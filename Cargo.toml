@@ -1,0 +1,19 @@
+[package]
+name = "velo"
+version = "2.0.0"
+edition = "2021"
+
+[dependencies]
+clap      = { version = "4.6", features = ["derive"] }
+blake3    = "1.8"
+zstd      = "0.13"
+rusqlite  = { version = "0.39", features = ["bundled"] }
+hex       = "0.4"
+rayon     = "1.11"
+similar   = "2.5"
+console   = "0.16"
+chrono    = "0.4"
+ignore    = "0.4"
+
+[dev-dependencies]
+tempfile  = "3.27"
