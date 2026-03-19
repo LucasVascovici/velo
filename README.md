@@ -1,6 +1,11 @@
 <p align="center">
+  <!-- Latest Release Version -->
   <img src="https://img.shields.io/github/v/release/LucasVascovici/velo?color=orange&logo=github" />
+  <!-- Continuous Integration (Push/PR Tests) -->
+  <img src="https://github.com/LucasVascovici/velo/actions/workflows/ci.yml/badge.svg" />
+  <!-- Release Build & Regression Tests -->
   <img src="https://github.com/LucasVascovici/velo/actions/workflows/release.yml/badge.svg" />
+  <!-- License -->
   <img src="https://img.shields.io/github/license/LucasVascovici/velo?color=blue" />
 </p>
 
