@@ -40,6 +40,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y musl-tools
+      
+      - name: Verify version match
+        shell: bash
+        run: |
+          CARGO_VERSION=$(grep "^version =" Cargo.toml | cut -d '"' -f 2)
+          TAG_VERSION=${GITHUB_REF#refs/tags/v}
+          
+          if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ ERROR: Cargo.toml version ($CARGO_VERSION) does not match Tag ($TAG_VERSION)"
+            exit 1
+          fi
 
       - name: Build Release
         run: cargo build --release --target ${{ matrix.target }}
