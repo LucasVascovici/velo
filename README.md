@@ -1,3 +1,9 @@
+<p align="center">
+  <img src="https://img.shields.io/github/v/release/LucasVascovici/velo?color=orange&logo=github" />
+  <img src="https://github.com/LucasVascovici/velo/actions/workflows/release.yml/badge.svg" />
+  <img src="https://img.shields.io/github/license/LucasVascovici/velo?color=blue" />
+</p>
+
 # 🚀 Velo
 
 **Velo** is a blazingly fast, safety-first version control system built in Rust. 
