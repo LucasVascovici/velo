@@ -12,6 +12,8 @@
   Git without the footguns.
 </p>
 
+> **Note:** This project was fully vibe-coded for fun — high-level intent, modern tech stack, tight feedback loop with an AI assistant. The result is a real, working tool, but it was built as an experiment in what's possible with that workflow, not as a production-grade replacement for Git.
+
 ---
 
 Git is a masterpiece of engineering — but its interface was designed in 2005 for the Linux kernel, not for everyday developers in 2025. Velo keeps what works (snapshots, branching, hashing, compression) and replaces what doesn't.
@@ -30,11 +32,11 @@ Benchmarked on a monorepo with 571 files across 6 language modules, 40 increment
 
 | Command | Latency | How |
 | :--- | :--- | :--- |
-| `velo status` (warm) | ~35–60 ms | mtime+size index cache skips rehashing unchanged files |
+| `velo status` (warm) | ~35–60 ms | mtime+size index cache — no rehashing on unchanged files |
 | `velo status` (cold) | ~50–200 ms | parallel BLAKE3 across all CPU cores via Rayon |
 | `velo save` (incremental) | ~285 ms avg | parallel hashing + single SQLite transaction + Zstd |
 | `velo restore` | ~200–800 ms | parallel file writes; scales with number of changed files |
-| `velo merge` | <100 ms | LCA computed with a recursive CTE; no file I/O needed |
+| `velo merge` | <100 ms | LCA found via recursive CTE; no file I/O needed |
 | `velo logs --all` | ~35 ms | indexed ancestry walk in SQLite WAL mode |
 
 The warm-cache path for `velo status` is essentially `N × stat()` — no file reads, no hashing. Only files whose `mtime` or `size` changed since the last run are rehashed.
@@ -43,19 +45,37 @@ The warm-cache path for `velo status` is essentially `N × stat()` — no file r
 
 ## Installation
 
-### Download a pre-built binary
+### Unix (Linux & macOS)
 
-Download the latest release for your platform from the [Releases page](https://github.com/LucasVascovici/velo/releases).
+```bash
+curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh | sh
+```
+
+By default the binary is installed to `/usr/local/bin` (with `sudo` if needed) or `~/.local/bin` if sudo is unavailable. To install to a custom directory:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh | sh -s -- --dir ~/.local/bin
+```
+
+To preview what the script would do without installing anything:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh | sh -s -- --dry-run
+```
+
+### Windows
+
+Download the latest `velo-x86_64-windows.zip` from the [Releases page](https://github.com/LucasVascovici/velo/releases), extract `velo.exe`, and place it anywhere on your `PATH`.
+
+### All platforms — pre-built binaries
 
 | Platform | File |
 | :--- | :--- |
 | Linux x86-64 (musl, static) | `velo-x86_64-linux.tar.gz` |
 | Linux ARM64 (musl, static)  | `velo-aarch64-linux.tar.gz` |
-| macOS Intel | `velo-x86_64-macos.tar.gz` |
-| macOS Apple Silicon | `velo-aarch64-macos.tar.gz` |
-| Windows x86-64 | `velo-x86_64-windows.zip` |
-
-Extract the binary and place it anywhere on your `PATH`.
+| macOS Apple Silicon         | `velo-aarch64-macos.tar.gz` |
+| macOS Intel                 | `velo-x86_64-macos.tar.gz` |
+| Windows x86-64              | `velo-x86_64-windows.zip` |
 
 ### Build from source
 
@@ -135,7 +155,7 @@ velo restore <hash>
 | `velo resolve <file> --take ours` | Resolve a conflict by keeping the current branch's version |
 | `velo resolve <file> --take theirs` | Resolve a conflict by taking the incoming branch's version |
 | `velo resolve <file>` | Mark a conflict as resolved after manual editing |
-| `velo resolve --all --take <ours\|theirs>` | Resolve all outstanding conflicts in one command |
+| `velo resolve --all --take <ours\|theirs>` | Resolve all outstanding conflicts at once |
 
 ### Tags
 
@@ -151,7 +171,7 @@ velo restore <hash>
 
 | Command | Description |
 | :--- | :--- |
-| `velo gc` | Remove orphaned objects and old undo history (frees disk space) |
+| `velo gc` | Remove orphaned objects and old undo history |
 | `velo gc --keep-days <n>` | Keep undo history for `n` days before permanent deletion (default: 30) |
 
 ---
@@ -188,33 +208,31 @@ velo save "Merge feature/payments"
 
 ## How `.conflict` files work
 
-When Velo detects a true conflict (both branches modified the same file since their common ancestor), it writes the incoming branch's version as `<file>.conflict` and leaves your version as `<file>`. Your code stays in a valid, runnable state — there are no `<<<<<<<` markers inside your file.
+When Velo detects a true conflict (both branches modified the same file since their common ancestor), it writes the incoming branch's version as `<file>.conflict` and leaves your version intact as `<file>`. Your code stays in a valid, runnable state — there are no `<<<<<<<` markers inside your file.
 
 ```
 config.py          ← your version (current branch)
 config.py.conflict ← their version (incoming branch)
 ```
 
-Use `velo diff config.py --conflict` to see the difference side by side. Once resolved, run `velo resolve config.py` to clear the sidecar file.
+Use `velo diff config.py --conflict` to see the two versions side by side. Once resolved, run `velo resolve config.py` to clear the sidecar file.
 
 ---
 
 ## Architecture
-
-Velo is a database, not a flat-file index.
 
 | Layer | Technology | Role |
 | :--- | :--- | :--- |
 | Hashing | BLAKE3 | Collision-proof, 10× faster than SHA-1; `rayon` splits large files across CPU cores |
 | Compression | Zstd level 1 | Fast compression on save; transparent decompression on restore |
 | Storage | SQLite (WAL mode) | Structured metadata — snapshots, branches, tags, ancestry — with indexed queries |
-| Mtime cache | `index_cache` table | Stores `(path, mtime_ns, size, hash)`; skips rehashing unchanged files on status/save |
+| Mtime cache | `index_cache` table | Stores `(path, mtime_ns, size, hash)`; skips rehashing unchanged files |
 | Concurrency | Rayon | Parallel filesystem walk, parallel hash-and-compress, parallel file writes on restore |
 | I/O | memmap2 | Memory-maps files ≥256 KB to avoid kernel→userspace copy during hashing |
 
-**Delta storage:** each snapshot stores only the files that changed. Unchanged files are recorded as references to the same object from the parent snapshot. A 1000-file project where 10 files change creates 10 new objects, not 1000.
+**Delta storage:** each snapshot records only the files that changed. Unchanged files are stored as references to the same object from the parent snapshot. A 1000-file project where 10 files change creates 10 new objects, not 1000.
 
-**Object store:** content-addressed storage under `.velo/objects/`. Each object is the Zstd-compressed file content, named by its full BLAKE3 hash. Identical file content is stored exactly once, regardless of how many times it appears across snapshots or branches.
+**Object store:** content-addressed storage under `.velo/objects/`. Each object is the Zstd-compressed file content, named by its full BLAKE3 hash. Identical content is stored exactly once across all snapshots and branches.
 
 ---
 
