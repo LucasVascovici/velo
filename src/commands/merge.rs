@@ -49,10 +49,7 @@ fn collect_conflict_files(root: &Path) -> std::io::Result<Vec<std::path::PathBuf
     Ok(out)
 }
 
-fn collect_cf_recursive(
-    dir: &Path,
-    out: &mut Vec<std::path::PathBuf>,
-) -> std::io::Result<()> {
+fn collect_cf_recursive(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> std::io::Result<()> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
@@ -76,8 +73,7 @@ fn load_file_map(
     conn: &rusqlite::Connection,
     snapshot_hash: &str,
 ) -> Result<HashMap<String, String>> {
-    let mut stmt =
-        conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+    let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
     let collected: HashMap<String, String> = stmt
         .query_map([snapshot_hash], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -105,8 +101,7 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
     }
 
     let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let head_raw =
-        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let head_raw = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
     let head_branch = head_raw.trim();
 
     if head_branch == target_branch {
@@ -159,7 +154,12 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
 
     if is_ff {
         return do_fast_forward(
-            root, &mut conn, head_branch, &current_hash, &target_hash, target_branch,
+            root,
+            &mut conn,
+            head_branch,
+            &current_hash,
+            &target_hash,
+            target_branch,
         );
     }
 
@@ -202,11 +202,11 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
         .ok();
 
     // ── Load all three file maps ───────────────────────────────────────────────
-    let current_files  = load_file_map(&conn, &current_hash)?;
-    let target_files   = load_file_map(&conn, &target_hash)?;
+    let current_files = load_file_map(&conn, &current_hash)?;
+    let target_files = load_file_map(&conn, &target_hash)?;
     let ancestor_files = match &ancestor_hash {
         Some(h) => load_file_map(&conn, h)?,
-        None    => HashMap::new(),
+        None => HashMap::new(),
     };
 
     println!(
@@ -218,8 +218,8 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
 
     let objects_dir = root.join(".velo/objects");
     let mut conflicts: Vec<String> = Vec::new();
-    let mut new_count  = 0usize;
-    let mut del_count  = 0usize;
+    let mut new_count = 0usize;
+    let mut del_count = 0usize;
     let mut took_count = 0usize; // files taken from target (non-conflicting)
 
     // Union of all paths seen in either branch tip
@@ -314,11 +314,14 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
             // finding is correct (it would mean they diverged before the ancestor),
             // but treat defensively as a conflict.
             (false, false) => {
-                let conflict_path =
-                    root.join(crate::db::db_to_path(&format!("{}.conflict", path)));
+                let conflict_path = root.join(crate::db::db_to_path(&format!("{}.conflict", path)));
                 let data = storage::read_object(&objects_dir, tgt_hash)?;
                 fs::write(&conflict_path, data)?;
-                println!("  {} Conflict (pre-ancestor): {}", style("!").yellow().bold(), path);
+                println!(
+                    "  {} Conflict (pre-ancestor): {}",
+                    style("!").yellow().bold(),
+                    path
+                );
                 conflicts.push(path.to_string());
             }
         }
@@ -343,7 +346,7 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
             println!(
                 "    Resolve: {}  or  {}",
                 style(format!("velo resolve {} --take theirs", f)).green(),
-                style(format!("velo resolve {} --take ours",   f)).dim()
+                style(format!("velo resolve {} --take ours", f)).dim()
             );
         }
         println!(
@@ -378,11 +381,10 @@ fn do_fast_forward(
 
     let now = chrono::Utc::now().to_rfc3339();
     let msg = format!("Fast-forward merge from '{}'", target_branch);
-    let ff_full_hex = blake3::hash(
-        format!("{}{}{}{}", msg, head_branch, current_hash, now).as_bytes(),
-    )
-    .to_hex()
-    .to_string();
+    let ff_full_hex =
+        blake3::hash(format!("{}{}{}{}", msg, head_branch, current_hash, now).as_bytes())
+            .to_hex()
+            .to_string();
     let new_hash = &ff_full_hex[..SNAP_HASH_LEN];
 
     let tx = conn.transaction()?;

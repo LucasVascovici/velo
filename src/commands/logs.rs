@@ -24,11 +24,9 @@ pub fn run(
 ) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
 
-    let current_parent =
-        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let current_parent = current_parent.trim();
-    let branch_raw =
-        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let branch_raw = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
     let branch = branch_raw.trim();
     let sql_limit = limit as i64;
 
@@ -76,16 +74,10 @@ pub fn run(
     } else {
         // Ancestry walk from PARENT on the current branch
         if current_parent.is_empty() {
-            println!(
-                "No snapshots yet on branch '{}'.",
-                style(branch).cyan()
-            );
+            println!("No snapshots yet on branch '{}'.", style(branch).cyan());
             return Ok(());
         }
-        println!(
-            "\nHistory for branch: {}",
-            style(branch).cyan().bold()
-        );
+        println!("\nHistory for branch: {}", style(branch).cyan().bold());
         let mut stmt = conn.prepare(
             "WITH RECURSIVE cte(hash, message, created_at, branch, parent_hash) AS (
                 SELECT hash, message, created_at, branch, parent_hash

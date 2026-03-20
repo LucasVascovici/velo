@@ -1,9 +1,9 @@
 use clap::{Parser, Subcommand};
 
+mod commands;
 mod db;
 mod error;
 mod storage;
-mod commands;
 
 #[cfg(test)]
 mod tests;
@@ -144,7 +144,9 @@ fn main() {
     // SAFETY: SetConsoleOutputCP is idempotent and safe to call at any time.
     unsafe {
         #[link(name = "kernel32")]
-        extern "system" { fn SetConsoleOutputCP(id: u32) -> i32; }
+        extern "system" {
+            fn SetConsoleOutputCP(id: u32) -> i32;
+        }
         SetConsoleOutputCP(65001);
     }
 
@@ -163,8 +165,7 @@ fn run() -> Result<()> {
         return commands::init::run(&current_dir);
     }
 
-    let root = commands::find_repo_root(&current_dir)
-        .ok_or(VeloError::NotARepo)?;
+    let root = commands::find_repo_root(&current_dir).ok_or(VeloError::NotARepo)?;
 
     match cli.command {
         Commands::Init => unreachable!(),
@@ -199,7 +200,12 @@ fn run() -> Result<()> {
 
         Commands::Status => commands::status::run(&root)?,
 
-        Commands::Logs { all, limit, branch, oneline } => {
+        Commands::Logs {
+            all,
+            limit,
+            branch,
+            oneline,
+        } => {
             commands::logs::run(&root, all, limit, branch.as_deref(), oneline)?;
         }
 
@@ -222,7 +228,12 @@ fn run() -> Result<()> {
             commands::branches::run(&root, delete)?;
         }
 
-        Commands::Tag { name, snapshot, delete, force } => {
+        Commands::Tag {
+            name,
+            snapshot,
+            delete,
+            force,
+        } => {
             commands::tag::run(&root, name, snapshot, delete, force)?;
         }
 

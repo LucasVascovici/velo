@@ -87,9 +87,7 @@ mod tests {
     }
 
     fn object_count(root: &Path) -> usize {
-        fs::read_dir(root.join(".velo/objects"))
-            .unwrap()
-            .count()
+        fs::read_dir(root.join(".velo/objects")).unwrap().count()
     }
 
     // =========================================================================
@@ -110,7 +108,9 @@ mod tests {
             "main"
         );
         assert_eq!(
-            fs::read_to_string(root.join(".velo/PARENT")).unwrap().trim(),
+            fs::read_to_string(root.join(".velo/PARENT"))
+                .unwrap()
+                .trim(),
             ""
         );
     }
@@ -267,9 +267,16 @@ mod tests {
 
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let trash_count: i64 = conn
-            .query_row("SELECT count(*) FROM trash WHERE branch = 'main'", [], |r| r.get(0))
+            .query_row(
+                "SELECT count(*) FROM trash WHERE branch = 'main'",
+                [],
+                |r| r.get(0),
+            )
             .unwrap();
-        assert_eq!(trash_count, 0, "Redo stack should be cleared after a new save");
+        assert_eq!(
+            trash_count, 0,
+            "Redo stack should be cleared after a new save"
+        );
     }
 
     #[test]
@@ -343,7 +350,10 @@ mod tests {
 
         commands::restore::run(&root, &h1, true).unwrap();
         assert!(exists(&root, "a.txt"), "a.txt should be present");
-        assert!(!exists(&root, "b.txt"), "b.txt is a ghost and must be removed");
+        assert!(
+            !exists(&root, "b.txt"),
+            "b.txt is a ghost and must be removed"
+        );
     }
 
     #[test]
@@ -356,7 +366,10 @@ mod tests {
         save(&root, "s2");
 
         commands::restore::run(&root, &h1, true).unwrap();
-        assert!(!exists(&root, "subdir"), "Empty subdir should be cleaned up");
+        assert!(
+            !exists(&root, "subdir"),
+            "Empty subdir should be cleaned up"
+        );
     }
 
     #[test]
@@ -394,7 +407,7 @@ mod tests {
         save(&root, "s1");
 
         write(&root, "a.txt", "A_mod"); // modified
-        write(&root, "c.txt", "C");     // new
+        write(&root, "c.txt", "C"); // new
         fs::remove_file(root.join("b.txt")).unwrap(); // deleted
 
         let dirty = commands::get_dirty_files(&root);
@@ -543,7 +556,10 @@ mod tests {
         assert!(!snapshot_exists(&root, &h1));
         assert_eq!(parent(&root), "");
         // The tracked file should be removed from disk
-        assert!(!exists(&root, "f.txt"), "File should be removed when first commit is undone");
+        assert!(
+            !exists(&root, "f.txt"),
+            "File should be removed when first commit is undone"
+        );
     }
 
     #[test]
@@ -611,7 +627,10 @@ mod tests {
         save(&root, "s3");
 
         let result = commands::redo::run(&root);
-        assert!(result.is_err(), "Redo should be unavailable after a new save");
+        assert!(
+            result.is_err(),
+            "Redo should be unavailable after a new save"
+        );
     }
 
     #[test]
@@ -645,10 +664,23 @@ mod tests {
     #[test]
     fn diff_modified_file() {
         let (_tmp, root) = setup();
-        write(&root, "large.txt", (0..100).map(|i| format!("Line {}\n", i)).collect::<String>().as_str());
+        write(
+            &root,
+            "large.txt",
+            (0..100)
+                .map(|i| format!("Line {}\n", i))
+                .collect::<String>()
+                .as_str(),
+        );
         save(&root, "base");
         let new_content = (0..100)
-            .map(|i| if i == 50 { "Line 50 MODIFIED\n".into() } else { format!("Line {}\n", i) })
+            .map(|i| {
+                if i == 50 {
+                    "Line 50 MODIFIED\n".into()
+                } else {
+                    format!("Line {}\n", i)
+                }
+            })
             .collect::<String>();
         write(&root, "large.txt", &new_content);
         commands::diff::run(&root, &Some("large.txt".into()), false).unwrap();
@@ -884,9 +916,11 @@ mod tests {
 
         write(&root, "f.txt", "v2");
         save(&root, "s2");
-        let result =
-            commands::tag::run(&root, Some("v1".into()), None, None, false);
-        assert!(result.is_err(), "Should not allow overwriting without --force");
+        let result = commands::tag::run(&root, Some("v1".into()), None, None, false);
+        assert!(
+            result.is_err(),
+            "Should not allow overwriting without --force"
+        );
     }
 
     #[test]
@@ -919,8 +953,7 @@ mod tests {
     #[test]
     fn tag_delete_nonexistent_is_error() {
         let (_tmp, root) = setup();
-        let result =
-            commands::tag::run(&root, None, None, Some("ghost_tag".into()), false);
+        let result = commands::tag::run(&root, None, None, Some("ghost_tag".into()), false);
         assert!(result.is_err());
     }
 
@@ -928,8 +961,7 @@ mod tests {
     fn tag_empty_head_is_error() {
         let (_tmp, root) = setup();
         // No snapshots yet — can't tag HEAD
-        let result =
-            commands::tag::run(&root, Some("v1".into()), None, None, false);
+        let result = commands::tag::run(&root, Some("v1".into()), None, None, false);
         assert!(result.is_err());
     }
 
@@ -994,7 +1026,13 @@ mod tests {
         save(&root, "save B");
 
         commands::merge::run(&root, Some("A"), false).unwrap();
-        commands::resolve::run(&root, Some("app.py"), Some(commands::resolve::TakeOption::Theirs), false).unwrap();
+        commands::resolve::run(
+            &root,
+            Some("app.py"),
+            Some(commands::resolve::TakeOption::Theirs),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(read(&root, "app.py"), "content A");
         assert!(!exists(&root, "app.py.conflict"));
@@ -1013,7 +1051,13 @@ mod tests {
         save(&root, "main snap");
 
         commands::merge::run(&root, Some("feat"), false).unwrap();
-        commands::resolve::run(&root, Some("f.txt"), Some(commands::resolve::TakeOption::Ours), false).unwrap();
+        commands::resolve::run(
+            &root,
+            Some("f.txt"),
+            Some(commands::resolve::TakeOption::Ours),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(read(&root, "f.txt"), "ours");
         assert!(!exists(&root, "f.txt.conflict"));
@@ -1033,13 +1077,22 @@ mod tests {
 
         // Back on main: both files still on disk
         commands::switch::run(&root, "main", true).unwrap();
-        assert!(exists(&root, "removed.txt"), "removed.txt should exist on main before merge");
+        assert!(
+            exists(&root, "removed.txt"),
+            "removed.txt should exist on main before merge"
+        );
         assert!(exists(&root, "kept.txt"));
 
         // Merge dev into main — dev deleted removed.txt, so it should disappear
         commands::merge::run(&root, Some("dev"), false).unwrap();
-        assert!(!exists(&root, "removed.txt"), "File deleted on target branch must be absent after merge");
-        assert!(exists(&root, "kept.txt"), "Unaffected file must still be present");
+        assert!(
+            !exists(&root, "removed.txt"),
+            "File deleted on target branch must be absent after merge"
+        );
+        assert!(
+            exists(&root, "kept.txt"),
+            "Unaffected file must still be present"
+        );
     }
 
     #[test]
@@ -1179,7 +1232,8 @@ mod tests {
             None,
             Some(commands::resolve::TakeOption::Theirs),
             true, // --all
-        ).unwrap();
+        )
+        .unwrap();
 
         assert!(!exists(&root, "a.py.conflict"));
         assert!(!exists(&root, "b.py.conflict"));
@@ -1211,7 +1265,11 @@ mod tests {
         commands::undo::run(&root).unwrap();
 
         // Inject a fake orphaned object manually
-        fs::write(root.join(".velo/objects/fake_orphan_object_hash"), b"garbage").unwrap();
+        fs::write(
+            root.join(".velo/objects/fake_orphan_object_hash"),
+            b"garbage",
+        )
+        .unwrap();
 
         let before = object_count(&root);
         // Run GC with 0 day keep to also purge trash immediately
@@ -1230,7 +1288,10 @@ mod tests {
         let before = object_count(&root);
         commands::gc::run(&root, 30).unwrap();
         let after = object_count(&root);
-        assert_eq!(before, after, "GC on a clean repo should not delete anything");
+        assert_eq!(
+            before, after,
+            "GC on a clean repo should not delete anything"
+        );
     }
 
     // =========================================================================
@@ -1326,8 +1387,14 @@ mod tests {
         // Switch back to main — feature.txt must vanish (it wasn't on main)
         commands::switch::run(&root, "main", true).unwrap();
         assert_eq!(read(&root, "README.md"), "# Project");
-        assert!(!exists(&root, "feature.txt"), "feature.txt should not exist on main");
-        assert!(commands::get_dirty_files(&root).is_empty(), "main must be clean before merge");
+        assert!(
+            !exists(&root, "feature.txt"),
+            "feature.txt should not exist on main"
+        );
+        assert!(
+            commands::get_dirty_files(&root).is_empty(),
+            "main must be clean before merge"
+        );
 
         // Fast-forward merge: feature.txt should appear
         commands::merge::run(&root, Some("feature"), false).unwrap();

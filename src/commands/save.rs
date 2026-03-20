@@ -38,8 +38,14 @@ pub fn run(root: &Path, message: &str) -> Result<Option<SaveResult>> {
     }
 
     let new_count = dirty.values().filter(|s| **s == FileStatus::New).count();
-    let modified_count = dirty.values().filter(|s| **s == FileStatus::Modified).count();
-    let deleted_count = dirty.values().filter(|s| **s == FileStatus::Deleted).count();
+    let modified_count = dirty
+        .values()
+        .filter(|s| **s == FileStatus::Modified)
+        .count();
+    let deleted_count = dirty
+        .values()
+        .filter(|s| **s == FileStatus::Deleted)
+        .count();
 
     let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
     let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
@@ -82,12 +88,10 @@ pub fn run(root: &Path, message: &str) -> Result<Option<SaveResult>> {
     // Copy forward unchanged files from the parent snapshot (delta storage).
     // Prepare the insert once and reuse it for every row.
     {
-        let modified_paths: HashSet<&str> =
-            hashed_files.iter().map(|(p, _)| p.as_str()).collect();
+        let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _)| p.as_str()).collect();
 
         let parent_files: Vec<(String, String)> = {
-            let mut stmt =
-                tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+            let mut stmt = tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
             let collected: Vec<(String, String)> = stmt
                 .query_map([parent_hash.trim()], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -103,9 +107,8 @@ pub fn run(root: &Path, message: &str) -> Result<Option<SaveResult>> {
 
         // Reuse a single prepared statement for all inserts
         {
-            let mut ins = tx.prepare(
-                "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
-            )?;
+            let mut ins =
+                tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
             for (p, h) in &parent_files {
                 ins.execute(params![snapshot_hash, p, h])?;
             }

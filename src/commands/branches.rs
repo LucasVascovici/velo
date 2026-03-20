@@ -9,8 +9,7 @@ use crate::error::{Result, VeloError};
 
 pub fn run(root: &Path, delete: Option<String>) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let head_raw =
-        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let head_raw = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
     let current = head_raw.trim();
 
     // ── Delete branch ─────────────────────────────────────────────────────────
@@ -54,9 +53,8 @@ pub fn run(root: &Path, delete: Option<String>) -> Result<()> {
     }
 
     // Collect distinct non-deleted branch names (from DB + current HEAD)
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT branch FROM snapshots WHERE branch NOT LIKE '_deleted_%'",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT branch FROM snapshots WHERE branch NOT LIKE '_deleted_%'")?;
     let mut branches: Vec<String> = stmt
         .query_map([], |r| r.get(0))?
         .filter_map(|r| r.ok())

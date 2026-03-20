@@ -48,7 +48,7 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
         CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
         CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at);
-        CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at);"
+        CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at);",
     )?;
     Ok(())
 }
@@ -62,14 +62,14 @@ pub fn get_conn_at_path(path: &Path) -> Result<Connection> {
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous",  "NORMAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     // 64 MB page cache (negative = kibibytes)
-    conn.pragma_update(None, "cache_size",   -65_536_i64)?;
+    conn.pragma_update(None, "cache_size", -65_536_i64)?;
     // 256 MB memory-mapped I/O
-    conn.pragma_update(None, "mmap_size",    268_435_456_i64)?;
+    conn.pragma_update(None, "mmap_size", 268_435_456_i64)?;
     // Temp tables in RAM
-    conn.pragma_update(None, "temp_store",   "MEMORY")?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
     Ok(())
 }
 
