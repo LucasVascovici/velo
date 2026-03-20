@@ -324,9 +324,10 @@ mod tests {
         // Dirty up the working tree
         write(&root, "f.txt", "dirty");
 
-        // Should not change anything (no force)
         let before_parent = parent(&root);
-        commands::restore::run(&root, &h1, false).unwrap();
+        // Should now return Err (exit 1) — not silently succeed
+        let result = commands::restore::run(&root, &h1, false);
+        assert!(result.is_err(), "Restore with dirty tree should error");
         assert_eq!(parent(&root), before_parent, "PARENT should not change");
         assert_eq!(read(&root, "f.txt"), "dirty", "File should not be restored");
     }

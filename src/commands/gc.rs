@@ -7,29 +7,25 @@ use console::style;
 use crate::db;
 use crate::error::Result;
 
-/// Remove orphaned objects and stale trash entries.
-///
-/// An object is considered orphaned when no row in `file_map` references it.
-/// Trash entries older than `keep_days` days are permanently deleted along with
-/// their (now truly unreferenced) file_map rows.
+/// Remove orphaned objects, stale trash entries, and stale index_cache rows.
 pub fn run(root: &Path, keep_days: u32) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
 
     // ── 1. Purge old trash entries ────────────────────────────────────────────
     let trash_rows = conn.execute(
-        "DELETE FROM trash WHERE deleted_at < datetime('now', ?)",
+        "DELETE FROM trash WHERE deleted_at <= datetime('now', ?)",
         [format!("-{} days", keep_days)],
     )?;
     if trash_rows > 0 {
         println!(
-            "  {} Permanently removed {} trash entry/entries older than {} days.",
+            "  {} Removed {} trash entry/entries older than {} days.",
             style("~").yellow(),
             trash_rows,
             keep_days
         );
     }
 
-    // ── 2. Remove file_map entries for snapshots that no longer exist ─────────
+    // ── 2. Remove orphaned file_map rows ─────────────────────────────────────
     let orphan_fm = conn.execute(
         "DELETE FROM file_map
          WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
@@ -38,20 +34,38 @@ pub fn run(root: &Path, keep_days: u32) -> Result<()> {
     )?;
     if orphan_fm > 0 {
         println!(
-            "  {} Cleaned up {} orphaned file_map row(s).",
+            "  {} Cleaned {} orphaned file_map row(s).",
             style("~").yellow(),
             orphan_fm
         );
     }
 
-    // ── 3. Collect all hashes still referenced by file_map ───────────────────
+    // ── 3. Prune stale index_cache entries ────────────────────────────────────
+    // Remove entries for paths that no longer exist on disk.
+    let stale_cache = conn.execute(
+        "DELETE FROM index_cache
+         WHERE path NOT IN (
+             SELECT path FROM file_map
+             WHERE snapshot_hash IN (SELECT hash FROM snapshots)
+         )",
+        [],
+    )?;
+    if stale_cache > 0 {
+        println!(
+            "  {} Pruned {} stale index cache entry/entries.",
+            style("~").yellow(),
+            stale_cache
+        );
+    }
+
+    // ── 4. Collect referenced object hashes ──────────────────────────────────
     let mut stmt = conn.prepare("SELECT DISTINCT hash FROM file_map")?;
     let referenced: HashSet<String> = stmt
         .query_map([], |r| r.get(0))?
         .filter_map(|r| r.ok())
         .collect();
 
-    // ── 4. Walk objects directory and delete unreferenced files ──────────────
+    // ── 5. Delete unreferenced objects ────────────────────────────────────────
     let objects_dir = root.join(".velo/objects");
     let mut deleted_count = 0usize;
     let mut freed_bytes = 0u64;
@@ -68,11 +82,11 @@ pub fn run(root: &Path, keep_days: u32) -> Result<()> {
     }
 
     // ── Summary ───────────────────────────────────────────────────────────────
-    if deleted_count == 0 && trash_rows == 0 && orphan_fm == 0 {
+    if deleted_count == 0 && trash_rows == 0 && orphan_fm == 0 && stale_cache == 0 {
         println!("{}", style("Repository is already clean. Nothing to collect.").dim());
     } else {
         println!(
-            "{} Garbage collection complete — removed {} object(s), freed {:.1} KB.",
+            "{} GC complete — removed {} object(s), freed {:.1} KB.",
             style("✔").green().bold(),
             deleted_count,
             freed_bytes as f64 / 1024.0

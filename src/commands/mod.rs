@@ -13,10 +13,14 @@ pub mod resolve;
 pub mod branches;
 pub mod gc;
 
-use ignore::WalkBuilder;
 use std::collections::HashMap;
+use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
+
+use ignore::{WalkBuilder, WalkState};
+use parking_lot::Mutex;
 use rayon::prelude::*;
 
 use crate::error::{Result, VeloError};
@@ -24,7 +28,7 @@ use crate::error::{Result, VeloError};
 /// Number of hex characters used for snapshot hashes (48 bits of entropy).
 pub const SNAP_HASH_LEN: usize = 12;
 
-// ─── Status ─────────────────────────────────────────────────────────────────
+// ─── File status ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum FileStatus {
@@ -33,10 +37,17 @@ pub enum FileStatus {
     Deleted,
 }
 
-// ─── Repository discovery ────────────────────────────────────────────────────
+// ─── Cache entry (from index_cache table) ─────────────────────────────────────
 
-/// Walk upward from `start` until a directory containing `.velo/` is found.
-/// Returns `None` if no repository is found all the way to the filesystem root.
+struct CacheEntry {
+    mtime_ns: i64,
+    size: i64,
+    hash: String,
+}
+
+// ─── Repository discovery ─────────────────────────────────────────────────────
+
+/// Walk upward from `start` until `.velo/` is found.
 pub fn find_repo_root(start: &Path) -> Option<PathBuf> {
     let mut dir = start.to_path_buf();
     loop {
@@ -49,12 +60,11 @@ pub fn find_repo_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Resolve a user-supplied snapshot identifier (tag name OR hash prefix) to a
-/// full hash stored in the database.
+/// Resolve a user-supplied snapshot identifier (tag name or hash prefix).
 pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
     let conn = crate::db::get_conn_at_path(&root.join(".velo/velo.db"))?;
 
-    // 1. Try as a tag name
+    // 1. Try as tag name
     if let Ok(h) = conn.query_row(
         "SELECT snapshot_hash FROM tags WHERE name = ?",
         [input],
@@ -63,11 +73,10 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
         return Ok(h);
     }
 
-    // 2. Try as an exact or prefix hash
+    // 2. Try as exact or prefix hash
     let rows: Vec<String> = {
-        let mut stmt = conn.prepare(
-            "SELECT hash FROM snapshots WHERE hash LIKE ? || '%'",
-        )?;
+        let mut stmt =
+            conn.prepare("SELECT hash FROM snapshots WHERE hash LIKE ? || '%'")?;
         let collected: Vec<String> = stmt
             .query_map([input], |r| r.get(0))?
             .filter_map(|r| r.ok())
@@ -81,41 +90,94 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
             input
         ))),
         1 => Ok(rows.into_iter().next().unwrap()),
-        _ => Err(VeloError::InvalidInput(format!(
+        n => Err(VeloError::InvalidInput(format!(
             "Ambiguous prefix '{}' matches {} snapshots. Use more characters.",
-            input,
-            rows.len()
+            input, n
         ))),
     }
 }
 
-// ─── File enumeration ────────────────────────────────────────────────────────
+// ─── Filesystem enumeration ───────────────────────────────────────────────────
 
-/// Return all tracked files under `root` (respecting `.veloignore` /
-/// `.gitignore`).  Conflict files (`.conflict` extension) are always excluded
-/// since they are ephemeral merge artefacts, not repository content.
-pub fn get_tracked_files(root: &Path) -> Vec<PathBuf> {
-    let mut builder = WalkBuilder::new(root);
-    builder
-        .hidden(false)
+/// Collected file entry from the parallel walk.
+struct WalkEntry {
+    path: PathBuf,
+    mtime_ns: i64,
+    size: i64,
+}
+
+/// Build a `WalkBuilder` with the standard ignore rules applied.
+fn make_walker(root: &Path) -> WalkBuilder {
+    let mut b = WalkBuilder::new(root);
+    b.hidden(false)
         .add_custom_ignore_filename(".veloignore")
         .add_custom_ignore_filename(".gitignore");
-    builder.filter_entry(|e| {
+    b.filter_entry(|e| {
         let n = e.file_name().to_str().unwrap_or("");
         n != ".velo" && n != ".git" && n != "target" && !n.ends_with(".conflict")
     });
-    builder
-        .build()
-        .filter_map(|r| r.ok())
-        .filter(|e| e.path().is_file())
-        .map(|e| e.into_path())
-        .collect()
+    b
 }
 
-/// Return a map of `rel_path -> FileStatus` for every file that differs from
-/// the current snapshot (PARENT).  Paths are normalised to forward-slashes.
+/// Return all tracked file paths under `root` using the parallel walker.
+pub fn get_tracked_files(root: &Path) -> Vec<PathBuf> {
+    let acc: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    make_walker(root).build_parallel().run(|| {
+        Box::new(|res| {
+            if let Ok(e) = res {
+                if e.path().is_file() {
+                    acc.lock().push(e.into_path());
+                }
+            }
+            WalkState::Continue
+        })
+    });
+    acc.into_inner()
+}
+
+/// Parallel walk that collects both the path and its filesystem metadata.
+fn walk_with_meta(root: &Path) -> Vec<WalkEntry> {
+    let acc: Mutex<Vec<WalkEntry>> = Mutex::new(Vec::new());
+    make_walker(root).build_parallel().run(|| {
+        Box::new(|res| {
+            if let Ok(entry) = res {
+                let path = entry.into_path();
+                if let Ok(meta) = path.metadata() {
+                    if meta.is_file() {
+                        let mtime_ns = meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos() as i64)
+                            .unwrap_or(0);
+                        let size = meta.len() as i64;
+                        acc.lock().push(WalkEntry { path, mtime_ns, size });
+                    }
+                }
+            }
+            WalkState::Continue
+        })
+    });
+    acc.into_inner()
+}
+
+// ─── Dirty-file detection (the hot path) ─────────────────────────────────────
+
+/// Return every file that differs from the current snapshot.
 ///
-/// Complexity: one DB round-trip + one filesystem walk.
+/// ### Performance strategy
+///
+/// 1. **One DB round-trip** – load the snapshot's file map into a `HashMap`.
+/// 2. **One DB round-trip** – load the full `index_cache` into a `HashMap`.
+/// 3. **Parallel filesystem walk** – enumerate files + read metadata in
+///    parallel using `ignore`'s built-in parallel walker.
+/// 4. **Parallel hash phase** – rayon processes all walk entries; files whose
+///    `(mtime_ns, size)` match the cache skip the disk read entirely.
+/// 5. **Batch cache write** – newly computed hashes are written back in one
+///    transaction so the next call is even faster.
+///
+/// On a clean working tree with a warm cache this is essentially:
+///   N × stat()  +  1 DB read  (instead of N × read + N × hash)
 pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
     let mut dirty = HashMap::new();
     let db_path = root.join(".velo/velo.db");
@@ -127,30 +189,93 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
         Ok(c) => c,
         Err(_) => return dirty,
     };
-    let parent_hash = std::fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let parent_hash =
+        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
-    let mut stmt = conn
-        .prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")
-        .unwrap();
-    let mut db_files: HashMap<String, String> = stmt
-        .query_map([parent_hash.trim()], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    // ── 1. Load snapshot's file map ───────────────────────────────────────────
+    let mut db_files: HashMap<String, String> = {
+        let mut stmt = conn
+            .prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")
+            .unwrap();
+        let collected: HashMap<String, String> = stmt
+            .query_map([parent_hash.trim()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        collected
+    };
+
+    // ── 2. Load index cache ───────────────────────────────────────────────────
+    let index: HashMap<String, CacheEntry> = {
+        let mut stmt = conn
+            .prepare("SELECT path, mtime_ns, size, hash FROM index_cache")
+            .unwrap();
+        stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, i64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, String>(3)?,
+            ))
         })
         .unwrap()
         .filter_map(|r| r.ok())
+        .map(|(p, m, s, h)| (p, CacheEntry { mtime_ns: m, size: s, hash: h }))
+        .collect()
+    };
+
+    // ── 3. Parallel walk ──────────────────────────────────────────────────────
+    let entries = walk_with_meta(root);
+
+    // ── 4. Parallel hash (cache-aware) ────────────────────────────────────────
+    // Returns (rel_path, current_hash, mtime_ns, size, was_cache_miss)
+    let results: Vec<(String, String, i64, i64, bool)> = entries
+        .into_par_iter()
+        .map(|e| {
+            let rel = crate::db::normalise(
+                e.path.strip_prefix(root).unwrap().to_str().unwrap(),
+            );
+            let (hash, miss) = if let Some(cached) = index.get(&rel) {
+                if cached.mtime_ns == e.mtime_ns && cached.size == e.size {
+                    (cached.hash.clone(), false) // cache hit — no disk read
+                } else {
+                    (crate::storage::fast_hash(&e.path), true)
+                }
+            } else {
+                (crate::storage::fast_hash(&e.path), true)
+            };
+            (rel, hash, e.mtime_ns, e.size, miss)
+        })
         .collect();
 
-    let tracked = get_tracked_files(root);
-    
-    let results: Vec<(String, String)> = tracked.into_par_iter().map(|path: std::path::PathBuf| {
-        let rel = crate::db::normalise(path.strip_prefix(root).unwrap().to_str().unwrap());
-        let current_hash = stream_hash(&path);
-        (rel, current_hash)
-    }).collect();
+    // ── 5. Batch-write cache misses back to DB ────────────────────────────────
+    let misses: Vec<_> = results
+        .iter()
+        .filter(|(_, _, _, _, miss)| *miss)
+        .collect();
 
-    for (rel, current_hash) in results {
-        if let Some(db_hash) = db_files.remove(&rel) {
-            if db_hash != current_hash {
+    if !misses.is_empty() {
+        if let Ok(tx) = conn.unchecked_transaction() {
+            if let Ok(mut stmt) = tx.prepare(
+                "INSERT OR REPLACE INTO index_cache (path, mtime_ns, size, hash)
+                 VALUES (?, ?, ?, ?)",
+            ) {
+                for (rel, hash, mtime, size, _) in &misses {
+                    let _ = stmt.execute(
+                        rusqlite::params![rel, mtime, size, hash],
+                    );
+                }
+            }
+            let _ = tx.commit();
+        }
+    }
+
+    // ── 6. Compare hashes against snapshot ───────────────────────────────────
+    for (rel, hash, _, _, _) in results {
+        if let Some(snap_hash) = db_files.remove(&rel) {
+            if snap_hash != hash {
                 dirty.insert(rel, FileStatus::Modified);
             }
         } else {
@@ -158,17 +283,39 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
         }
     }
 
+    // Anything left in db_files was deleted from disk
     for rel in db_files.into_keys() {
         dirty.insert(rel, FileStatus::Deleted);
     }
+
     dirty
 }
 
-/// Return the list of active `.conflict` files (only meaningful while a merge
-/// is in progress).
+/// Invalidate index_cache entries for a set of paths.
+/// Called after `restore` writes files: the mtime will have changed so the
+/// old entries would cause spurious cache hits on the next dirty check.
+pub fn invalidate_cache_entries(root: &Path, paths: &[String]) {
+    if paths.is_empty() {
+        return;
+    }
+    let db_path = root.join(".velo/velo.db");
+    if let Ok(conn) = crate::db::get_conn_at_path(&db_path) {
+        if let Ok(tx) = conn.unchecked_transaction() {
+            if let Ok(mut stmt) =
+                tx.prepare("DELETE FROM index_cache WHERE path = ?")
+            {
+                for p in paths {
+                    let _ = stmt.execute([p]);
+                }
+            }
+            let _ = tx.commit();
+        }
+    }
+}
+
+/// Return the list of active `.conflict` files.
 pub fn get_conflict_files(root: &Path) -> Vec<String> {
-    let merge_head = root.join(".velo/MERGE_HEAD");
-    if !merge_head.exists() {
+    if !root.join(".velo/MERGE_HEAD").exists() {
         return vec![];
     }
     let mut out = Vec::new();
@@ -187,12 +334,12 @@ pub fn get_conflict_files(root: &Path) -> Vec<String> {
 
 fn walkdir_all(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
-    for entry in std::fs::read_dir(root)? {
+    for entry in fs::read_dir(root)? {
         let entry = entry?;
         let path = entry.path();
-        let name = entry.file_name();
-        let n = name.to_str().unwrap_or("");
-        if n == ".velo" || n == ".git" {
+        let n = entry.file_name();
+        let name = n.to_str().unwrap_or("");
+        if name == ".velo" || name == ".git" {
             continue;
         }
         if path.is_dir() {
@@ -206,21 +353,16 @@ fn walkdir_all(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     Ok(out)
 }
 
-// ─── Hashing ─────────────────────────────────────────────────────────────────
+// ─── Hashing (public for other modules) ──────────────────────────────────────
 
-/// Stream-hash a file without loading it entirely into memory.
+/// Streaming content hash — delegates to `storage::fast_hash`.
 pub fn stream_hash(path: &Path) -> String {
-    let mut hasher = blake3::Hasher::new();
-    if let Ok(mut file) = std::fs::File::open(path) {
-        let _ = std::io::copy(&mut file, &mut hasher);
-    }
-    hasher.finalize().to_hex().to_string()
+    crate::storage::fast_hash(path)
 }
 
-/// Return `true` if the file likely contains binary data (null byte in first
-/// 1 KiB).  Prevents terminal corruption during diff output.
+/// Return `true` if the file likely contains binary data.
 pub fn is_binary(path: &Path) -> bool {
-    if let Ok(mut file) = std::fs::File::open(path) {
+    if let Ok(mut file) = fs::File::open(path) {
         let mut buf = [0u8; 1024];
         if let Ok(n) = file.read(&mut buf) {
             return buf[..n].contains(&0);
@@ -231,17 +373,16 @@ pub fn is_binary(path: &Path) -> bool {
 
 // ─── Filesystem helpers ───────────────────────────────────────────────────────
 
-/// Remove the directory `dir` and all empty ancestors up to (but not
-/// including) `root`.  Silently ignores non-empty directories and errors.
+/// Remove `dir` and all empty ancestors up to (but not including) `root`.
 pub fn remove_empty_parents(dir: &Path, root: &Path) {
     let mut current = dir.to_path_buf();
     loop {
         if current == root {
             break;
         }
-        match std::fs::remove_dir(&current) {
+        match fs::remove_dir(&current) {
             Ok(_) => {}
-            Err(_) => break, // Non-empty or error — stop climbing
+            Err(_) => break,
         }
         if !current.pop() {
             break;

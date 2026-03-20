@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
@@ -16,12 +17,10 @@ pub struct SaveResult {
     pub deleted_count: usize,
 }
 
-/// Snapshot the current working directory.
+/// Snapshot the working directory.
 ///
-/// Returns `Ok(None)` when the directory is clean (nothing to save).
-/// Returns `Ok(Some(result))` on success.
+/// Returns `Ok(None)` when the directory is clean.
 pub fn run(root: &Path, message: &str) -> Result<Option<SaveResult>> {
-    // ── Validate message ─────────────────────────────────────────────────────
     let message = message.trim();
     if message.is_empty() {
         return Err(VeloError::InvalidInput(
@@ -46,11 +45,11 @@ pub fn run(root: &Path, message: &str) -> Result<Option<SaveResult>> {
     let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
-    // ── Hash new / modified files in parallel ────────────────────────────────
+    // ── Parallel hash + compress new/modified files ───────────────────────────
     let objects_dir = root.join(".velo/objects");
     let files_to_hash: Vec<String> = dirty
         .iter()
-        .filter(|(_, status)| **status != FileStatus::Deleted)
+        .filter(|(_, s)| **s != FileStatus::Deleted)
         .map(|(p, _)| p.clone())
         .collect();
 
@@ -72,7 +71,7 @@ pub fn run(root: &Path, message: &str) -> Result<Option<SaveResult>> {
     .to_string();
     let snapshot_hash = &full_hex[..SNAP_HASH_LEN];
 
-    // ── Write to DB inside a transaction ─────────────────────────────────────
+    // ── Single transaction for all DB writes ──────────────────────────────────
     let tx = conn.transaction()?;
 
     tx.execute(
@@ -80,51 +79,44 @@ pub fn run(root: &Path, message: &str) -> Result<Option<SaveResult>> {
         params![snapshot_hash, message, branch.trim(), parent_hash.trim()],
     )?;
 
-    let modified_and_deleted: Vec<String> = dirty.keys().cloned().collect();
-    
-    if !parent_hash.trim().is_empty() {
-        if modified_and_deleted.is_empty() {
-            // Edge case: literally nothing changed, just copy everything
-            tx.execute(
-                "INSERT INTO file_map (snapshot_hash, path, hash) 
-                 SELECT ?, path, hash FROM file_map WHERE snapshot_hash = ?",
-                params![snapshot_hash, parent_hash.trim()],
-            )?;
-        } else {
-            // Process in chunks to stay under SQLite's parameter limit (usually 999)
-            for chunk in modified_and_deleted.chunks(900) {
-                let placeholders = vec!["?"; chunk.len()].join(",");
-                let sql = format!(
-                    "INSERT INTO file_map (snapshot_hash, path, hash) 
-                     SELECT ?, path, hash FROM file_map 
-                     WHERE snapshot_hash = ? AND path NOT IN ({})",
-                    placeholders
-                );
+    // Copy forward unchanged files from the parent snapshot (delta storage).
+    // Prepare the insert once and reuse it for every row.
+    {
+        let modified_paths: HashSet<&str> =
+            hashed_files.iter().map(|(p, _)| p.as_str()).collect();
 
-                let mut sql_params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
-                sql_params.push(Box::new(snapshot_hash.to_string()));
-                sql_params.push(Box::new(parent_hash.trim().to_string()));
-                for item in chunk {
-                    sql_params.push(Box::new(item.clone()));
-                }
-                tx.execute(&sql, rusqlite::params_from_iter(sql_params))?;
+        let parent_files: Vec<(String, String)> = {
+            let mut stmt =
+                tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+            let collected: Vec<(String, String)> = stmt
+                .query_map([parent_hash.trim()], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                })?
+                .filter_map(|r| r.ok())
+                .filter(|(p, _)| {
+                    !modified_paths.contains(p.as_str())
+                        && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
+                })
+                .collect();
+            collected
+        };
+
+        // Reuse a single prepared statement for all inserts
+        {
+            let mut ins = tx.prepare(
+                "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
+            )?;
+            for (p, h) in &parent_files {
+                ins.execute(params![snapshot_hash, p, h])?;
+            }
+            for (rel, hash) in &hashed_files {
+                ins.execute(params![snapshot_hash, rel, hash])?;
             }
         }
     }
 
-    // Insert newly hashed files
-    for (rel, hash) in &hashed_files {
-        tx.execute(
-            "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
-            params![snapshot_hash, rel, hash],
-        )?;
-    }
-
-    // A new save invalidates the redo stack for this branch
-    tx.execute(
-        "DELETE FROM trash WHERE branch = ?",
-        [branch.trim()],
-    )?;
+    // New save invalidates the redo stack for this branch
+    tx.execute("DELETE FROM trash WHERE branch = ?", [branch.trim()])?;
 
     tx.commit()?;
     fs::write(root.join(".velo/PARENT"), snapshot_hash)?;

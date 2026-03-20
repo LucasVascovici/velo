@@ -1,8 +1,8 @@
 use rusqlite::{Connection, Result};
 use std::path::Path;
 
-/// Open (or create) a database at `path` and run the full schema migration.
-/// WAL mode is enabled on every connection for better concurrency and durability.
+/// Open (or create) the database at `path` and apply the full schema.
+/// WAL mode + large page cache + mmap are set on every connection.
 pub fn init_db_at_path(path: &Path) -> Result<()> {
     let conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
@@ -26,9 +26,6 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
             snapshot_hash TEXT NOT NULL
         );
 
-        -- Soft-deleted snapshots kept for `velo redo`.
-        -- file_map entries are intentionally preserved (not deleted on undo)
-        -- so that redo can restore them without touching the object store.
         CREATE TABLE IF NOT EXISTS trash (
             hash        TEXT PRIMARY KEY,
             message     TEXT NOT NULL,
@@ -38,15 +35,25 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
             deleted_at  DATETIME DEFAULT CURRENT_TIMESTAMP
         );
 
+        -- Mtime+size content-hash cache.
+        -- If mtime_ns AND size match the stored entry the file content has not
+        -- changed, so we can skip the disk read entirely (same logic as git index).
+        CREATE TABLE IF NOT EXISTS index_cache (
+            path     TEXT PRIMARY KEY,
+            mtime_ns INTEGER NOT NULL,
+            size     INTEGER NOT NULL,
+            hash     TEXT    NOT NULL
+        );
+
         CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
         CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
         CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at);
-        CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at);",
+        CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at);"
     )?;
     Ok(())
 }
 
-/// Open an existing database and apply WAL mode.
+/// Open an existing database with all performance pragmas applied.
 pub fn get_conn_at_path(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
@@ -55,20 +62,23 @@ pub fn get_conn_at_path(path: &Path) -> Result<Connection> {
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous", "NORMAL")?;
+    conn.pragma_update(None, "synchronous",  "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "busy_timeout", "10000")?;
+    // 64 MB page cache (negative = kibibytes)
+    conn.pragma_update(None, "cache_size",   -65_536_i64)?;
+    // 256 MB memory-mapped I/O
+    conn.pragma_update(None, "mmap_size",    268_435_456_i64)?;
+    // Temp tables in RAM
+    conn.pragma_update(None, "temp_store",   "MEMORY")?;
     Ok(())
 }
 
-/// Normalise a relative path to forward-slash notation for cross-platform
-/// storage in SQLite.  On Linux/macOS this is a no-op.
+#[inline]
 pub fn normalise(rel: &str) -> String {
     rel.replace('\\', "/")
 }
 
-/// Convert a DB-stored (forward-slash) path back to a native `Path`.
-/// `std::path::Path` accepts `/` on all platforms, so no conversion needed.
+#[inline]
 pub fn db_to_path(db_path: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(db_path)
 }

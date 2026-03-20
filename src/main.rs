@@ -137,6 +137,17 @@ enum Commands {
 }
 
 fn main() {
+    // On Windows the default console code page is often CP1252, which mangles
+    // UTF-8 output (✔ → âœ", · → Â·, … → â€¦).  Switching to CP 65001 (UTF-8)
+    // before any output is written fixes this without any extra dependencies.
+    #[cfg(windows)]
+    // SAFETY: SetConsoleOutputCP is idempotent and safe to call at any time.
+    unsafe {
+        #[link(name = "kernel32")]
+        extern "system" { fn SetConsoleOutputCP(id: u32) -> i32; }
+        SetConsoleOutputCP(65001);
+    }
+
     if let Err(e) = run() {
         eprintln!("{} {}", console::style("error:").red().bold(), e);
         std::process::exit(1);
