@@ -22,7 +22,7 @@ jobs:
           CARGO_VERSION=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
           TAG_VERSION="${GITHUB_REF#refs/tags/v}"
           if [ "$CARGO_VERSION" != "$TAG_VERSION" ]; then
-            echo "❌ Cargo.toml version ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
+            echo "❌ Cargo.toml ($CARGO_VERSION) does not match tag ($TAG_VERSION)"
             exit 1
           fi
           echo "✔ Version $CARGO_VERSION matches tag"
@@ -39,35 +39,39 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86-64 (static musl binary — runs on any Linux without glibc)
+          # ── Linux x86-64 (static musl binary) ─────────────────────────────
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact: velo
             package: velo-x86_64-linux.tar.gz
-            extra_packages: musl-tools
-            cc_env: CC_x86_64_unknown_linux_musl=musl-gcc
+            musl_cc: musl-gcc
+            apt_packages: musl-tools
 
-          # Linux ARM64 (AWS Graviton, Raspberry Pi 4+, etc.)
+          # ── Linux ARM64 (static musl binary) ──────────────────────────────
+          # Uses the native ARM64 runner — no cross-compilation needed, no
+          # Docker, no separate toolchain.
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
             artifact: velo
             package: velo-aarch64-linux.tar.gz
-            extra_packages: musl-tools gcc-aarch64-linux-gnu
-            cc_env: CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc
+            musl_cc: musl-gcc
+            apt_packages: musl-tools
 
-          # macOS Intel
-          - os: macos-13
-            target: x86_64-apple-darwin
-            artifact: velo
-            package: velo-x86_64-macos.tar.gz
-
-          # macOS Apple Silicon (M1/M2/M3 — native runner)
+          # ── macOS Apple Silicon (native runner) ───────────────────────────
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: velo
             package: velo-aarch64-macos.tar.gz
 
-          # Windows x86-64
+          # ── macOS Intel (cross-compiled from the Apple Silicon runner) ────
+          # Apple's own Clang ships both targets; no extra toolchain needed.
+          # macos-13 was retired in 2026 — cross-compile instead.
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: velo
+            package: velo-x86_64-macos.tar.gz
+
+          # ── Windows x86-64 ────────────────────────────────────────────────
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: velo.exe
@@ -93,31 +97,36 @@ jobs:
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
       - name: Install Linux system packages
-        if: matrix.extra_packages != ''
+        if: matrix.apt_packages != ''
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y ${{ matrix.extra_packages }}
+          sudo apt-get install -y ${{ matrix.apt_packages }}
 
-      # Run the test suite before producing the release binary.
-      # Tests are compiled in debug mode (fast) — the release binary is built
-      # separately below.  --locked ensures exact dep versions from Cargo.lock.
+      # Set the C compiler for musl targets via $GITHUB_ENV so it is available
+      # to all subsequent steps.  This is necessary because rusqlite's bundled
+      # SQLite is compiled by cc-rs, which reads the CC environment variable.
+      # The broken dynamic-key trick (${{ matrix.cc_env }}: '') does NOT work
+      # in GitHub Actions — env map keys cannot be expressions.
+      - name: Set CC for musl targets (Linux)
+        if: matrix.musl_cc != ''
+        run: echo "CC=${{ matrix.musl_cc }}" >> $GITHUB_ENV
+
+      # Tests are run in debug mode (fast compile) before producing the release
+      # binary.  --locked ensures exact dep versions from Cargo.lock.
       - name: Run tests
         run: cargo test --locked
-        env:
-          ${{ matrix.cc_env || 'DUMMY' }}: ''
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
-        env:
-          ${{ matrix.cc_env || 'DUMMY' }}: ''
 
       # ── Package ────────────────────────────────────────────────────────────
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           BINARY="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
-          test -f "$BINARY" || (echo "Binary not found: $BINARY" && exit 1)
-          tar -czf "${{ matrix.package }}" -C "target/${{ matrix.target }}/release" "${{ matrix.artifact }}"
+          test -f "$BINARY" || (echo "Binary not found at $BINARY" && exit 1)
+          tar -czf "${{ matrix.package }}" \
+            -C "target/${{ matrix.target }}/release" "${{ matrix.artifact }}"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -127,7 +136,6 @@ jobs:
           if (-not (Test-Path $binary)) { throw "Binary not found: $binary" }
           Compress-Archive -Path $binary -DestinationPath "${{ matrix.package }}"
 
-      # ── Upload to GitHub Release ────────────────────────────────────────────
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
