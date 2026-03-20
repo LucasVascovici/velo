@@ -12,8 +12,7 @@ use crate::storage;
 pub fn run(root: &Path, snapshot_hash: &str, force: bool) -> Result<()> {
     // ── No-op guard ───────────────────────────────────────────────────────────
     // Skip only when PARENT already points here AND the tree is clean.
-    let current_parent =
-        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     if current_parent.trim() == snapshot_hash {
         let dirty = get_dirty_files(root);
         if dirty.is_empty() {
@@ -75,8 +74,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool) -> Result<()> {
 
     // Load target snapshot's file map
     let snapshot_files: Vec<(String, String)> = {
-        let mut stmt =
-            conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
         let collected: Vec<(String, String)> = stmt
             .query_map(params![snapshot_hash], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -96,9 +94,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool) -> Result<()> {
     let ghosts: Vec<_> = current_files
         .iter()
         .filter(|p| {
-            let rel = crate::db::normalise(
-                p.strip_prefix(root).unwrap().to_str().unwrap(),
-            );
+            let rel = crate::db::normalise(p.strip_prefix(root).unwrap().to_str().unwrap());
             !snapshot_set.contains(rel.as_str())
         })
         .collect();

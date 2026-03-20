@@ -7,10 +7,8 @@ use crate::commands::{get_conflict_files, get_dirty_files, FileStatus};
 use crate::error::Result;
 
 pub fn run(root: &Path) -> Result<()> {
-    let branch =
-        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
-    let parent_hash =
-        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let parent_hash = parent_hash.trim();
 
     // ── Header ────────────────────────────────────────────────────────────────
@@ -28,11 +26,11 @@ pub fn run(root: &Path) -> Result<()> {
     // Show the message of the current snapshot if one exists
     if !parent_hash.is_empty() {
         let conn = crate::db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-        if let Ok(msg) =
-            conn.query_row("SELECT message FROM snapshots WHERE hash = ?", [parent_hash], |r| {
-                r.get::<_, String>(0)
-            })
-        {
+        if let Ok(msg) = conn.query_row(
+            "SELECT message FROM snapshots WHERE hash = ?",
+            [parent_hash],
+            |r| r.get::<_, String>(0),
+        ) {
             print!("  \"{}\"", style(&msg).dim());
         }
     }
@@ -49,11 +47,7 @@ pub fn run(root: &Path) -> Result<()> {
         for c in &conflicts {
             // Strip the ".conflict" suffix for display
             let orig = c.trim_end_matches(".conflict");
-            println!(
-                "  {} {}",
-                style("[Conflict]").red().bold(),
-                orig
-            );
+            println!("  {} {}", style("[Conflict]").red().bold(), orig);
         }
         println!(
             "  Run {} or {} to resolve, then {}",
@@ -89,19 +83,31 @@ pub fn run(root: &Path) -> Result<()> {
     deleted.sort_unstable();
 
     if !new_files.is_empty() {
-        println!("\n  {} {} file(s):", style("New").green().bold(), new_files.len());
+        println!(
+            "\n  {} {} file(s):",
+            style("New").green().bold(),
+            new_files.len()
+        );
         for f in &new_files {
             println!("    {}", style(f).green());
         }
     }
     if !modified.is_empty() {
-        println!("\n  {} {} file(s):", style("Modified").yellow().bold(), modified.len());
+        println!(
+            "\n  {} {} file(s):",
+            style("Modified").yellow().bold(),
+            modified.len()
+        );
         for f in &modified {
             println!("    {}", style(f).yellow());
         }
     }
     if !deleted.is_empty() {
-        println!("\n  {} {} file(s):", style("Deleted").red().bold(), deleted.len());
+        println!(
+            "\n  {} {} file(s):",
+            style("Deleted").red().bold(),
+            deleted.len()
+        );
         for f in &deleted {
             println!("    {}", style(f).red());
         }

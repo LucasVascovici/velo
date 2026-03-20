@@ -12,16 +12,12 @@ pub enum TakeOption {
     Theirs,
 }
 
-pub fn run(
-    root: &Path,
-    file: Option<&str>,
-    take: Option<TakeOption>,
-    all: bool,
-) -> Result<()> {
+pub fn run(root: &Path, file: Option<&str>, take: Option<TakeOption>, all: bool) -> Result<()> {
     // ── Validate arguments ────────────────────────────────────────────────────
     if !all && file.is_none() {
         return Err(VeloError::InvalidInput(
-            "Specify a file to resolve, or use --all.  Example: velo resolve app.py --take theirs".into(),
+            "Specify a file to resolve, or use --all.  Example: velo resolve app.py --take theirs"
+                .into(),
         ));
     }
 
@@ -62,10 +58,7 @@ pub fn run(
             remaining.len()
         );
         for r in &remaining {
-            println!(
-                "  {}",
-                style(r.trim_end_matches(".conflict")).yellow()
-            );
+            println!("  {}", style(r.trim_end_matches(".conflict")).yellow());
         }
     }
 

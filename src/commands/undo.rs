@@ -19,8 +19,7 @@ pub fn run(root: &Path) -> Result<String> {
     }
 
     let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let branch =
-        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
 
     // ── Find the latest snapshot on this branch ───────────────────────────────
     let snap: Option<(String, String, String)> = conn
@@ -34,9 +33,8 @@ pub fn run(root: &Path) -> Result<String> {
         )
         .optional()?;
 
-    let (hash, message, parent_hash) = snap.ok_or_else(|| {
-        VeloError::InvalidInput("Nothing to undo on this branch.".into())
-    })?;
+    let (hash, message, parent_hash) =
+        snap.ok_or_else(|| VeloError::InvalidInput("Nothing to undo on this branch.".into()))?;
 
     println!(
         "Removing snapshot {} — \"{}\"",
