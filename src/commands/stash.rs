@@ -28,7 +28,10 @@ use crate::storage;
 pub fn push(root: &Path, name: Option<String>) -> Result<()> {
     let dirty = get_dirty_files(root);
     if dirty.is_empty() {
-        println!("{}", style("Working directory clean — nothing to stash.").dim());
+        println!(
+            "{}",
+            style("Working directory clean — nothing to stash.").dim()
+        );
         return Ok(());
     }
 
@@ -37,9 +40,8 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     // Auto-generate a name if none supplied
-    let shelf_name = name.unwrap_or_else(|| {
-        format!("stash-{}", &Utc::now().format("%Y%m%d-%H%M%S"))
-    });
+    let shelf_name =
+        name.unwrap_or_else(|| format!("stash-{}", &Utc::now().format("%Y%m%d-%H%M%S")));
 
     // Check for name collision
     let existing: bool = conn.query_row(
@@ -74,7 +76,14 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
     // Build snapshot hash
     let now = Utc::now().to_rfc3339();
     let full_hex = blake3::hash(
-        format!("stash{}{}{}{}", shelf_name, branch.trim(), parent_hash.trim(), now).as_bytes(),
+        format!(
+            "stash{}{}{}{}",
+            shelf_name,
+            branch.trim(),
+            parent_hash.trim(),
+            now
+        )
+        .as_bytes(),
     )
     .to_hex()
     .to_string();
@@ -85,14 +94,17 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
     // Insert a snapshot row on the hidden '_stash' branch
     tx.execute(
         "INSERT INTO snapshots (hash, message, branch, parent_hash) VALUES (?, ?, '_stash', ?)",
-        params![snap_hash, format!("stash: {}", shelf_name), parent_hash.trim()],
+        params![
+            snap_hash,
+            format!("stash: {}", shelf_name),
+            parent_hash.trim()
+        ],
     )?;
 
     // Copy unchanged files from parent, insert hashed files
     {
         let parent_files: Vec<(String, String)> = {
-            let mut stmt =
-                tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+            let mut stmt = tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
             let collected: Vec<(String, String)> = stmt
                 .query_map([parent_hash.trim()], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -103,9 +115,8 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
                 .collect();
             collected
         };
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
-        )?;
+        let mut ins =
+            tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
         for (p, h) in &parent_files {
             ins.execute(params![snap_hash, p, h])?;
         }
@@ -132,15 +143,23 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
         crate::commands::restore::run(root, parent_hash.trim(), true, &[])?;
     }
 
-    let n_mod = dirty.values().filter(|s| **s == FileStatus::Modified).count();
+    let n_mod = dirty
+        .values()
+        .filter(|s| **s == FileStatus::Modified)
+        .count();
     let n_new = dirty.values().filter(|s| **s == FileStatus::New).count();
-    let n_del = dirty.values().filter(|s| **s == FileStatus::Deleted).count();
+    let n_del = dirty
+        .values()
+        .filter(|s| **s == FileStatus::Deleted)
+        .count();
 
     println!(
         "{} Shelved '{}' ({} modified, {} new, {} deleted)",
         style("✔").green().bold(),
         style(&shelf_name).cyan(),
-        n_mod, n_new, n_del
+        n_mod,
+        n_new,
+        n_del
     );
     println!(
         "  Working tree restored to {}",
@@ -153,9 +172,8 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
 
 pub fn list(root: &Path) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let mut stmt = conn.prepare(
-        "SELECT name, branch, created_at, snapshot_hash FROM stash ORDER BY id DESC",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT name, branch, created_at, snapshot_hash FROM stash ORDER BY id DESC")?;
     let rows: Vec<(String, String, String, String)> = stmt
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?
         .filter_map(|r| r.ok())
@@ -223,10 +241,8 @@ fn apply_shelf(root: &Path, name: Option<String>, restore: bool) -> Result<()> {
             )));
         }
 
-        let current_branch = fs::read_to_string(root.join(".velo/HEAD"))
-            .unwrap_or_default();
-        let current_parent = fs::read_to_string(root.join(".velo/PARENT"))
-            .unwrap_or_default();
+        let current_branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
+        let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
         if current_branch.trim() != saved_branch {
             println!(
@@ -264,7 +280,9 @@ fn apply_shelf(root: &Path, name: Option<String>, restore: bool) -> Result<()> {
                     fs::create_dir_all(p).ok()?;
                 }
                 match storage::read_object(&objects_dir, hash) {
-                    Ok(data) => fs::write(&full, data).err().map(|e| format!("{}: {}", rel, e)),
+                    Ok(data) => fs::write(&full, data)
+                        .err()
+                        .map(|e| format!("{}: {}", rel, e)),
                     Err(e) => Some(format!("{}: {}", rel, e)),
                 }
             })

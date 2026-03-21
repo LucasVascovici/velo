@@ -15,18 +15,12 @@ use crate::storage;
 /// `force`         — discard unsaved changes without prompting.
 /// `paths`         — if non-empty, only restore these paths (relative, forward-slash).
 ///                   PARENT is only updated when `paths` is empty (full restore).
-pub fn run(
-    root: &Path,
-    snapshot_hash: &str,
-    force: bool,
-    paths: &[String],
-) -> Result<()> {
+pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> Result<()> {
     let partial = !paths.is_empty();
 
     // ── No-op guard (full restore only) ──────────────────────────────────────
     if !partial {
-        let current_parent =
-            fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+        let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
         if current_parent.trim() == snapshot_hash {
             let dirty = get_dirty_files(root);
             if dirty.is_empty() {
@@ -87,8 +81,7 @@ pub fn run(
 
     // Load target snapshot's file map
     let mut snapshot_files: Vec<(String, String)> = {
-        let mut stmt =
-            conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
         let collected: Vec<(String, String)> = stmt
             .query_map(params![snapshot_hash], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -100,10 +93,11 @@ pub fn run(
 
     // Filter to requested paths for partial restore
     if partial {
-        let normalised_paths: Vec<String> =
-            paths.iter().map(|p| crate::db::normalise(p)).collect();
+        let normalised_paths: Vec<String> = paths.iter().map(|p| crate::db::normalise(p)).collect();
         snapshot_files.retain(|(rel, _)| {
-            normalised_paths.iter().any(|p| rel.starts_with(p.as_str()) || rel == p.as_str())
+            normalised_paths
+                .iter()
+                .any(|p| rel.starts_with(p.as_str()) || rel == p.as_str())
         });
         if snapshot_files.is_empty() {
             println!(
@@ -126,9 +120,7 @@ pub fn run(
         let ghosts: Vec<_> = current_files
             .iter()
             .filter(|p| {
-                let rel = crate::db::normalise(
-                    p.strip_prefix(root).unwrap().to_str().unwrap(),
-                );
+                let rel = crate::db::normalise(p.strip_prefix(root).unwrap().to_str().unwrap());
                 !snapshot_set.contains(rel.as_str())
             })
             .collect();
@@ -139,8 +131,12 @@ pub fn run(
                 .iter()
                 .filter_map(|p| p.parent().map(|d| d.to_path_buf()))
                 .collect();
-            ghosts.par_iter().for_each(|p| { let _ = fs::remove_file(p); });
-            for dir in ghost_parents { remove_empty_parents(&dir, root); }
+            ghosts.par_iter().for_each(|p| {
+                let _ = fs::remove_file(p);
+            });
+            for dir in ghost_parents {
+                remove_empty_parents(&dir, root);
+            }
             println!(
                 "  {} Removed {} ghost file(s).",
                 style("~").yellow(),

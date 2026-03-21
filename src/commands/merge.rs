@@ -65,15 +65,13 @@ fn do_abort(root: &Path) -> Result<()> {
     Ok(())
 }
 
-
 // ─── File-map loader ─────────────────────────────────────────────────────────
 
 fn load_file_map(
     conn: &rusqlite::Connection,
     snapshot_hash: &str,
 ) -> Result<HashMap<String, String>> {
-    let mut stmt =
-        conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+    let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
     let collected: HashMap<String, String> = stmt
         .query_map([snapshot_hash], |r| {
             Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -101,12 +99,10 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
     }
 
     let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let head_raw =
-        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let head_raw = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
     let head_branch = head_raw.trim();
     // Read pre-merge parent for abort restoration
-    let pre_merge_parent =
-        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let pre_merge_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     if head_branch == target_branch {
         return Err(VeloError::InvalidInput(format!(
@@ -158,7 +154,12 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
 
     if is_ff {
         return do_fast_forward(
-            root, &mut conn, head_branch, &current_hash, &target_hash, target_branch,
+            root,
+            &mut conn,
+            head_branch,
+            &current_hash,
+            &target_hash,
+            target_branch,
         );
     }
 
@@ -201,11 +202,11 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
         .ok();
 
     // ── Load all three file maps ───────────────────────────────────────────────
-    let current_files  = load_file_map(&conn, &current_hash)?;
-    let target_files   = load_file_map(&conn, &target_hash)?;
+    let current_files = load_file_map(&conn, &current_hash)?;
+    let target_files = load_file_map(&conn, &target_hash)?;
     let ancestor_files = match &ancestor_hash {
         Some(h) => load_file_map(&conn, h)?,
-        None    => HashMap::new(),
+        None => HashMap::new(),
     };
 
     println!(
@@ -217,8 +218,8 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
 
     let objects_dir = root.join(".velo/objects");
     let mut conflicts: Vec<(String, String, String, String)> = Vec::new(); // (path, anc_hash, our_hash, thr_hash)
-    let mut new_count  = 0usize;
-    let mut del_count  = 0usize;
+    let mut new_count = 0usize;
+    let mut del_count = 0usize;
     let mut took_count = 0usize; // files taken from target (non-conflicting)
 
     // Union of all paths seen in either branch tip
@@ -299,17 +300,29 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
                 } else {
                     // Both modified to different content → store in conflict_files DB
                     // The working file stays untouched (contains our version).
-                    conflicts.push((path.to_string(), anc_hash.to_string(),
-                                    cur_hash.to_string(), tgt_hash.to_string()));
+                    conflicts.push((
+                        path.to_string(),
+                        anc_hash.to_string(),
+                        cur_hash.to_string(),
+                        tgt_hash.to_string(),
+                    ));
                     println!("  {} Conflict: {}", style("!").yellow().bold(), path);
                 }
             }
 
             // Defensive: both sides differ but no ancestor match — treat as conflict
             (false, false) => {
-                conflicts.push((path.to_string(), anc_hash.to_string(),
-                                cur_hash.to_string(), tgt_hash.to_string()));
-                println!("  {} Conflict (pre-ancestor): {}", style("!").yellow().bold(), path);
+                conflicts.push((
+                    path.to_string(),
+                    anc_hash.to_string(),
+                    cur_hash.to_string(),
+                    tgt_hash.to_string(),
+                ));
+                println!(
+                    "  {} Conflict (pre-ancestor): {}",
+                    style("!").yellow().bold(),
+                    path
+                );
             }
         }
     }
@@ -323,8 +336,10 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
 
     if !conflicts.is_empty() {
         // Record merge state: write pre-merge PARENT hash so --abort can restore it
-        fs::write(root.join(".velo/MERGE_HEAD"),
-                format!("{}:{}", pre_merge_parent.trim(), target_branch))?;
+        fs::write(
+            root.join(".velo/MERGE_HEAD"),
+            format!("{}:{}", pre_merge_parent.trim(), target_branch),
+        )?;
         let conn2 = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         for (path, anc_h, our_h, thr_h) in &conflicts {
             conn2.execute(
@@ -345,7 +360,7 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
             println!(
                 "    Quick-take:            {}  or  {}",
                 style(format!("velo resolve {} --take theirs", f)).green(),
-                style(format!("velo resolve {} --take ours",   f)).dim()
+                style(format!("velo resolve {} --take ours", f)).dim()
             );
         }
         println!(
@@ -384,11 +399,10 @@ fn do_fast_forward(
 
     let now = chrono::Utc::now().to_rfc3339();
     let msg = format!("Fast-forward merge from '{}'", target_branch);
-    let ff_full_hex = blake3::hash(
-        format!("{}{}{}{}", msg, head_branch, current_hash, now).as_bytes(),
-    )
-    .to_hex()
-    .to_string();
+    let ff_full_hex =
+        blake3::hash(format!("{}{}{}{}", msg, head_branch, current_hash, now).as_bytes())
+            .to_hex()
+            .to_string();
     let new_hash = &ff_full_hex[..SNAP_HASH_LEN];
 
     let tx = conn.transaction()?;

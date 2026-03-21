@@ -38,22 +38,26 @@ pub enum Decision {
 impl Decision {
     fn to_db(&self) -> (&str, Option<String>) {
         match self {
-            Decision::Ours           => ("ours",       None),
-            Decision::Theirs         => ("theirs",     None),
-            Decision::BothOursFirst  => ("both_ours",  None),
-            Decision::BothTheirsFirst=> ("both_theirs",None),
-            Decision::Manual(lines)  => ("manual",     Some(lines.join("\n"))),
+            Decision::Ours => ("ours", None),
+            Decision::Theirs => ("theirs", None),
+            Decision::BothOursFirst => ("both_ours", None),
+            Decision::BothTheirsFirst => ("both_theirs", None),
+            Decision::Manual(lines) => ("manual", Some(lines.join("\n"))),
         }
     }
 
     fn from_db(kind: &str, content: Option<&str>) -> Option<Self> {
         match kind {
-            "ours"        => Some(Decision::Ours),
-            "theirs"      => Some(Decision::Theirs),
-            "both_ours"   => Some(Decision::BothOursFirst),
+            "ours" => Some(Decision::Ours),
+            "theirs" => Some(Decision::Theirs),
+            "both_ours" => Some(Decision::BothOursFirst),
             "both_theirs" => Some(Decision::BothTheirsFirst),
-            "manual"      => Some(Decision::Manual(
-                content.unwrap_or("").lines().map(|s| s.to_string()).collect()
+            "manual" => Some(Decision::Manual(
+                content
+                    .unwrap_or("")
+                    .lines()
+                    .map(|s| s.to_string())
+                    .collect(),
             )),
             _ => None,
         }
@@ -66,29 +70,24 @@ pub struct ConflictHunk {
     pub id: usize,
     /// First line in ancestor covered by this conflict (0-indexed, exclusive end).
     pub ancestor_start: usize,
-    pub ancestor_end:   usize,
+    pub ancestor_end: usize,
     pub context_before: Vec<String>,
-    pub ours:           Vec<String>,
-    pub theirs:         Vec<String>,
-    pub context_after:  Vec<String>,
-    pub decision:       Option<Decision>,
+    pub ours: Vec<String>,
+    pub theirs: Vec<String>,
+    pub context_after: Vec<String>,
+    pub decision: Option<Decision>,
 }
 
 struct ConflictFile {
-    path:          String,
+    path: String,
     ancestor_hash: String,
-    our_hash:      String,
-    their_hash:    String,
+    our_hash: String,
+    their_hash: String,
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 
-pub fn run(
-    root:  &Path,
-    file:  Option<&str>,
-    take:  Option<TakeOption>,
-    all:   bool,
-) -> Result<()> {
+pub fn run(root: &Path, file: Option<&str>, take: Option<TakeOption>, all: bool) -> Result<()> {
     // ── Validate: must be in a merge (unless --all on a clean state) ─────────
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
     let conflict_count: i64 = conn
@@ -111,7 +110,8 @@ pub fn run(
         return Err(VeloError::InvalidInput(
             "Specify a file, or use --all.\n  \
              Example: velo resolve src/auth.py\n  \
-             Example: velo resolve --all --take theirs".into(),
+             Example: velo resolve --all --take theirs"
+                .into(),
         ));
     }
 
@@ -139,7 +139,10 @@ pub fn run(
                 "{} Resolved '{}' (took {}).",
                 style("✔").green(),
                 cf.path,
-                match take_side { TakeOption::Ours => "ours", TakeOption::Theirs => "theirs" }
+                match take_side {
+                    TakeOption::Ours => "ours",
+                    TakeOption::Theirs => "theirs",
+                }
             );
         }
         finish_if_all_resolved(root, &conn)?;
@@ -160,21 +163,23 @@ pub fn run(
 fn apply_take(
     root: &Path,
     conn: &rusqlite::Connection,
-    cf:   &ConflictFile,
+    cf: &ConflictFile,
     side: &TakeOption,
 ) -> Result<()> {
     let objects_dir = root.join(".velo/objects");
     let ancestor = read_text(&objects_dir, &cf.ancestor_hash)?;
-    let ours     = read_text(&objects_dir, &cf.our_hash)?;
-    let theirs   = read_text(&objects_dir, &cf.their_hash)?;
+    let ours = read_text(&objects_dir, &cf.our_hash)?;
+    let theirs = read_text(&objects_dir, &cf.their_hash)?;
 
     let mut hunks = compute_conflict_hunks(&ancestor, &ours, &theirs);
 
     let decision = match side {
-        TakeOption::Ours   => Decision::Ours,
+        TakeOption::Ours => Decision::Ours,
         TakeOption::Theirs => Decision::Theirs,
     };
-    for h in &mut hunks { h.decision = Some(decision.clone()); }
+    for h in &mut hunks {
+        h.decision = Some(decision.clone());
+    }
 
     let resolved = build_resolved_content(
         &ancestor.lines().collect::<Vec<_>>(),
@@ -201,15 +206,11 @@ fn apply_take(
 
 // ─── Interactive TUI ─────────────────────────────────────────────────────────
 
-fn interactive_resolve(
-    root: &Path,
-    conn: &rusqlite::Connection,
-    cf:   &ConflictFile,
-) -> Result<()> {
+fn interactive_resolve(root: &Path, conn: &rusqlite::Connection, cf: &ConflictFile) -> Result<()> {
     let objects_dir = root.join(".velo/objects");
     let ancestor = read_text(&objects_dir, &cf.ancestor_hash)?;
-    let ours     = read_text(&objects_dir, &cf.our_hash)?;
-    let theirs   = read_text(&objects_dir, &cf.their_hash)?;
+    let ours = read_text(&objects_dir, &cf.our_hash)?;
+    let theirs = read_text(&objects_dir, &cf.their_hash)?;
 
     let mut hunks = compute_conflict_hunks(&ancestor, &ours, &theirs);
     if hunks.is_empty() {
@@ -234,16 +235,16 @@ fn interactive_resolve(
     let mut cursor: usize = 0; // current hunk index
 
     // MERGE_HEAD stores "pre_merge_hash:source_branch" — extract the branch name
-    let merge_info = fs::read_to_string(root.join(".velo/MERGE_HEAD"))
-        .unwrap_or_default();
-    let source_branch: String = merge_info.trim()
+    let merge_info = fs::read_to_string(root.join(".velo/MERGE_HEAD")).unwrap_or_default();
+    let source_branch: String = merge_info
+        .trim()
         .split_once(':')
         .map(|(_, b)| b.to_string())
         .unwrap_or_else(|| "(unknown)".into());
 
     loop {
         let decided = hunks.iter().filter(|h| h.decision.is_some()).count();
-        let total   = hunks.len();
+        let total = hunks.len();
 
         // ── Draw the screen ───────────────────────────────────────────────────
         if term.is_term() {
@@ -257,7 +258,9 @@ fn interactive_resolve(
         println!(
             "  {}  ·  Hunk {}/{}  ·  {} decided  ·  {} ← {}",
             style(&cf.path).cyan().bold(),
-            cursor + 1, total, decided,
+            cursor + 1,
+            total,
+            decided,
             style("main").dim(),
             style(source_branch.trim()).yellow()
         );
@@ -270,7 +273,11 @@ fn interactive_resolve(
 
         // Ours (red)
         if hunk.ours.is_empty() {
-            println!("  {} {}", style("OURS:").red().bold(), style("(deleted)").dim());
+            println!(
+                "  {} {}",
+                style("OURS:").red().bold(),
+                style("(deleted)").dim()
+            );
         } else {
             println!("  {}", style("OURS:").red().bold());
             for line in &hunk.ours {
@@ -280,7 +287,11 @@ fn interactive_resolve(
 
         // Theirs (green)
         if hunk.theirs.is_empty() {
-            println!("  {} {}", style("THEIRS:").green().bold(), style("(deleted)").dim());
+            println!(
+                "  {} {}",
+                style("THEIRS:").green().bold(),
+                style("(deleted)").dim()
+            );
         } else {
             println!("  {}", style("THEIRS:").green().bold());
             for line in &hunk.theirs {
@@ -296,11 +307,15 @@ fn interactive_resolve(
         // Current decision badge
         if let Some(ref d) = hunk.decision {
             let badge = match d {
-                Decision::Ours            => style("[✔ OURS]").red().bold().to_string(),
-                Decision::Theirs          => style("[✔ THEIRS]").green().bold().to_string(),
-                Decision::BothOursFirst   => style("[✔ BOTH (ours·theirs)]").yellow().bold().to_string(),
-                Decision::BothTheirsFirst => style("[✔ BOTH (theirs·ours)]").yellow().bold().to_string(),
-                Decision::Manual(_)       => style("[✔ MANUAL]").cyan().bold().to_string(),
+                Decision::Ours => style("[✔ OURS]").red().bold().to_string(),
+                Decision::Theirs => style("[✔ THEIRS]").green().bold().to_string(),
+                Decision::BothOursFirst => {
+                    style("[✔ BOTH (ours·theirs)]").yellow().bold().to_string()
+                }
+                Decision::BothTheirsFirst => {
+                    style("[✔ BOTH (theirs·ours)]").yellow().bold().to_string()
+                }
+                Decision::Manual(_) => style("[✔ MANUAL]").cyan().bold().to_string(),
             };
             println!("\n  Decided: {}", badge);
         }
@@ -321,11 +336,16 @@ fn interactive_resolve(
             let mut buf = String::new();
             std::io::stdin().read_line(&mut buf).ok();
             match buf.trim() {
-                "1" => Key::Char('1'), "2" => Key::Char('2'),
-                "3" => Key::Char('3'), "4" => Key::Char('4'),
-                "e" => Key::Char('e'), "n" => Key::Char('n'),
-                "p" => Key::Char('p'), "u" => Key::Char('u'),
-                "q" => Key::Char('q'), _   => Key::Char('n'),
+                "1" => Key::Char('1'),
+                "2" => Key::Char('2'),
+                "3" => Key::Char('3'),
+                "4" => Key::Char('4'),
+                "e" => Key::Char('e'),
+                "n" => Key::Char('n'),
+                "p" => Key::Char('p'),
+                "u" => Key::Char('u'),
+                "q" => Key::Char('q'),
+                _ => Key::Char('n'),
             }
         };
 
@@ -344,7 +364,8 @@ fn interactive_resolve(
                 conn.execute(
                     "DELETE FROM hunk_decisions WHERE file_path = ? AND hunk_id = ?",
                     params![cf.path, cursor as i64],
-                ).ok();
+                )
+                .ok();
                 None
             }
             Key::Char('n') | Key::ArrowRight => {
@@ -391,7 +412,9 @@ fn interactive_resolve(
 
             remove_conflict_file(conn, &cf.path)?;
 
-            if term.is_term() { let _ = term.clear_screen(); }
+            if term.is_term() {
+                let _ = term.clear_screen();
+            }
             println!(
                 "{} All {} hunk(s) resolved — '{}' written.",
                 style("✔").green().bold(),
@@ -408,14 +431,18 @@ fn interactive_resolve(
 // ─── Editor integration ───────────────────────────────────────────────────────
 
 fn open_in_editor(
-    _root:    &Path,
-    cf:       &ConflictFile,
-    hunk:     &ConflictHunk,
+    _root: &Path,
+    cf: &ConflictFile,
+    hunk: &ConflictHunk,
 ) -> Result<Option<Vec<String>>> {
     let editor = std::env::var("VISUAL")
         .or_else(|_| std::env::var("EDITOR"))
         .unwrap_or_else(|_| {
-            if cfg!(windows) { "notepad".into() } else { "vi".into() }
+            if cfg!(windows) {
+                "notepad".into()
+            } else {
+                "vi".into()
+            }
         });
 
     // Write a temp file with both versions and a resolution zone
@@ -429,16 +456,18 @@ fn open_in_editor(
          #\n\
          # ── OURS ─────────────────────────────────────────────────────────────\n"
     );
-    for line in &hunk.ours   { content.push_str(&format!("# {}\n", line)); }
-    content.push_str(
-        "# ── THEIRS ──────────────────────────────────────────────────────────\n"
-    );
-    for line in &hunk.theirs { content.push_str(&format!("# {}\n", line)); }
-    content.push_str(
-        "# ── RESOLUTION (edit below) ─────────────────────────────────────────\n"
-    );
+    for line in &hunk.ours {
+        content.push_str(&format!("# {}\n", line));
+    }
+    content.push_str("# ── THEIRS ──────────────────────────────────────────────────────────\n");
+    for line in &hunk.theirs {
+        content.push_str(&format!("# {}\n", line));
+    }
+    content.push_str("# ── RESOLUTION (edit below) ─────────────────────────────────────────\n");
     // Pre-fill with ours as a starting point
-    for line in &hunk.ours   { content.push_str(&format!("{}\n", line)); }
+    for line in &hunk.ours {
+        content.push_str(&format!("{}\n", line));
+    }
 
     fs::write(&tmp_path, &content)?;
 
@@ -449,16 +478,19 @@ fn open_in_editor(
         .map_err(|e| VeloError::Io(e))?;
 
     if !status.success() {
-        println!("{} Editor exited with non-zero status.", style("!").yellow());
+        println!(
+            "{} Editor exited with non-zero status.",
+            style("!").yellow()
+        );
         return Ok(None);
     }
 
     // Read back — everything after the last "# ── RESOLUTION" line
-    let edited = fs::read_to_string(&tmp_path)
-        .map_err(VeloError::Io)?;
+    let edited = fs::read_to_string(&tmp_path).map_err(VeloError::Io)?;
     let _ = fs::remove_file(&tmp_path);
 
-    let resolution_marker = "# ── RESOLUTION (edit below) ─────────────────────────────────────────";
+    let resolution_marker =
+        "# ── RESOLUTION (edit below) ─────────────────────────────────────────";
     if let Some(pos) = edited.find(resolution_marker) {
         let after = &edited[pos + resolution_marker.len()..];
         let lines: Vec<String> = after
@@ -468,7 +500,10 @@ fn open_in_editor(
             .collect();
         Ok(Some(lines))
     } else {
-        println!("{} Could not find resolution marker in edited file.", style("!").yellow());
+        println!(
+            "{} Could not find resolution marker in edited file.",
+            style("!").yellow()
+        );
         Ok(None)
     }
 }
@@ -478,11 +513,7 @@ fn open_in_editor(
 /// Compute conflict hunks using 3-way diff.
 /// ancestor → ours gives "our changes"; ancestor → theirs gives "their changes".
 /// Overlapping changed regions are true conflicts.
-pub fn compute_conflict_hunks(
-    ancestor: &str,
-    ours:     &str,
-    theirs:   &str,
-) -> Vec<ConflictHunk> {
+pub fn compute_conflict_hunks(ancestor: &str, ours: &str, theirs: &str) -> Vec<ConflictHunk> {
     let anc: Vec<&str> = ancestor.lines().collect();
     let our: Vec<&str> = ours.lines().collect();
     let thr: Vec<&str> = theirs.lines().collect();
@@ -493,18 +524,24 @@ pub fn compute_conflict_hunks(
 
     let mut hunks = Vec::new();
     for (id, region) in conflict_regions.iter().enumerate() {
-        let ctx_start  = region.start.saturating_sub(3);
-        let ctx_end    = (region.end + 3).min(anc.len());
+        let ctx_start = region.start.saturating_sub(3);
+        let ctx_end = (region.end + 3).min(anc.len());
         let region_end = region.end.min(anc.len());
 
         hunks.push(ConflictHunk {
             id,
             ancestor_start: region.start,
-            ancestor_end:   region_end,
-            context_before: anc[ctx_start..region.start].iter().map(|s| s.to_string()).collect(),
-            ours:   extract_new_for_old_range(&anc, &our, region.start..region_end),
+            ancestor_end: region_end,
+            context_before: anc[ctx_start..region.start]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            ours: extract_new_for_old_range(&anc, &our, region.start..region_end),
             theirs: extract_new_for_old_range(&anc, &thr, region.start..region_end),
-            context_after:  anc[region_end..ctx_end].iter().map(|s| s.to_string()).collect(),
+            context_after: anc[region_end..ctx_end]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
             decision: None,
         });
     }
@@ -513,21 +550,19 @@ pub fn compute_conflict_hunks(
 
 /// Returns the ranges of `old` (ancestor) that were changed by `new`.
 /// Insertions are represented as zero-width ranges at their insertion point.
-fn changed_ranges_in_ancestor(
-    old: &[&str],
-    new: &[&str],
-) -> Vec<std::ops::Range<usize>> {
+fn changed_ranges_in_ancestor(old: &[&str], new: &[&str]) -> Vec<std::ops::Range<usize>> {
     let diff = TextDiff::from_slices(old, new);
     let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
 
     for op in diff.ops().iter().copied() {
         match op {
-            DiffOp::Replace { old_index, old_len, .. } =>
-                ranges.push(old_index..old_index + old_len),
-            DiffOp::Delete  { old_index, old_len, .. } =>
-                ranges.push(old_index..old_index + old_len),
-            DiffOp::Insert  { old_index, .. } =>
-                ranges.push(old_index..old_index), // zero-width
+            DiffOp::Replace {
+                old_index, old_len, ..
+            } => ranges.push(old_index..old_index + old_len),
+            DiffOp::Delete {
+                old_index, old_len, ..
+            } => ranges.push(old_index..old_index + old_len),
+            DiffOp::Insert { old_index, .. } => ranges.push(old_index..old_index), // zero-width
             DiffOp::Equal { .. } => {}
         }
     }
@@ -568,8 +603,8 @@ fn find_overlapping_regions(
 
 /// Returns the lines that `new` produces in place of `old[old_range]`.
 fn extract_new_for_old_range(
-    old:       &[&str],
-    new:       &[&str],
+    old: &[&str],
+    new: &[&str],
     old_range: std::ops::Range<usize>,
 ) -> Vec<String> {
     let diff = TextDiff::from_slices(old, new);
@@ -582,7 +617,9 @@ fn extract_new_for_old_range(
             continue;
         }
         // Stop ops entirely after our range
-        if o.start > old_range.end { break; }
+        if o.start > old_range.end {
+            break;
+        }
 
         let _n = op.new_range();
         match op {
@@ -594,14 +631,23 @@ fn extract_new_for_old_range(
                 }
             }
             DiffOp::Delete { .. } => {} // deleted → nothing
-            DiffOp::Insert { old_index, new_index, new_len } => {
+            DiffOp::Insert {
+                old_index,
+                new_index,
+                new_len,
+            } => {
                 if old_index >= old_range.start && old_index <= old_range.end {
                     for i in 0..new_len {
                         result.push(new[new_index + i].to_string());
                     }
                 }
             }
-            DiffOp::Replace { old_index, old_len, new_index, new_len } => {
+            DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } => {
                 let op_old = old_index..old_index + old_len;
                 if op_old.start < old_range.end && old_range.start < op_old.end {
                     for i in 0..new_len {
@@ -638,11 +684,21 @@ pub fn build_resolved_content(
 
         // Apply the hunk decision (default to ours if undecided)
         let lines: Vec<String> = match hunk.decision.as_ref().unwrap_or(&Decision::Ours) {
-            Decision::Ours            => hunk.ours.clone(),
-            Decision::Theirs          => hunk.theirs.clone(),
-            Decision::BothOursFirst   => hunk.ours.iter().chain(hunk.theirs.iter()).cloned().collect(),
-            Decision::BothTheirsFirst => hunk.theirs.iter().chain(hunk.ours.iter()).cloned().collect(),
-            Decision::Manual(ls)      => ls.clone(),
+            Decision::Ours => hunk.ours.clone(),
+            Decision::Theirs => hunk.theirs.clone(),
+            Decision::BothOursFirst => hunk
+                .ours
+                .iter()
+                .chain(hunk.theirs.iter())
+                .cloned()
+                .collect(),
+            Decision::BothTheirsFirst => hunk
+                .theirs
+                .iter()
+                .chain(hunk.ours.iter())
+                .cloned()
+                .collect(),
+            Decision::Manual(ls) => ls.clone(),
         };
         output.extend(lines);
         cursor = hunk.ancestor_end;
@@ -670,7 +726,9 @@ fn sort_and_merge(mut ranges: Vec<std::ops::Range<usize>>) -> Vec<std::ops::Rang
     for r in ranges {
         match merged.last_mut() {
             Some(last) if r.start <= last.end => {
-                if r.end > last.end { last.end = r.end; }
+                if r.end > last.end {
+                    last.end = r.end;
+                }
             }
             _ => merged.push(r),
         }
@@ -682,15 +740,17 @@ fn sort_and_merge(mut ranges: Vec<std::ops::Range<usize>>) -> Vec<std::ops::Rang
 
 fn load_all_conflict_files(conn: &rusqlite::Connection) -> Result<Vec<ConflictFile>> {
     let mut stmt = conn.prepare(
-        "SELECT path, ancestor_hash, our_hash, their_hash FROM conflict_files ORDER BY path"
+        "SELECT path, ancestor_hash, our_hash, their_hash FROM conflict_files ORDER BY path",
     )?;
     let rows: Vec<ConflictFile> = stmt
-        .query_map([], |r| Ok(ConflictFile {
-            path:          r.get(0)?,
-            ancestor_hash: r.get(1)?,
-            our_hash:      r.get(2)?,
-            their_hash:    r.get(3)?,
-        }))?
+        .query_map([], |r| {
+            Ok(ConflictFile {
+                path: r.get(0)?,
+                ancestor_hash: r.get(1)?,
+                our_hash: r.get(2)?,
+                their_hash: r.get(3)?,
+            })
+        })?
         .filter_map(|r| r.ok())
         .collect();
     Ok(rows)
@@ -701,13 +761,16 @@ fn load_conflict_file(conn: &rusqlite::Connection, path: &str) -> Result<Conflic
         "SELECT path, ancestor_hash, our_hash, their_hash
          FROM conflict_files WHERE path = ?",
         [path],
-        |r| Ok(ConflictFile {
-            path:          r.get(0)?,
-            ancestor_hash: r.get(1)?,
-            our_hash:      r.get(2)?,
-            their_hash:    r.get(3)?,
-        }),
-    ).map_err(|_| VeloError::InvalidInput(format!("No conflict found for '{}'.", path)))
+        |r| {
+            Ok(ConflictFile {
+                path: r.get(0)?,
+                ancestor_hash: r.get(1)?,
+                our_hash: r.get(2)?,
+                their_hash: r.get(3)?,
+            })
+        },
+    )
+    .map_err(|_| VeloError::InvalidInput(format!("No conflict found for '{}'.", path)))
 }
 
 fn remove_conflict_file(conn: &rusqlite::Connection, path: &str) -> Result<()> {

@@ -30,7 +30,11 @@ pub fn run(root: &Path, target: &str, file_filter: &Option<String>) -> Result<()
         .map_err(|_| VeloError::InvalidInput(format!("Snapshot '{}' not found.", target)))?;
 
     // Header
-    let date = if created_at.len() >= 19 { &created_at[..19] } else { &created_at };
+    let date = if created_at.len() >= 19 {
+        &created_at[..19]
+    } else {
+        &created_at
+    };
     println!(
         "{} {}  {}  {}",
         style("snapshot").dim(),
@@ -153,8 +157,7 @@ fn load_file_map(
     if snap_hash.is_empty() {
         return Ok(std::collections::HashMap::new());
     }
-    let mut stmt =
-        conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+    let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
     let collected: std::collections::HashMap<String, String> = stmt
         .query_map([snap_hash], |r| Ok((r.get(0)?, r.get(1)?)))?
         .filter_map(|r| r.ok())
@@ -183,13 +186,15 @@ fn print_diff(old: &str, new: &str) {
                 let (sign, color) = match change.tag() {
                     ChangeTag::Delete => ("-", console::Color::Red),
                     ChangeTag::Insert => ("+", console::Color::Green),
-                    ChangeTag::Equal  => (" ", console::Color::White),
+                    ChangeTag::Equal => (" ", console::Color::White),
                 };
                 let ln = match change.tag() {
                     ChangeTag::Delete => change.old_index().map(|i| i + 1),
-                    _                 => change.new_index().map(|i| i + 1),
+                    _ => change.new_index().map(|i| i + 1),
                 };
-                let ln_str = ln.map(|n| format!("{:>5}", n)).unwrap_or_else(|| "     ".into());
+                let ln_str = ln
+                    .map(|n| format!("{:>5}", n))
+                    .unwrap_or_else(|| "     ".into());
                 print!(
                     "{} {}{}",
                     style(ln_str).dim(),
@@ -202,5 +207,7 @@ fn print_diff(old: &str, new: &str) {
 }
 
 fn normalise_text(s: &str) -> String {
-    s.strip_prefix('\u{feff}').unwrap_or(s).replace("\r\n", "\n")
+    s.strip_prefix('\u{feff}')
+        .unwrap_or(s)
+        .replace("\r\n", "\n")
 }

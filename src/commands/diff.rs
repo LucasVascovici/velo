@@ -5,16 +5,12 @@ use std::path::Path;
 use console::style;
 use similar::{ChangeTag, TextDiff};
 
-use crate::commands::{is_binary, get_dirty_files, FileStatus};
+use crate::commands::{get_dirty_files, is_binary, FileStatus};
 use crate::db;
 use crate::error::Result;
 use crate::storage;
 
-pub fn run(
-    root: &Path,
-    target_file: &Option<String>,
-    show_conflict: bool,
-) -> Result<()> {
+pub fn run(root: &Path, target_file: &Option<String>, show_conflict: bool) -> Result<()> {
     match (show_conflict, target_file) {
         (true, Some(file)) => diff_one(root, file, true, &HashMap::new()),
         (true, None) => {
@@ -38,10 +34,7 @@ pub fn run(
             for file in keys {
                 println!(
                     "\n{}",
-                    style(format!("── {} ", file))
-                        .bold()
-                        .cyan()
-                        .underlined()
+                    style(format!("── {} ", file)).bold().cyan().underlined()
                 );
                 diff_one(root, file, false, &dirty)?;
             }
@@ -58,11 +51,7 @@ fn diff_one(
 ) -> Result<()> {
     // ── Deleted file shortcut ─────────────────────────────────────────────────
     if dirty.get(rel_path) == Some(&FileStatus::Deleted) {
-        println!(
-            "{} '{}' was deleted.",
-            style("[-]").red().bold(),
-            rel_path
-        );
+        println!("{} '{}' was deleted.", style("[-]").red().bold(), rel_path);
         return Ok(());
     }
 
@@ -82,23 +71,31 @@ fn diff_one(
         // Read ours and theirs from the object store via the DB conflict record
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         let normalised = db::normalise(rel_path);
-        let (our_hash, thr_hash): (String, String) = conn.query_row(
-            "SELECT our_hash, their_hash FROM conflict_files WHERE path = ?",
-            [&normalised],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        ).map_err(|_| crate::error::VeloError::InvalidInput(format!(
-            "No conflict record found for '{}'. Is a merge in progress?",
-            rel_path
-        )))?;
+        let (our_hash, thr_hash): (String, String) = conn
+            .query_row(
+                "SELECT our_hash, their_hash FROM conflict_files WHERE path = ?",
+                [&normalised],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .map_err(|_| {
+                crate::error::VeloError::InvalidInput(format!(
+                    "No conflict record found for '{}'. Is a merge in progress?",
+                    rel_path
+                ))
+            })?;
         let objects_dir = root.join(".velo/objects");
-        let ours_bytes  = storage::read_object(&objects_dir, &our_hash)?;
-        let theirs_bytes= storage::read_object(&objects_dir, &thr_hash)?;
-        let ours_text   = String::from_utf8_lossy(&ours_bytes).into_owned();
+        let ours_bytes = storage::read_object(&objects_dir, &our_hash)?;
+        let theirs_bytes = storage::read_object(&objects_dir, &thr_hash)?;
+        let ours_text = String::from_utf8_lossy(&ours_bytes).into_owned();
         let theirs_text = String::from_utf8_lossy(&theirs_bytes).into_owned();
-        (ours_text, theirs_text, "OURS".to_string(), "THEIRS".to_string())
+        (
+            ours_text,
+            theirs_text,
+            "OURS".to_string(),
+            "THEIRS".to_string(),
+        )
     } else {
-        let parent_hash =
-            fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+        let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         let last_hash: Option<String> = conn
             .query_row(
@@ -110,14 +107,18 @@ fn diff_one(
 
         let old = if let Some(h) = last_hash {
             let objects_dir = root.join(".velo/objects");
-            String::from_utf8_lossy(&storage::read_object(&objects_dir, &h)?)
-                .into_owned()
+            String::from_utf8_lossy(&storage::read_object(&objects_dir, &h)?).into_owned()
         } else {
             String::new()
         };
 
         let new = fs::read_to_string(&full_path).unwrap_or_default();
-        (old, new, "last saved".to_string(), "working tree".to_string())
+        (
+            old,
+            new,
+            "last saved".to_string(),
+            "working tree".to_string(),
+        )
     };
 
     let old_norm = normalise(&old_content);
