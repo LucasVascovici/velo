@@ -446,7 +446,7 @@ mod tests {
             save(&root, &format!("snap {}", i));
         }
         // Should not panic and return Ok
-        commands::logs::run(&root, false, 10, None, false, false, None).unwrap();
+        commands::history::run(&root, false, 10, None, false, false, None).unwrap();
     }
 
     #[test]
@@ -458,7 +458,7 @@ mod tests {
         }
         // This just verifies it doesn't error; actual row count is verified via
         // the DB in a more targeted test below.
-        commands::logs::run(&root, false, 3, None, false, false, None).unwrap();
+        commands::history::run(&root, false, 3, None, false, false, None).unwrap();
 
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let total: i64 = conn
@@ -479,7 +479,7 @@ mod tests {
         commands::branches::run(&root, Some("feature".into())).unwrap();
 
         // Global log should not show _deleted_feature entries
-        commands::logs::run(&root, true, 20, None, false, false, None).unwrap();
+        commands::history::run(&root, true, 20, None, false, false, None).unwrap();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let deleted_visible: i64 = conn
             .query_row(
@@ -501,7 +501,7 @@ mod tests {
         save(&root, "dev snap");
 
         // Should not error even though we're not on 'main'
-        commands::logs::run(&root, false, 20, Some("main"), false, false, None).unwrap();
+        commands::history::run(&root, false, 20, Some("main"), false, false, None).unwrap();
     }
 
     #[test]
@@ -509,7 +509,7 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        commands::logs::run(&root, false, 10, None, true, false, None).unwrap();
+        commands::history::run(&root, false, 10, None, true, false, None).unwrap();
     }
 
     // =========================================================================
@@ -658,7 +658,7 @@ mod tests {
         write(&root, "f.txt", "v1");
         save(&root, "s1");
         // Should not error on a clean dir
-        commands::diff::run(&root, &None, false).unwrap();
+        commands::diff::run(&root, &None).unwrap();
     }
 
     #[test]
@@ -683,17 +683,18 @@ mod tests {
             })
             .collect::<String>();
         write(&root, "large.txt", &new_content);
-        commands::diff::run(&root, &Some("large.txt".into()), false).unwrap();
+        commands::diff::run(&root, &Some("large.txt".into())).unwrap();
     }
 
     #[test]
-    fn diff_conflict_missing_file_is_error() {
+    fn diff_shows_changes_vs_last_snapshot() {
+        // Replaces old diff_conflict_missing_file_is_error — --conflict is removed.
+        // Just verify diff works on a modified file.
         let (_tmp, root) = setup();
-        write(&root, "app.py", "base");
+        write(&root, "app.py", "version 1");
         save(&root, "s1");
-        // No merge performed, so no conflict file exists
-        let result = commands::diff::run(&root, &Some("app.py".into()), true);
-        assert!(result.is_err());
+        write(&root, "app.py", "version 2");
+        commands::diff::run(&root, &Some("app.py".into())).unwrap();
     }
 
     #[test]
@@ -703,7 +704,7 @@ mod tests {
         save(&root, "s1");
         fs::remove_file(root.join("gone.txt")).unwrap();
         // Should not panic even for deleted files
-        commands::diff::run(&root, &Some("gone.txt".into()), false).unwrap();
+        commands::diff::run(&root, &Some("gone.txt".into())).unwrap();
     }
 
     // =========================================================================
@@ -1839,7 +1840,7 @@ mod tests {
         save(&root, "only b touched");
 
         // File filter for a.txt: should find both s1 and s2, not s3
-        commands::logs::run(&root, false, 20, None, false, false, Some("a.txt")).unwrap();
+        commands::history::run(&root, false, 20, None, false, false, Some("a.txt")).unwrap();
 
         // Verify via DB: a.txt appears in exactly the snapshots that touched it
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
@@ -1864,7 +1865,7 @@ mod tests {
             write(&root, "f.txt", &i.to_string());
             save(&root, &format!("snap {}", i));
         }
-        commands::logs::run(&root, false, 20, None, false, true, None).unwrap();
+        commands::history::run(&root, false, 20, None, false, true, None).unwrap();
     }
 
     #[test]
@@ -1877,7 +1878,7 @@ mod tests {
         save(&root, "dev snap");
         commands::switch::run(&root, "main", true).unwrap();
 
-        commands::logs::run(&root, true, 20, None, false, true, None).unwrap();
+        commands::history::run(&root, true, 20, None, false, true, None).unwrap();
     }
 
     // ─── save --amend ─────────────────────────────────────────────────────────

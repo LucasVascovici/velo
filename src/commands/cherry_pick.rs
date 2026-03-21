@@ -216,6 +216,7 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
             "\nOnce resolved: {}",
             style("velo save \"Apply cherry-pick\"").yellow().bold()
         );
+        println!("  To cancel:    {}", style("velo merge --abort").dim());
     } else {
         // Auto-save the cherry-pick as a new snapshot
         let now = chrono::Utc::now().to_rfc3339();
