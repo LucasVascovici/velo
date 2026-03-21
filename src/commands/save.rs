@@ -62,9 +62,15 @@ pub fn run(root: &Path, message: &str, amend: bool) -> Result<Option<SaveResult>
     };
 
     // ── Count changes ─────────────────────────────────────────────────────────
-    let new_count      = dirty.values().filter(|s| **s == FileStatus::New).count();
-    let modified_count = dirty.values().filter(|s| **s == FileStatus::Modified).count();
-    let deleted_count  = dirty.values().filter(|s| **s == FileStatus::Deleted).count();
+    let new_count = dirty.values().filter(|s| **s == FileStatus::New).count();
+    let modified_count = dirty
+        .values()
+        .filter(|s| **s == FileStatus::Modified)
+        .count();
+    let deleted_count = dirty
+        .values()
+        .filter(|s| **s == FileStatus::Deleted)
+        .count();
 
     // ── Parallel hash + compress ───────────────────────────────────────────────
     let objects_dir = root.join(".velo/objects");
@@ -85,11 +91,10 @@ pub fn run(root: &Path, message: &str, amend: bool) -> Result<Option<SaveResult>
 
     // ── Build snapshot hash ───────────────────────────────────────────────────
     let now = chrono::Utc::now().to_rfc3339();
-    let full_hex = blake3::hash(
-        format!("{}{}{}{}", message, branch.trim(), effective_parent, now).as_bytes(),
-    )
-    .to_hex()
-    .to_string();
+    let full_hex =
+        blake3::hash(format!("{}{}{}{}", message, branch.trim(), effective_parent, now).as_bytes())
+            .to_hex()
+            .to_string();
     let snapshot_hash = &full_hex[..SNAP_HASH_LEN];
 
     // ── DB transaction ────────────────────────────────────────────────────────
@@ -98,24 +103,27 @@ pub fn run(root: &Path, message: &str, amend: bool) -> Result<Option<SaveResult>
     // If amending, delete the old snapshot and its file_map first
     if let Some((old_hash, _)) = &amend_hash {
         tx.execute("DELETE FROM file_map WHERE snapshot_hash = ?", [old_hash])?;
-        tx.execute("DELETE FROM snapshots   WHERE hash = ?",       [old_hash])?;
+        tx.execute("DELETE FROM snapshots   WHERE hash = ?", [old_hash])?;
         // Also remove from trash (shouldn't be there, but be safe)
         tx.execute("DELETE FROM trash WHERE hash = ?", [old_hash])?;
     }
 
     tx.execute(
         "INSERT INTO snapshots (hash, message, branch, parent_hash) VALUES (?, ?, ?, ?)",
-        params![snapshot_hash, message, branch.trim(), effective_parent.as_str()],
+        params![
+            snapshot_hash,
+            message,
+            branch.trim(),
+            effective_parent.as_str()
+        ],
     )?;
 
     // Copy forward unchanged files from the effective parent
     {
-        let modified_paths: HashSet<&str> =
-            hashed_files.iter().map(|(p, _)| p.as_str()).collect();
+        let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _)| p.as_str()).collect();
 
         let parent_files: Vec<(String, String)> = {
-            let mut stmt =
-                tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+            let mut stmt = tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
             let collected: Vec<(String, String)> = stmt
                 .query_map([effective_parent.as_str()], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
@@ -130,9 +138,8 @@ pub fn run(root: &Path, message: &str, amend: bool) -> Result<Option<SaveResult>
         };
 
         {
-            let mut ins = tx.prepare(
-                "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
-            )?;
+            let mut ins =
+                tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
             for (p, h) in &parent_files {
                 ins.execute(params![snapshot_hash, p, h])?;
             }

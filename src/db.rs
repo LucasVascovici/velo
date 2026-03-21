@@ -70,7 +70,7 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
         CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
         CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at);
         CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at);
-        CREATE INDEX IF NOT EXISTS idx_stash_name    ON stash (name);"
+        CREATE INDEX IF NOT EXISTS idx_stash_name    ON stash (name);",
     )?;
     Ok(())
 }
@@ -83,16 +83,18 @@ pub fn get_conn_at_path(path: &Path) -> Result<Connection> {
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
-    conn.pragma_update(None, "synchronous",  "NORMAL")?;
+    conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
-    conn.pragma_update(None, "cache_size",   -65_536_i64)?;
-    conn.pragma_update(None, "mmap_size",    268_435_456_i64)?;
-    conn.pragma_update(None, "temp_store",   "MEMORY")?;
+    conn.pragma_update(None, "cache_size", -65_536_i64)?;
+    conn.pragma_update(None, "mmap_size", 268_435_456_i64)?;
+    conn.pragma_update(None, "temp_store", "MEMORY")?;
     Ok(())
 }
 
 #[inline]
-pub fn normalise(rel: &str) -> String { rel.replace('\\', "/") }
+pub fn normalise(rel: &str) -> String {
+    rel.replace('\\', "/")
+}
 
 #[inline]
 pub fn db_to_path(db_path: &str) -> std::path::PathBuf {

@@ -17,13 +17,9 @@ pub fn run(root: &Path, branch_name: &str, force: bool) -> Result<()> {
     }
 
     // ── Early exit: already on this branch ────────────────────────────────────
-    let current_head =
-        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
+    let current_head = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
     if current_head.trim() == branch_name {
-        println!(
-            "Already on branch '{}'.",
-            style(branch_name).cyan().bold()
-        );
+        println!("Already on branch '{}'.", style(branch_name).cyan().bold());
         return Ok(());
     }
 
@@ -54,8 +50,7 @@ pub fn run(root: &Path, branch_name: &str, force: bool) -> Result<()> {
     }
 
     // ── Save current PARENT so the new branch can inherit it if it's new ──────
-    let parent_hash =
-        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
 

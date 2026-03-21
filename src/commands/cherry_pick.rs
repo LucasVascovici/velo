@@ -57,8 +57,8 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
     let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     // Load three file maps: current, snapshot (theirs), ancestor (snapshot's parent)
-    let current_files  = load_file_map(&conn, current_parent.trim())?;
-    let their_files    = load_file_map(&conn, &snap_hash)?;
+    let current_files = load_file_map(&conn, current_parent.trim())?;
+    let their_files = load_file_map(&conn, &snap_hash)?;
     let ancestor_files = load_file_map(&conn, &parent_hash)?;
 
     let all_paths: std::collections::HashSet<&str> = current_files
@@ -77,9 +77,9 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
     let mut deletes: Vec<String> = Vec::new();
 
     for path in &all_paths {
-        let cur  = current_files .get(*path).map(|s| s.as_str()).unwrap_or("");
-        let tgt  = their_files   .get(*path).map(|s| s.as_str()).unwrap_or("");
-        let anc  = ancestor_files.get(*path).map(|s| s.as_str()).unwrap_or("");
+        let cur = current_files.get(*path).map(|s| s.as_str()).unwrap_or("");
+        let tgt = their_files.get(*path).map(|s| s.as_str()).unwrap_or("");
+        let anc = ancestor_files.get(*path).map(|s| s.as_str()).unwrap_or("");
 
         // No change between snapshot and its parent — skip
         if tgt == anc {
@@ -113,8 +113,12 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
                     // Real content conflict — store in DB (no sidecar file)
                     // ancestor = snapshot's parent, cur = current file, tgt = cherry-picked
                     let anc_obj = ancestor_files.get(*path).map(|s| s.as_str()).unwrap_or("");
-                    conflicts.push((path.to_string(), anc_obj.to_string(),
-                                    cur.to_string(), tgt.to_string()));
+                    conflicts.push((
+                        path.to_string(),
+                        anc_obj.to_string(),
+                        cur.to_string(),
+                        tgt.to_string(),
+                    ));
                     println!("  {} Conflict: {}", style("!").yellow().bold(), path);
                 }
             }
@@ -182,8 +186,10 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
         // Write MERGE_HEAD + store conflicts in DB
         // Format: "pre_merge_hash:cherry-pick/<snap_hash>" for abort support
         let pre_cp_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-        fs::write(root.join(".velo/MERGE_HEAD"),
-            format!("{}:cherry-pick/{}", pre_cp_parent.trim(), &snap_hash[..8]))?;
+        fs::write(
+            root.join(".velo/MERGE_HEAD"),
+            format!("{}:cherry-pick/{}", pre_cp_parent.trim(), &snap_hash[..8]),
+        )?;
         let conn2 = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         for (path, anc_h, our_h, thr_h) in &conflicts {
             conn2.execute(
@@ -196,20 +202,34 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
         println!("\n{}", style("Action required:").red().bold());
         for (f, _, _, _) in &conflicts {
             println!("  [{}]", style(f).yellow());
-            println!("    Resolve interactively: {}",
-                style(format!("velo resolve {}", f)).cyan());
-            println!("    Quick-take: {}  or  {}",
+            println!(
+                "    Resolve interactively: {}",
+                style(format!("velo resolve {}", f)).cyan()
+            );
+            println!(
+                "    Quick-take: {}  or  {}",
                 style(format!("velo resolve {} --take theirs", f)).green(),
-                style(format!("velo resolve {} --take ours", f)).dim());
+                style(format!("velo resolve {} --take ours", f)).dim()
+            );
         }
-        println!("\nOnce resolved: {}", style("velo save \"Apply cherry-pick\"").yellow().bold());
+        println!(
+            "\nOnce resolved: {}",
+            style("velo save \"Apply cherry-pick\"").yellow().bold()
+        );
     } else {
         // Auto-save the cherry-pick as a new snapshot
         let now = chrono::Utc::now().to_rfc3339();
         let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
         let cp_message = format!("Cherry-pick {}: {}", &snap_hash[..8], message);
         let full_hex = blake3::hash(
-            format!("{}{}{}{}", cp_message, branch.trim(), current_parent.trim(), now).as_bytes(),
+            format!(
+                "{}{}{}{}",
+                cp_message,
+                branch.trim(),
+                current_parent.trim(),
+                now
+            )
+            .as_bytes(),
         )
         .to_hex()
         .to_string();
@@ -222,21 +242,25 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
             params![new_snap, &cp_message, branch.trim(), current_parent.trim()],
         )?;
         // File map: current files + all changes from the writes
-        let writes_set: HashMap<&str, &str> =
-            writes.iter().map(|(p, h)| (p.as_str(), h.as_str())).collect();
+        let writes_set: HashMap<&str, &str> = writes
+            .iter()
+            .map(|(p, h)| (p.as_str(), h.as_str()))
+            .collect();
         let deletes_set: std::collections::HashSet<&str> =
             deletes.iter().map(|s| s.as_str()).collect();
 
         {
-            let mut ins = tx.prepare(
-                "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
-            )?;
+            let mut ins =
+                tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
             // Copy current files forward, overriding with writes and skipping deletes
             for (path, hash) in &current_files {
                 if deletes_set.contains(path.as_str()) {
                     continue;
                 }
-                let h = writes_set.get(path.as_str()).copied().unwrap_or(hash.as_str());
+                let h = writes_set
+                    .get(path.as_str())
+                    .copied()
+                    .unwrap_or(hash.as_str());
                 ins.execute(params![new_snap, path, h])?;
             }
             // New files not in current
@@ -258,15 +282,11 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_file_map(
-    conn: &rusqlite::Connection,
-    snap_hash: &str,
-) -> Result<HashMap<String, String>> {
+fn load_file_map(conn: &rusqlite::Connection, snap_hash: &str) -> Result<HashMap<String, String>> {
     if snap_hash.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut stmt =
-        conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+    let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
     let collected: HashMap<String, String> = stmt
         .query_map([snap_hash], |r| Ok((r.get(0)?, r.get(1)?)))?
         .filter_map(|r| r.ok())
