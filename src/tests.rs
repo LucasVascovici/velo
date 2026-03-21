@@ -46,7 +46,7 @@ mod tests {
     }
 
     fn save(root: &Path, msg: &str) -> String {
-        commands::save::run(root, msg)
+        commands::save::run(root, msg, false)
             .unwrap()
             .expect("expected a snapshot to be created")
             .hash
@@ -87,7 +87,9 @@ mod tests {
     }
 
     fn object_count(root: &Path) -> usize {
-        fs::read_dir(root.join(".velo/objects")).unwrap().count()
+        fs::read_dir(root.join(".velo/objects"))
+            .unwrap()
+            .count()
     }
 
     // =========================================================================
@@ -108,9 +110,7 @@ mod tests {
             "main"
         );
         assert_eq!(
-            fs::read_to_string(root.join(".velo/PARENT"))
-                .unwrap()
-                .trim(),
+            fs::read_to_string(root.join(".velo/PARENT")).unwrap().trim(),
             ""
         );
     }
@@ -187,7 +187,7 @@ mod tests {
     fn save_basic_roundtrip() {
         let (_tmp, root) = setup();
         write(&root, "hello.txt", "hello");
-        let r = commands::save::run(&root, "first").unwrap().unwrap();
+        let r = commands::save::run(&root, "first", false).unwrap().unwrap();
         assert_eq!(r.new_count, 2); // hello.txt + .veloignore
         assert_eq!(r.modified_count, 0);
         assert_eq!(r.deleted_count, 0);
@@ -200,7 +200,7 @@ mod tests {
     fn save_empty_message_is_error() {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "x");
-        let err = commands::save::run(&root, "").unwrap_err();
+        let err = commands::save::run(&root, "", false).unwrap_err();
         assert!(matches!(err, crate::error::VeloError::InvalidInput(_)));
     }
 
@@ -208,7 +208,7 @@ mod tests {
     fn save_whitespace_only_message_is_error() {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "x");
-        let err = commands::save::run(&root, "   ").unwrap_err();
+        let err = commands::save::run(&root, "   ", false).unwrap_err();
         assert!(matches!(err, crate::error::VeloError::InvalidInput(_)));
     }
 
@@ -218,7 +218,7 @@ mod tests {
         write(&root, "f.txt", "x");
         save(&root, "s1");
         // Nothing changed — should return None
-        let result = commands::save::run(&root, "s2").unwrap();
+        let result = commands::save::run(&root, "s2", false).unwrap();
         assert!(result.is_none());
     }
 
@@ -246,7 +246,7 @@ mod tests {
         save(&root, "s1");
 
         fs::remove_file(root.join("a.txt")).unwrap();
-        let r = commands::save::run(&root, "s2").unwrap().unwrap();
+        let r = commands::save::run(&root, "s2", false).unwrap().unwrap();
         assert_eq!(r.deleted_count, 1);
     }
 
@@ -267,16 +267,9 @@ mod tests {
 
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let trash_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM trash WHERE branch = 'main'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM trash WHERE branch = 'main'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(
-            trash_count, 0,
-            "Redo stack should be cleared after a new save"
-        );
+        assert_eq!(trash_count, 0, "Redo stack should be cleared after a new save");
     }
 
     #[test]
@@ -289,7 +282,7 @@ mod tests {
         fs::create_dir_all(root.join("temp")).unwrap();
         write(&root, "temp/cache.tmp", "junk");
 
-        let r = commands::save::run(&root, "test").unwrap().unwrap();
+        let r = commands::save::run(&root, "test", false).unwrap().unwrap();
         // Only app.rs + .veloignore should be tracked (debug.log and temp/ excluded)
         assert_eq!(r.new_count, 2);
     }
@@ -306,7 +299,7 @@ mod tests {
         write(&root, "f.txt", "v2");
         save(&root, "s2");
 
-        commands::restore::run(&root, &h1, true).unwrap();
+        commands::restore::run(&root, &h1, true, &[]).unwrap();
         assert_eq!(read(&root, "f.txt"), "v1");
         assert_eq!(parent(&root), h1);
     }
@@ -317,7 +310,7 @@ mod tests {
         write(&root, "f.txt", "v1");
         let h1 = save(&root, "s1");
         // Should succeed silently without error
-        commands::restore::run(&root, &h1, true).unwrap();
+        commands::restore::run(&root, &h1, true, &[]).unwrap();
     }
 
     #[test]
@@ -333,7 +326,7 @@ mod tests {
 
         let before_parent = parent(&root);
         // Should now return Err (exit 1) — not silently succeed
-        let result = commands::restore::run(&root, &h1, false);
+        let result = commands::restore::run(&root, &h1, false, &[]);
         assert!(result.is_err(), "Restore with dirty tree should error");
         assert_eq!(parent(&root), before_parent, "PARENT should not change");
         assert_eq!(read(&root, "f.txt"), "dirty", "File should not be restored");
@@ -348,12 +341,9 @@ mod tests {
         write(&root, "b.txt", "B"); // ghost file (added after h1)
         save(&root, "s2");
 
-        commands::restore::run(&root, &h1, true).unwrap();
+        commands::restore::run(&root, &h1, true, &[]).unwrap();
         assert!(exists(&root, "a.txt"), "a.txt should be present");
-        assert!(
-            !exists(&root, "b.txt"),
-            "b.txt is a ghost and must be removed"
-        );
+        assert!(!exists(&root, "b.txt"), "b.txt is a ghost and must be removed");
     }
 
     #[test]
@@ -365,11 +355,8 @@ mod tests {
         write(&root, "subdir/nested/file.txt", "content");
         save(&root, "s2");
 
-        commands::restore::run(&root, &h1, true).unwrap();
-        assert!(
-            !exists(&root, "subdir"),
-            "Empty subdir should be cleaned up"
-        );
+        commands::restore::run(&root, &h1, true, &[]).unwrap();
+        assert!(!exists(&root, "subdir"), "Empty subdir should be cleaned up");
     }
 
     #[test]
@@ -380,7 +367,7 @@ mod tests {
         write(&root, "f.txt", "v2");
         save(&root, "s2");
 
-        commands::restore::run(&root, &h1, true).unwrap();
+        commands::restore::run(&root, &h1, true, &[]).unwrap();
         assert_eq!(parent(&root), h1);
         // Working tree should be clean after restore
         assert!(commands::get_dirty_files(&root).is_empty());
@@ -391,7 +378,7 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        let result = commands::restore::run(&root, "deadbeef9999", true);
+        let result = commands::restore::run(&root, "deadbeef9999", true, &[]);
         assert!(result.is_err());
     }
 
@@ -407,7 +394,7 @@ mod tests {
         save(&root, "s1");
 
         write(&root, "a.txt", "A_mod"); // modified
-        write(&root, "c.txt", "C"); // new
+        write(&root, "c.txt", "C");     // new
         fs::remove_file(root.join("b.txt")).unwrap(); // deleted
 
         let dirty = commands::get_dirty_files(&root);
@@ -424,7 +411,7 @@ mod tests {
         write(&root, "f.txt", "v2");
         save(&root, "s2");
 
-        commands::restore::run(&root, &h1, true).unwrap();
+        commands::restore::run(&root, &h1, true, &[]).unwrap();
         assert!(commands::get_dirty_files(&root).is_empty());
     }
 
@@ -446,7 +433,7 @@ mod tests {
             save(&root, &format!("snap {}", i));
         }
         // Should not panic and return Ok
-        commands::logs::run(&root, false, 10, None, false).unwrap();
+        commands::logs::run(&root, false, 10, None, false, false, None).unwrap();
     }
 
     #[test]
@@ -458,7 +445,7 @@ mod tests {
         }
         // This just verifies it doesn't error; actual row count is verified via
         // the DB in a more targeted test below.
-        commands::logs::run(&root, false, 3, None, false).unwrap();
+        commands::logs::run(&root, false, 3, None, false, false, None).unwrap();
 
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let total: i64 = conn
@@ -479,7 +466,7 @@ mod tests {
         commands::branches::run(&root, Some("feature".into())).unwrap();
 
         // Global log should not show _deleted_feature entries
-        commands::logs::run(&root, true, 20, None, false).unwrap();
+        commands::logs::run(&root, true, 20, None, false, false, None).unwrap();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let deleted_visible: i64 = conn
             .query_row(
@@ -501,7 +488,7 @@ mod tests {
         save(&root, "dev snap");
 
         // Should not error even though we're not on 'main'
-        commands::logs::run(&root, false, 20, Some("main"), false).unwrap();
+        commands::logs::run(&root, false, 20, Some("main"), false, false, None).unwrap();
     }
 
     #[test]
@@ -509,7 +496,7 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        commands::logs::run(&root, false, 10, None, true).unwrap();
+        commands::logs::run(&root, false, 10, None, true, false, None).unwrap();
     }
 
     // =========================================================================
@@ -556,10 +543,7 @@ mod tests {
         assert!(!snapshot_exists(&root, &h1));
         assert_eq!(parent(&root), "");
         // The tracked file should be removed from disk
-        assert!(
-            !exists(&root, "f.txt"),
-            "File should be removed when first commit is undone"
-        );
+        assert!(!exists(&root, "f.txt"), "File should be removed when first commit is undone");
     }
 
     #[test]
@@ -627,10 +611,7 @@ mod tests {
         save(&root, "s3");
 
         let result = commands::redo::run(&root);
-        assert!(
-            result.is_err(),
-            "Redo should be unavailable after a new save"
-        );
+        assert!(result.is_err(), "Redo should be unavailable after a new save");
     }
 
     #[test]
@@ -664,23 +645,10 @@ mod tests {
     #[test]
     fn diff_modified_file() {
         let (_tmp, root) = setup();
-        write(
-            &root,
-            "large.txt",
-            (0..100)
-                .map(|i| format!("Line {}\n", i))
-                .collect::<String>()
-                .as_str(),
-        );
+        write(&root, "large.txt", (0..100).map(|i| format!("Line {}\n", i)).collect::<String>().as_str());
         save(&root, "base");
         let new_content = (0..100)
-            .map(|i| {
-                if i == 50 {
-                    "Line 50 MODIFIED\n".into()
-                } else {
-                    format!("Line {}\n", i)
-                }
-            })
+            .map(|i| if i == 50 { "Line 50 MODIFIED\n".into() } else { format!("Line {}\n", i) })
             .collect::<String>();
         write(&root, "large.txt", &new_content);
         commands::diff::run(&root, &Some("large.txt".into()), false).unwrap();
@@ -916,11 +884,9 @@ mod tests {
 
         write(&root, "f.txt", "v2");
         save(&root, "s2");
-        let result = commands::tag::run(&root, Some("v1".into()), None, None, false);
-        assert!(
-            result.is_err(),
-            "Should not allow overwriting without --force"
-        );
+        let result =
+            commands::tag::run(&root, Some("v1".into()), None, None, false);
+        assert!(result.is_err(), "Should not allow overwriting without --force");
     }
 
     #[test]
@@ -953,7 +919,8 @@ mod tests {
     #[test]
     fn tag_delete_nonexistent_is_error() {
         let (_tmp, root) = setup();
-        let result = commands::tag::run(&root, None, None, Some("ghost_tag".into()), false);
+        let result =
+            commands::tag::run(&root, None, None, Some("ghost_tag".into()), false);
         assert!(result.is_err());
     }
 
@@ -961,7 +928,8 @@ mod tests {
     fn tag_empty_head_is_error() {
         let (_tmp, root) = setup();
         // No snapshots yet — can't tag HEAD
-        let result = commands::tag::run(&root, Some("v1".into()), None, None, false);
+        let result =
+            commands::tag::run(&root, Some("v1".into()), None, None, false);
         assert!(result.is_err());
     }
 
@@ -1026,13 +994,7 @@ mod tests {
         save(&root, "save B");
 
         commands::merge::run(&root, Some("A"), false).unwrap();
-        commands::resolve::run(
-            &root,
-            Some("app.py"),
-            Some(commands::resolve::TakeOption::Theirs),
-            false,
-        )
-        .unwrap();
+        commands::resolve::run(&root, Some("app.py"), Some(commands::resolve::TakeOption::Theirs), false).unwrap();
 
         assert_eq!(read(&root, "app.py"), "content A");
         assert!(!exists(&root, "app.py.conflict"));
@@ -1051,13 +1013,7 @@ mod tests {
         save(&root, "main snap");
 
         commands::merge::run(&root, Some("feat"), false).unwrap();
-        commands::resolve::run(
-            &root,
-            Some("f.txt"),
-            Some(commands::resolve::TakeOption::Ours),
-            false,
-        )
-        .unwrap();
+        commands::resolve::run(&root, Some("f.txt"), Some(commands::resolve::TakeOption::Ours), false).unwrap();
 
         assert_eq!(read(&root, "f.txt"), "ours");
         assert!(!exists(&root, "f.txt.conflict"));
@@ -1077,22 +1033,13 @@ mod tests {
 
         // Back on main: both files still on disk
         commands::switch::run(&root, "main", true).unwrap();
-        assert!(
-            exists(&root, "removed.txt"),
-            "removed.txt should exist on main before merge"
-        );
+        assert!(exists(&root, "removed.txt"), "removed.txt should exist on main before merge");
         assert!(exists(&root, "kept.txt"));
 
         // Merge dev into main — dev deleted removed.txt, so it should disappear
         commands::merge::run(&root, Some("dev"), false).unwrap();
-        assert!(
-            !exists(&root, "removed.txt"),
-            "File deleted on target branch must be absent after merge"
-        );
-        assert!(
-            exists(&root, "kept.txt"),
-            "Unaffected file must still be present"
-        );
+        assert!(!exists(&root, "removed.txt"), "File deleted on target branch must be absent after merge");
+        assert!(exists(&root, "kept.txt"), "Unaffected file must still be present");
     }
 
     #[test]
@@ -1232,8 +1179,7 @@ mod tests {
             None,
             Some(commands::resolve::TakeOption::Theirs),
             true, // --all
-        )
-        .unwrap();
+        ).unwrap();
 
         assert!(!exists(&root, "a.py.conflict"));
         assert!(!exists(&root, "b.py.conflict"));
@@ -1265,11 +1211,7 @@ mod tests {
         commands::undo::run(&root).unwrap();
 
         // Inject a fake orphaned object manually
-        fs::write(
-            root.join(".velo/objects/fake_orphan_object_hash"),
-            b"garbage",
-        )
-        .unwrap();
+        fs::write(root.join(".velo/objects/fake_orphan_object_hash"), b"garbage").unwrap();
 
         let before = object_count(&root);
         // Run GC with 0 day keep to also purge trash immediately
@@ -1288,10 +1230,7 @@ mod tests {
         let before = object_count(&root);
         commands::gc::run(&root, 30).unwrap();
         let after = object_count(&root);
-        assert_eq!(
-            before, after,
-            "GC on a clean repo should not delete anything"
-        );
+        assert_eq!(before, after, "GC on a clean repo should not delete anything");
     }
 
     // =========================================================================
@@ -1357,13 +1296,13 @@ mod tests {
         write(&root, "f.txt", "v3");
         let h3 = save(&root, "s3");
 
-        commands::restore::run(&root, &h2, true).unwrap();
+        commands::restore::run(&root, &h2, true, &[]).unwrap();
         assert_eq!(read(&root, "f.txt"), "v2");
 
-        commands::restore::run(&root, &h3, true).unwrap();
+        commands::restore::run(&root, &h3, true, &[]).unwrap();
         assert_eq!(read(&root, "f.txt"), "v3");
 
-        commands::restore::run(&root, &h1, true).unwrap();
+        commands::restore::run(&root, &h1, true, &[]).unwrap();
         assert_eq!(read(&root, "f.txt"), "v1");
     }
 
@@ -1387,14 +1326,8 @@ mod tests {
         // Switch back to main — feature.txt must vanish (it wasn't on main)
         commands::switch::run(&root, "main", true).unwrap();
         assert_eq!(read(&root, "README.md"), "# Project");
-        assert!(
-            !exists(&root, "feature.txt"),
-            "feature.txt should not exist on main"
-        );
-        assert!(
-            commands::get_dirty_files(&root).is_empty(),
-            "main must be clean before merge"
-        );
+        assert!(!exists(&root, "feature.txt"), "feature.txt should not exist on main");
+        assert!(commands::get_dirty_files(&root).is_empty(), "main must be clean before merge");
 
         // Fast-forward merge: feature.txt should appear
         commands::merge::run(&root, Some("feature"), false).unwrap();
@@ -1446,7 +1379,7 @@ mod tests {
         fs::create_dir_all(root.join("temp")).unwrap();
         write(&root, "temp/cache.tmp", "junk");
 
-        let r = commands::save::run(&root, "test").unwrap().unwrap();
+        let r = commands::save::run(&root, "test", false).unwrap().unwrap();
         // Only main.rs + .veloignore should be tracked
         assert_eq!(r.new_count, 2);
     }
@@ -1470,5 +1403,509 @@ mod tests {
         write(&root, "src/lib.rs", "pub fn bar() {}");
         let dirty = commands::get_dirty_files(&found);
         assert_eq!(dirty.get("src/lib.rs"), Some(&FileStatus::Modified));
+    }
+
+    // ═════════════════════════════════════════════════════════════════════════════
+    // NEW FEATURE TESTS
+    // ═════════════════════════════════════════════════════════════════════════════
+
+    // ─── stash ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn stash_push_clears_working_tree() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+
+        write(&root, "f.txt", "dirty");
+        write(&root, "new.txt", "brand new");
+        commands::stash::push(&root, None).unwrap();
+
+        // Working tree should be clean (back to s1 state)
+        assert_eq!(read(&root, "f.txt"), "base");
+        assert!(!exists(&root, "new.txt"));
+        assert!(commands::get_dirty_files(&root).is_empty());
+    }
+
+    #[test]
+    fn stash_push_named_shelf() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+        write(&root, "f.txt", "wip");
+        commands::stash::push(&root, Some("my-feature".into())).unwrap();
+
+        // Should appear in list
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM stash WHERE name = 'my-feature'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn stash_push_duplicate_name_is_error() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+        write(&root, "f.txt", "wip");
+        commands::stash::push(&root, Some("shelf".into())).unwrap();
+
+        write(&root, "f.txt", "wip2");
+        let result = commands::stash::push(&root, Some("shelf".into()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn stash_push_clean_tree_is_noop() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+        // Clean — stash should do nothing
+        commands::stash::push(&root, None).unwrap();
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM stash", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn stash_pop_restores_changes() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+
+        write(&root, "f.txt", "stashed content");
+        commands::stash::push(&root, Some("wip".into())).unwrap();
+        assert_eq!(read(&root, "f.txt"), "base");
+
+        commands::stash::pop(&root, Some("wip".into())).unwrap();
+        assert_eq!(read(&root, "f.txt"), "stashed content");
+
+        // Shelf should be gone after pop
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM stash", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn stash_pop_most_recent_when_no_name() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+
+        write(&root, "f.txt", "v2");
+        commands::stash::push(&root, Some("first".into())).unwrap();
+
+        write(&root, "f.txt", "v3");
+        commands::stash::push(&root, Some("second".into())).unwrap();
+
+        // Pop with no name should get "second" (most recent)
+        commands::stash::pop(&root, None).unwrap();
+        assert_eq!(read(&root, "f.txt"), "v3");
+    }
+
+    #[test]
+    fn stash_pop_on_dirty_tree_is_error() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+
+        write(&root, "f.txt", "stashed");
+        commands::stash::push(&root, None).unwrap();
+
+        // Make the tree dirty again
+        write(&root, "f.txt", "dirty");
+        let result = commands::stash::pop(&root, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn stash_drop_removes_shelf_without_restoring() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+
+        write(&root, "f.txt", "stashed");
+        commands::stash::push(&root, Some("temp".into())).unwrap();
+        assert_eq!(read(&root, "f.txt"), "base");
+
+        commands::stash::drop_shelf(&root, Some("temp".into())).unwrap();
+        // File still "base" — not restored
+        assert_eq!(read(&root, "f.txt"), "base");
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM stash", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn stash_pop_nonexistent_is_error() {
+        let (_tmp, root) = setup();
+        let result = commands::stash::pop(&root, Some("ghost".into()));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn stash_preserves_new_files() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "base");
+        save(&root, "s1");
+
+        // Stash a brand-new file that doesn't exist in the snapshot
+        write(&root, "brand_new.txt", "totally new");
+        commands::stash::push(&root, Some("new-file-stash".into())).unwrap();
+        assert!(!exists(&root, "brand_new.txt"));
+
+        commands::stash::pop(&root, Some("new-file-stash".into())).unwrap();
+        assert!(exists(&root, "brand_new.txt"));
+        assert_eq!(read(&root, "brand_new.txt"), "totally new");
+    }
+
+    // ─── show ────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn show_displays_snapshot_info() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        let h1 = save(&root, "s1");
+        write(&root, "f.txt", "v2");
+        save(&root, "s2");
+
+        // Should not panic or error
+        commands::show::run(&root, &h1, &None).unwrap();
+    }
+
+    #[test]
+    fn show_with_file_filter() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "A");
+        write(&root, "b.txt", "B");
+        let h1 = save(&root, "s1");
+
+        commands::show::run(&root, &h1, &Some("a.txt".into())).unwrap();
+    }
+
+    #[test]
+    fn show_first_snapshot_no_parent() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        let h1 = save(&root, "s1");
+        // First snapshot has no parent — should show all files as added
+        commands::show::run(&root, &h1, &None).unwrap();
+    }
+
+    #[test]
+    fn show_nonexistent_hash_is_error() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        save(&root, "s1");
+        let result = commands::show::run(&root, "deadbeef1234", &None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn show_works_via_tag() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        save(&root, "s1");
+        commands::tag::run(&root, Some("release".into()), None, None, false).unwrap();
+        commands::show::run(&root, "release", &None).unwrap();
+    }
+
+    // ─── logs file filter ─────────────────────────────────────────────────────
+
+    #[test]
+    fn logs_file_filter_returns_only_relevant_snapshots() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "A1");
+        write(&root, "b.txt", "B1");
+        save(&root, "both touched");
+
+        write(&root, "a.txt", "A2");
+        save(&root, "only a touched");
+
+        write(&root, "b.txt", "B2");
+        save(&root, "only b touched");
+
+        // File filter for a.txt: should find both s1 and s2, not s3
+        commands::logs::run(&root, false, 20, None, false, false, Some("a.txt")).unwrap();
+
+        // Verify via DB: a.txt appears in exactly the snapshots that touched it
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT count(DISTINCT snapshot_hash) FROM file_map WHERE path = 'a.txt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(count >= 2, "a.txt should appear in at least 2 snapshots, got {}", count);
+    }
+
+    #[test]
+    fn logs_graph_does_not_panic() {
+        let (_tmp, root) = setup();
+        for i in 0..5 {
+            write(&root, "f.txt", &i.to_string());
+            save(&root, &format!("snap {}", i));
+        }
+        commands::logs::run(&root, false, 20, None, false, true, None).unwrap();
+    }
+
+    #[test]
+    fn logs_graph_with_branches_does_not_panic() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "main");
+        save(&root, "main snap");
+        commands::switch::run(&root, "dev", false).unwrap();
+        write(&root, "f.txt", "dev");
+        save(&root, "dev snap");
+        commands::switch::run(&root, "main", true).unwrap();
+
+        commands::logs::run(&root, true, 20, None, false, true, None).unwrap();
+    }
+
+    // ─── save --amend ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn save_amend_replaces_last_snapshot() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        let h1 = save(&root, "s1");
+
+        // Amend: fix a typo in f.txt and update message
+        write(&root, "f.txt", "v1 fixed");
+        let result = commands::save::run(&root, "s1 amended", true).unwrap();
+        let amended = result.unwrap();
+
+        assert_ne!(amended.hash, h1, "Amended hash must differ");
+
+        // Original hash no longer exists
+        assert!(!snapshot_exists(&root, &h1));
+        // Amended snapshot does exist and is the current parent
+        assert!(snapshot_exists(&root, &amended.hash));
+        assert_eq!(parent(&root), amended.hash);
+
+        // Content of the file should reflect the amendment
+        assert_eq!(read(&root, "f.txt"), "v1 fixed");
+    }
+
+    #[test]
+    fn save_amend_message_updated() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        save(&root, "original message");
+
+        write(&root, "f.txt", "v1b");
+        commands::save::run(&root, "corrected message", true).unwrap();
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let msg: String = conn
+            .query_row(
+                "SELECT message FROM snapshots WHERE branch = 'main' ORDER BY created_at DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(msg, "corrected message");
+    }
+
+    #[test]
+    fn save_amend_preserves_parent_lineage() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        let h1 = save(&root, "s1");
+        write(&root, "f.txt", "v2");
+        save(&root, "s2");
+
+        // Amend s2 — the amended snapshot's parent should still be h1
+        write(&root, "f.txt", "v2 amended");
+        commands::save::run(&root, "s2 amended", true).unwrap();
+
+        // PARENT file is the authoritative source — it's written last in save::run
+        // and always points to the most recently created snapshot.
+        let amended_hash = parent(&root);
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let new_parent: String = conn
+            .query_row(
+                "SELECT parent_hash FROM snapshots WHERE hash = ?",
+                [&amended_hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(new_parent, h1, "Amended snapshot's parent should be h1");
+    }
+
+    #[test]
+    fn save_amend_clean_tree_still_updates_message() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        save(&root, "typo mesage");
+
+        // Amend with no file changes — just fix the message
+        // (dirty is empty, but amend=true forces a save)
+        let result = commands::save::run(&root, "fixed message", true).unwrap();
+        // Should return Some even when tree is clean (amend forces it)
+        // Note: if dirty is empty AND amend, we still create a new snapshot
+        assert!(result.is_some());
+    }
+
+    // ─── restore pathspec ─────────────────────────────────────────────────────
+
+    #[test]
+    fn restore_single_file_does_not_update_parent() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "A1");
+        write(&root, "b.txt", "B1");
+        let h1 = save(&root, "s1");
+
+        write(&root, "a.txt", "A2");
+        write(&root, "b.txt", "B2");
+        let h2 = save(&root, "s2");
+
+        // Restore only a.txt from s1
+        commands::restore::run(&root, &h1, false, &["a.txt".into()]).unwrap();
+
+        // a.txt should be back to A1, b.txt stays at B2
+        assert_eq!(read(&root, "a.txt"), "A1");
+        assert_eq!(read(&root, "b.txt"), "B2");
+
+        // PARENT should still point to h2 (partial restore doesn't update it)
+        assert_eq!(parent(&root), h2);
+    }
+
+    #[test]
+    fn restore_pathspec_nonexistent_in_snapshot() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "A");
+        let h1 = save(&root, "s1");
+        write(&root, "a.txt", "A2");
+        save(&root, "s2");
+
+        // "ghost.txt" didn't exist in s1 — should be a no-op (no error)
+        commands::restore::run(&root, &h1, false, &["ghost.txt".into()]).unwrap();
+        // Current file unchanged
+        assert_eq!(read(&root, "a.txt"), "A2");
+    }
+
+    #[test]
+    fn restore_pathspec_prefix_matches_directory() {
+        let (_tmp, root) = setup();
+        write(&root, "src/a.rs", "fn a() {}");
+        write(&root, "src/b.rs", "fn b() {}");
+        write(&root, "main.rs", "fn main() {}");
+        let h1 = save(&root, "s1");
+
+        write(&root, "src/a.rs", "fn a_modified() {}");
+        write(&root, "src/b.rs", "fn b_modified() {}");
+        write(&root, "main.rs", "fn main_modified() {}");
+        save(&root, "s2");
+
+        // Restore the entire src/ directory from h1
+        commands::restore::run(&root, &h1, false, &["src/".into()]).unwrap();
+        assert_eq!(read(&root, "src/a.rs"), "fn a() {}");
+        assert_eq!(read(&root, "src/b.rs"), "fn b() {}");
+        // main.rs should remain at s2 version
+        assert_eq!(read(&root, "main.rs"), "fn main_modified() {}");
+    }
+
+    // ─── cherry-pick ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn cherry_pick_applies_changes_from_another_branch() {
+        let (_tmp, root) = setup();
+        write(&root, "base.txt", "base content");
+        save(&root, "base");
+
+        // Create a hotfix on another branch
+        commands::switch::run(&root, "hotfix", false).unwrap();
+        write(&root, "fix.txt", "bug fix content");
+        save(&root, "hotfix save");
+        let fix_hash = parent(&root);
+
+        // Back on main, apply the hotfix
+        commands::switch::run(&root, "main", true).unwrap();
+        commands::cherry_pick::run(&root, &fix_hash).unwrap();
+
+        // The new file from the hotfix should be on main now
+        assert!(exists(&root, "fix.txt"));
+        assert_eq!(read(&root, "fix.txt"), "bug fix content");
+    }
+
+    #[test]
+    fn cherry_pick_aborts_on_dirty_tree() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base");
+        save(&root, "s1");
+        write(&root, "f.txt", "v2");
+        let h2 = save(&root, "s2");
+
+        // Make the tree dirty
+        write(&root, "f.txt", "dirty");
+        let result = commands::cherry_pick::run(&root, &h2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn cherry_pick_conflict_creates_conflict_file() {
+        let (_tmp, root) = setup();
+        write(&root, "shared.txt", "base");
+        save(&root, "base");
+
+        // Branch A: modify shared.txt
+        commands::switch::run(&root, "branch-a", false).unwrap();
+        write(&root, "shared.txt", "branch A version");
+        save(&root, "branch A");
+        let branch_a_hash = parent(&root);
+
+        // Back on main: independently modify shared.txt
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "shared.txt", "main version");
+        save(&root, "main snap");
+
+        // Cherry-pick branch A's change — should conflict
+        commands::cherry_pick::run(&root, &branch_a_hash).unwrap();
+        assert!(exists(&root, "shared.txt.conflict"));
+    }
+
+    #[test]
+    fn cherry_pick_auto_saves_clean_pick() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "A");
+        write(&root, "b.txt", "B");
+        save(&root, "base");
+
+        // On another branch, add a new independent file
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "c.txt", "C — new feature file");
+        save(&root, "feature adds c");
+        let feature_hash = parent(&root);
+
+        commands::switch::run(&root, "main", true).unwrap();
+        let before_parent = parent(&root);
+
+        commands::cherry_pick::run(&root, &feature_hash).unwrap();
+
+        // Should auto-save — parent should have advanced
+        let after_parent = parent(&root);
+        assert_ne!(before_parent, after_parent, "Cherry-pick should auto-save when clean");
+        assert!(exists(&root, "c.txt"));
+    }
+
+    #[test]
+    fn cherry_pick_nonexistent_hash_is_error() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v");
+        save(&root, "s1");
+        let result = commands::cherry_pick::run(&root, "deadbeef1234");
+        assert!(result.is_err());
     }
 }

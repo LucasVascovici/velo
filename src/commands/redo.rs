@@ -26,7 +26,8 @@ pub fn run(root: &Path) -> Result<()> {
     }
 
     let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let branch =
+        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
 
     // ── Find the most recently trashed snapshot for this branch ──────────────
     let snap: Option<(String, String)> = conn
@@ -38,7 +39,10 @@ pub fn run(root: &Path) -> Result<()> {
         .optional()?;
 
     let (hash, message) = snap.ok_or_else(|| {
-        VeloError::InvalidInput(format!("Nothing to redo on branch '{}'.", branch.trim()))
+        VeloError::InvalidInput(format!(
+            "Nothing to redo on branch '{}'.",
+            branch.trim()
+        ))
     })?;
 
     println!(
@@ -58,7 +62,7 @@ pub fn run(root: &Path) -> Result<()> {
     tx.commit()?;
 
     // ── Restore working tree (restore::run writes PARENT itself) ─────────────
-    crate::commands::restore::run(root, &hash, true)?;
+    crate::commands::restore::run(root, &hash, true, &[])?;
 
     println!(
         "{} Redo complete — now at snapshot {}",

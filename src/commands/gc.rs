@@ -83,10 +83,7 @@ pub fn run(root: &Path, keep_days: u32) -> Result<()> {
 
     // ── Summary ───────────────────────────────────────────────────────────────
     if deleted_count == 0 && trash_rows == 0 && orphan_fm == 0 && stale_cache == 0 {
-        println!(
-            "{}",
-            style("Repository is already clean. Nothing to collect.").dim()
-        );
+        println!("{}", style("Repository is already clean. Nothing to collect.").dim());
     } else {
         println!(
             "{} GC complete — removed {} object(s), freed {:.1} KB.",
