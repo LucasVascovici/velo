@@ -67,7 +67,7 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
         .map(|s| s.as_str())
         .collect();
 
-    let mut conflicts: Vec<String> = Vec::new();
+    let mut conflicts: Vec<(String, String, String, String)> = Vec::new(); // (path, anc, our, thr)
     let mut new_count = 0usize;
     let mut changed_count = 0usize;
     let mut del_count = 0usize;
@@ -110,12 +110,12 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
                         path
                     );
                 } else {
-                    // Real content conflict
-                    let data = storage::read_object(&objects_dir, tgt)?;
-                    let conflict_path = root.join(db::db_to_path(&format!("{}.conflict", path)));
-                    fs::write(&conflict_path, data)?;
+                    // Real content conflict — store in DB (no sidecar file)
+                    // ancestor = snapshot's parent, cur = current file, tgt = cherry-picked
+                    let anc_obj = ancestor_files.get(*path).map(|s| s.as_str()).unwrap_or("");
+                    conflicts.push((path.to_string(), anc_obj.to_string(),
+                                    cur.to_string(), tgt.to_string()));
                     println!("  {} Conflict: {}", style("!").yellow().bold(), path);
-                    conflicts.push(path.to_string());
                 }
             }
             _ => {}
@@ -179,15 +179,28 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
     println!("  Conflicts: {}", conflicts.len());
 
     if !conflicts.is_empty() {
-        // Reuse MERGE_HEAD to signal "resolve then save"
-        fs::write(root.join(".velo/MERGE_HEAD"), &snap_hash)?;
+        // Write MERGE_HEAD + store conflicts in DB
+        // Format: "pre_merge_hash:cherry-pick/<snap_hash>" for abort support
+        let pre_cp_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+        fs::write(root.join(".velo/MERGE_HEAD"),
+            format!("{}:cherry-pick/{}", pre_cp_parent.trim(), &snap_hash[..8]))?;
+        let conn2 = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
+        for (path, anc_h, our_h, thr_h) in &conflicts {
+            conn2.execute(
+                "INSERT OR REPLACE INTO conflict_files
+                 (path, ancestor_hash, our_hash, their_hash)
+                 VALUES (?, ?, ?, ?)",
+                rusqlite::params![path, anc_h, our_h, thr_h],
+            )?;
+        }
         println!("\n{}", style("Action required:").red().bold());
-        for f in &conflicts {
+        for (f, _, _, _) in &conflicts {
             println!("  [{}]", style(f).yellow());
-            println!("    Resolve: {} or {}",
+            println!("    Resolve interactively: {}",
+                style(format!("velo resolve {}", f)).cyan());
+            println!("    Quick-take: {}  or  {}",
                 style(format!("velo resolve {} --take theirs", f)).green(),
-                style(format!("velo resolve {} --take ours", f)).dim()
-            );
+                style(format!("velo resolve {} --take ours", f)).dim());
         }
         println!("\nOnce resolved: {}", style("velo save \"Apply cherry-pick\"").yellow().bold());
     } else {

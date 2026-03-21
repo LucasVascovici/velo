@@ -40,7 +40,20 @@ pub fn run(root: &Path, keep_days: u32) -> Result<()> {
         );
     }
 
-    // ── 3. Prune stale index_cache entries ────────────────────────────────────
+    // ── 3. Clean up stale conflict/resolve state ─────────────────────────────
+    let stale_decisions = conn.execute(
+        "DELETE FROM hunk_decisions WHERE file_path NOT IN (SELECT path FROM conflict_files)",
+        [],
+    )?;
+    if stale_decisions > 0 {
+        println!(
+            "  {} Cleaned {} orphaned hunk decision(s).",
+            style("~").yellow(),
+            stale_decisions
+        );
+    }
+
+    // ── 4. Prune stale index_cache entries ────────────────────────────────────
     // Remove entries for paths that no longer exist on disk.
     let stale_cache = conn.execute(
         "DELETE FROM index_cache
@@ -58,14 +71,14 @@ pub fn run(root: &Path, keep_days: u32) -> Result<()> {
         );
     }
 
-    // ── 4. Collect referenced object hashes ──────────────────────────────────
+    // ── 5. Collect referenced object hashes ──────────────────────────────────
     let mut stmt = conn.prepare("SELECT DISTINCT hash FROM file_map")?;
     let referenced: HashSet<String> = stmt
         .query_map([], |r| r.get(0))?
         .filter_map(|r| r.ok())
         .collect();
 
-    // ── 5. Delete unreferenced objects ────────────────────────────────────────
+    // ── 6. Delete unreferenced objects ────────────────────────────────────────
     let objects_dir = root.join(".velo/objects");
     let mut deleted_count = 0usize;
     let mut freed_bytes = 0u64;
@@ -81,7 +94,7 @@ pub fn run(root: &Path, keep_days: u32) -> Result<()> {
         }
     }
 
-    // ── Summary ───────────────────────────────────────────────────────────────
+    // ── 7. Summary ───────────────────────────────────────────────────────────────
     if deleted_count == 0 && trash_rows == 0 && orphan_fm == 0 && stale_cache == 0 {
         println!("{}", style("Repository is already clean. Nothing to collect.").dim());
     } else {

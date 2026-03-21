@@ -79,16 +79,23 @@ fn diff_one(
 
     // ── Gather old and new content ────────────────────────────────────────────
     let (old_content, new_content, label_old, label_new) = if is_conflict {
-        let conflict_path = root.join(format!("{}.conflict", rel_path));
-        if !conflict_path.exists() {
-            return Err(crate::error::VeloError::InvalidInput(format!(
-                "No conflict file found for '{}'. Run 'velo merge' first.",
-                rel_path
-            )));
-        }
-        let current = fs::read_to_string(&full_path).unwrap_or_default();
-        let conflict = fs::read_to_string(&conflict_path)?;
-        (current, conflict, "OURS".to_string(), "THEIRS".to_string())
+        // Read ours and theirs from the object store via the DB conflict record
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
+        let normalised = db::normalise(rel_path);
+        let (our_hash, thr_hash): (String, String) = conn.query_row(
+            "SELECT our_hash, their_hash FROM conflict_files WHERE path = ?",
+            [&normalised],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        ).map_err(|_| crate::error::VeloError::InvalidInput(format!(
+            "No conflict record found for '{}'. Is a merge in progress?",
+            rel_path
+        )))?;
+        let objects_dir = root.join(".velo/objects");
+        let ours_bytes  = storage::read_object(&objects_dir, &our_hash)?;
+        let theirs_bytes= storage::read_object(&objects_dir, &thr_hash)?;
+        let ours_text   = String::from_utf8_lossy(&ours_bytes).into_owned();
+        let theirs_text = String::from_utf8_lossy(&theirs_bytes).into_owned();
+        (ours_text, theirs_text, "OURS".to_string(), "THEIRS".to_string())
     } else {
         let parent_hash =
             fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();

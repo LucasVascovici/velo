@@ -23,52 +23,48 @@ pub fn run(root: &Path, target_branch: Option<&str>, abort: bool) -> Result<()> 
 // ─── Abort ───────────────────────────────────────────────────────────────────
 
 fn do_abort(root: &Path) -> Result<()> {
-    let merge_head = root.join(".velo/MERGE_HEAD");
-    if !merge_head.exists() {
+    let merge_head_path = root.join(".velo/MERGE_HEAD");
+    let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
+    let conflict_count: i64 = conn
+        .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
+        .unwrap_or(0);
+
+    if !merge_head_path.exists() && conflict_count == 0 {
         return Err(VeloError::InvalidInput("No merge in progress.".into()));
     }
-    let mut removed = 0usize;
-    if let Ok(entries) = collect_conflict_files(root) {
-        for path in entries {
-            let _ = fs::remove_file(&path);
-            removed += 1;
-        }
+
+    // MERGE_HEAD stores "pre_merge_hash:source_branch"
+    let merge_info = fs::read_to_string(&merge_head_path).unwrap_or_default();
+    let merge_info = merge_info.trim();
+    let (pre_merge_hash, source_branch) = merge_info
+        .split_once(':')
+        .unwrap_or((merge_info, "(unknown)"));
+
+    // Clear all conflict state from the database
+    conn.execute("DELETE FROM hunk_decisions", [])?;
+    conn.execute("DELETE FROM conflict_files", [])?;
+    let _ = fs::remove_file(&merge_head_path);
+
+    // Restore the working tree to its pre-merge state
+    if !pre_merge_hash.is_empty() {
+        println!(
+            "{} Aborting merge of '{}' — restoring to {}…",
+            style("!").yellow().bold(),
+            style(source_branch).cyan(),
+            style(pre_merge_hash).yellow()
+        );
+        crate::commands::restore::run(root, pre_merge_hash, true, &[])?;
+    } else {
+        println!(
+            "{} Merge aborted (no pre-merge snapshot recorded).",
+            style("✔").green()
+        );
     }
-    fs::remove_file(&merge_head)?;
-    println!(
-        "{} Merge aborted. Removed {} conflict file(s).",
-        style("✔").green(),
-        removed
-    );
+
+    println!("{} Merge aborted cleanly.", style("✔").green().bold());
     Ok(())
 }
 
-fn collect_conflict_files(root: &Path) -> std::io::Result<Vec<std::path::PathBuf>> {
-    let mut out = Vec::new();
-    collect_cf_recursive(root, &mut out)?;
-    Ok(out)
-}
-
-fn collect_cf_recursive(
-    dir: &Path,
-    out: &mut Vec<std::path::PathBuf>,
-) -> std::io::Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let name = entry.file_name();
-        let n = name.to_str().unwrap_or("");
-        if n == ".velo" || n == ".git" {
-            continue;
-        }
-        if path.is_dir() {
-            collect_cf_recursive(&path, out)?;
-        } else if path.extension().map(|e| e == "conflict").unwrap_or(false) {
-            out.push(path);
-        }
-    }
-    Ok(())
-}
 
 // ─── File-map loader ─────────────────────────────────────────────────────────
 
@@ -108,6 +104,9 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
     let head_raw =
         fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
     let head_branch = head_raw.trim();
+    // Read pre-merge parent for abort restoration
+    let pre_merge_parent =
+        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     if head_branch == target_branch {
         return Err(VeloError::InvalidInput(format!(
@@ -217,7 +216,7 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
     );
 
     let objects_dir = root.join(".velo/objects");
-    let mut conflicts: Vec<String> = Vec::new();
+    let mut conflicts: Vec<(String, String, String, String)> = Vec::new(); // (path, anc_hash, our_hash, thr_hash)
     let mut new_count  = 0usize;
     let mut del_count  = 0usize;
     let mut took_count = 0usize; // files taken from target (non-conflicting)
@@ -283,10 +282,8 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
                         style("!").yellow().bold(),
                         path
                     );
-                    // Not a blocker — no conflict file written; current wins
                 } else if cur_hash.is_empty() {
                     // Current deleted, target modified → take target's version
-                    // (current deleted intentionally; target's new work should not be lost)
                     let full = root.join(crate::db::db_to_path(path));
                     if let Some(p) = full.parent() {
                         fs::create_dir_all(p)?;
@@ -300,26 +297,19 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
                     );
                     took_count += 1;
                 } else {
-                    // Both modified to different content → textbook conflict
-                    let conflict_path =
-                        root.join(crate::db::db_to_path(&format!("{}.conflict", path)));
-                    let data = storage::read_object(&objects_dir, tgt_hash)?;
-                    fs::write(&conflict_path, data)?;
+                    // Both modified to different content → store in conflict_files DB
+                    // The working file stays untouched (contains our version).
+                    conflicts.push((path.to_string(), anc_hash.to_string(),
+                                    cur_hash.to_string(), tgt_hash.to_string()));
                     println!("  {} Conflict: {}", style("!").yellow().bold(), path);
-                    conflicts.push(path.to_string());
                 }
             }
 
-            // (false, false) with cur_hash != tgt_hash is impossible when ancestor
-            // finding is correct (it would mean they diverged before the ancestor),
-            // but treat defensively as a conflict.
+            // Defensive: both sides differ but no ancestor match — treat as conflict
             (false, false) => {
-                let conflict_path =
-                    root.join(crate::db::db_to_path(&format!("{}.conflict", path)));
-                let data = storage::read_object(&objects_dir, tgt_hash)?;
-                fs::write(&conflict_path, data)?;
+                conflicts.push((path.to_string(), anc_hash.to_string(),
+                                cur_hash.to_string(), tgt_hash.to_string()));
                 println!("  {} Conflict (pre-ancestor): {}", style("!").yellow().bold(), path);
-                conflicts.push(path.to_string());
             }
         }
     }
@@ -332,22 +322,38 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
     println!("  Conflicts: {}", conflicts.len());
 
     if !conflicts.is_empty() {
-        fs::write(root.join(".velo/MERGE_HEAD"), &target_hash)?;
+        // Record merge state: write pre-merge PARENT hash so --abort can restore it
+        fs::write(root.join(".velo/MERGE_HEAD"),
+                format!("{}:{}", pre_merge_parent.trim(), target_branch))?;
+        let conn2 = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
+        for (path, anc_h, our_h, thr_h) in &conflicts {
+            conn2.execute(
+                "INSERT OR REPLACE INTO conflict_files
+                 (path, ancestor_hash, our_hash, their_hash)
+                 VALUES (?, ?, ?, ?)",
+                params![path, anc_h, our_h, thr_h],
+            )?;
+        }
+
         println!("\n{}", style("Action required:").red().bold());
-        for f in &conflicts {
+        for (f, _, _, _) in &conflicts {
             println!("  [{}]", style(f).yellow());
             println!(
-                "    View:    {}",
-                style(format!("velo diff {} --conflict", f)).cyan()
+                "    Resolve interactively: {}",
+                style(format!("velo resolve {}", f)).cyan()
             );
             println!(
-                "    Resolve: {}  or  {}",
+                "    Quick-take:            {}  or  {}",
                 style(format!("velo resolve {} --take theirs", f)).green(),
                 style(format!("velo resolve {} --take ours",   f)).dim()
             );
         }
         println!(
-            "\nOnce all conflicts are resolved: {}",
+            "\nResolve all at once:  {}",
+            style("velo resolve --all --take theirs").cyan()
+        );
+        println!(
+            "Once resolved:        {}",
             style("velo save \"Merge <branch>\"").yellow().bold()
         );
     } else {

@@ -976,7 +976,10 @@ mod tests {
         save(&root, "save B");
 
         commands::merge::run(&root, Some("A"), false).unwrap();
-        assert!(exists(&root, "app.py.conflict"));
+        // Conflict stored in DB
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
+        assert!(count > 0, "conflict should be in DB");
         assert!(exists(&root, ".velo/MERGE_HEAD"));
     }
 
@@ -997,7 +1000,10 @@ mod tests {
         commands::resolve::run(&root, Some("app.py"), Some(commands::resolve::TakeOption::Theirs), false).unwrap();
 
         assert_eq!(read(&root, "app.py"), "content A");
-        assert!(!exists(&root, "app.py.conflict"));
+        // .conflict files are no longer used; resolution handled via DB
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn.query_row("SELECT count(*) FROM conflict_files WHERE path = 'app.py'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "conflict should be resolved");
     }
 
     #[test]
@@ -1016,7 +1022,10 @@ mod tests {
         commands::resolve::run(&root, Some("f.txt"), Some(commands::resolve::TakeOption::Ours), false).unwrap();
 
         assert_eq!(read(&root, "f.txt"), "ours");
-        assert!(!exists(&root, "f.txt.conflict"));
+        // No .conflict file in new system
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let c: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
+        assert_eq!(c, 0);
     }
 
     #[test]
@@ -1090,11 +1099,63 @@ mod tests {
         save(&root, "save B");
 
         commands::merge::run(&root, Some("A"), false).unwrap();
-        assert!(exists(&root, "app.py.conflict"));
+        // Conflict stored in DB
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
+        assert!(count > 0, "conflict should be in DB");
+        // app.py is still "content B" on disk (our version untouched during merge)
+        assert_eq!(read(&root, "app.py"), "content B");
 
         commands::merge::run(&root, None, true).unwrap(); // --abort
-        assert!(!exists(&root, "app.py.conflict"));
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn.query_row("SELECT count(*) FROM conflict_files WHERE path = 'app.py'", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0, "conflict should be cleared from DB");
         assert!(!exists(&root, ".velo/MERGE_HEAD"));
+        // Working tree should be restored to the pre-merge state ("content B")
+        assert_eq!(read(&root, "app.py"), "content B",
+            "abort should restore working tree to pre-merge state");
+        // And the working tree should be clean
+        assert!(commands::get_dirty_files(&root).is_empty(),
+            "working tree should be clean after abort");
+    }
+    #[test]
+    fn merge_abort_works_after_all_conflicts_resolved() {
+        // Key scenario: user resolves all conflicts but changes their mind.
+        // abort must still work — MERGE_HEAD must stay alive until save.
+        let (_tmp, root) = setup();
+        write(&root, "app.py", "base");
+        save(&root, "base");
+
+        commands::switch::run(&root, "feat", false).unwrap();
+        write(&root, "app.py", "theirs");
+        save(&root, "feat snap");
+
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "app.py", "ours");
+        save(&root, "main snap");
+
+        let pre_merge_parent = parent(&root);
+
+        commands::merge::run(&root, Some("feat"), false).unwrap();
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
+        assert!(n > 0, "should have conflict");
+
+        // Resolve all conflicts non-interactively
+        commands::resolve::run(&root, Some("app.py"), Some(commands::resolve::TakeOption::Theirs), false).unwrap();
+        let n2: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
+        assert_eq!(n2, 0, "all conflicts resolved");
+
+        // MERGE_HEAD must still exist after resolving
+        assert!(exists(&root, ".velo/MERGE_HEAD"), "MERGE_HEAD must stay alive until save");
+
+        // Abort even though all conflicts were resolved
+        commands::merge::run(&root, None, true).unwrap();
+
+        assert!(!exists(&root, ".velo/MERGE_HEAD"), "MERGE_HEAD should be gone after abort");
+        assert_eq!(parent(&root), pre_merge_parent, "PARENT should rewind to pre-merge");
+        assert!(commands::get_dirty_files(&root).is_empty(), "working tree should be clean");
+        assert_eq!(read(&root, "app.py"), "ours", "file restored to pre-merge version");
     }
 
     #[test]
@@ -1171,8 +1232,10 @@ mod tests {
         save(&root, "Y snap");
 
         commands::merge::run(&root, Some("X"), false).unwrap();
-        assert!(exists(&root, "a.py.conflict"));
-        assert!(exists(&root, "b.py.conflict"));
+        // Conflicts are stored in DB, not .conflict files
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
+        assert!(n >= 2, "expected at least 2 conflict entries in DB, got {}", n);
 
         commands::resolve::run(
             &root,
@@ -1181,9 +1244,17 @@ mod tests {
             true, // --all
         ).unwrap();
 
-        assert!(!exists(&root, "a.py.conflict"));
-        assert!(!exists(&root, "b.py.conflict"));
-        assert!(!exists(&root, ".velo/MERGE_HEAD"));
+        let n2: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
+        assert_eq!(n2, 0, "all conflicts should be resolved");
+
+        // MERGE_HEAD stays alive until `velo save` so the user can still abort.
+        assert!(exists(&root, ".velo/MERGE_HEAD"),
+            "MERGE_HEAD should remain until velo save finalises the merge");
+
+        // After saving, MERGE_HEAD is cleared.
+        commands::save::run(&root, "Finish merge", false).unwrap();
+        assert!(!exists(&root, ".velo/MERGE_HEAD"),
+            "MERGE_HEAD should be gone after velo save");
     }
 
     #[test]
@@ -1873,7 +1944,13 @@ mod tests {
 
         // Cherry-pick branch A's change — should conflict
         commands::cherry_pick::run(&root, &branch_a_hash).unwrap();
-        assert!(exists(&root, "shared.txt.conflict"));
+        // Conflict stored in DB, not as a .conflict file
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let n: i64 = conn.query_row(
+            "SELECT count(*) FROM conflict_files WHERE path = 'shared.txt'",
+            [], |r| r.get(0)
+        ).unwrap();
+        assert!(n > 0, "shared.txt conflict should be in DB");
     }
 
     #[test]
