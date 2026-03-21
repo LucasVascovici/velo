@@ -107,8 +107,7 @@ pub fn run(
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
-                r.get::<_, Option<String>>(2)?
-                    .unwrap_or_else(|| "(deleted)".into()),
+                r.get::<_, Option<String>>(2)?.unwrap_or_else(|| "(deleted)".into()),
             ))
         })?
         .filter_map(|r| r.ok())
