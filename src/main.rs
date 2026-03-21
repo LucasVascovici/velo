@@ -68,7 +68,6 @@ enum Commands {
     ///
     /// Example
     ///   velo init
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · .velo/ is never tracked — it is automatically excluded.
@@ -87,7 +86,6 @@ NOTES
     /// Examples
     ///   velo save "Fix login bug"
     ///   velo save "Tweak config" --amend
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · The message cannot be empty or whitespace-only.
@@ -121,7 +119,6 @@ NOTES
     ///   velo restore v1.0                # by tag
     ///   velo restore abc123ef --force    # discard unsaved changes
     ///   velo restore abc123ef -- src/    # restore only src/ directory
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · Without --force, restore aborts if there are unsaved changes.
@@ -152,7 +149,6 @@ NOTES
     /// Examples
     ///   velo status
     ///   velo st        # alias
-    #[command(verbatim_doc_comment)]
     #[command(
         alias = "st",
         after_help = "\
@@ -176,16 +172,12 @@ NOTES
     ///   velo log --oneline                # compact format
     ///   velo log --graph                  # ASCII branch graph
     ///   velo log --limit 50               # show up to 50 entries
-    #[command(verbatim_doc_comment)]
-    #[command(
-        alias = "log",
-        after_help = "\
+    #[command(name = "history", aliases = ["hist", "log"], after_help = "\
 NOTES
     · --file filters by any path prefix, so --file src/ matches all
       files under src/.
-    · --graph is best combined with --oneline for compact output."
-    )]
-    Logs {
+    · --graph is best combined with --oneline for compact output.")]
+    History {
         /// Show history across all branches (not just the current one).
         #[arg(short, long, help = "Show history across all branches")]
         all: bool,
@@ -234,7 +226,6 @@ NOTES
     ///
     /// Example
     ///   velo undo
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · Undo aborts if there are unsaved changes.
@@ -250,7 +241,6 @@ NOTES
     ///
     /// Example
     ///   velo redo
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · Redo is cleared the moment you run `velo save` — once you
@@ -260,19 +250,18 @@ NOTES
 
     /// Show line-level changes vs the last snapshot.
     ///
-    /// Without a file argument, diffs all dirty files in the working
-    /// tree.  With --conflict, compares your version of a file against
-    /// the incoming .conflict sidecar.
+    /// Without a file argument, diffs all dirty files in the working tree.
+    /// Use `velo resolve <file>` to inspect and resolve merge conflicts
+    /// interactively.
     ///
     /// Examples
-    ///   velo diff                         # all changed files
-    ///   velo diff src/auth.py             # one file
-    ///   velo diff src/auth.py --conflict  # view merge conflict
-    #[command(verbatim_doc_comment)]
+    ///   velo diff                  # all changed files
+    ///   velo diff src/auth.py      # one file
     #[command(after_help = "\
 NOTES
     · Binary files are detected automatically and their diffs are omitted.
-    · Diff output uses unified format with ±5 lines of context per hunk.")]
+    · Diff output uses unified format with 3 lines of context per hunk.
+    · To inspect merge conflicts, use `velo resolve <file>` (interactive TUI).")]
     Diff {
         /// File to diff (relative to repo root). Omit to diff all dirty files.
         #[arg(
@@ -280,14 +269,6 @@ NOTES
             help = "File to diff (defaults to all modified files)"
         )]
         file: Option<String>,
-
-        /// Show diff between the working file and its .conflict sidecar.
-        #[arg(
-            short,
-            long,
-            help = "Diff against the .conflict sidecar (during a merge)"
-        )]
-        conflict: bool,
     },
 
     /// Inspect a snapshot without restoring the working tree.
@@ -299,7 +280,6 @@ NOTES
     ///   velo show abc123ef          # full diff for this snapshot
     ///   velo show v1.0              # diff for the tagged snapshot
     ///   velo show abc123ef -- src/  # restrict diff to src/
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · Nothing on disk is changed — show is entirely read-only.
@@ -327,7 +307,6 @@ NOTES
     ///
     /// Example
     ///   velo cherry-pick abc123ef
-    #[command(verbatim_doc_comment)]
     #[command(
         name = "cherry-pick",
         after_help = "\
@@ -350,7 +329,6 @@ NOTES
     /// Examples
     ///   velo switch feature/auth    # switch (creates if new)
     ///   velo switch main --force    # discard unsaved changes and switch
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · New branches inherit the current working tree state.
@@ -375,7 +353,6 @@ NOTES
     ///   velo branches
     ///   velo branch                         # alias
     ///   velo branches --delete feature/old
-    #[command(verbatim_doc_comment)]
     #[command(
         alias = "branch",
         after_help = "\
@@ -403,7 +380,6 @@ NOTES
     ///   velo tag v1.0 abc123ef           # tag a specific snapshot
     ///   velo tag v1.0 --force            # overwrite an existing tag
     ///   velo tag --delete v1.0           # delete a tag
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · Deleting a tag does not affect the snapshot it pointed to.
@@ -445,7 +421,6 @@ NOTES
     /// Examples
     ///   velo merge feature/payments    # merge into current branch
     ///   velo merge --abort             # discard in-progress merge
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 CONFLICT RESOLUTION WORKFLOW
     1. velo merge <branch>
@@ -457,7 +432,8 @@ CONFLICT RESOLUTION WORKFLOW
 NOTES
     · Merge aborts if there are unsaved changes.
     · Fast-forward merges (linear ancestry) are handled automatically.
-    · --abort removes all .conflict files and clears the merge state.")]
+    · --abort restores the working tree to its exact pre-merge state and
+      clears all conflict data — works even after all conflicts are resolved.")]
     Merge {
         /// Branch to merge into the current branch.
         #[arg(value_name = "BRANCH", help = "Branch to merge in")]
@@ -484,7 +460,6 @@ NOTES
     ///   velo resolve src/auth.py --take ours      # keep current version
     ///   velo resolve src/auth.py                  # mark manually edited file as resolved
     ///   velo resolve --all --take theirs           # resolve all conflicts at once
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · After resolving all conflicts, run `velo save \"Merge <branch>\"`.
@@ -530,7 +505,6 @@ NOTES
     ///   velo stash list
     ///   velo stash pop "wip: auth"
     ///   velo stash drop "wip: auth"
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 NOTES
     · Stashing restores the working tree to the last saved snapshot.
@@ -551,7 +525,6 @@ NOTES
     ///   velo gc                   # default: keep undo history for 30 days
     ///   velo gc --keep-days 0     # purge everything immediately
     ///   velo gc --keep-days 90    # keep undo history for 90 days
-    #[command(verbatim_doc_comment)]
     #[command(after_help = "\
 WHAT GC CLEANS UP
     · Orphaned objects (no snapshot references them)
@@ -713,7 +686,7 @@ fn run() -> Result<()> {
 
         Commands::Status => commands::status::run(&root)?,
 
-        Commands::Logs {
+        Commands::History {
             all,
             limit,
             branch,
@@ -721,7 +694,7 @@ fn run() -> Result<()> {
             graph,
             file_filter,
         } => {
-            commands::logs::run(
+            commands::history::run(
                 &root,
                 all,
                 limit,
@@ -739,8 +712,8 @@ fn run() -> Result<()> {
 
         Commands::Redo => commands::redo::run(&root)?,
 
-        Commands::Diff { file, conflict } => {
-            commands::diff::run(&root, &file, conflict)?;
+        Commands::Diff { file } => {
+            commands::diff::run(&root, &file)?;
         }
 
         Commands::Show { target, paths } => {

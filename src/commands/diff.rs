@@ -10,20 +10,13 @@ use crate::db;
 use crate::error::Result;
 use crate::storage;
 
-pub fn run(root: &Path, target_file: &Option<String>, show_conflict: bool) -> Result<()> {
-    match (show_conflict, target_file) {
-        (true, Some(file)) => diff_one(root, file, true, &HashMap::new()),
-        (true, None) => {
-            println!("Usage: velo diff <FILE> --conflict");
-            Ok(())
-        }
-        (false, Some(file)) => {
-            // Compute dirty map once, then diff just the requested file
+pub fn run(root: &Path, target_file: &Option<String>) -> Result<()> {
+    match target_file {
+        Some(file) => {
             let dirty = get_dirty_files(root);
-            diff_one(root, file, false, &dirty)
+            diff_one(root, file, &dirty)
         }
-        (false, None) => {
-            // Diff all dirty files — compute dirty map once for the whole run
+        None => {
             let dirty = get_dirty_files(root);
             if dirty.is_empty() {
                 println!("{}", style("Working directory clean.").dim());
@@ -36,19 +29,14 @@ pub fn run(root: &Path, target_file: &Option<String>, show_conflict: bool) -> Re
                     "\n{}",
                     style(format!("── {} ", file)).bold().cyan().underlined()
                 );
-                diff_one(root, file, false, &dirty)?;
+                diff_one(root, file, &dirty)?;
             }
             Ok(())
         }
     }
 }
 
-fn diff_one(
-    root: &Path,
-    rel_path: &str,
-    is_conflict: bool,
-    dirty: &HashMap<String, FileStatus>,
-) -> Result<()> {
+fn diff_one(root: &Path, rel_path: &str, dirty: &HashMap<String, FileStatus>) -> Result<()> {
     // ── Deleted file shortcut ─────────────────────────────────────────────────
     if dirty.get(rel_path) == Some(&FileStatus::Deleted) {
         println!("{} '{}' was deleted.", style("[-]").red().bold(), rel_path);
@@ -57,7 +45,7 @@ fn diff_one(
 
     // ── Binary guard ─────────────────────────────────────────────────────────
     let full_path = root.join(rel_path);
-    if !is_conflict && is_binary(&full_path) {
+    if is_binary(&full_path) {
         println!(
             "{} Binary file '{}' modified (diff omitted).",
             style("[~]").yellow().bold(),
@@ -67,34 +55,7 @@ fn diff_one(
     }
 
     // ── Gather old and new content ────────────────────────────────────────────
-    let (old_content, new_content, label_old, label_new) = if is_conflict {
-        // Read ours and theirs from the object store via the DB conflict record
-        let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-        let normalised = db::normalise(rel_path);
-        let (our_hash, thr_hash): (String, String) = conn
-            .query_row(
-                "SELECT our_hash, their_hash FROM conflict_files WHERE path = ?",
-                [&normalised],
-                |r| Ok((r.get(0)?, r.get(1)?)),
-            )
-            .map_err(|_| {
-                crate::error::VeloError::InvalidInput(format!(
-                    "No conflict record found for '{}'. Is a merge in progress?",
-                    rel_path
-                ))
-            })?;
-        let objects_dir = root.join(".velo/objects");
-        let ours_bytes = storage::read_object(&objects_dir, &our_hash)?;
-        let theirs_bytes = storage::read_object(&objects_dir, &thr_hash)?;
-        let ours_text = String::from_utf8_lossy(&ours_bytes).into_owned();
-        let theirs_text = String::from_utf8_lossy(&theirs_bytes).into_owned();
-        (
-            ours_text,
-            theirs_text,
-            "OURS".to_string(),
-            "THEIRS".to_string(),
-        )
-    } else {
+    let (old_content, new_content, label_old, label_new) = {
         let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         let last_hash: Option<String> = conn
