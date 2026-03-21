@@ -117,7 +117,7 @@ fn make_walker(root: &Path) -> WalkBuilder {
         .add_custom_ignore_filename(".gitignore");
     b.filter_entry(|e| {
         let n = e.file_name().to_str().unwrap_or("");
-        n != ".velo" && n != ".git" && n != "target" && !n.ends_with(".conflict")
+        n != ".velo" && n != ".git" && n != "target"
     });
     b
 }
@@ -316,25 +316,24 @@ pub fn invalidate_cache_entries(root: &Path, paths: &[String]) {
     }
 }
 
-/// Return the list of active `.conflict` files.
+/// Return the list of files with active merge conflicts (reads from DB).
 pub fn get_conflict_files(root: &Path) -> Vec<String> {
-    if !root.join(".velo/MERGE_HEAD").exists() {
-        return vec![];
-    }
-    let mut out = Vec::new();
-    if let Ok(entries) = walkdir_all(root) {
-        for p in entries {
-            if p.extension().map(|e| e == "conflict").unwrap_or(false) {
-                if let Ok(rel) = p.strip_prefix(root) {
-                    out.push(crate::db::normalise(rel.to_str().unwrap_or("")));
-                }
-            }
-        }
-    }
-    out.sort();
-    out
+    let db_path = root.join(".velo/velo.db");
+    if !db_path.exists() { return vec![]; }
+    let conn = match crate::db::get_conn_at_path(&db_path) {
+        Ok(c) => c,
+        Err(_) => return vec![],
+    };
+    let mut stmt = match conn.prepare("SELECT path FROM conflict_files ORDER BY path") {
+        Ok(s) => s,
+        Err(_) => return vec![],
+    };
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .map(|rows| rows.filter_map(|r| r.ok()).collect())
+        .unwrap_or_default()
 }
 
+#[allow(dead_code)]
 fn walkdir_all(root: &Path) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
     for entry in fs::read_dir(root)? {
@@ -359,6 +358,7 @@ fn walkdir_all(root: &Path) -> std::io::Result<Vec<PathBuf>> {
 // ─── Hashing (public for other modules) ──────────────────────────────────────
 
 /// Streaming content hash — delegates to `storage::fast_hash`.
+#[allow(dead_code)]
 pub fn stream_hash(path: &Path) -> String {
     crate::storage::fast_hash(path)
 }

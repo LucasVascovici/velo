@@ -47,18 +47,16 @@ pub fn run(root: &Path) -> Result<()> {
             conflicts.len()
         );
         for c in &conflicts {
-            // Strip the ".conflict" suffix for display
-            let orig = c.trim_end_matches(".conflict");
             println!(
                 "  {} {}",
                 style("[Conflict]").red().bold(),
-                orig
+                c
             );
         }
         println!(
             "  Run {} or {} to resolve, then {}",
-            style("velo diff <file> --conflict").cyan(),
-            style("velo resolve <file> --take ours|theirs").cyan(),
+            style("velo resolve <file>").cyan(),
+            style("velo resolve --all --take ours|theirs").cyan(),
             style("velo save \"Finish merge\"").green()
         );
         println!();

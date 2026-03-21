@@ -46,6 +46,26 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
             parent_hash   TEXT NOT NULL DEFAULT '',
             created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
         );
+        -- Files with active merge conflicts.
+        -- The three object hashes are all we need to recompute hunks on demand.
+        CREATE TABLE IF NOT EXISTS conflict_files (
+            path          TEXT PRIMARY KEY,
+            ancestor_hash TEXT NOT NULL,
+            our_hash      TEXT NOT NULL,
+            their_hash    TEXT NOT NULL
+        );
+
+        -- Per-hunk resolution decisions.
+        -- decision: 'ours' | 'theirs' | 'both_ours' | 'both_theirs' | 'manual'
+        -- manual_content: newline-delimited lines (only set when decision='manual')
+        CREATE TABLE IF NOT EXISTS hunk_decisions (
+            file_path      TEXT    NOT NULL,
+            hunk_id        INTEGER NOT NULL,
+            decision       TEXT    NOT NULL,
+            manual_content TEXT,
+            PRIMARY KEY (file_path, hunk_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
         CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
         CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at);

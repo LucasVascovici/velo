@@ -148,6 +148,12 @@ pub fn run(root: &Path, message: &str, amend: bool) -> Result<Option<SaveResult>
 
     fs::write(root.join(".velo/PARENT"), snapshot_hash)?;
 
+    // If a merge was in progress, this save finalises it — clear the merge state
+    let merge_head = root.join(".velo/MERGE_HEAD");
+    if merge_head.exists() {
+        let _ = fs::remove_file(&merge_head);
+    }
+
     Ok(Some(SaveResult {
         hash: snapshot_hash.to_string(),
         new_count,

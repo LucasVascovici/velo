@@ -69,7 +69,7 @@ enum Commands {
     /// Example
     ///   velo init
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · .velo/ is never tracked — it is automatically excluded.
     · The default branch is called 'main'.
@@ -88,7 +88,7 @@ NOTES
     ///   velo save "Fix login bug"
     ///   velo save "Tweak config" --amend
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · The message cannot be empty or whitespace-only.
     · --amend replaces the previous snapshot in-place and keeps the
@@ -119,7 +119,7 @@ NOTES
     ///   velo restore abc123ef --force    # discard unsaved changes
     ///   velo restore abc123ef -- src/    # restore only src/ directory
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · Without --force, restore aborts if there are unsaved changes.
     · When paths are given (-- <path>…), only those files are written
@@ -150,7 +150,7 @@ NOTES
     ///   velo status
     ///   velo st        # alias
     #[command(verbatim_doc_comment)]
-    #[command(alias = "st", after_help = "\
+	#[command(alias = "st", after_help = "\
 NOTES
     · Velo uses an mtime+size cache to skip rehashing unchanged files.
       The first call after a large change is slower; subsequent calls
@@ -171,7 +171,7 @@ NOTES
     ///   velo log --graph                  # ASCII branch graph
     ///   velo log --limit 50               # show up to 50 entries
     #[command(verbatim_doc_comment)]
-    #[command(alias = "log", after_help = "\
+	#[command(alias = "log", after_help = "\
 NOTES
     · --file filters by any path prefix, so --file src/ matches all
       files under src/.
@@ -211,7 +211,7 @@ NOTES
     /// Example
     ///   velo undo
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · Undo aborts if there are unsaved changes.
     · Undone snapshots are stored in an internal trash table and can
@@ -227,7 +227,7 @@ NOTES
     /// Example
     ///   velo redo
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · Redo is cleared the moment you run `velo save` — once you
       diverge, there is nothing to redo.
@@ -245,7 +245,7 @@ NOTES
     ///   velo diff src/auth.py             # one file
     ///   velo diff src/auth.py --conflict  # view merge conflict
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · Binary files are detected automatically and their diffs are omitted.
     · Diff output uses unified format with ±5 lines of context per hunk.")]
@@ -269,7 +269,7 @@ NOTES
     ///   velo show v1.0              # diff for the tagged snapshot
     ///   velo show abc123ef -- src/  # restrict diff to src/
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · Nothing on disk is changed — show is entirely read-only.
     · Use `velo restore <target> -- <file>` to pull a single file out
@@ -297,7 +297,7 @@ NOTES
     /// Example
     ///   velo cherry-pick abc123ef
     #[command(verbatim_doc_comment)]
-    #[command(name = "cherry-pick", after_help = "\
+	#[command(name = "cherry-pick", after_help = "\
 NOTES
     · Cherry-pick aborts if there are unsaved changes.
     · With conflicts: resolve them, then `velo save \"Apply cherry-pick\"`.
@@ -317,7 +317,7 @@ NOTES
     ///   velo switch feature/auth    # switch (creates if new)
     ///   velo switch main --force    # discard unsaved changes and switch
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · New branches inherit the current working tree state.
     · Switch to a deleted branch is not permitted.
@@ -342,7 +342,7 @@ NOTES
     ///   velo branch                         # alias
     ///   velo branches --delete feature/old
     #[command(verbatim_doc_comment)]
-    #[command(alias = "branch", after_help = "\
+	#[command(alias = "branch", after_help = "\
 NOTES
     · Branch deletion is a soft delete — history is preserved in the
       database and purged only by `velo gc`.
@@ -367,7 +367,7 @@ NOTES
     ///   velo tag v1.0 --force            # overwrite an existing tag
     ///   velo tag --delete v1.0           # delete a tag
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · Deleting a tag does not affect the snapshot it pointed to.
     · A tag can point to any snapshot across all branches.")]
@@ -403,7 +403,7 @@ NOTES
     ///   velo merge feature/payments    # merge into current branch
     ///   velo merge --abort             # discard in-progress merge
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 CONFLICT RESOLUTION WORKFLOW
     1. velo merge <branch>
     2. velo diff <file> --conflict    # inspect each conflict
@@ -438,7 +438,7 @@ NOTES
     ///   velo resolve src/auth.py                  # mark manually edited file as resolved
     ///   velo resolve --all --take theirs           # resolve all conflicts at once
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · After resolving all conflicts, run `velo save \"Merge <branch>\"`.
     · Velo will remind you of remaining conflicts after each resolve.
@@ -478,7 +478,7 @@ NOTES
     ///   velo stash pop "wip: auth"
     ///   velo stash drop "wip: auth"
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 NOTES
     · Stashing restores the working tree to the last saved snapshot.
     · Pop aborts if there are unsaved changes.
@@ -499,7 +499,7 @@ NOTES
     ///   velo gc --keep-days 0     # purge everything immediately
     ///   velo gc --keep-days 90    # keep undo history for 90 days
     #[command(verbatim_doc_comment)]
-    #[command(after_help = "\
+	#[command(after_help = "\
 WHAT GC CLEANS UP
     · Orphaned objects (no snapshot references them)
     · Stale file_map rows (snapshot was deleted)
@@ -527,7 +527,6 @@ enum StashSub {
     /// Examples
     ///   velo stash push
     ///   velo stash push "wip: payments"
-    #[command(verbatim_doc_comment)]
     Push {
         /// Name for the shelf. Auto-generated (stash-YYYYMMDD-HHMMSS) if omitted.
         #[arg(value_name = "NAME", help = "Shelf name (auto-generated if omitted)")]
@@ -540,7 +539,6 @@ enum StashSub {
     ///
     /// Example
     ///   velo stash list
-    #[command(verbatim_doc_comment)]
     List,
 
     /// Restore a shelf and remove it from the list.
@@ -550,7 +548,6 @@ enum StashSub {
     /// Examples
     ///   velo stash pop
     ///   velo stash pop "wip: payments"
-    #[command(verbatim_doc_comment)]
     Pop {
         /// Name of the shelf to restore. Defaults to the most recent.
         #[arg(value_name = "NAME", help = "Shelf to restore (defaults to most recent)")]
@@ -564,7 +561,6 @@ enum StashSub {
     /// Examples
     ///   velo stash drop
     ///   velo stash drop "old-experiment"
-    #[command(verbatim_doc_comment)]
     Drop {
         /// Name of the shelf to delete. Defaults to the most recent.
         #[arg(value_name = "NAME", help = "Shelf to delete (defaults to most recent)")]
@@ -578,7 +574,6 @@ enum StashSub {
     /// Examples
     ///   velo stash show
     ///   velo stash show "wip: payments"
-    #[command(verbatim_doc_comment)]
     Show {
         /// Name of the shelf to inspect. Defaults to the most recent.
         #[arg(value_name = "NAME", help = "Shelf to inspect (defaults to most recent)")]
