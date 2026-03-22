@@ -186,6 +186,7 @@ fn apply_take(
         &ours.lines().collect::<Vec<_>>(),
         &theirs.lines().collect::<Vec<_>>(),
         &hunks,
+        ours.ends_with('\n'),
     );
 
     let full_path = root.join(db::db_to_path(&cf.path));
@@ -406,7 +407,13 @@ fn interactive_resolve(root: &Path, conn: &rusqlite::Connection, cf: &ConflictFi
             let our_lines: Vec<&str> = ours.lines().collect();
             let thr_lines: Vec<&str> = theirs.lines().collect();
 
-            let resolved = build_resolved_content(&anc_lines, &our_lines, &thr_lines, &hunks);
+            let resolved = build_resolved_content(
+                &anc_lines,
+                &our_lines,
+                &thr_lines,
+                &hunks,
+                ours.ends_with('\n'),
+            );
             let full_path = root.join(db::db_to_path(&cf.path));
             fs::write(&full_path, &resolved)?;
 
@@ -662,61 +669,143 @@ fn extract_new_for_old_range(
 }
 
 /// Produce the final file content after all hunk decisions are applied.
-/// For undecided hunks, ours is used.
+///
+/// Instead of re-deriving OUR content from ancestor ranges (which double-counts
+/// insertions), we walk the actual ancestor→our diff ops and replace each op
+/// that corresponds to a conflict hunk with the user's decision.  Ops that are
+/// not part of any conflict are included verbatim from our side.
 pub fn build_resolved_content(
     anc: &[&str],
     our: &[&str],
     _thr: &[&str],
     hunks: &[ConflictHunk],
+    trailing_newline: bool,
 ) -> String {
+    use std::collections::HashMap;
+
+    // Sort hunks by ancestor position.
     let mut sorted: Vec<&ConflictHunk> = hunks.iter().collect();
     sorted.sort_by_key(|h| h.ancestor_start);
 
+    // Build a lookup keyed by (ancestor_start, ancestor_end).
+    // Ranges are non-overlapping after sort_and_merge, so keys are unique.
+    // We use `remove` so each hunk is matched at most once.
+    let mut hunk_map: HashMap<(usize, usize), &ConflictHunk> = sorted
+        .iter()
+        .map(|h| ((h.ancestor_start, h.ancestor_end), *h))
+        .collect();
+
+    let diff = TextDiff::from_slices(anc, our);
     let mut output: Vec<String> = Vec::new();
-    let mut cursor = 0usize;
 
-    for hunk in &sorted {
-        // Fill the gap between cursor and this hunk using our non-conflicting changes
-        if cursor < hunk.ancestor_start {
-            let region = extract_new_for_old_range(anc, our, cursor..hunk.ancestor_start);
-            output.extend(region);
+    for op in diff.ops() {
+        match op {
+            // ── Unchanged lines: always include ────────────────────────────
+            DiffOp::Equal { new_index, .. } => {
+                let len = op.new_range().len();
+                for i in 0..len {
+                    output.push(our[new_index + i].to_string());
+                }
+            }
+
+            // ── Our-side insertion ──────────────────────────────────────────
+            DiffOp::Insert {
+                old_index,
+                new_index,
+                new_len,
+            } => {
+                // A zero-width conflict hunk sits at this exact position.
+                if let Some(h) = hunk_map.remove(&(*old_index, *old_index)) {
+                    output.extend(hunk_lines(h));
+                } else {
+                    // Non-conflicting our insertion — keep it.
+                    for i in 0..*new_len {
+                        output.push(our[new_index + i].to_string());
+                    }
+                }
+            }
+
+            // ── Our-side deletion ──────────────────────────────────────────
+            DiffOp::Delete {
+                old_index, old_len, ..
+            } => {
+                if let Some(h) = hunk_map.remove(&(*old_index, old_index + old_len)) {
+                    output.extend(hunk_lines(h));
+                }
+                // Non-conflicting our deletion — output nothing.
+            }
+
+            // ── Our-side replacement ────────────────────────────────────────
+            DiffOp::Replace {
+                old_index,
+                old_len,
+                new_index,
+                new_len,
+            } => {
+                // Exact non-zero-width hunk match.
+                if let Some(h) = hunk_map.remove(&(*old_index, old_index + old_len)) {
+                    output.extend(hunk_lines(h));
+                }
+                // Zero-width hunk at the start of a Replace.
+                // similar may coalesce Insert(P) + Equal(P, 1) into Replace(P, 1, Q, N)
+                // when the "equal" line appears at a different position in our.
+                else if let Some(h) = hunk_map.remove(&(*old_index, *old_index)) {
+                    // Emit the resolved insertion.
+                    output.extend(hunk_lines(h));
+                    // The rest of this Replace: our lines that correspond to
+                    // unchanged ancestor content.  Skip the ours-side of the
+                    // insertion (h.ours) and emit the remainder.
+                    let our_slice = &our[*new_index..*new_index + *new_len];
+                    let skip = if our_slice.len() >= h.ours.len()
+                        && our_slice[..h.ours.len()]
+                            .iter()
+                            .zip(&h.ours)
+                            .all(|(a, b)| *a == b.as_str())
+                    {
+                        h.ours.len()
+                    } else {
+                        0
+                    };
+                    for i in skip..*new_len {
+                        output.push(our[new_index + i].to_string());
+                    }
+                }
+                // Non-conflicting our replacement — keep our side.
+                else {
+                    for i in 0..*new_len {
+                        output.push(our[new_index + i].to_string());
+                    }
+                }
+            }
         }
-
-        // Apply the hunk decision (default to ours if undecided)
-        let lines: Vec<String> = match hunk.decision.as_ref().unwrap_or(&Decision::Ours) {
-            Decision::Ours => hunk.ours.clone(),
-            Decision::Theirs => hunk.theirs.clone(),
-            Decision::BothOursFirst => hunk
-                .ours
-                .iter()
-                .chain(hunk.theirs.iter())
-                .cloned()
-                .collect(),
-            Decision::BothTheirsFirst => hunk
-                .theirs
-                .iter()
-                .chain(hunk.ours.iter())
-                .cloned()
-                .collect(),
-            Decision::Manual(ls) => ls.clone(),
-        };
-        output.extend(lines);
-        cursor = hunk.ancestor_end;
     }
 
-    // Remaining tail after the last hunk
-    if cursor <= anc.len() {
-        let tail = extract_new_for_old_range(anc, our, cursor..anc.len());
-        output.extend(tail);
+    // Defensive: any hunks that weren't matched to a diff op.
+    // Sort by ancestor_start so they're appended in document order.
+    let mut remaining: Vec<&ConflictHunk> = hunk_map.into_values().collect();
+    remaining.sort_by_key(|h| h.ancestor_start);
+    for h in remaining {
+        output.extend(hunk_lines(h));
     }
 
+    // Reconstruct the file text, preserving the original trailing newline.
+    // str::lines() strips a trailing newline, so we detect it via the
+    // `trailing_newline` flag passed by the caller from the raw object bytes.
     let joined = output.join("\n");
-    // Preserve trailing newline if the ours version had one
-    let ours_text: String = our.join("\n");
-    if ours_text.ends_with('\n') && !joined.ends_with('\n') {
+    if trailing_newline && !joined.ends_with('\n') {
         format!("{}\n", joined)
     } else {
         joined
+    }
+}
+
+fn hunk_lines(h: &ConflictHunk) -> Vec<String> {
+    match h.decision.as_ref().unwrap_or(&Decision::Ours) {
+        Decision::Ours => h.ours.clone(),
+        Decision::Theirs => h.theirs.clone(),
+        Decision::BothOursFirst => h.ours.iter().chain(h.theirs.iter()).cloned().collect(),
+        Decision::BothTheirsFirst => h.theirs.iter().chain(h.ours.iter()).cloned().collect(),
+        Decision::Manual(ls) => ls.clone(),
     }
 }
 

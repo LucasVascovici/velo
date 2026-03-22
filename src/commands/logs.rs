@@ -28,9 +28,11 @@ pub fn run(
 ) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
 
-    let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let current_parent =
+        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let current_parent = current_parent.trim();
-    let branch_raw = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let branch_raw =
+        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
     let branch = branch_raw.trim();
     let sql_limit = limit as i64;
 
@@ -72,9 +74,7 @@ pub fn run(
                 tag: r.get(5)?,
             })
         })?;
-        for e in rows {
-            history.push(e?);
-        }
+        for e in rows { history.push(e?); }
     } else {
         if current_parent.is_empty() {
             println!("No snapshots yet on branch '{}'.", style(branch).cyan());
@@ -104,9 +104,7 @@ pub fn run(
                 tag: r.get(5)?,
             })
         })?;
-        for e in rows {
-            history.push(e?);
-        }
+        for e in rows { history.push(e?); }
     }
 
     // ── File filter: only show snapshots that touched the given file ──────────
@@ -150,11 +148,7 @@ pub fn run(
 // ─── Formatters ───────────────────────────────────────────────────────────────
 
 fn safe_date(s: &str) -> &str {
-    if s.len() >= 19 {
-        &s[..19]
-    } else {
-        s
-    }
+    if s.len() >= 19 { &s[..19] } else { s }
 }
 
 fn print_full(history: &[LogEntry], current_parent: &str) {
@@ -240,21 +234,17 @@ fn print_oneline(history: &[LogEntry], current_parent: &str) {
 //      and advance lanes (removing the commit's lane, adding its parents').
 
 fn print_graph(history: &[LogEntry], current_parent: &str) {
-    if history.is_empty() {
-        return;
-    }
+    if history.is_empty() { return; }
 
     // Index by hash for quick lookup
-    let by_hash: HashMap<&str, &LogEntry> = history.iter().map(|e| (e.hash.as_str(), e)).collect();
+    let by_hash: HashMap<&str, &LogEntry> =
+        history.iter().map(|e| (e.hash.as_str(), e)).collect();
 
     // Build children map (which hashes in our set have this hash as parent)
     let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
     for e in history {
         if by_hash.contains_key(e.parent_hash.as_str()) {
-            children
-                .entry(e.parent_hash.as_str())
-                .or_default()
-                .push(e.hash.as_str());
+            children.entry(e.parent_hash.as_str()).or_default().push(e.hash.as_str());
         }
     }
     // Suppress unused-variable warning — children map is used for future
@@ -308,34 +298,23 @@ fn print_graph(history: &[LogEntry], current_parent: &str) {
             None => String::new(),
         };
         let marker = if hash == current_parent {
-            style(format!(
-                "{} {} ({}){}",
-                graph_prefix,
-                style(hash).yellow().bold(),
-                style(&entry.branch).cyan(),
-                tag_str
-            ))
-            .to_string()
+            style(format!("{} {} ({}){}", graph_prefix, style(hash).yellow().bold(),
+                style(&entry.branch).cyan(), tag_str)).to_string()
         } else {
-            format!(
-                "{} {}{} ({})",
+            format!("{} {}{} ({})",
                 graph_prefix,
                 style(hash).yellow(),
                 tag_str,
-                style(&entry.branch).dim()
-            )
+                style(&entry.branch).dim())
         };
 
         println!("{}", marker);
 
         // Show the message indented under the graph
         let indent: String = " ".repeat(my_lane * 2 + 2);
-        println!(
-            "{}  {} {}",
-            indent,
+        println!("{}  {} {}", indent,
             style(safe_date(&entry.date)).dim(),
-            style(&entry.message).white()
-        );
+            style(&entry.message).white());
 
         // Advance lanes: replace my lane with my parent (if in set), else None
         if !parent.is_empty() && by_hash.contains_key(parent) {
