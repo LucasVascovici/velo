@@ -61,6 +61,27 @@ pub fn run(root: &Path, message: &str, amend: bool) -> Result<Option<SaveResult>
         None => parent_hash.trim().to_string(),
     };
 
+    // ── Detect merge parent (second parent for merge commits) ────────────────
+    // MERGE_HEAD stores "pre_merge_hash:source_branch". The source branch tip
+    // at the time of the merge is the second parent of this snapshot.
+    let merge_parent: String = if !amend {
+        let merge_head_path = root.join(".velo/MERGE_HEAD");
+        if merge_head_path.exists() {
+            let info = fs::read_to_string(&merge_head_path).unwrap_or_default();
+            let source_branch = info.trim().split_once(':').map(|(_, b)| b).unwrap_or("");
+            // Resolve the source branch tip from the DB
+            conn.query_row(
+                "SELECT hash FROM snapshots WHERE branch = ?                  ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                [source_branch],
+                |r| r.get::<_, String>(0),
+            ).unwrap_or_default()
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+
     // ── Count changes ─────────────────────────────────────────────────────────
     let new_count = dirty.values().filter(|s| **s == FileStatus::New).count();
     let modified_count = dirty
@@ -109,13 +130,8 @@ pub fn run(root: &Path, message: &str, amend: bool) -> Result<Option<SaveResult>
     }
 
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash) VALUES (?, ?, ?, ?)",
-        params![
-            snapshot_hash,
-            message,
-            branch.trim(),
-            effective_parent.as_str()
-        ],
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent) VALUES (?, ?, ?, ?, ?)",
+        params![snapshot_hash, message, branch.trim(), effective_parent.as_str(), merge_parent.as_str()],
     )?;
 
     // Copy forward unchanged files from the effective parent
