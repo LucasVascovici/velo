@@ -87,16 +87,29 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
     };
 
     match rows.len() {
-        0 => Err(VeloError::InvalidInput(format!(
-            "No snapshot or tag found matching '{}'.",
-            input
-        ))),
-        1 => Ok(rows.into_iter().next().unwrap()),
-        n => Err(VeloError::InvalidInput(format!(
-            "Ambiguous prefix '{}' matches {} snapshots. Use more characters.",
-            input, n
-        ))),
+        1 => return Ok(rows.into_iter().next().unwrap()),
+        n if n > 1 => {
+            return Err(VeloError::InvalidInput(format!(
+                "Ambiguous prefix '{}' matches {} snapshots. Use more characters.",
+                input, n
+            )))
+        }
+        _ => {}
     }
+
+    // 3. Try as a branch name — resolve to its most recent snapshot
+    if let Ok(h) = conn.query_row(
+        "SELECT hash FROM snapshots WHERE branch = ?          ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        [input],
+        |r| r.get::<_, String>(0),
+    ) {
+        return Ok(h);
+    }
+
+    Err(VeloError::InvalidInput(format!(
+        "No snapshot, tag, or branch found matching '{}'.",
+        input
+    )))
 }
 
 // ─── Filesystem enumeration ───────────────────────────────────────────────────

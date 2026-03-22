@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -244,92 +243,74 @@ fn print_graph(history: &[LogEntry], current_parent: &str) {
         return;
     }
 
-    // Index by hash for quick lookup
-    let by_hash: HashMap<&str, &LogEntry> = history.iter().map(|e| (e.hash.as_str(), e)).collect();
+    let known: std::collections::HashSet<&str> = history.iter().map(|e| e.hash.as_str()).collect();
 
-    // Build children map (which hashes in our set have this hash as parent)
-    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
-    for e in history {
-        if by_hash.contains_key(e.parent_hash.as_str()) {
-            children
-                .entry(e.parent_hash.as_str())
-                .or_default()
-                .push(e.hash.as_str());
-        }
-    }
-    // Suppress unused-variable warning — children map is used for future
-    // topological refinement; currently we rely on query ordering.
-    let _ = &children;
-
-    // Render in the order provided by the query (ancestry-correct for the
-    // common linear + simple branch cases).
-    let render_order: Vec<&LogEntry> = history.iter().collect();
-
-    // Track lanes: Vec<Option<&str>> where each slot holds the hash of the
-    // commit expected to appear in that column, or None (empty lane).
+    // lanes[i] = Some(hash) means lane i is "live" waiting for that hash to appear
     let mut lanes: Vec<Option<&str>> = Vec::new();
 
-    for entry in &render_order {
+    for entry in history {
         let hash = entry.hash.as_str();
         let parent = entry.parent_hash.as_str();
+        let is_head = hash == current_parent;
 
-        // Find or allocate a lane for this commit
-        let my_lane = if let Some(pos) = lanes.iter().position(|l| *l == Some(hash)) {
-            pos
-        } else {
-            // New tip — open a new lane
-            if let Some(empty) = lanes.iter().position(|l| l.is_none()) {
-                lanes[empty] = Some(hash);
-                empty
-            } else {
-                lanes.push(Some(hash));
-                lanes.len() - 1
-            }
+        // ── Assign this commit to a lane ──────────────────────────────────
+        let my_lane = match lanes.iter().position(|l| *l == Some(hash)) {
+            Some(p) => p,
+            None => match lanes.iter().position(|l| l.is_none()) {
+                Some(p) => {
+                    lanes[p] = Some(hash);
+                    p
+                }
+                None => {
+                    lanes.push(Some(hash));
+                    lanes.len() - 1
+                }
+            },
         };
 
-        // Build the graph column string for this row
-        let width = lanes.len();
-        let mut col_chars: Vec<char> = vec![' '; width * 2];
-
+        // ── Build commit-row prefix ────────────────────────────────────────
+        let n = lanes.len();
+        let mut glyphs: Vec<&str> = vec!["  "; n];
         for (i, lane) in lanes.iter().enumerate() {
-            let col = i * 2;
-            if i == my_lane {
-                col_chars[col] = if hash == current_parent { '●' } else { '*' };
+            glyphs[i] = if i == my_lane {
+                if is_head {
+                    "● "
+                } else {
+                    "* "
+                }
             } else if lane.is_some() {
-                col_chars[col] = '|';
-            }
+                "| "
+            } else {
+                "  "
+            };
         }
+        let prefix: String = glyphs.concat();
+        let indent = " ".repeat(prefix.len());
 
-        let graph_prefix: String = col_chars.into_iter().collect();
-
-        // Format the log line
-        let tag_str = match &entry.tag {
-            Some(t) => format!(" {}", style(format!("[{}]", t)).yellow()),
-            None => String::new(),
-        };
-        let marker = if hash == current_parent {
-            style(format!(
-                "{} {} ({}){}",
-                graph_prefix,
+        // ── Print commit and message rows ──────────────────────────────────
+        let tag_str = entry
+            .tag
+            .as_ref()
+            .map(|t| format!(" {}", style(format!("[{}]", t)).yellow()))
+            .unwrap_or_default();
+        let blabel = format!("({})", &entry.branch);
+        if is_head {
+            println!(
+                "{}{} {}{}",
+                prefix,
                 style(hash).yellow().bold(),
-                style(&entry.branch).cyan(),
+                style(&blabel).cyan().bold(),
                 tag_str
-            ))
-            .to_string()
+            );
         } else {
-            format!(
-                "{} {}{} ({})",
-                graph_prefix,
+            println!(
+                "{}{} {}{}",
+                prefix,
                 style(hash).yellow(),
-                tag_str,
-                style(&entry.branch).dim()
-            )
-        };
-
-        println!("{}", marker);
-
-        // Show the message indented under the graph
-        let indent: String = " ".repeat(my_lane * 2 + 2);
+                style(&blabel).dim(),
+                tag_str
+            );
+        }
         println!(
             "{}  {} {}",
             indent,
@@ -337,35 +318,54 @@ fn print_graph(history: &[LogEntry], current_parent: &str) {
             style(&entry.message).white()
         );
 
-        // Advance lanes: replace my lane with my parent (if in set), else None
-        if !parent.is_empty() && by_hash.contains_key(parent) {
-            // Check if parent already has a lane
-            let parent_lane = lanes.iter().position(|l| *l == Some(parent));
-            if parent_lane.is_none() {
-                lanes[my_lane] = Some(parent);
-            } else {
-                // Parent already tracked — close my lane
-                lanes[my_lane] = None;
+        // ── Determine where the parent lives (if it's in our history) ─────
+        let parent_in_history = !parent.is_empty() && known.contains(parent);
+        let parent_lane = lanes.iter().position(|l| *l == Some(parent));
+
+        // ── Convergence connector: draw |/ when this lane merges left ──────
+        if let Some(pil) = parent_lane {
+            if my_lane > pil {
+                // My lane converges into pil — draw the diagonal row
+                let conn: String = lanes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, lane)| {
+                        if i == my_lane {
+                            "/ "
+                        } else if lane.is_some() {
+                            "| "
+                        } else {
+                            "  "
+                        }
+                    })
+                    .collect();
+                println!("{}", conn);
             }
-        } else {
-            lanes[my_lane] = None;
         }
 
-        // Print connector lines between commits
-        let next_has_content = render_order
-            .iter()
-            .skip_while(|e| e.hash.as_str() != hash)
-            .nth(1)
-            .is_some();
+        // ── Advance lanes ──────────────────────────────────────────────────
+        if let Some(pil) = parent_lane {
+            // Parent already tracked in another lane — retire this one
+            lanes[my_lane] = None;
+            let _ = pil; // suppress unused warning
+        } else if parent_in_history {
+            // Parent not yet in any lane — keep tracking in this lane
+            lanes[my_lane] = Some(parent);
+        } else {
+            // Root commit or parent outside the displayed window
+            lanes[my_lane] = None;
+        }
+        while lanes.last() == Some(&None) {
+            lanes.pop();
+        }
 
-        if next_has_content {
-            let mut connector: Vec<char> = vec![' '; lanes.len() * 2];
-            for (i, lane) in lanes.iter().enumerate() {
-                if lane.is_some() {
-                    connector[i * 2] = '|';
-                }
-            }
-            println!("{}", connector.into_iter().collect::<String>());
+        // ── Regular vertical-connector row ────────────────────────────────
+        if !lanes.is_empty() {
+            let conn: String = lanes
+                .iter()
+                .map(|l| if l.is_some() { "| " } else { "  " })
+                .collect();
+            println!("{}", conn);
         }
     }
 }

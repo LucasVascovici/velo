@@ -1028,7 +1028,7 @@ mod tests {
         save(&root, "save A");
         commands::switch::run(&root, "main", true).unwrap();
         commands::switch::run(&root, "B", false).unwrap();
-        write(&root, "app.py", "content B");
+        write(&root, "app.py", "content B\n");
         save(&root, "save B");
 
         commands::merge::run(&root, Some("A"), false).unwrap();
@@ -1040,7 +1040,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(read(&root, "app.py"), "content A");
+        assert_eq!(read(&root, "app.py"), "content A\n");
         // .conflict files are no longer used; resolution handled via DB
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let count: i64 = conn
@@ -1059,10 +1059,10 @@ mod tests {
         write(&root, "f.txt", "base");
         save(&root, "base");
         commands::switch::run(&root, "feat", false).unwrap();
-        write(&root, "f.txt", "theirs");
+        write(&root, "f.txt", "theirs\n");
         save(&root, "feat snap");
         commands::switch::run(&root, "main", true).unwrap();
-        write(&root, "f.txt", "ours");
+        write(&root, "f.txt", "ours\n");
         save(&root, "main snap");
 
         commands::merge::run(&root, Some("feat"), false).unwrap();
@@ -1074,7 +1074,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(read(&root, "f.txt"), "ours");
+        assert_eq!(read(&root, "f.txt"), "ours\n");
         // No .conflict file in new system
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let c: i64 = conn
@@ -1155,11 +1155,11 @@ mod tests {
         write(&root, "app.py", "base");
         save(&root, "base");
         commands::switch::run(&root, "A", false).unwrap();
-        write(&root, "app.py", "content A");
+        write(&root, "app.py", "content A\n");
         save(&root, "save A");
         commands::switch::run(&root, "main", true).unwrap();
         commands::switch::run(&root, "B", false).unwrap();
-        write(&root, "app.py", "content B");
+        write(&root, "app.py", "content B\n");
         save(&root, "save B");
 
         commands::merge::run(&root, Some("A"), false).unwrap();
@@ -1169,8 +1169,8 @@ mod tests {
             .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
             .unwrap();
         assert!(count > 0, "conflict should be in DB");
-        // app.py is still "content B" on disk (our version untouched during merge)
-        assert_eq!(read(&root, "app.py"), "content B");
+        // app.py is still "content B\n" on disk (our version untouched during merge)
+        assert_eq!(read(&root, "app.py"), "content B\n");
 
         commands::merge::run(&root, None, true).unwrap(); // --abort
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
@@ -1183,10 +1183,10 @@ mod tests {
             .unwrap();
         assert_eq!(count, 0, "conflict should be cleared from DB");
         assert!(!exists(&root, ".velo/MERGE_HEAD"));
-        // Working tree should be restored to the pre-merge state ("content B")
+        // Working tree should be restored to the pre-merge state ("content B\n")
         assert_eq!(
             read(&root, "app.py"),
-            "content B",
+            "content B\n",
             "abort should restore working tree to pre-merge state"
         );
         // And the working tree should be clean
@@ -1204,11 +1204,11 @@ mod tests {
         save(&root, "base");
 
         commands::switch::run(&root, "feat", false).unwrap();
-        write(&root, "app.py", "theirs");
+        write(&root, "app.py", "theirs\n");
         save(&root, "feat snap");
 
         commands::switch::run(&root, "main", true).unwrap();
-        write(&root, "app.py", "ours");
+        write(&root, "app.py", "ours\n");
         save(&root, "main snap");
 
         let pre_merge_parent = parent(&root);
@@ -1257,8 +1257,98 @@ mod tests {
         );
         assert_eq!(
             read(&root, "app.py"),
-            "ours",
+            "ours\n",
             "file restored to pre-merge version"
+        );
+    }
+
+    #[test]
+    fn resolve_take_theirs_produces_correct_content() {
+        // Regression: zero-width conflict (both sides inserted at same ancestor
+        // position) resolved with Decision::Theirs must produce exactly theirs
+        // content, not any duplicate lines.
+        let (_tmp, root) = setup();
+
+        // ancestor: 2 lines
+        write(&root, "app.py", "def img2pdf():\n    return None\n");
+        save(&root, "base");
+
+        // branch A (ours): insert print("ours") before return
+        commands::switch::run(&root, "A", false).unwrap();
+        write(
+            &root,
+            "app.py",
+            "def img2pdf():\n    print(\"ours\")\n    return None\n",
+        );
+        save(&root, "ours");
+
+        // back to main, create branch B (theirs): insert print("theirs") before return
+        commands::switch::run(&root, "main", true).unwrap();
+        commands::switch::run(&root, "B", false).unwrap();
+        write(
+            &root,
+            "app.py",
+            "def img2pdf():\n    print(\"theirs\")\n    return None\n",
+        );
+        save(&root, "theirs");
+
+        // Merge A into B → conflict
+        commands::merge::run(&root, Some("A"), false).unwrap();
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
+            .unwrap();
+        assert!(n > 0, "expected a conflict");
+
+        // Resolve taking theirs (branch A = print("ours"))
+        commands::resolve::run(
+            &root,
+            Some("app.py"),
+            Some(commands::resolve::TakeOption::Theirs),
+            false,
+        )
+        .unwrap();
+
+        // Working file must have exactly 3 lines, with "print("ours")" once
+        let result = read(&root, "app.py");
+        let lines: Vec<&str> = result.lines().collect();
+        assert_eq!(
+            lines.len(),
+            3,
+            "resolved file should have exactly 3 lines, got: {:?}",
+            lines
+        );
+        assert_eq!(lines[0], "def img2pdf():", "line 0");
+        assert_eq!(
+            lines[1], "    print(\"ours\")",
+            "line 1 — 'theirs' in merge context is branch A"
+        );
+        assert_eq!(lines[2], "    return None", "line 2");
+
+        // And taking ours (branch B = print("theirs")) must also be correct
+        // Re-do the merge to test the ours path
+        commands::merge::run(&root, None, true).unwrap(); // abort
+
+        commands::merge::run(&root, Some("A"), false).unwrap();
+        commands::resolve::run(
+            &root,
+            Some("app.py"),
+            Some(commands::resolve::TakeOption::Ours),
+            false,
+        )
+        .unwrap();
+
+        let result2 = read(&root, "app.py");
+        let lines2: Vec<&str> = result2.lines().collect();
+        assert_eq!(
+            lines2.len(),
+            3,
+            "resolved file should have exactly 3 lines (ours), got: {:?}",
+            lines2
+        );
+        assert_eq!(
+            lines2[1], "    print(\"theirs\")",
+            "line 1 — our branch is B"
         );
     }
 
