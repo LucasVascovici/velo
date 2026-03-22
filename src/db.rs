@@ -6,11 +6,12 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
     apply_pragmas(&conn)?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS snapshots (
-            hash        TEXT PRIMARY KEY,
-            message     TEXT NOT NULL,
-            branch      TEXT NOT NULL,
-            parent_hash TEXT NOT NULL DEFAULT '',
-            created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            hash         TEXT PRIMARY KEY,
+            message      TEXT NOT NULL,
+            branch       TEXT NOT NULL,
+            parent_hash  TEXT NOT NULL DEFAULT '',
+            merge_parent TEXT NOT NULL DEFAULT '',
+            created_at   DATETIME DEFAULT CURRENT_TIMESTAMP
         );
         CREATE TABLE IF NOT EXISTS file_map (
             snapshot_hash TEXT NOT NULL,
@@ -78,7 +79,27 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
 pub fn get_conn_at_path(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
+    apply_migrations(&conn)?;
     Ok(conn)
+}
+
+/// Idempotent schema migrations — safe to run on every connection open.
+fn apply_migrations(conn: &Connection) -> Result<()> {
+    // Migration 1: add merge_parent to snapshots (2.3+)
+    let has_col: bool = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('snapshots') WHERE name = 'merge_parent'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !has_col {
+        conn.execute_batch(
+            "ALTER TABLE snapshots ADD COLUMN merge_parent TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+    Ok(())
 }
 
 fn apply_pragmas(conn: &Connection) -> Result<()> {

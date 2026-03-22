@@ -13,6 +13,7 @@ struct LogEntry {
     date: String,
     branch: String,
     parent_hash: String,
+    merge_parent: String,
     tag: Option<String>,
 }
 
@@ -45,7 +46,7 @@ pub fn run(
         println!("\n{}", style(header).bold().underlined());
 
         let sql = if filter_branch.is_some() {
-            "SELECT s.hash, s.message, s.created_at, s.branch, s.parent_hash, t.name
+            "SELECT s.hash, s.message, s.created_at, s.branch, s.parent_hash, s.merge_parent, t.name
              FROM snapshots s
              LEFT JOIN tags t ON s.hash = t.snapshot_hash
              WHERE s.branch = ?1
@@ -53,7 +54,7 @@ pub fn run(
                AND s.branch NOT LIKE '_stash%'
              ORDER BY s.created_at DESC, s.rowid DESC LIMIT ?2"
         } else {
-            "SELECT s.hash, s.message, s.created_at, s.branch, s.parent_hash, t.name
+            "SELECT s.hash, s.message, s.created_at, s.branch, s.parent_hash, s.merge_parent, t.name
              FROM snapshots s
              LEFT JOIN tags t ON s.hash = t.snapshot_hash
              WHERE s.branch NOT LIKE '_deleted_%'
@@ -68,7 +69,8 @@ pub fn run(
                 date: r.get(2)?,
                 branch: r.get(3)?,
                 parent_hash: r.get(4)?,
-                tag: r.get(5)?,
+                merge_parent: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                tag: r.get(6)?,
             })
         })?;
         for e in rows {
@@ -81,14 +83,14 @@ pub fn run(
         }
         println!("\nHistory for branch: {}", style(branch).cyan().bold());
         let mut stmt = conn.prepare(
-            "WITH RECURSIVE cte(hash, message, created_at, branch, parent_hash) AS (
-                SELECT hash, message, created_at, branch, parent_hash
+            "WITH RECURSIVE cte(hash, message, created_at, branch, parent_hash, merge_parent) AS (
+                SELECT hash, message, created_at, branch, parent_hash, merge_parent
                 FROM snapshots WHERE hash = ?1
                 UNION ALL
-                SELECT s.hash, s.message, s.created_at, s.branch, s.parent_hash
+                SELECT s.hash, s.message, s.created_at, s.branch, s.parent_hash, s.merge_parent
                 FROM snapshots s JOIN cte c ON s.hash = c.parent_hash
             )
-            SELECT c.hash, c.message, c.created_at, c.branch, c.parent_hash, t.name
+            SELECT c.hash, c.message, c.created_at, c.branch, c.parent_hash, c.merge_parent, t.name
             FROM cte c
             LEFT JOIN tags t ON c.hash = t.snapshot_hash
             LIMIT ?2",
@@ -100,7 +102,8 @@ pub fn run(
                 date: r.get(2)?,
                 branch: r.get(3)?,
                 parent_hash: r.get(4)?,
-                tag: r.get(5)?,
+                merge_parent: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                tag: r.get(6)?,
             })
         })?;
         for e in rows {
@@ -238,134 +241,201 @@ fn print_oneline(history: &[LogEntry], current_parent: &str) {
 //   4. For each commit, render its lane column (*), draw merges (joining lines),
 //      and advance lanes (removing the commit's lane, adding its parents').
 
+/// Per-lane colour cycle: cyan → green → yellow → magenta → blue.
+fn lane_colour(lane: usize, s: &str) -> String {
+    match lane % 5 {
+        0 => style(s).cyan().to_string(),
+        1 => style(s).green().to_string(),
+        2 => style(s).yellow().to_string(),
+        3 => style(s).magenta().to_string(),
+        _ => style(s).blue().to_string(),
+    }
+}
+
+/// Render 2-chars-per-lane for a connector row. Active lanes get │, others get spaces.
+fn v_row(lanes: &[Option<String>]) -> String {
+    let mut s = String::new();
+    for (i, l) in lanes.iter().enumerate() {
+        if l.is_some() {
+            s.push_str(&lane_colour(i, "│"));
+        } else {
+            s.push(' ');
+        }
+        if i + 1 < lanes.len() {
+            s.push(' ');
+        }
+    }
+    s.trim_end().to_string()
+}
+
 fn print_graph(history: &[LogEntry], current_parent: &str) {
+    use std::collections::HashSet;
     if history.is_empty() {
         return;
     }
 
-    let known: std::collections::HashSet<&str> = history.iter().map(|e| e.hash.as_str()).collect();
+    let known: HashSet<&str> = history.iter().map(|e| e.hash.as_str()).collect();
 
-    // lanes[i] = Some(hash) means lane i is "live" waiting for that hash to appear
-    let mut lanes: Vec<Option<&str>> = Vec::new();
+    // lanes[i] = Some(hash): lane i is live, waiting for that commit.
+    let mut lanes: Vec<Option<String>> = Vec::new();
 
     for entry in history {
         let hash = entry.hash.as_str();
         let parent = entry.parent_hash.as_str();
+        let mp = entry.merge_parent.as_str();
         let is_head = hash == current_parent;
+        let is_merge = !mp.is_empty() && known.contains(mp);
 
-        // ── Assign this commit to a lane ──────────────────────────────────
-        let my_lane = match lanes.iter().position(|l| *l == Some(hash)) {
+        // ── Step 1: find/assign lane (BEFORE any lane mutation) ──────────────
+        let my_lane = match lanes.iter().position(|l| l.as_deref() == Some(hash)) {
             Some(p) => p,
-            None => match lanes.iter().position(|l| l.is_none()) {
-                Some(p) => {
-                    lanes[p] = Some(hash);
+            None => {
+                // Take leftmost free slot, or append
+                if let Some(p) = lanes.iter().position(|l| l.is_none()) {
+                    lanes[p] = Some(hash.to_string());
                     p
-                }
-                None => {
-                    lanes.push(Some(hash));
+                } else {
+                    lanes.push(Some(hash.to_string()));
                     lanes.len() - 1
                 }
-            },
+            }
         };
 
-        // ── Build commit-row prefix ────────────────────────────────────────
-        let n = lanes.len();
-        let mut glyphs: Vec<&str> = vec!["  "; n];
-        for (i, lane) in lanes.iter().enumerate() {
-            glyphs[i] = if i == my_lane {
-                if is_head {
-                    "● "
-                } else {
-                    "* "
-                }
-            } else if lane.is_some() {
-                "| "
+        // ── Step 2: print commit row (lanes are still pre-update here) ────────
+        // Each lane = 2 chars: char + space (trailing space trimmed at end).
+        let w = lanes.len();
+        let mut row = String::new();
+        for i in 0..w {
+            if i == my_lane {
+                row.push_str(&lane_colour(my_lane, if is_head { "●" } else { "○" }));
+            } else if lanes[i].is_some() {
+                row.push_str(&lane_colour(i, "│"));
             } else {
-                "  "
-            };
-        }
-        let prefix: String = glyphs.concat();
-        let indent = " ".repeat(prefix.len());
-
-        // ── Print commit and message rows ──────────────────────────────────
-        let tag_str = entry
-            .tag
-            .as_ref()
-            .map(|t| format!(" {}", style(format!("[{}]", t)).yellow()))
-            .unwrap_or_default();
-        let blabel = format!("({})", &entry.branch);
-        if is_head {
-            println!(
-                "{}{} {}{}",
-                prefix,
-                style(hash).yellow().bold(),
-                style(&blabel).cyan().bold(),
-                tag_str
-            );
-        } else {
-            println!(
-                "{}{} {}{}",
-                prefix,
-                style(hash).yellow(),
-                style(&blabel).dim(),
-                tag_str
-            );
-        }
-        println!(
-            "{}  {} {}",
-            indent,
-            style(safe_date(&entry.date)).dim(),
-            style(&entry.message).white()
-        );
-
-        // ── Determine where the parent lives (if it's in our history) ─────
-        let parent_in_history = !parent.is_empty() && known.contains(parent);
-        let parent_lane = lanes.iter().position(|l| *l == Some(parent));
-
-        // ── Convergence connector: draw |/ when this lane merges left ──────
-        if let Some(pil) = parent_lane {
-            if my_lane > pil {
-                // My lane converges into pil — draw the diagonal row
-                let conn: String = lanes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, lane)| {
-                        if i == my_lane {
-                            "/ "
-                        } else if lane.is_some() {
-                            "| "
-                        } else {
-                            "  "
-                        }
-                    })
-                    .collect();
-                println!("{}", conn);
+                row.push(' ');
+            }
+            if i + 1 < w {
+                row.push(' ');
             }
         }
 
-        // ── Advance lanes ──────────────────────────────────────────────────
-        if let Some(pil) = parent_lane {
-            // Parent already tracked in another lane — retire this one
-            lanes[my_lane] = None;
-            let _ = pil; // suppress unused warning
-        } else if parent_in_history {
-            // Parent not yet in any lane — keep tracking in this lane
-            lanes[my_lane] = Some(parent);
+        let hash_s = if is_head {
+            style(hash).white().bold().to_string()
         } else {
-            // Root commit or parent outside the displayed window
+            style(hash).white().to_string()
+        };
+        let branch_s = style(format!("({})", entry.branch)).cyan().to_string();
+        let date_s = style(safe_date(&entry.date)).dim().to_string();
+        let tag_s = entry
+            .tag
+            .as_ref()
+            .map(|t| format!("  {}", style(format!("[{}]", t)).bold().yellow()))
+            .unwrap_or_default();
+
+        // Two spaces between graph prefix and commit info.
+        println!(
+            "{}  {}  {}  {}  {}{}",
+            row, hash_s, branch_s, date_s, entry.message, tag_s
+        );
+
+        // ── Step 3: update lanes ──────────────────────────────────────────────
+        // Does primary parent already have a lane (other than ours)?
+        let pp_lane: Option<usize> = if !parent.is_empty() {
+            lanes
+                .iter()
+                .position(|l| l.as_deref() == Some(parent))
+                .filter(|&p| p != my_lane)
+        } else {
+            None
+        };
+
+        // Save state needed for connector rows.
+        let pre_width = lanes.len();
+        let converging = pp_lane.map_or(false, |p| my_lane > p);
+        let pp_lane_idx = pp_lane;
+
+        // Update my lane → track primary parent (or clear if converging/root).
+        if pp_lane.is_some() {
+            lanes[my_lane] = None;
+        } else if !parent.is_empty() && known.contains(parent) {
+            lanes[my_lane] = Some(parent.to_string());
+        } else {
             lanes[my_lane] = None;
         }
+
+        // Open merge-parent lane to the right (AFTER updating, so it doesn't
+        // contaminate the commit row glyph or the pp_lane search above).
+        let mp_new_lane: Option<usize> = if is_merge {
+            let already = lanes.iter().position(|l| l.as_deref() == Some(mp));
+            if already.is_none() {
+                let nl = lanes.len();
+                lanes.push(Some(mp.to_string()));
+                Some(nl)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        // Trim trailing empty lanes.
         while lanes.last() == Some(&None) {
             lanes.pop();
         }
 
-        // ── Regular vertical-connector row ────────────────────────────────
+        // ── Step 4: connector rows ────────────────────────────────────────────
+
+        // A) Merge fork row: after a merge commit, show the new branch lane
+        //    opening to the right with a ╲ diagonal.
+        //    Format (2 chars per lane): │ for active lanes, ╲ for new mp lane.
+        if let Some(mpl) = mp_new_lane {
+            let fw = pre_width.max(mpl + 1);
+            let mut fork = String::new();
+            for i in 0..fw {
+                if i == mpl {
+                    fork.push_str(&lane_colour(mpl, "╲"));
+                } else if i < lanes.len() && lanes[i].is_some() {
+                    fork.push_str(&lane_colour(i, "│"));
+                } else if i == my_lane {
+                    // my lane continues down (it was updated above)
+                    fork.push_str(&lane_colour(my_lane, "│"));
+                } else {
+                    fork.push(' ');
+                }
+                if i + 1 < fw {
+                    fork.push(' ');
+                }
+            }
+            println!("{}", fork.trim_end());
+        }
+
+        // B) Convergence row: when my lane merges into an existing parent lane.
+        //    Show ╱ at my_lane (retiring), │ everywhere else.
+        if converging {
+            if let Some(pil) = pp_lane_idx {
+                let cw = pre_width;
+                let mut conv = String::new();
+                for i in 0..cw {
+                    if i == my_lane {
+                        conv.push_str(&lane_colour(my_lane, "╱"));
+                    } else if i == pil || (i < lanes.len() && lanes[i].is_some()) {
+                        conv.push_str(&lane_colour(i, "│"));
+                    } else {
+                        conv.push(' ');
+                    }
+                    if i + 1 < cw {
+                        conv.push(' ');
+                    }
+                }
+                println!("{}", conv.trim_end());
+            }
+        }
+
+        // C) Standard vertical connector for all remaining active lanes.
         if !lanes.is_empty() {
-            let conn: String = lanes
-                .iter()
-                .map(|l| if l.is_some() { "| " } else { "  " })
-                .collect();
-            println!("{}", conn);
+            let v = v_row(&lanes);
+            if !v.is_empty() {
+                println!("{}", v);
+            }
         }
     }
 }
