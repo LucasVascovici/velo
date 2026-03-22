@@ -12,58 +12,74 @@ BINARY="velo"
 # ── Parse flags ───────────────────────────────────────────────────────────────
 INSTALL_DIR=""
 DRY_RUN=0
-for arg in "$@"; do
-    case "$arg" in
-        --dir=*)  INSTALL_DIR="${arg#--dir=}" ;;
-        --dir)    shift; INSTALL_DIR="$1" ;;
-        --dry-run) DRY_RUN=1 ;;
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --dir=*) INSTALL_DIR="${1#--dir=}" ;;
+        --dir)   shift; INSTALL_DIR="$1"   ;;
+        --dry-run) DRY_RUN=1               ;;
         --help|-h)
             echo "Usage: install.sh [--dir <path>] [--dry-run]"
             echo "  --dir <path>   Install directory (default: /usr/local/bin or ~/.local/bin)"
-            echo "  --dry-run      Print what would be done without installing"
+            echo "  --dry-run      Show what would happen without making any changes"
             exit 0 ;;
     esac
+    shift
 done
 
 # ── Dependency check ──────────────────────────────────────────────────────────
 for dep in curl uname; do
     if ! command -v "$dep" >/dev/null 2>&1; then
-        echo "❌ Required tool not found: $dep"
+        echo "error: required tool not found: $dep"
         exit 1
     fi
 done
 
-# ── Detect platform ───────────────────────────────────────────────────────────
+# ── Detect platform and map to release asset name ────────────────────────────
+# Release asset names (from .github/workflows/release.yml):
+#   velo-x86_64-linux.tar.gz
+#   velo-aarch64-linux.tar.gz
+#   velo-x86_64-macos.tar.gz
+#   velo-aarch64-macos.tar.gz
+#   velo-x86_64-windows.zip
+
 OS="$(uname -s)"
 ARCH="$(uname -m)"
 
-case "$OS" in
-    Linux)  PLATFORM="unknown-linux-musl"; EXT="tar.gz" ;;
-    Darwin) PLATFORM="apple-darwin";       EXT="tar.gz" ;;
-    MSYS*|CYGWIN*|MINGW*)
-            PLATFORM="pc-windows-msvc";    EXT="zip"    ;;
-    *)
-        echo "❌ Unsupported OS: $OS"
-        echo "   Download a binary manually from: https://github.com/$OWNER/$REPO/releases"
-        exit 1 ;;
-esac
-
 case "$ARCH" in
-    x86_64)       TARGET_ARCH="x86_64"  ;;
-    arm64|aarch64) TARGET_ARCH="aarch64" ;;
+    x86_64)        ASSET_ARCH="x86_64"  ;;
+    arm64|aarch64) ASSET_ARCH="aarch64" ;;
     *)
-        echo "❌ Unsupported architecture: $ARCH"
-        echo "   Download a binary manually from: https://github.com/$OWNER/$REPO/releases"
+        echo "error: unsupported architecture: $ARCH"
+        echo "  Download manually: https://github.com/$OWNER/$REPO/releases"
         exit 1 ;;
 esac
 
-ASSET="${BINARY}-${TARGET_ARCH}-${PLATFORM}.${EXT}"
-echo "  Platform : $OS ($ARCH) → $ASSET"
+case "$OS" in
+    Linux)
+        ASSET="${BINARY}-${ASSET_ARCH}-linux.tar.gz"
+        EXT="tar.gz"
+        ;;
+    Darwin)
+        ASSET="${BINARY}-${ASSET_ARCH}-macos.tar.gz"
+        EXT="tar.gz"
+        ;;
+    MSYS*|CYGWIN*|MINGW*)
+        # Only x86_64 is available for Windows — ARM64 runs via emulation
+        ASSET="${BINARY}-x86_64-windows.zip"
+        ASSET_ARCH="x86_64"
+        EXT="zip"
+        ;;
+    *)
+        echo "error: unsupported OS: $OS"
+        echo "  Download manually: https://github.com/$OWNER/$REPO/releases"
+        exit 1 ;;
+esac
+
+echo "  Platform : $OS ($ARCH)"
+echo "  Asset    : $ASSET"
 
 # ── Resolve install directory ─────────────────────────────────────────────────
 if [ -z "$INSTALL_DIR" ]; then
-    # Prefer /usr/local/bin if it exists and we have write access (or can sudo).
-    # Fall back to ~/.local/bin (no sudo required).
     if [ -d "/usr/local/bin" ] && [ -w "/usr/local/bin" ]; then
         INSTALL_DIR="/usr/local/bin"
     elif command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
@@ -83,65 +99,118 @@ fi
 
 # ── Fetch latest release URL ──────────────────────────────────────────────────
 echo ""
-echo "🔍 Looking up latest release..."
+echo "Looking up latest release..."
 
-RELEASE_URL=$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/releases/latest" \
+RELEASE_JSON=$(curl -fsSL "https://api.github.com/repos/$OWNER/$REPO/releases/latest")
+
+# Extract the download URL for our asset
+RELEASE_URL=$(printf '%s' "$RELEASE_JSON" \
     | grep "browser_download_url" \
-    | grep "$ASSET" \
+    | grep "\"$ASSET\"" \
     | cut -d '"' -f 4)
 
 if [ -z "$RELEASE_URL" ]; then
-    echo "❌ Could not find a release asset matching: $ASSET"
-    echo "   Check https://github.com/$OWNER/$REPO/releases for available builds."
+    # Fallback: less strict grep (handles minor naming differences)
+    RELEASE_URL=$(printf '%s' "$RELEASE_JSON" \
+        | grep "browser_download_url" \
+        | grep "$ASSET" \
+        | cut -d '"' -f 4 \
+        | head -1)
+fi
+
+if [ -z "$RELEASE_URL" ]; then
+    echo "error: no release asset found matching '$ASSET'"
+    echo ""
+    echo "Available assets:"
+    printf '%s' "$RELEASE_JSON" \
+        | grep "browser_download_url" \
+        | cut -d '"' -f 4 \
+        | while read -r url; do
+            echo "  $(basename "$url")"
+          done
+    echo ""
+    echo "  Download manually: https://github.com/$OWNER/$REPO/releases"
     exit 1
 fi
 
-VERSION=$(echo "$RELEASE_URL" | sed 's|.*/download/\(v[^/]*\)/.*|\1|')
-echo "   Found $VERSION"
+VERSION=$(printf '%s' "$RELEASE_URL" | sed 's|.*/download/\(v[^/]*\)/.*|\1|')
+echo "  Version  : $VERSION"
 
-# ── Download to a temp directory (cleaned up on exit) ─────────────────────────
-TMPDIR="$(mktemp -d)"
-trap 'rm -rf "$TMPDIR"' EXIT INT TERM
+# ── Download ──────────────────────────────────────────────────────────────────
+# Use a unique temp dir that is always cleaned up on exit
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT INT TERM
 
-echo "📥 Downloading..."
-curl -fsSL --progress-bar "$RELEASE_URL" -o "$TMPDIR/package"
+echo ""
+echo "Downloading $ASSET..."
+curl -fsSL --progress-bar "$RELEASE_URL" -o "$WORK_DIR/package.$EXT"
 
 # ── Extract ───────────────────────────────────────────────────────────────────
 case "$EXT" in
-    tar.gz) tar -xzf "$TMPDIR/package" -C "$TMPDIR" ;;
-    zip)    unzip -q  "$TMPDIR/package" -d "$TMPDIR" ;;
+    tar.gz)
+        tar -xzf "$WORK_DIR/package.$EXT" -C "$WORK_DIR"
+        ;;
+    zip)
+        # unzip may not be available on minimal systems; try tar first (BSDs)
+        if command -v unzip >/dev/null 2>&1; then
+            unzip -q "$WORK_DIR/package.$EXT" -d "$WORK_DIR"
+        else
+            echo "error: 'unzip' not found — install it and retry"
+            exit 1
+        fi
+        ;;
 esac
 
-if [ ! -f "$TMPDIR/$BINARY" ] && [ ! -f "$TMPDIR/${BINARY}.exe" ]; then
-    echo "❌ Binary not found inside the downloaded archive."
+# Find the extracted binary (handles both 'velo' and 'velo.exe')
+EXTRACTED=""
+for name in "$BINARY" "${BINARY}.exe"; do
+    if [ -f "$WORK_DIR/$name" ]; then
+        EXTRACTED="$WORK_DIR/$name"
+        break
+    fi
+done
+
+if [ -z "$EXTRACTED" ]; then
+    echo "error: binary not found in archive"
+    echo "  Contents of archive:"
+    ls -la "$WORK_DIR/"
     exit 1
 fi
 
 # ── Install ───────────────────────────────────────────────────────────────────
 mkdir -p "$INSTALL_DIR"
-chmod +x "$TMPDIR/$BINARY" 2>/dev/null || true
+
+chmod +x "$EXTRACTED" 2>/dev/null || true
+
+DEST="$INSTALL_DIR/$BINARY"
+
+# Replace any existing installation cleanly
+if [ -f "$DEST" ]; then
+    OLD_VERSION=$("$DEST" --version 2>/dev/null | head -1 || echo "unknown")
+    echo "  Replacing existing installation ($OLD_VERSION)"
+fi
 
 if [ -w "$INSTALL_DIR" ]; then
-    mv "$TMPDIR/$BINARY" "$INSTALL_DIR/$BINARY"
+    cp "$EXTRACTED" "$DEST"
 else
-    sudo mv "$TMPDIR/$BINARY" "$INSTALL_DIR/$BINARY"
+    sudo cp "$EXTRACTED" "$DEST"
 fi
 
 # ── Verify ────────────────────────────────────────────────────────────────────
-if ! command -v "$BINARY" >/dev/null 2>&1; then
-    # Binary installed but may not be on PATH
-    echo ""
-    echo "✔ Velo $VERSION installed to $INSTALL_DIR/$BINARY"
-    echo ""
-    echo "⚠  $INSTALL_DIR is not on your PATH."
-    echo "   Add this to your shell config (~/.bashrc, ~/.zshrc, etc.):"
-    echo ""
-    echo "     export PATH=\"\$PATH:$INSTALL_DIR\""
-    echo ""
-else
-    INSTALLED_VERSION=$("$BINARY" --version 2>/dev/null | head -1 || echo "")
-    echo ""
-    echo "✔ $INSTALLED_VERSION installed to $INSTALL_DIR/$BINARY"
+echo ""
+if command -v "$BINARY" >/dev/null 2>&1; then
+    INSTALLED=$("$BINARY" --version 2>/dev/null | head -1 || echo "velo $VERSION")
+    echo "  $INSTALLED"
+    echo "  installed to $DEST"
     echo ""
     echo "  Run 'velo --help' to get started."
+else
+    echo "  Installed to $DEST"
+    echo ""
+    echo "  WARNING: $INSTALL_DIR is not on your PATH."
+    echo "  Add this line to your shell config (~/.bashrc, ~/.zshrc, etc.):"
+    echo ""
+    echo "    export PATH=\"\$PATH:$INSTALL_DIR\""
+    echo ""
+    echo "  Then restart your shell or run: source ~/.bashrc"
 fi
