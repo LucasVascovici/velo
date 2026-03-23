@@ -1,6 +1,6 @@
 [package]
 name = "velo"
-version = "2.3.4"
+version = "2.4.0"
 edition = "2021"
 
 [dependencies]
@@ -16,6 +16,7 @@ chrono      = "0.4"
 ignore      = "0.4"
 memmap2     = "0.9"
 parking_lot = "0.12"
+regex       = "1.12"
 
 [dev-dependencies]
 tempfile  = "3.27"

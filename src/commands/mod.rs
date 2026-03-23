@@ -1,20 +1,24 @@
-pub mod branches;
-pub mod cherry_pick;
-pub mod diff;
-pub mod gc;
-pub mod history;
 pub mod init;
-pub mod merge;
-pub mod redo;
-pub mod resolve;
-pub mod restore;
 pub mod save;
-pub mod show;
-pub mod stash;
+pub mod restore;
 pub mod status;
+pub mod history;
+pub mod undo;
+pub mod redo;
+pub mod diff;
 pub mod switch;
 pub mod tag;
-pub mod undo;
+pub mod merge;
+pub mod resolve;
+pub mod branches;
+pub mod gc;
+pub mod stash;
+pub mod show;
+pub mod cherry_pick;
+pub mod blame;
+pub mod grep;
+pub mod squash;
+pub mod rebase;
 
 use std::collections::HashMap;
 use std::fs;
@@ -78,7 +82,8 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
 
     // 2. Try as exact or prefix hash
     let rows: Vec<String> = {
-        let mut stmt = conn.prepare("SELECT hash FROM snapshots WHERE hash LIKE ? || '%'")?;
+        let mut stmt =
+            conn.prepare("SELECT hash FROM snapshots WHERE hash LIKE ? || '%'")?;
         let collected: Vec<String> = stmt
             .query_map([input], |r| r.get(0))?
             .filter_map(|r| r.ok())
@@ -88,12 +93,10 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
 
     match rows.len() {
         1 => return Ok(rows.into_iter().next().unwrap()),
-        n if n > 1 => {
-            return Err(VeloError::InvalidInput(format!(
-                "Ambiguous prefix '{}' matches {} snapshots. Use more characters.",
-                input, n
-            )))
-        }
+        n if n > 1 => return Err(VeloError::InvalidInput(format!(
+            "Ambiguous prefix '{}' matches {} snapshots. Use more characters.",
+            input, n
+        ))),
         _ => {}
     }
 
@@ -166,11 +169,7 @@ fn walk_with_meta(root: &Path) -> Vec<WalkEntry> {
                             .map(|d| d.as_nanos() as i64)
                             .unwrap_or(0);
                         let size = meta.len() as i64;
-                        acc.lock().push(WalkEntry {
-                            path,
-                            mtime_ns,
-                            size,
-                        });
+                        acc.lock().push(WalkEntry { path, mtime_ns, size });
                     }
                 }
             }
@@ -208,7 +207,8 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
         Ok(c) => c,
         Err(_) => return dirty,
     };
-    let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let parent_hash =
+        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     // ── 1. Load snapshot's file map ───────────────────────────────────────────
     let mut db_files: HashMap<String, String> = {
@@ -240,16 +240,7 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
         })
         .unwrap()
         .filter_map(|r| r.ok())
-        .map(|(p, m, s, h)| {
-            (
-                p,
-                CacheEntry {
-                    mtime_ns: m,
-                    size: s,
-                    hash: h,
-                },
-            )
-        })
+        .map(|(p, m, s, h)| (p, CacheEntry { mtime_ns: m, size: s, hash: h }))
         .collect()
     };
 
@@ -261,7 +252,9 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
     let results: Vec<(String, String, i64, i64, bool)> = entries
         .into_par_iter()
         .map(|e| {
-            let rel = crate::db::normalise(e.path.strip_prefix(root).unwrap().to_str().unwrap());
+            let rel = crate::db::normalise(
+                e.path.strip_prefix(root).unwrap().to_str().unwrap(),
+            );
             let (hash, miss) = if let Some(cached) = index.get(&rel) {
                 if cached.mtime_ns == e.mtime_ns && cached.size == e.size {
                     (cached.hash.clone(), false) // cache hit — no disk read
@@ -276,7 +269,10 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
         .collect();
 
     // ── 5. Batch-write cache misses back to DB ────────────────────────────────
-    let misses: Vec<_> = results.iter().filter(|(_, _, _, _, miss)| *miss).collect();
+    let misses: Vec<_> = results
+        .iter()
+        .filter(|(_, _, _, _, miss)| *miss)
+        .collect();
 
     if !misses.is_empty() {
         if let Ok(tx) = conn.unchecked_transaction() {
@@ -285,7 +281,9 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
                  VALUES (?, ?, ?, ?)",
             ) {
                 for (rel, hash, mtime, size, _) in &misses {
-                    let _ = stmt.execute(rusqlite::params![rel, mtime, size, hash]);
+                    let _ = stmt.execute(
+                        rusqlite::params![rel, mtime, size, hash],
+                    );
                 }
             }
             let _ = tx.commit();
@@ -321,7 +319,9 @@ pub fn invalidate_cache_entries(root: &Path, paths: &[String]) {
     let db_path = root.join(".velo/velo.db");
     if let Ok(conn) = crate::db::get_conn_at_path(&db_path) {
         if let Ok(tx) = conn.unchecked_transaction() {
-            if let Ok(mut stmt) = tx.prepare("DELETE FROM index_cache WHERE path = ?") {
+            if let Ok(mut stmt) =
+                tx.prepare("DELETE FROM index_cache WHERE path = ?")
+            {
                 for p in paths {
                     let _ = stmt.execute([p]);
                 }
@@ -334,9 +334,7 @@ pub fn invalidate_cache_entries(root: &Path, paths: &[String]) {
 /// Return the list of files with active merge conflicts (reads from DB).
 pub fn get_conflict_files(root: &Path) -> Vec<String> {
     let db_path = root.join(".velo/velo.db");
-    if !db_path.exists() {
-        return vec![];
-    }
+    if !db_path.exists() { return vec![]; }
     let conn = match crate::db::get_conn_at_path(&db_path) {
         Ok(c) => c,
         Err(_) => return vec![],
