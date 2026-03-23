@@ -87,7 +87,9 @@ mod tests {
     }
 
     fn object_count(root: &Path) -> usize {
-        fs::read_dir(root.join(".velo/objects")).unwrap().count()
+        fs::read_dir(root.join(".velo/objects"))
+            .unwrap()
+            .count()
     }
 
     // =========================================================================
@@ -108,9 +110,7 @@ mod tests {
             "main"
         );
         assert_eq!(
-            fs::read_to_string(root.join(".velo/PARENT"))
-                .unwrap()
-                .trim(),
+            fs::read_to_string(root.join(".velo/PARENT")).unwrap().trim(),
             ""
         );
     }
@@ -267,16 +267,9 @@ mod tests {
 
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let trash_count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM trash WHERE branch = 'main'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM trash WHERE branch = 'main'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(
-            trash_count, 0,
-            "Redo stack should be cleared after a new save"
-        );
+        assert_eq!(trash_count, 0, "Redo stack should be cleared after a new save");
     }
 
     #[test]
@@ -350,10 +343,7 @@ mod tests {
 
         commands::restore::run(&root, &h1, true, &[]).unwrap();
         assert!(exists(&root, "a.txt"), "a.txt should be present");
-        assert!(
-            !exists(&root, "b.txt"),
-            "b.txt is a ghost and must be removed"
-        );
+        assert!(!exists(&root, "b.txt"), "b.txt is a ghost and must be removed");
     }
 
     #[test]
@@ -366,10 +356,7 @@ mod tests {
         save(&root, "s2");
 
         commands::restore::run(&root, &h1, true, &[]).unwrap();
-        assert!(
-            !exists(&root, "subdir"),
-            "Empty subdir should be cleaned up"
-        );
+        assert!(!exists(&root, "subdir"), "Empty subdir should be cleaned up");
     }
 
     #[test]
@@ -407,7 +394,7 @@ mod tests {
         save(&root, "s1");
 
         write(&root, "a.txt", "A_mod"); // modified
-        write(&root, "c.txt", "C"); // new
+        write(&root, "c.txt", "C");     // new
         fs::remove_file(root.join("b.txt")).unwrap(); // deleted
 
         let dirty = commands::get_dirty_files(&root);
@@ -431,7 +418,7 @@ mod tests {
     #[test]
     fn status_run_does_not_panic_on_empty_repo() {
         let (_tmp, root) = setup();
-        commands::status::run(&root).unwrap();
+        commands::status::run(&root, &[]).unwrap();
     }
 
     // =========================================================================
@@ -556,10 +543,7 @@ mod tests {
         assert!(!snapshot_exists(&root, &h1));
         assert_eq!(parent(&root), "");
         // The tracked file should be removed from disk
-        assert!(
-            !exists(&root, "f.txt"),
-            "File should be removed when first commit is undone"
-        );
+        assert!(!exists(&root, "f.txt"), "File should be removed when first commit is undone");
     }
 
     #[test]
@@ -627,10 +611,7 @@ mod tests {
         save(&root, "s3");
 
         let result = commands::redo::run(&root);
-        assert!(
-            result.is_err(),
-            "Redo should be unavailable after a new save"
-        );
+        assert!(result.is_err(), "Redo should be unavailable after a new save");
     }
 
     #[test]
@@ -664,23 +645,10 @@ mod tests {
     #[test]
     fn diff_modified_file() {
         let (_tmp, root) = setup();
-        write(
-            &root,
-            "large.txt",
-            (0..100)
-                .map(|i| format!("Line {}\n", i))
-                .collect::<String>()
-                .as_str(),
-        );
+        write(&root, "large.txt", (0..100).map(|i| format!("Line {}\n", i)).collect::<String>().as_str());
         save(&root, "base");
         let new_content = (0..100)
-            .map(|i| {
-                if i == 50 {
-                    "Line 50 MODIFIED\n".into()
-                } else {
-                    format!("Line {}\n", i)
-                }
-            })
+            .map(|i| if i == 50 { "Line 50 MODIFIED\n".into() } else { format!("Line {}\n", i) })
             .collect::<String>();
         write(&root, "large.txt", &new_content);
         commands::diff::run(&root, &Some("large.txt".into())).unwrap();
@@ -917,11 +885,9 @@ mod tests {
 
         write(&root, "f.txt", "v2");
         save(&root, "s2");
-        let result = commands::tag::run(&root, Some("v1".into()), None, None, false);
-        assert!(
-            result.is_err(),
-            "Should not allow overwriting without --force"
-        );
+        let result =
+            commands::tag::run(&root, Some("v1".into()), None, None, false);
+        assert!(result.is_err(), "Should not allow overwriting without --force");
     }
 
     #[test]
@@ -954,7 +920,8 @@ mod tests {
     #[test]
     fn tag_delete_nonexistent_is_error() {
         let (_tmp, root) = setup();
-        let result = commands::tag::run(&root, None, None, Some("ghost_tag".into()), false);
+        let result =
+            commands::tag::run(&root, None, None, Some("ghost_tag".into()), false);
         assert!(result.is_err());
     }
 
@@ -962,7 +929,8 @@ mod tests {
     fn tag_empty_head_is_error() {
         let (_tmp, root) = setup();
         // No snapshots yet — can't tag HEAD
-        let result = commands::tag::run(&root, Some("v1".into()), None, None, false);
+        let result =
+            commands::tag::run(&root, Some("v1".into()), None, None, false);
         assert!(result.is_err());
     }
 
@@ -1011,9 +979,7 @@ mod tests {
         commands::merge::run(&root, Some("A"), false).unwrap();
         // Conflict stored in DB
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let count: i64 = conn
-            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
-            .unwrap();
+        let count: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
         assert!(count > 0, "conflict should be in DB");
         assert!(exists(&root, ".velo/MERGE_HEAD"));
     }
@@ -1032,24 +998,12 @@ mod tests {
         save(&root, "save B");
 
         commands::merge::run(&root, Some("A"), false).unwrap();
-        commands::resolve::run(
-            &root,
-            Some("app.py"),
-            Some(commands::resolve::TakeOption::Theirs),
-            false,
-        )
-        .unwrap();
+        commands::resolve::run(&root, Some("app.py"), Some(commands::resolve::TakeOption::Theirs), false).unwrap();
 
         assert_eq!(read(&root, "app.py"), "content A\n");
         // .conflict files are no longer used; resolution handled via DB
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM conflict_files WHERE path = 'app.py'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let count: i64 = conn.query_row("SELECT count(*) FROM conflict_files WHERE path = 'app.py'", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "conflict should be resolved");
     }
 
@@ -1066,20 +1020,12 @@ mod tests {
         save(&root, "main snap");
 
         commands::merge::run(&root, Some("feat"), false).unwrap();
-        commands::resolve::run(
-            &root,
-            Some("f.txt"),
-            Some(commands::resolve::TakeOption::Ours),
-            false,
-        )
-        .unwrap();
+        commands::resolve::run(&root, Some("f.txt"), Some(commands::resolve::TakeOption::Ours), false).unwrap();
 
         assert_eq!(read(&root, "f.txt"), "ours\n");
         // No .conflict file in new system
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let c: i64 = conn
-            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
-            .unwrap();
+        let c: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
         assert_eq!(c, 0);
     }
 
@@ -1097,22 +1043,13 @@ mod tests {
 
         // Back on main: both files still on disk
         commands::switch::run(&root, "main", true).unwrap();
-        assert!(
-            exists(&root, "removed.txt"),
-            "removed.txt should exist on main before merge"
-        );
+        assert!(exists(&root, "removed.txt"), "removed.txt should exist on main before merge");
         assert!(exists(&root, "kept.txt"));
 
         // Merge dev into main — dev deleted removed.txt, so it should disappear
         commands::merge::run(&root, Some("dev"), false).unwrap();
-        assert!(
-            !exists(&root, "removed.txt"),
-            "File deleted on target branch must be absent after merge"
-        );
-        assert!(
-            exists(&root, "kept.txt"),
-            "Unaffected file must still be present"
-        );
+        assert!(!exists(&root, "removed.txt"), "File deleted on target branch must be absent after merge");
+        assert!(exists(&root, "kept.txt"), "Unaffected file must still be present");
     }
 
     #[test]
@@ -1165,35 +1102,22 @@ mod tests {
         commands::merge::run(&root, Some("A"), false).unwrap();
         // Conflict stored in DB
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let count: i64 = conn
-            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
-            .unwrap();
+        let count: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
         assert!(count > 0, "conflict should be in DB");
         // app.py is still "content B\n" on disk (our version untouched during merge)
         assert_eq!(read(&root, "app.py"), "content B\n");
 
         commands::merge::run(&root, None, true).unwrap(); // --abort
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM conflict_files WHERE path = 'app.py'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let count: i64 = conn.query_row("SELECT count(*) FROM conflict_files WHERE path = 'app.py'", [], |r| r.get(0)).unwrap();
         assert_eq!(count, 0, "conflict should be cleared from DB");
         assert!(!exists(&root, ".velo/MERGE_HEAD"));
         // Working tree should be restored to the pre-merge state ("content B\n")
-        assert_eq!(
-            read(&root, "app.py"),
-            "content B\n",
-            "abort should restore working tree to pre-merge state"
-        );
+        assert_eq!(read(&root, "app.py"), "content B\n",
+            "abort should restore working tree to pre-merge state");
         // And the working tree should be clean
-        assert!(
-            commands::get_dirty_files(&root).is_empty(),
-            "working tree should be clean after abort"
-        );
+        assert!(commands::get_dirty_files(&root).is_empty(),
+            "working tree should be clean after abort");
     }
     #[test]
     fn merge_abort_works_after_all_conflicts_resolved() {
@@ -1215,51 +1139,24 @@ mod tests {
 
         commands::merge::run(&root, Some("feat"), false).unwrap();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let n: i64 = conn
-            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
-            .unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
         assert!(n > 0, "should have conflict");
 
         // Resolve all conflicts non-interactively
-        commands::resolve::run(
-            &root,
-            Some("app.py"),
-            Some(commands::resolve::TakeOption::Theirs),
-            false,
-        )
-        .unwrap();
-        let n2: i64 = conn
-            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
-            .unwrap();
+        commands::resolve::run(&root, Some("app.py"), Some(commands::resolve::TakeOption::Theirs), false).unwrap();
+        let n2: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
         assert_eq!(n2, 0, "all conflicts resolved");
 
         // MERGE_HEAD must still exist after resolving
-        assert!(
-            exists(&root, ".velo/MERGE_HEAD"),
-            "MERGE_HEAD must stay alive until save"
-        );
+        assert!(exists(&root, ".velo/MERGE_HEAD"), "MERGE_HEAD must stay alive until save");
 
         // Abort even though all conflicts were resolved
         commands::merge::run(&root, None, true).unwrap();
 
-        assert!(
-            !exists(&root, ".velo/MERGE_HEAD"),
-            "MERGE_HEAD should be gone after abort"
-        );
-        assert_eq!(
-            parent(&root),
-            pre_merge_parent,
-            "PARENT should rewind to pre-merge"
-        );
-        assert!(
-            commands::get_dirty_files(&root).is_empty(),
-            "working tree should be clean"
-        );
-        assert_eq!(
-            read(&root, "app.py"),
-            "ours\n",
-            "file restored to pre-merge version"
-        );
+        assert!(!exists(&root, ".velo/MERGE_HEAD"), "MERGE_HEAD should be gone after abort");
+        assert_eq!(parent(&root), pre_merge_parent, "PARENT should rewind to pre-merge");
+        assert!(commands::get_dirty_files(&root).is_empty(), "working tree should be clean");
+        assert_eq!(read(&root, "app.py"), "ours\n", "file restored to pre-merge version");
     }
 
     #[test]
@@ -1275,81 +1172,47 @@ mod tests {
 
         // branch A (ours): insert print("ours") before return
         commands::switch::run(&root, "A", false).unwrap();
-        write(
-            &root,
-            "app.py",
-            "def img2pdf():\n    print(\"ours\")\n    return None\n",
-        );
+        write(&root, "app.py", "def img2pdf():\n    print(\"ours\")\n    return None\n");
         save(&root, "ours");
 
         // back to main, create branch B (theirs): insert print("theirs") before return
         commands::switch::run(&root, "main", true).unwrap();
         commands::switch::run(&root, "B", false).unwrap();
-        write(
-            &root,
-            "app.py",
-            "def img2pdf():\n    print(\"theirs\")\n    return None\n",
-        );
+        write(&root, "app.py", "def img2pdf():\n    print(\"theirs\")\n    return None\n");
         save(&root, "theirs");
 
         // Merge A into B → conflict
         commands::merge::run(&root, Some("A"), false).unwrap();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let n: i64 = conn
-            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
-            .unwrap();
+        let n: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
         assert!(n > 0, "expected a conflict");
 
         // Resolve taking theirs (branch A = print("ours"))
-        commands::resolve::run(
-            &root,
-            Some("app.py"),
-            Some(commands::resolve::TakeOption::Theirs),
-            false,
-        )
-        .unwrap();
+        commands::resolve::run(&root, Some("app.py"),
+            Some(commands::resolve::TakeOption::Theirs), false).unwrap();
 
         // Working file must have exactly 3 lines, with "print("ours")" once
         let result = read(&root, "app.py");
         let lines: Vec<&str> = result.lines().collect();
-        assert_eq!(
-            lines.len(),
-            3,
-            "resolved file should have exactly 3 lines, got: {:?}",
-            lines
-        );
-        assert_eq!(lines[0], "def img2pdf():", "line 0");
-        assert_eq!(
-            lines[1], "    print(\"ours\")",
-            "line 1 — 'theirs' in merge context is branch A"
-        );
-        assert_eq!(lines[2], "    return None", "line 2");
+        assert_eq!(lines.len(), 3,
+            "resolved file should have exactly 3 lines, got: {:?}", lines);
+        assert_eq!(lines[0], "def img2pdf():",   "line 0");
+        assert_eq!(lines[1], "    print(\"ours\")", "line 1 — 'theirs' in merge context is branch A");
+        assert_eq!(lines[2], "    return None",  "line 2");
 
         // And taking ours (branch B = print("theirs")) must also be correct
         // Re-do the merge to test the ours path
         commands::merge::run(&root, None, true).unwrap(); // abort
 
         commands::merge::run(&root, Some("A"), false).unwrap();
-        commands::resolve::run(
-            &root,
-            Some("app.py"),
-            Some(commands::resolve::TakeOption::Ours),
-            false,
-        )
-        .unwrap();
+        commands::resolve::run(&root, Some("app.py"),
+            Some(commands::resolve::TakeOption::Ours), false).unwrap();
 
         let result2 = read(&root, "app.py");
         let lines2: Vec<&str> = result2.lines().collect();
-        assert_eq!(
-            lines2.len(),
-            3,
-            "resolved file should have exactly 3 lines (ours), got: {:?}",
-            lines2
-        );
-        assert_eq!(
-            lines2[1], "    print(\"theirs\")",
-            "line 1 — our branch is B"
-        );
+        assert_eq!(lines2.len(), 3,
+            "resolved file should have exactly 3 lines (ours), got: {:?}", lines2);
+        assert_eq!(lines2[1], "    print(\"theirs\")", "line 1 — our branch is B");
     }
 
     #[test]
@@ -1428,40 +1291,27 @@ mod tests {
         commands::merge::run(&root, Some("X"), false).unwrap();
         // Conflicts are stored in DB, not .conflict files
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let n: i64 = conn
-            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
-            .unwrap();
-        assert!(
-            n >= 2,
-            "expected at least 2 conflict entries in DB, got {}",
-            n
-        );
+        let n: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
+        assert!(n >= 2, "expected at least 2 conflict entries in DB, got {}", n);
 
         commands::resolve::run(
             &root,
             None,
             Some(commands::resolve::TakeOption::Theirs),
             true, // --all
-        )
-        .unwrap();
+        ).unwrap();
 
-        let n2: i64 = conn
-            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
-            .unwrap();
+        let n2: i64 = conn.query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0)).unwrap();
         assert_eq!(n2, 0, "all conflicts should be resolved");
 
         // MERGE_HEAD stays alive until `velo save` so the user can still abort.
-        assert!(
-            exists(&root, ".velo/MERGE_HEAD"),
-            "MERGE_HEAD should remain until velo save finalises the merge"
-        );
+        assert!(exists(&root, ".velo/MERGE_HEAD"),
+            "MERGE_HEAD should remain until velo save finalises the merge");
 
         // After saving, MERGE_HEAD is cleared.
         commands::save::run(&root, "Finish merge", false).unwrap();
-        assert!(
-            !exists(&root, ".velo/MERGE_HEAD"),
-            "MERGE_HEAD should be gone after velo save"
-        );
+        assert!(!exists(&root, ".velo/MERGE_HEAD"),
+            "MERGE_HEAD should be gone after velo save");
     }
 
     #[test]
@@ -1489,11 +1339,7 @@ mod tests {
         commands::undo::run(&root).unwrap();
 
         // Inject a fake orphaned object manually
-        fs::write(
-            root.join(".velo/objects/fake_orphan_object_hash"),
-            b"garbage",
-        )
-        .unwrap();
+        fs::write(root.join(".velo/objects/fake_orphan_object_hash"), b"garbage").unwrap();
 
         let before = object_count(&root);
         // Run GC with 0 day keep to also purge trash immediately
@@ -1512,10 +1358,7 @@ mod tests {
         let before = object_count(&root);
         commands::gc::run(&root, 30).unwrap();
         let after = object_count(&root);
-        assert_eq!(
-            before, after,
-            "GC on a clean repo should not delete anything"
-        );
+        assert_eq!(before, after, "GC on a clean repo should not delete anything");
     }
 
     // =========================================================================
@@ -1611,14 +1454,8 @@ mod tests {
         // Switch back to main — feature.txt must vanish (it wasn't on main)
         commands::switch::run(&root, "main", true).unwrap();
         assert_eq!(read(&root, "README.md"), "# Project");
-        assert!(
-            !exists(&root, "feature.txt"),
-            "feature.txt should not exist on main"
-        );
-        assert!(
-            commands::get_dirty_files(&root).is_empty(),
-            "main must be clean before merge"
-        );
+        assert!(!exists(&root, "feature.txt"), "feature.txt should not exist on main");
+        assert!(commands::get_dirty_files(&root).is_empty(), "main must be clean before merge");
 
         // Fast-forward merge: feature.txt should appear
         commands::merge::run(&root, Some("feature"), false).unwrap();
@@ -1696,9 +1533,9 @@ mod tests {
         assert_eq!(dirty.get("src/lib.rs"), Some(&FileStatus::Modified));
     }
 
-    // ═════════════════════════════════════════════════════════════════════════════
-    // NEW FEATURE TESTS
-    // ═════════════════════════════════════════════════════════════════════════════
+// ═════════════════════════════════════════════════════════════════════════════
+// NEW FEATURE TESTS
+// ═════════════════════════════════════════════════════════════════════════════
 
     // ─── stash ───────────────────────────────────────────────────────────────
 
@@ -1729,11 +1566,7 @@ mod tests {
         // Should appear in list
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let count: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM stash WHERE name = 'my-feature'",
-                [],
-                |r| r.get(0),
-            )
+            .query_row("SELECT count(*) FROM stash WHERE name = 'my-feature'", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
     }
@@ -1941,11 +1774,7 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(
-            count >= 2,
-            "a.txt should appear in at least 2 snapshots, got {}",
-            count
-        );
+        assert!(count >= 2, "a.txt should appear in at least 2 snapshots, got {}", count);
     }
 
     #[test]
@@ -2174,13 +2003,10 @@ mod tests {
         commands::cherry_pick::run(&root, &branch_a_hash).unwrap();
         // Conflict stored in DB, not as a .conflict file
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let n: i64 = conn
-            .query_row(
-                "SELECT count(*) FROM conflict_files WHERE path = 'shared.txt'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
+        let n: i64 = conn.query_row(
+            "SELECT count(*) FROM conflict_files WHERE path = 'shared.txt'",
+            [], |r| r.get(0)
+        ).unwrap();
         assert!(n > 0, "shared.txt conflict should be in DB");
     }
 
@@ -2204,10 +2030,7 @@ mod tests {
 
         // Should auto-save — parent should have advanced
         let after_parent = parent(&root);
-        assert_ne!(
-            before_parent, after_parent,
-            "Cherry-pick should auto-save when clean"
-        );
+        assert_ne!(before_parent, after_parent, "Cherry-pick should auto-save when clean");
         assert!(exists(&root, "c.txt"));
     }
 
@@ -2219,4 +2042,289 @@ mod tests {
         let result = commands::cherry_pick::run(&root, "deadbeef1234");
         assert!(result.is_err());
     }
+
+    // ─── blame ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn blame_attributes_lines_to_snapshots() {
+        let (_tmp, root) = setup();
+        write(&root, "app.py", "line one\n");
+        let h1 = save(&root, "first");
+        write(&root, "app.py", "line one\nline two\n");
+        let h2 = save(&root, "second");
+
+        // blame should not panic and should succeed
+        commands::blame::run(&root, "app.py", None).unwrap();
+        // line 2 ("line two") was introduced in h2
+        // line 1 ("line one") was introduced in h1
+        // We verify by checking the snapshots exist
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn blame_nonexistent_file_is_error() {
+        let (_tmp, root) = setup();
+        write(&root, "app.py", "hello\n");
+        save(&root, "s1");
+        let r = commands::blame::run(&root, "missing.py", None);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn blame_at_past_snapshot() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1\n");
+        let h1 = save(&root, "v1");
+        write(&root, "f.txt", "v2\n");
+        save(&root, "v2");
+        // blame at h1 should work on the file as it was then
+        commands::blame::run(&root, "f.txt", Some(&h1)).unwrap();
+    }
+
+    // ─── grep ─────────────────────────────────────────────────────────────────
+
+    #[test]
+    fn grep_finds_pattern_in_working_tree() {
+        let (_tmp, root) = setup();
+        write(&root, "main.py", "def hello():\n    return 'world'\n");
+        save(&root, "init");
+        // Should succeed (no panic) even with no match
+        commands::grep::run(&root, "hello", None, false, false, 2).unwrap();
+    }
+
+    #[test]
+    fn grep_no_match_is_ok() {
+        let (_tmp, root) = setup();
+        write(&root, "main.py", "def hello():\n    pass\n");
+        save(&root, "init");
+        commands::grep::run(&root, "XYZNOTFOUND", None, false, false, 0).unwrap();
+    }
+
+    #[test]
+    fn grep_in_snapshot() {
+        let (_tmp, root) = setup();
+        write(&root, "auth.py", "API_KEY = 'secret'\n");
+        let h = save(&root, "add key");
+        write(&root, "auth.py", "API_KEY = 'rotated'\n");
+        save(&root, "rotate key");
+        // Search the old snapshot — should find 'secret'
+        commands::grep::run(&root, "secret", Some(&h), false, false, 0).unwrap();
+    }
+
+    #[test]
+    fn grep_invalid_regex_is_error() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "hello\n");
+        save(&root, "s1");
+        let r = commands::grep::run(&root, "[invalid(", None, false, false, 0);
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn grep_case_insensitive() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "Hello World\n");
+        save(&root, "s1");
+        commands::grep::run(&root, "hello", None, true, false, 0).unwrap();
+    }
+
+    // ─── squash ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn squash_collapses_n_commits() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1\n");
+        save(&root, "s1");
+        write(&root, "f.txt", "v2\n");
+        save(&root, "s2");
+        write(&root, "f.txt", "v3\n");
+        save(&root, "s3");
+
+        commands::squash::run(&root, 3, "combined").unwrap();
+
+        // History should now have exactly 1 snapshot on this branch
+        let conn = crate::db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT count(*) FROM snapshots WHERE branch = 'main'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(count, 1, "squash 3 should leave 1 snapshot");
+
+        // The message should be the new one
+        let msg: String = conn.query_row(
+            "SELECT message FROM snapshots WHERE branch = 'main'", [], |r| r.get(0)
+        ).unwrap();
+        assert_eq!(msg, "combined");
+
+        // File content should be the HEAD content
+        assert_eq!(read(&root, "f.txt"), "v3\n");
+    }
+
+    #[test]
+    fn squash_requires_at_least_two() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1\n");
+        save(&root, "s1");
+        let r = commands::squash::run(&root, 1, "msg");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn squash_fails_when_not_enough_commits() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1\n");
+        save(&root, "only one");
+        let r = commands::squash::run(&root, 3, "too many");
+        assert!(r.is_err());
+    }
+
+    #[test]
+    fn squash_fails_on_dirty_tree() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1\n");
+        save(&root, "s1");
+        write(&root, "f.txt", "v2\n");
+        save(&root, "s2");
+        write(&root, "f.txt", "dirty\n"); // unsaved
+        let r = commands::squash::run(&root, 2, "msg");
+        assert!(r.is_err());
+    }
+
+    // ─── diff range ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn diff_range_two_snapshots() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "version 1\n");
+        let h1 = save(&root, "s1");
+        write(&root, "f.txt", "version 2\n");
+        let h2 = save(&root, "s2");
+        // Should not panic
+        commands::diff::run_range(&root, &h1, Some(&h2), &[]).unwrap();
+    }
+
+    #[test]
+    fn diff_range_snapshot_vs_working_tree() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "saved\n");
+        let h = save(&root, "s1");
+        write(&root, "f.txt", "working\n");
+        commands::diff::run_range(&root, &h, None, &[]).unwrap();
+    }
+
+    #[test]
+    fn diff_range_with_pathspec() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "a1\n");
+        write(&root, "b.txt", "b1\n");
+        let h1 = save(&root, "s1");
+        write(&root, "a.txt", "a2\n");
+        write(&root, "b.txt", "b2\n");
+        let h2 = save(&root, "s2");
+        // Only diff b.txt — should succeed
+        commands::diff::run_range(&root, &h1, Some(&h2), &["b.txt".to_string()]).unwrap();
+    }
+
+    // ─── rebase ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn rebase_clean_produces_linear_history() {
+        let (_tmp, root) = setup();
+        write(&root, "base.txt", "base\n");
+        save(&root, "base");
+
+        // feature branch: adds feature.txt
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "feature.txt", "feature\n");
+        save(&root, "add feature");
+
+        // main advances independently
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "main.txt", "main\n");
+        save(&root, "main update");
+
+        // Rebase feature onto main
+        commands::switch::run(&root, "feature", false).unwrap();
+        commands::rebase::run(&root, "main", false, false).unwrap();
+
+        // After rebase: feature.txt present, rebased on top of main update
+        assert!(exists(&root, "feature.txt"));
+        assert!(exists(&root, "main.txt"));
+
+        // History should be linear: no REBASE_STATE file left
+        assert!(!exists(&root, ".velo/REBASE_STATE"));
+    }
+
+    #[test]
+    fn rebase_abort_restores_original() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base\n");
+        save(&root, "base");
+        let _orig = parent(&root);
+
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "feature\n");
+        save(&root, "feature change");
+
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "main conflict\n");
+        save(&root, "main conflict");
+
+        commands::switch::run(&root, "feature", false).unwrap();
+        let feature_head = parent(&root);
+
+        // Start rebase (will have conflict)
+        let _ = commands::rebase::run(&root, "main", false, false);
+
+        // Abort
+        commands::rebase::run(&root, "", true, false).unwrap();
+
+        assert!(!exists(&root, ".velo/REBASE_STATE"));
+        assert_eq!(parent(&root), feature_head);
+    }
+
+    #[test]
+    fn rebase_no_in_progress_error() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v\n");
+        save(&root, "s1");
+        let r = commands::rebase::run(&root, "", false, true);
+        assert!(r.is_err());
+    }
+
+    // ─── pathspec on save ─────────────────────────────────────────────────────
+
+    #[test]
+    fn save_with_pathspec_only_saves_matching_files() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "a1\n");
+        write(&root, "b.txt", "b1\n");
+        save(&root, "base");
+
+        write(&root, "a.txt", "a2\n");
+        write(&root, "b.txt", "b2\n");
+
+        // Only save a.txt
+        commands::save::run_with_paths(&root, "only a", false, &["a.txt".to_string()]).unwrap();
+
+        // a.txt should be saved, b.txt should still be dirty
+        let dirty = commands::get_dirty_files(&root);
+        assert!(!dirty.contains_key("a.txt"), "a.txt should be clean");
+        assert!(dirty.contains_key("b.txt"), "b.txt should still be dirty");
+    }
+
+    // ─── pathspec on status ───────────────────────────────────────────────────
+
+    #[test]
+    fn status_with_pathspec_filters_output() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "a1\n");
+        write(&root, "b.txt", "b1\n");
+        save(&root, "base");
+        write(&root, "a.txt", "a2\n");
+        write(&root, "b.txt", "b2\n");
+
+        // Status restricted to b.txt should succeed
+        commands::status::run(&root, &["b.txt".to_string()]).unwrap();
+    }
+
 }

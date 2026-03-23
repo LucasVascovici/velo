@@ -52,6 +52,11 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Time-travel to a past state | `git checkout <hash>` | `velo restore <hash>` |
 | Undo the last commit | `git reset --soft HEAD~1` | `velo undo` |
 | Redo an undone commit | `git reflog` + `git reset` | `velo redo` |
+| Annotate file with blame | `git blame <file>` | `velo blame <file>` |
+| Search tracked files | `git grep <pattern>` | `velo grep <pattern>` |
+| Squash last N commits | interactive rebase | `velo squash <n> "msg"` |
+| Diff two commits | `git diff <a> <b>` | `velo diff-range <a>..<b>` |
+| Rebase branch | `git rebase <target>` | `velo rebase <target>` |
 | Fix the last commit message | `git commit --amend` | `velo save "new msg" --amend` |
 
 ### Branches
@@ -65,6 +70,8 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Merge a branch | `git merge <branch>` | `velo merge <branch>` |
 | Abort a merge | `git merge --abort` | `velo merge --abort` |
 | Apply one commit | `git cherry-pick <hash>` | `velo cherry-pick <hash>` |
+| Rebase branch | `git rebase <target>` | `velo rebase <target>` |
+| Squash commits | `git rebase -i HEAD~N` | `velo squash <n> "msg"` |
 
 ### Conflict resolution
 
@@ -214,11 +221,20 @@ velo save "Merge feature/login"
 | :--- | :--- |
 | `velo init` | Initialise a new repository in the current directory |
 | `velo save "<message>"` | Snapshot all tracked files with a description |
+| `velo save "<message>" -- <path>` | Snapshot only the listed paths; other changes remain unsaved |
 | `velo save "<message>" --amend` | Replace the last snapshot (keeps same parent) |
 | `velo status` | Show new, modified, and deleted files vs the last snapshot |
+| `velo status -- <path>` | Restrict status output to specific paths |
 | `velo diff [<file>]` | Show line-level diff against the last snapshot |
 | `velo show <target>` | Inspect a past snapshot without restoring — hash, prefix, tag, or branch name |
 | `velo show <target> -- <path>` | Restrict the diff to a specific file or directory |
+| `velo blame <file>` | Annotate each line with the snapshot that last changed it |
+| `velo blame <file> --at <target>` | Blame at a specific past snapshot, tag, or branch |
+| `velo grep <pattern>` | Search tracked files for a regex pattern |
+| `velo grep <pattern> --snapshot <target>` | Search inside a stored snapshot |
+| `velo grep <pattern> -i` | Case-insensitive search |
+| `velo grep <pattern> -l` | Print only file names with matches |
+| `velo grep <pattern> -C <n>` | Show N lines of context around each match |
 
 ### History and time-travel
 
@@ -235,6 +251,10 @@ velo save "Merge feature/login"
 | `velo restore <target>` | Restore the working tree to a hash, prefix, tag, or branch name |
 | `velo restore <target> --force` | Restore, discarding any unsaved changes |
 | `velo restore <target> -- <path>` | Restore only specific files (PARENT is not updated) |
+| `velo diff-range <a>..<b>` | Diff between two snapshots; hash prefixes, tags, and branch names accepted |
+| `velo diff-range <a>..<b> -- <path>` | Restrict the diff to specific paths |
+| `velo diff-range <a>` | Compare a snapshot against the current working tree |
+| `velo squash <n> "<msg>"` | Collapse the last N snapshots into one with a new message |
 | `velo undo` | Remove the most recent snapshot and rewind the working tree |
 | `velo redo` | Re-apply the most recently undone snapshot |
 
@@ -258,6 +278,9 @@ velo save "Merge feature/login"
 | `velo resolve <file> --take theirs` | Non-interactive: take the incoming branch's version |
 | `velo resolve --all --take <ours\|theirs>` | Resolve all outstanding conflicts non-interactively |
 | `velo cherry-pick <target>` | Apply the diff from one snapshot onto the current branch |
+| `velo rebase <target>` | Replay current branch commits on top of another branch |
+| `velo rebase --abort` | Abort the rebase and restore the original branch state |
+| `velo rebase --continue` | Continue after resolving a rebase conflict |
 
 ### Stash
 

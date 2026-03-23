@@ -1,9 +1,9 @@
 use clap::{builder::styling, Parser, Subcommand};
 
-mod commands;
 mod db;
 mod error;
 mod storage;
+mod commands;
 
 #[cfg(test)]
 mod tests;
@@ -69,14 +69,11 @@ enum Commands {
     ///
     /// Example
     ///   velo init
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · .velo/ is never tracked — it is automatically excluded.
     · The default branch is called 'main'.
-    · Edit .veloignore to exclude build artefacts, secrets, etc."
-    )]
+    · Edit .veloignore to exclude build artefacts, secrets, etc.")]
     Init,
 
     /// Snapshot the working directory with a message.
@@ -90,15 +87,12 @@ NOTES
     /// Examples
     ///   velo save "Fix login bug"
     ///   velo save "Tweak config" --amend
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · The message cannot be empty or whitespace-only.
     · --amend replaces the previous snapshot in-place and keeps the
       same parent, preserving a linear history.  Objects from the
-      replaced snapshot are cleaned up by `velo gc`."
-    )]
+      replaced snapshot are cleaned up by `velo gc`.")]
     Save {
         /// Short description of what changed in this snapshot.
         #[arg(value_name = "MESSAGE")]
@@ -107,11 +101,13 @@ NOTES
         /// Replace the most recent snapshot on this branch instead of
         /// creating a new one.  Useful to fix a typo or include a
         /// missed file without polluting history.
-        #[arg(
-            long,
-            help = "Amend the most recent snapshot instead of creating a new one"
-        )]
+        #[arg(long, help = "Amend the most recent snapshot instead of creating a new one")]
         amend: bool,
+
+        /// Only snapshot these paths (relative to repo root).
+        /// Other changed files are left as unsaved changes.
+        #[arg(last = true, value_name = "PATH")]
+        paths: Vec<String>,
     },
 
     /// Restore the working directory to a past snapshot.
@@ -126,15 +122,12 @@ NOTES
     ///   velo restore v1.0                # by tag
     ///   velo restore abc123ef --force    # discard unsaved changes
     ///   velo restore abc123ef -- src/    # restore only src/ directory
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Without --force, restore aborts if there are unsaved changes.
     · When paths are given (-- <path>…), only those files are written
       and PARENT is not updated — use this for surgical file-level reverts.
-    · Restore via tag: first create a tag with `velo tag <name>`."
-    )]
+    · Restore via tag: first create a tag with `velo tag <name>`.")]
     Restore {
         /// Hash (or prefix), or tag name to restore to.
         #[arg(value_name = "TARGET")]
@@ -158,17 +151,18 @@ NOTES
     ///
     /// Examples
     ///   velo status
+    ///   velo status -- src/    # only show src/ changes
     ///   velo st        # alias
-    #[command(
-        verbatim_doc_comment,
-        alias = "st",
-        after_help = "\
+    #[command(verbatim_doc_comment, alias = "st", after_help = "\
 NOTES
     · Velo uses an mtime+size cache to skip rehashing unchanged files.
       The first call after a large change is slower; subsequent calls
-      on an unchanged tree are essentially free (stat only)."
-    )]
-    Status,
+      on an unchanged tree are essentially free (stat only).")]
+    Status {
+        /// Restrict output to these paths.
+        #[arg(last = true, value_name = "PATH")]
+        paths: Vec<String>,
+    },
 
     /// Show snapshot history.
     ///
@@ -183,37 +177,22 @@ NOTES
     ///   velo history --oneline                # compact format
     ///   velo history --graph                  # ASCII branch graph
     ///   velo history --limit 50               # show up to 50 entries
-    #[command(
-        verbatim_doc_comment,
-        name = "history",
-        after_help = "\
+    #[command(verbatim_doc_comment, name = "history", after_help = "\
 NOTES
     · --file filters by any path prefix, so --file src/ matches all
       files under src/.
-    · --graph is best combined with --oneline for compact output."
-    )]
+    · --graph is best combined with --oneline for compact output.")]
     History {
         /// Show history across all branches (not just the current one).
         #[arg(short, long, help = "Show history across all branches")]
         all: bool,
 
         /// Maximum number of snapshots to display.
-        #[arg(
-            short,
-            long,
-            default_value_t = 20,
-            value_name = "N",
-            help = "Maximum number of entries to show [default: 20]"
-        )]
+        #[arg(short, long, default_value_t = 20, value_name = "N", help = "Maximum number of entries to show [default: 20]")]
         limit: usize,
 
         /// Show history for a specific branch without switching to it.
-        #[arg(
-            short,
-            long,
-            value_name = "BRANCH",
-            help = "Filter to a specific branch"
-        )]
+        #[arg(short, long, value_name = "BRANCH", help = "Filter to a specific branch")]
         branch: Option<String>,
 
         /// Compact one-line format: hash  branch  message.
@@ -225,11 +204,7 @@ NOTES
         graph: bool,
 
         /// Show only snapshots that touched the given file or directory.
-        #[arg(
-            long = "file",
-            value_name = "PATH",
-            help = "Filter to snapshots that modified PATH"
-        )]
+        #[arg(long = "file", value_name = "PATH", help = "Filter to snapshots that modified PATH")]
         file_filter: Option<String>,
     },
 
@@ -241,15 +216,12 @@ NOTES
     ///
     /// Example
     ///   velo undo
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Undo aborts if there are unsaved changes.
     · Undone snapshots are stored in an internal trash table and can
       be recovered with `velo redo` until `velo gc` purges them.
-    · Undoing the very first snapshot clears the working tree."
-    )]
+    · Undoing the very first snapshot clears the working tree.")]
     Undo,
 
     /// Re-apply the most recently undone snapshot.
@@ -259,14 +231,11 @@ NOTES
     ///
     /// Example
     ///   velo redo
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Redo is cleared the moment you run `velo save` — once you
       diverge, there is nothing to redo.
-    · Redo aborts if there are unsaved changes."
-    )]
+    · Redo aborts if there are unsaved changes.")]
     Redo,
 
     /// Show line-level changes vs the last snapshot.
@@ -278,21 +247,19 @@ NOTES
     /// Examples
     ///   velo diff                  # all changed files
     ///   velo diff src/auth.py      # one file
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Binary files are detected automatically and their diffs are omitted.
     · Diff output uses unified format with 3 lines of context per hunk.
-    · To inspect merge conflicts, use `velo resolve <file>` (interactive TUI)."
-    )]
+    · To inspect merge conflicts, use `velo resolve <file>` (interactive TUI).")]
     Diff {
         /// File to diff (relative to repo root). Omit to diff all dirty files.
-        #[arg(
-            value_name = "FILE",
-            help = "File to diff (defaults to all modified files)"
-        )]
+        #[arg(value_name = "FILE", help = "File to diff (defaults to all modified files)")]
         file: Option<String>,
+
+        /// Restrict diff to these paths.
+        #[arg(last = true, value_name = "PATH")]
+        paths: Vec<String>,
     },
 
     /// Inspect a snapshot without restoring the working tree.
@@ -304,14 +271,11 @@ NOTES
     ///   velo show abc123ef          # full diff for this snapshot
     ///   velo show v1.0              # diff for the tagged snapshot
     ///   velo show abc123ef -- src/  # restrict diff to src/
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Nothing on disk is changed — show is entirely read-only.
     · Use `velo restore <target> -- <file>` to pull a single file out
-      of a historical snapshot into your working tree."
-    )]
+      of a historical snapshot into your working tree.")]
     Show {
         /// Hash (or prefix), or tag name of the snapshot to inspect.
         #[arg(value_name = "TARGET")]
@@ -334,15 +298,11 @@ NOTES
     ///
     /// Example
     ///   velo cherry-pick abc123ef
-    #[command(
-        verbatim_doc_comment,
-        name = "cherry-pick",
-        after_help = "\
+    #[command(verbatim_doc_comment, name = "cherry-pick", after_help = "\
 NOTES
     · Cherry-pick aborts if there are unsaved changes.
     · With conflicts: resolve them, then `velo save \"Apply cherry-pick\"`.
-    · Without conflicts: a new snapshot is created automatically."
-    )]
+    · Without conflicts: a new snapshot is created automatically.")]
     CherryPick {
         /// Hash (or prefix), or tag name of the snapshot to apply.
         #[arg(value_name = "TARGET")]
@@ -357,14 +317,11 @@ NOTES
     /// Examples
     ///   velo switch feature/auth    # switch (creates if new)
     ///   velo switch main --force    # discard unsaved changes and switch
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · New branches inherit the current working tree state.
     · Switch to a deleted branch is not permitted.
-    · --force discards unsaved changes — they cannot be recovered."
-    )]
+    · --force discards unsaved changes — they cannot be recovered.")]
     Switch {
         /// Branch name to switch to (or create).
         #[arg(value_name = "NAME")]
@@ -384,16 +341,12 @@ NOTES
     ///   velo branches
     ///   velo branch                         # alias
     ///   velo branches --delete feature/old
-    #[command(
-        verbatim_doc_comment,
-        alias = "branch",
-        after_help = "\
+    #[command(verbatim_doc_comment, alias = "branch", after_help = "\
 NOTES
     · Branch deletion is a soft delete — history is preserved in the
       database and purged only by `velo gc`.
     · The current branch and 'main' cannot be deleted.
-    · Deleted branches are hidden from all listings."
-    )]
+    · Deleted branches are hidden from all listings.")]
     Branches {
         /// Delete this branch (soft delete; history is preserved until gc).
         #[arg(short, long, value_name = "NAME", help = "Delete the named branch")]
@@ -412,13 +365,10 @@ NOTES
     ///   velo tag v1.0 abc123ef           # tag a specific snapshot
     ///   velo tag v1.0 --force            # overwrite an existing tag
     ///   velo tag --delete v1.0           # delete a tag
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Deleting a tag does not affect the snapshot it pointed to.
-    · A tag can point to any snapshot across all branches."
-    )]
+    · A tag can point to any snapshot across all branches.")]
     Tag {
         /// Tag name to create.
         #[arg(value_name = "NAME", help = "Tag name to create")]
@@ -430,13 +380,7 @@ NOTES
         snapshot: Option<String>,
 
         /// Delete the named tag.
-        #[arg(
-            short,
-            long,
-            value_name = "NAME",
-            conflicts_with = "name",
-            help = "Delete a tag by name"
-        )]
+        #[arg(short, long, value_name = "NAME", conflicts_with = "name", help = "Delete a tag by name")]
         delete: Option<String>,
 
         /// Overwrite an existing tag with the same name.
@@ -456,9 +400,7 @@ NOTES
     /// Examples
     ///   velo merge feature/payments    # merge into current branch
     ///   velo merge --abort             # discard in-progress merge
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 CONFLICT RESOLUTION WORKFLOW
     1. velo merge <branch>
     2. velo diff <file> --conflict    # inspect each conflict
@@ -470,19 +412,14 @@ NOTES
     · Merge aborts if there are unsaved changes.
     · Fast-forward merges (linear ancestry) are handled automatically.
     · --abort restores the working tree to its exact pre-merge state and
-      clears all conflict data — works even after all conflicts are resolved."
-    )]
+      clears all conflict data — works even after all conflicts are resolved.")]
     Merge {
         /// Branch to merge into the current branch.
         #[arg(value_name = "BRANCH", help = "Branch to merge in")]
         branch: Option<String>,
 
         /// Abort an in-progress merge, removing all conflict files.
-        #[arg(
-            long,
-            conflicts_with = "branch",
-            help = "Abort the current merge and clean up"
-        )]
+        #[arg(long, conflicts_with = "branch", help = "Abort the current merge and clean up")]
         abort: bool,
     },
 
@@ -498,28 +435,19 @@ NOTES
     ///   velo resolve src/auth.py --take ours      # keep current version
     ///   velo resolve src/auth.py                  # mark manually edited file as resolved
     ///   velo resolve --all --take theirs           # resolve all conflicts at once
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · After resolving all conflicts, run `velo save \"Merge <branch>\"`.
     · Velo will remind you of remaining conflicts after each resolve.
     · --all requires --take; without it Velo doesn't know which version
-      to pick for each file."
-    )]
+      to pick for each file.")]
     Resolve {
         /// File to resolve (relative to repo root). Omit when using --all.
         #[arg(value_name = "FILE", help = "File to resolve (omit with --all)")]
         file: Option<String>,
 
         /// Automatically accept 'ours' or 'theirs' for this file.
-        #[arg(
-            short,
-            long,
-            value_enum,
-            value_name = "VERSION",
-            help = "Which version to keep: ours or theirs"
-        )]
+        #[arg(short, long, value_enum, value_name = "VERSION", help = "Which version to keep: ours or theirs")]
         take: Option<TakeOption>,
 
         /// Resolve all outstanding conflict files at once.
@@ -546,17 +474,152 @@ NOTES
     ///   velo stash list
     ///   velo stash pop "wip: auth"
     ///   velo stash drop "wip: auth"
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Stashing restores the working tree to the last saved snapshot.
     · Pop aborts if there are unsaved changes.
-    · Shelves are stored in the repository database and survive restarts."
-    )]
+    · Shelves are stored in the repository database and survive restarts.")]
     Stash {
         #[command(subcommand)]
         sub: StashSub,
+    },
+
+
+    /// Show which snapshot last changed each line of a file.
+    ///
+    /// Walks history backwards and attributes each line to the snapshot that
+    /// introduced or last modified it.
+    ///
+    /// Examples
+    ///   velo blame src/auth.py
+    ///   velo blame src/auth.py --at v1.0
+    #[command(verbatim_doc_comment, after_help = "\
+NOTES
+    · --at accepts a hash prefix, tag, or branch name.
+    · Binary files are skipped automatically.")]
+    Blame {
+        /// File to annotate (relative to repo root).
+        #[arg(value_name = "FILE")]
+        file: String,
+
+        /// Annotate the file as it existed at this snapshot (default: current HEAD).
+        #[arg(long, value_name = "TARGET", help = "Snapshot, tag, or branch to inspect")]
+        at: Option<String>,
+    },
+
+    /// Search tracked files for a pattern.
+    ///
+    /// Searches the working tree by default.  Use --snapshot to search
+    /// inside a stored snapshot without touching disk.
+    ///
+    /// Examples
+    ///   velo grep "TODO"
+    ///   velo grep "api_key" -i
+    ///   velo grep "def.*login" --snapshot v1.0
+    ///   velo grep "error" -l
+    ///   velo grep "token" -C 3
+    #[command(verbatim_doc_comment, after_help = "\
+NOTES
+    · Patterns are treated as regular expressions.
+    · Use -l to list only matching file names (no content shown).
+    · -C sets how many lines of context to show around each match.")]
+    Grep {
+        /// Pattern to search for (regular expression).
+        #[arg(value_name = "PATTERN")]
+        pattern: String,
+
+        /// Search inside a stored snapshot instead of the working tree.
+        #[arg(long, short, value_name = "TARGET", help = "Search inside this snapshot")]
+        snapshot: Option<String>,
+
+        /// Case-insensitive matching.
+        #[arg(short = 'i', long = "ignore-case", help = "Case-insensitive search")]
+        ignore_case: bool,
+
+        /// Only print file names with matches, not the matching lines.
+        #[arg(short = 'l', long = "files-with-matches", help = "Print only file names")]
+        files_only: bool,
+
+        /// Lines of context to show around each match.
+        #[arg(short = 'C', long = "context", default_value_t = 2, value_name = "N",
+              help = "Lines of context around each match [default: 2]")]
+        context: usize,
+    },
+
+    /// Collapse the last N snapshots into one.
+    ///
+    /// Rewrites history by replacing the last N snapshots with a single new
+    /// snapshot that has the same files as HEAD and a new message.
+    /// The squashed parent becomes the oldest replaced snapshot's parent.
+    ///
+    /// Examples
+    ///   velo squash 3 "Combine auth fixes"
+    #[command(verbatim_doc_comment, after_help = "\
+NOTES
+    · Squash aborts if there are unsaved changes.
+    · Any tags on squashed snapshots are moved to the new snapshot.
+    · The squashed objects remain in the store until `velo gc`.")]
+    Squash {
+        /// Number of snapshots to collapse (must be ≥ 2).
+        #[arg(value_name = "N")]
+        count: usize,
+
+        /// Message for the new combined snapshot.
+        #[arg(value_name = "MESSAGE")]
+        message: String,
+    },
+
+    /// Diff two snapshots, or a snapshot against the working tree.
+    ///
+    /// Accepts a <from>..<to> range or a single snapshot compared against
+    /// the working tree.  Optionally restrict to specific paths.
+    ///
+    /// Examples
+    ///   velo diff abc123..def456
+    ///   velo diff abc123                   # snapshot vs working tree
+    ///   velo diff abc123..def456 -- src/   # restrict to src/
+    #[command(verbatim_doc_comment, name = "diff-range", alias = "dr", after_help = "\
+NOTES
+    · Hash prefixes, tags, and branch names are all accepted.
+    · If only one hash is given, the working tree is used as the second side.")]
+    DiffRange {
+        /// Range in the form <a>..<b>, or a single hash.
+        #[arg(value_name = "RANGE")]
+        range: String,
+
+        /// Restrict diff to these paths.
+        #[arg(last = true, value_name = "PATH")]
+        paths: Vec<String>,
+    },
+
+    /// Replay commits from the current branch on top of another.
+    ///
+    /// Finds the commits on the current branch that are NOT in the target's
+    /// ancestry, then cherry-picks them one by one onto the target.  If a
+    /// commit produces a conflict the rebase pauses so you can resolve it.
+    ///
+    /// Examples
+    ///   velo rebase main
+    ///   velo rebase main --abort
+    ///   velo rebase main --continue
+    #[command(verbatim_doc_comment, after_help = "\
+NOTES
+    · Rebase rewrites history — the rebased commits get new hashes.
+    · If a conflict occurs: resolve with `velo resolve`, save with
+      `velo save`, then continue with `velo rebase --continue`.
+    · `velo rebase --abort` restores the original branch state.")]
+    Rebase {
+        /// Branch or snapshot to rebase onto.
+        #[arg(value_name = "TARGET")]
+        target: Option<String>,
+
+        /// Abort the rebase and restore the original branch.
+        #[arg(long, conflicts_with = "cont", help = "Abort and restore original state")]
+        abort: bool,
+
+        /// Continue after resolving a conflict.
+        #[arg(long = "continue", help = "Continue after resolving conflicts")]
+        cont: bool,
     },
 
     /// Reclaim disk space by removing unreachable objects.
@@ -569,9 +632,7 @@ NOTES
     ///   velo gc                   # default: keep undo history for 30 days
     ///   velo gc --keep-days 0     # purge everything immediately
     ///   velo gc --keep-days 90    # keep undo history for 90 days
-    #[command(
-        verbatim_doc_comment,
-        after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 WHAT GC CLEANS UP
     · Orphaned objects (no snapshot references them)
     · Stale file_map rows (snapshot was deleted)
@@ -580,16 +641,10 @@ WHAT GC CLEANS UP
 
 NOTES
     · Running gc while a merge is in progress is safe.
-    · The operation is idempotent — running it twice is harmless."
-    )]
+    · The operation is idempotent — running it twice is harmless.")]
     Gc {
         /// Keep undone snapshot history for this many days (default: 30).
-        #[arg(
-            long,
-            default_value_t = 30,
-            value_name = "DAYS",
-            help = "Retain undo history for N days [default: 30]"
-        )]
+        #[arg(long, default_value_t = 30, value_name = "DAYS", help = "Retain undo history for N days [default: 30]")]
         keep_days: u32,
     },
 }
@@ -631,10 +686,7 @@ enum StashSub {
     #[command(verbatim_doc_comment)]
     Pop {
         /// Name of the shelf to restore. Defaults to the most recent.
-        #[arg(
-            value_name = "NAME",
-            help = "Shelf to restore (defaults to most recent)"
-        )]
+        #[arg(value_name = "NAME", help = "Shelf to restore (defaults to most recent)")]
         name: Option<String>,
     },
 
@@ -648,10 +700,7 @@ enum StashSub {
     #[command(verbatim_doc_comment)]
     Drop {
         /// Name of the shelf to delete. Defaults to the most recent.
-        #[arg(
-            value_name = "NAME",
-            help = "Shelf to delete (defaults to most recent)"
-        )]
+        #[arg(value_name = "NAME", help = "Shelf to delete (defaults to most recent)")]
         name: Option<String>,
     },
 
@@ -665,10 +714,7 @@ enum StashSub {
     #[command(verbatim_doc_comment)]
     Show {
         /// Name of the shelf to inspect. Defaults to the most recent.
-        #[arg(
-            value_name = "NAME",
-            help = "Shelf to inspect (defaults to most recent)"
-        )]
+        #[arg(value_name = "NAME", help = "Shelf to inspect (defaults to most recent)")]
         name: Option<String>,
     },
 }
@@ -679,9 +725,7 @@ fn main() {
     #[cfg(windows)]
     unsafe {
         #[link(name = "kernel32")]
-        extern "system" {
-            fn SetConsoleOutputCP(id: u32) -> i32;
-        }
+        extern "system" { fn SetConsoleOutputCP(id: u32) -> i32; }
         SetConsoleOutputCP(65001);
     }
 
@@ -704,57 +748,37 @@ fn run() -> Result<()> {
     match cli.command {
         Commands::Init => unreachable!(),
 
-        Commands::Save { message, amend } => match commands::save::run(&root, &message, amend)? {
-            None => {}
-            Some(r) => {
-                let verb = if amend { "Amended" } else { "Saved" };
-                println!(
-                    "{} {} {} on {}  ({} new, {} modified, {} deleted)",
-                    console::style("✔").green().bold(),
-                    verb,
-                    console::style(&r.hash).yellow(),
-                    console::style(
-                        std::fs::read_to_string(root.join(".velo/HEAD"))
-                            .unwrap_or_default()
-                            .trim()
-                            .to_string()
-                    )
-                    .cyan(),
-                    r.new_count,
-                    r.modified_count,
-                    r.deleted_count,
-                );
+        Commands::Save { message, amend, paths } => {
+            match commands::save::run_with_paths(&root, &message, amend, &paths)? {
+                None => {}
+                Some(r) => {
+                    let verb = if amend { "Amended" } else { "Saved" };
+                    println!(
+                        "{} {} {} on {}  ({} new, {} modified, {} deleted)",
+                        console::style("✔").green().bold(),
+                        verb,
+                        console::style(&r.hash).yellow(),
+                        console::style(
+                            std::fs::read_to_string(root.join(".velo/HEAD"))
+                                .unwrap_or_default()
+                                .trim()
+                                .to_string()
+                        ).cyan(),
+                        r.new_count, r.modified_count, r.deleted_count,
+                    );
+                }
             }
-        },
+        }
 
-        Commands::Restore {
-            target,
-            force,
-            paths,
-        } => {
+        Commands::Restore { target, force, paths } => {
             let hash = commands::resolve_snapshot_id(&root, &target)?;
             commands::restore::run(&root, &hash, force, &paths)?;
         }
 
-        Commands::Status => commands::status::run(&root)?,
+        Commands::Status { paths } => commands::status::run(&root, &paths)?,
 
-        Commands::History {
-            all,
-            limit,
-            branch,
-            oneline,
-            graph,
-            file_filter,
-        } => {
-            commands::history::run(
-                &root,
-                all,
-                limit,
-                branch.as_deref(),
-                oneline,
-                graph,
-                file_filter.as_deref(),
-            )?;
+        Commands::History { all, limit, branch, oneline, graph, file_filter } => {
+            commands::history::run(&root, all, limit, branch.as_deref(), oneline, graph, file_filter.as_deref())?;
         }
 
         Commands::Undo => {
@@ -764,8 +788,19 @@ fn run() -> Result<()> {
 
         Commands::Redo => commands::redo::run(&root)?,
 
-        Commands::Diff { file } => {
-            commands::diff::run(&root, &file)?;
+        Commands::Diff { file, paths } => {
+            if paths.is_empty() {
+                commands::diff::run(&root, &file)?;
+            } else {
+                // pathspec: diff only the listed paths
+                commands::diff::run_range(&root,
+                    &std::fs::read_to_string(root.join(".velo/PARENT"))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string(),
+                    None,
+                    &paths)?;
+            }
         }
 
         Commands::Show { target, paths } => {
@@ -785,12 +820,7 @@ fn run() -> Result<()> {
             commands::branches::run(&root, delete)?;
         }
 
-        Commands::Tag {
-            name,
-            snapshot,
-            delete,
-            force,
-        } => {
+        Commands::Tag { name, snapshot, delete, force } => {
             commands::tag::run(&root, name, snapshot, delete, force)?;
         }
 
@@ -804,11 +834,43 @@ fn run() -> Result<()> {
 
         Commands::Stash { sub } => match sub {
             StashSub::Push { name } => commands::stash::push(&root, name)?,
-            StashSub::List => commands::stash::list(&root)?,
-            StashSub::Pop { name } => commands::stash::pop(&root, name)?,
-            StashSub::Drop { name } => commands::stash::drop_shelf(&root, name)?,
-            StashSub::Show { name } => commands::stash::show_shelf(&root, name)?,
+            StashSub::List           => commands::stash::list(&root)?,
+            StashSub::Pop  { name }  => commands::stash::pop(&root, name)?,
+            StashSub::Drop { name }  => commands::stash::drop_shelf(&root, name)?,
+            StashSub::Show { name }  => commands::stash::show_shelf(&root, name)?,
         },
+
+
+        Commands::Blame { file, at } => {
+            commands::blame::run(&root, &file, at.as_deref())?;
+        }
+
+        Commands::Grep { pattern, snapshot, ignore_case, files_only, context } => {
+            commands::grep::run(&root, &pattern, snapshot.as_deref(), ignore_case, files_only, context)?;
+        }
+
+        Commands::Squash { count, message } => {
+            commands::squash::run(&root, count, &message)?;
+        }
+
+        Commands::DiffRange { range, paths } => {
+            // Parse "a..b" or just "a"
+            if let Some((a, b)) = range.split_once("..") {
+                commands::diff::run_range(&root, a, Some(b), &paths)?;
+            } else {
+                commands::diff::run_range(&root, &range, None, &paths)?;
+            }
+        }
+
+        Commands::Rebase { target, abort, cont } => {
+            let t = target.as_deref().unwrap_or("");
+            if !abort && !cont && t.is_empty() {
+                eprintln!("{} Specify a target branch, or use --abort / --continue.",
+                    console::style("error:").red().bold());
+                std::process::exit(1);
+            }
+            commands::rebase::run(&root, t, abort, cont)?;
+        }
 
         Commands::Gc { keep_days } => {
             commands::gc::run(&root, keep_days)?;
