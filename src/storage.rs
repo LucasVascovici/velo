@@ -23,11 +23,11 @@ pub fn hash_and_compress(file_path: &Path, objects_dir: &Path) -> Result<String>
     let obj_path = objects_dir.join(&hash);
     if !obj_path.exists() {
         // Re-read for compression (mmap again for large files)
-        let data = if size >= MMAP_THRESHOLD {
+        let data = normalise_crlf(if size >= MMAP_THRESHOLD {
             read_mmap(file_path)?
         } else {
             fs::read(file_path).map_err(VeloError::Io)?
-        };
+        });
         let compressed = zstd::encode_all(&data[..], 1) // level 1: fast save
             .map_err(VeloError::Io)?;
         fs::write(&obj_path, compressed).map_err(VeloError::Io)?;
@@ -51,9 +51,38 @@ pub fn read_object(objects_dir: &Path, hash: &str) -> Result<Vec<u8>> {
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
 
+/// Normalise CRLF → LF in a byte buffer.
+/// Text files on Windows often use \r\n. We always store and hash LF-normalised
+/// content so that files saved on Windows compare correctly to files saved on Unix.
+/// Binary files (containing a NUL byte) are returned unchanged.
+#[inline]
+pub fn normalise_crlf(data: Vec<u8>) -> Vec<u8> {
+    if data.contains(&0u8) {
+        // Binary file — do not touch
+        return data;
+    }
+    if !data.contains(&b'\r') {
+        return data;
+    }
+    let mut out = Vec::with_capacity(data.len());
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == b'\r' {
+            if i + 1 < data.len() && data[i + 1] == b'\n' {
+                i += 1; // skip \r, keep \n
+            }
+            // bare \r — skip it too
+        } else {
+            out.push(data[i]);
+        }
+        i += 1;
+    }
+    out
+}
+
 /// Hash a small file by reading it fully into a Vec then hashing.
 fn hash_small(path: &Path) -> Result<String> {
-    let data = fs::read(path).map_err(VeloError::Io)?;
+    let data = normalise_crlf(fs::read(path).map_err(VeloError::Io)?);
     Ok(blake3::hash(&data).to_hex().to_string())
 }
 
@@ -88,9 +117,12 @@ fn read_mmap(path: &Path) -> Result<Vec<u8>> {
 /// Fast content hash used during dirty-checks.
 /// Uses the same mmap strategy as `hash_and_compress` but skips compression.
 pub fn fast_hash(path: &Path) -> String {
+    // Always normalise CRLF for consistent hashing across platforms.
     let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size >= MMAP_THRESHOLD {
-        hash_mmap(path, size).unwrap_or_default()
+        let data = read_mmap(path).unwrap_or_default();
+        let data = normalise_crlf(data);
+        blake3::hash(&data).to_hex().to_string()
     } else {
         hash_small(path).unwrap_or_default()
     }

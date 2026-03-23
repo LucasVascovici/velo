@@ -145,4 +145,5 @@ fn normalise(s: &str) -> String {
     s.strip_prefix('\u{feff}')
         .unwrap_or(s)
         .replace("\r\n", "\n")
+        .replace('\r', "\n")
 }
