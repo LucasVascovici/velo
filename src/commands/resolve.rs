@@ -331,7 +331,7 @@ fn interactive_resolve(root: &Path, conn: &rusqlite::Connection, cf: &ConflictFi
 
         // ── Wait for keypress ─────────────────────────────────────────────────
         let key = if term.is_term() {
-            term.read_key().map_err(|e| VeloError::Io(e))?
+            term.read_key().map_err(VeloError::Io)?
         } else {
             // Non-TTY fallback: read a char from stdin
             let mut buf = String::new();
@@ -454,15 +454,13 @@ fn open_in_editor(
 
     // Write a temp file with both versions and a resolution zone
     let tmp_dir = std::env::temp_dir();
-    let filename = cf.path.replace('/', "_").replace('\\', "_");
+    let filename = cf.path.replace(['/', '\\'], "_");
     let tmp_path = tmp_dir.join(format!("velo_hunk_{}.txt", filename));
 
-    let mut content = format!(
-        "# VELO conflict hunk — edit the RESOLUTION section below, then save and exit.\n\
+    let mut content = "# VELO conflict hunk — edit the RESOLUTION section below, then save and exit.\n\
          # Do NOT change the lines starting with '#'.\n\
          #\n\
-         # ── OURS ─────────────────────────────────────────────────────────────\n"
-    );
+         # ── OURS ─────────────────────────────────────────────────────────────\n".to_string();
     for line in &hunk.ours {
         content.push_str(&format!("# {}\n", line));
     }
@@ -482,7 +480,7 @@ fn open_in_editor(
     let status = std::process::Command::new(&editor)
         .arg(&tmp_path)
         .status()
-        .map_err(|e| VeloError::Io(e))?;
+        .map_err(VeloError::Io)?;
 
     if !status.success() {
         println!(
@@ -515,282 +513,235 @@ fn open_in_editor(
     }
 }
 
-// ─── Hunk computation ─────────────────────────────────────────────────────────
+// ─── 3-way merge (diff3) ───────────────────────────────────────────────────────
 
-/// Compute conflict hunks using 3-way diff.
-/// ancestor → ours gives "our changes"; ancestor → theirs gives "their changes".
-/// Overlapping changed regions are true conflicts.
-pub fn compute_conflict_hunks(ancestor: &str, ours: &str, theirs: &str) -> Vec<ConflictHunk> {
+/// One segment of a 3-way merge, aligned against the common ancestor.
+#[derive(Debug, Clone)]
+enum Segment {
+    /// Lines identical across all sides, or on which both sides made the same
+    /// change. Emitted verbatim.
+    Stable(Vec<String>),
+    /// Only our side changed this region — take ours automatically.
+    OursOnly(Vec<String>),
+    /// Only their side changed this region — take theirs automatically.
+    TheirsOnly(Vec<String>),
+    /// A genuine conflict: both sides changed the same region differently.
+    Conflict {
+        anc_start: usize,
+        anc_end: usize,
+        ours: Vec<String>,
+        theirs: Vec<String>,
+    },
+}
+
+/// Map each ancestor line index to its corresponding index on `side`, but only
+/// for lines left *unchanged* (part of an `Equal` run). Changed lines map to
+/// `None`. These common lines are the anchors the diff3 walk synchronises on.
+fn equal_line_map(anc: &[&str], side: &[&str]) -> Vec<Option<usize>> {
+    let mut map = vec![None; anc.len()];
+    let diff = TextDiff::from_slices(anc, side);
+    for op in diff.ops() {
+        if let DiffOp::Equal {
+            old_index,
+            new_index,
+            len,
+        } = *op
+        {
+            for j in 0..len {
+                map[old_index + j] = Some(new_index + j);
+            }
+        }
+    }
+    map
+}
+
+/// Decompose ancestor/ours/theirs into ordered merge segments (classic diff3).
+///
+/// Lines both sides leave unchanged are *stable anchors*; the slot between two
+/// consecutive anchors is resolved by comparing each side's version against the
+/// ancestor:
+///   * both sides equal            → take either (no real change)
+///   * only ours differs           → take ours
+///   * only theirs differs         → take theirs
+///   * both differ, differently    → conflict
+///
+/// Crucially, a change made by *theirs* to a region ours did not touch is
+/// applied automatically instead of being dropped — the bug the previous
+/// ours-only reconstruction had.
+fn diff3_segments(ancestor: &str, ours: &str, theirs: &str) -> Vec<Segment> {
     let anc: Vec<&str> = ancestor.lines().collect();
     let our: Vec<&str> = ours.lines().collect();
     let thr: Vec<&str> = theirs.lines().collect();
 
-    let our_changed = changed_ranges_in_ancestor(&anc, &our);
-    let thr_changed = changed_ranges_in_ancestor(&anc, &thr);
-    let conflict_regions = find_overlapping_regions(&our_changed, &thr_changed);
+    let our_map = equal_line_map(&anc, &our);
+    let thr_map = equal_line_map(&anc, &thr);
+
+    // Stable anchors: ancestor lines unchanged on BOTH sides. Sentinels at each
+    // end let the loop treat the head and tail slots uniformly.
+    let mut anchors: Vec<(i64, i64, i64)> = vec![(-1, -1, -1)];
+    for k in 0..anc.len() {
+        if let (Some(o), Some(t)) = (our_map[k], thr_map[k]) {
+            anchors.push((k as i64, o as i64, t as i64));
+        }
+    }
+    anchors.push((anc.len() as i64, our.len() as i64, thr.len() as i64));
+
+    let mut segments = Vec::new();
+    for w in anchors.windows(2) {
+        let (a_anc, a_our, a_thr) = w[0];
+        let (b_anc, b_our, b_thr) = w[1];
+
+        // The slot strictly between the two anchors.
+        let anc_start = (a_anc + 1) as usize;
+        let anc_end = b_anc as usize; // exclusive
+        let anc_slot: Vec<String> = anc[anc_start..anc_end].iter().map(|s| s.to_string()).collect();
+        let our_slot: Vec<String> = our[(a_our + 1) as usize..b_our as usize]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let thr_slot: Vec<String> = thr[(a_thr + 1) as usize..b_thr as usize]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        if !(anc_slot.is_empty() && our_slot.is_empty() && thr_slot.is_empty()) {
+            if our_slot == thr_slot {
+                segments.push(Segment::Stable(our_slot));
+            } else if our_slot == anc_slot {
+                segments.push(Segment::TheirsOnly(thr_slot));
+            } else if thr_slot == anc_slot {
+                segments.push(Segment::OursOnly(our_slot));
+            } else {
+                segments.push(Segment::Conflict {
+                    anc_start,
+                    anc_end,
+                    ours: our_slot,
+                    theirs: thr_slot,
+                });
+            }
+        }
+
+        // Emit the anchor line itself (unless it is the trailing sentinel).
+        if (b_anc as usize) < anc.len() {
+            segments.push(Segment::Stable(vec![anc[b_anc as usize].to_string()]));
+        }
+    }
+
+    segments
+}
+
+// ─── Hunk computation ─────────────────────────────────────────────────────────
+
+/// Compute the conflicting hunks — the regions both sides changed differently.
+/// Non-overlapping changes are auto-merged and never surface here.
+pub fn compute_conflict_hunks(ancestor: &str, ours: &str, theirs: &str) -> Vec<ConflictHunk> {
+    let anc: Vec<&str> = ancestor.lines().collect();
+    let segments = diff3_segments(ancestor, ours, theirs);
 
     let mut hunks = Vec::new();
-    for (id, region) in conflict_regions.iter().enumerate() {
-        let ctx_start = region.start.saturating_sub(3);
-        let ctx_end = (region.end + 3).min(anc.len());
-        let region_end = region.end.min(anc.len());
-
-        hunks.push(ConflictHunk {
-            id,
-            ancestor_start: region.start,
-            ancestor_end: region_end,
-            context_before: anc[ctx_start..region.start]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            ours: extract_new_for_old_range(&anc, &our, region.start..region_end),
-            theirs: extract_new_for_old_range(&anc, &thr, region.start..region_end),
-            context_after: anc[region_end..ctx_end]
-                .iter()
-                .map(|s| s.to_string())
-                .collect(),
-            decision: None,
-        });
+    for seg in &segments {
+        if let Segment::Conflict {
+            anc_start,
+            anc_end,
+            ours,
+            theirs,
+        } = seg
+        {
+            let id = hunks.len();
+            let ctx_start = anc_start.saturating_sub(3);
+            let ctx_end = (anc_end + 3).min(anc.len());
+            hunks.push(ConflictHunk {
+                id,
+                ancestor_start: *anc_start,
+                ancestor_end: *anc_end,
+                context_before: anc[ctx_start..*anc_start]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                ours: ours.clone(),
+                theirs: theirs.clone(),
+                context_after: anc[*anc_end..ctx_end]
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+                decision: None,
+            });
+        }
     }
     hunks
 }
 
-/// Returns the ranges of `old` (ancestor) that were changed by `new`.
-/// Insertions are represented as zero-width ranges at their insertion point.
-fn changed_ranges_in_ancestor(old: &[&str], new: &[&str]) -> Vec<std::ops::Range<usize>> {
-    let diff = TextDiff::from_slices(old, new);
-    let mut ranges: Vec<std::ops::Range<usize>> = Vec::new();
-
-    for op in diff.ops().iter().copied() {
-        match op {
-            DiffOp::Replace {
-                old_index, old_len, ..
-            } => ranges.push(old_index..old_index + old_len),
-            DiffOp::Delete {
-                old_index, old_len, ..
-            } => ranges.push(old_index..old_index + old_len),
-            DiffOp::Insert { old_index, .. } => ranges.push(old_index..old_index), // zero-width
-            DiffOp::Equal { .. } => {}
-        }
-    }
-
-    sort_and_merge(ranges)
-}
-
-/// Find regions where both sides made changes (overlapping or adjacent).
-fn find_overlapping_regions(
-    a: &[std::ops::Range<usize>],
-    b: &[std::ops::Range<usize>],
-) -> Vec<std::ops::Range<usize>> {
-    let mut result: Vec<std::ops::Range<usize>> = Vec::new();
-
-    for ar in a {
-        for br in b {
-            // Two ranges "overlap" in the conflict sense if either:
-            //   - both are non-empty and intersect: ar.start < br.end && br.start < ar.end
-            //   - one is a zero-width insert inside the other's range
-            let overlap = if ar.start == ar.end && br.start == br.end {
-                ar.start == br.start
-            } else if ar.start == ar.end {
-                br.start <= ar.start && ar.start <= br.end
-            } else if br.start == br.end {
-                ar.start <= br.start && br.start <= ar.end
-            } else {
-                ar.start < br.end && br.start < ar.end
-            };
-
-            if overlap {
-                result.push(ar.start.min(br.start)..ar.end.max(br.end));
-            }
-        }
-    }
-
-    sort_and_merge(result)
-}
-
-/// Returns the lines that `new` produces in place of `old[old_range]`.
-fn extract_new_for_old_range(
-    old: &[&str],
-    new: &[&str],
-    old_range: std::ops::Range<usize>,
-) -> Vec<String> {
-    let diff = TextDiff::from_slices(old, new);
-    let mut result = Vec::new();
-
-    for op in diff.ops().iter().copied() {
-        let o = op.old_range();
-        // Skip ops entirely before our range
-        if o.end <= old_range.start && !(o.start == o.end && o.start == old_range.start) {
-            continue;
-        }
-        // Stop ops entirely after our range
-        if o.start > old_range.end {
-            break;
-        }
-
-        let _n = op.new_range();
-        match op {
-            DiffOp::Equal { new_index, .. } => {
-                for (i, oi) in o.enumerate() {
-                    if old_range.contains(&oi) {
-                        result.push(new[new_index + i].to_string());
-                    }
-                }
-            }
-            DiffOp::Delete { .. } => {} // deleted → nothing
-            DiffOp::Insert {
-                old_index,
-                new_index,
-                new_len,
-            } => {
-                if old_index >= old_range.start && old_index <= old_range.end {
-                    for i in 0..new_len {
-                        result.push(new[new_index + i].to_string());
-                    }
-                }
-            }
-            DiffOp::Replace {
-                old_index,
-                old_len,
-                new_index,
-                new_len,
-            } => {
-                let op_old = old_index..old_index + old_len;
-                if op_old.start < old_range.end && old_range.start < op_old.end {
-                    for i in 0..new_len {
-                        result.push(new[new_index + i].to_string());
-                    }
-                }
-            }
-        }
-    }
-
-    result
-}
-
-/// Produce the final file content after all hunk decisions are applied.
+/// Attempt a clean, fully-automatic 3-way merge.
 ///
-/// Instead of re-deriving OUR content from ancestor ranges (which double-counts
-/// insertions), we walk the actual ancestor→our diff ops and replace each op
-/// that corresponds to a conflict hunk with the user's decision.  Ops that are
-/// not part of any conflict are included verbatim from our side.
+/// Returns `Some(merged_text)` when the two sides' changes do not overlap (so no
+/// human decision is needed), or `None` when at least one region genuinely
+/// conflicts and must be resolved interactively.
+pub fn try_auto_merge(ancestor: &str, ours: &str, theirs: &str) -> Option<String> {
+    if !compute_conflict_hunks(ancestor, ours, theirs).is_empty() {
+        return None;
+    }
+    let anc: Vec<&str> = ancestor.lines().collect();
+    let our: Vec<&str> = ours.lines().collect();
+    let thr: Vec<&str> = theirs.lines().collect();
+    Some(build_resolved_content(
+        &anc,
+        &our,
+        &thr,
+        &[],
+        ours.ends_with('\n') || theirs.ends_with('\n'),
+    ))
+}
+
+/// Produce the final merged file content.
+///
+/// Non-conflicting changes from *both* sides are applied automatically; each
+/// conflicting region uses the decision recorded on its matching hunk. Because
+/// the segmentation here is identical to the one `compute_conflict_hunks` used,
+/// conflict regions line up with hunks by their ancestor range.
 pub fn build_resolved_content(
     anc: &[&str],
     our: &[&str],
-    _thr: &[&str],
+    thr: &[&str],
     hunks: &[ConflictHunk],
     trailing_newline: bool,
 ) -> String {
     use std::collections::HashMap;
 
-    // Sort hunks by ancestor position.
-    let mut sorted: Vec<&ConflictHunk> = hunks.iter().collect();
-    sorted.sort_by_key(|h| h.ancestor_start);
+    let ancestor = anc.join("\n");
+    let ours = our.join("\n");
+    let theirs = thr.join("\n");
+    let segments = diff3_segments(&ancestor, &ours, &theirs);
 
-    // Build a lookup keyed by (ancestor_start, ancestor_end).
-    // Ranges are non-overlapping after sort_and_merge, so keys are unique.
-    // We use `remove` so each hunk is matched at most once.
-    let mut hunk_map: HashMap<(usize, usize), &ConflictHunk> = sorted
+    // Decisions keyed by the conflict region they resolve.
+    let decisions: HashMap<(usize, usize), &ConflictHunk> = hunks
         .iter()
-        .map(|h| ((h.ancestor_start, h.ancestor_end), *h))
+        .map(|h| ((h.ancestor_start, h.ancestor_end), h))
         .collect();
 
-    let diff = TextDiff::from_slices(anc, our);
     let mut output: Vec<String> = Vec::new();
-
-    for op in diff.ops() {
-        match op {
-            // ── Unchanged lines: always include ────────────────────────────
-            DiffOp::Equal { new_index, .. } => {
-                let len = op.new_range().len();
-                for i in 0..len {
-                    output.push(our[new_index + i].to_string());
-                }
+    for seg in segments {
+        match seg {
+            Segment::Stable(lines) | Segment::OursOnly(lines) | Segment::TheirsOnly(lines) => {
+                output.extend(lines)
             }
-
-            // ── Our-side insertion ──────────────────────────────────────────
-            DiffOp::Insert {
-                old_index,
-                new_index,
-                new_len,
+            Segment::Conflict {
+                anc_start,
+                anc_end,
+                ours,
+                theirs,
             } => {
-                // A zero-width conflict hunk sits at this exact position.
-                if let Some(h) = hunk_map.remove(&(*old_index, *old_index)) {
+                if let Some(h) = decisions.get(&(anc_start, anc_end)) {
                     output.extend(hunk_lines(h));
                 } else {
-                    // Non-conflicting our insertion — keep it.
-                    for i in 0..*new_len {
-                        output.push(our[new_index + i].to_string());
-                    }
-                }
-            }
-
-            // ── Our-side deletion ──────────────────────────────────────────
-            DiffOp::Delete {
-                old_index, old_len, ..
-            } => {
-                if let Some(h) = hunk_map.remove(&(*old_index, old_index + old_len)) {
-                    output.extend(hunk_lines(h));
-                }
-                // Non-conflicting our deletion — output nothing.
-            }
-
-            // ── Our-side replacement ────────────────────────────────────────
-            DiffOp::Replace {
-                old_index,
-                old_len,
-                new_index,
-                new_len,
-            } => {
-                // Exact non-zero-width hunk match.
-                if let Some(h) = hunk_map.remove(&(*old_index, old_index + old_len)) {
-                    output.extend(hunk_lines(h));
-                }
-                // Zero-width hunk at the start of a Replace.
-                // similar may coalesce Insert(P) + Equal(P, 1) into Replace(P, 1, Q, N)
-                // when the "equal" line appears at a different position in our.
-                else if let Some(h) = hunk_map.remove(&(*old_index, *old_index)) {
-                    // Emit the resolved insertion.
-                    output.extend(hunk_lines(h));
-                    // The rest of this Replace: our lines that correspond to
-                    // unchanged ancestor content.  Skip the ours-side of the
-                    // insertion (h.ours) and emit the remainder.
-                    let our_slice = &our[*new_index..*new_index + *new_len];
-                    let skip = if our_slice.len() >= h.ours.len()
-                        && our_slice[..h.ours.len()]
-                            .iter()
-                            .zip(&h.ours)
-                            .all(|(a, b)| *a == b.as_str())
-                    {
-                        h.ours.len()
-                    } else {
-                        0
-                    };
-                    for i in skip..*new_len {
-                        output.push(our[new_index + i].to_string());
-                    }
-                }
-                // Non-conflicting our replacement — keep our side.
-                else {
-                    for i in 0..*new_len {
-                        output.push(our[new_index + i].to_string());
-                    }
+                    // No decision recorded (not reached in normal flow). Emit
+                    // both sides rather than silently dropping either.
+                    output.extend(ours);
+                    output.extend(theirs);
                 }
             }
         }
     }
 
-    // Defensive: any hunks that weren't matched to a diff op.
-    // Sort by ancestor_start so they're appended in document order.
-    let mut remaining: Vec<&ConflictHunk> = hunk_map.into_values().collect();
-    remaining.sort_by_key(|h| h.ancestor_start);
-    for h in remaining {
-        output.extend(hunk_lines(h));
-    }
-
-    // Reconstruct the file text, preserving the original trailing newline.
-    // str::lines() strips a trailing newline, so we detect it via the
-    // `trailing_newline` flag passed by the caller from the raw object bytes.
     let joined = output.join("\n");
     if trailing_newline && !joined.ends_with('\n') {
         format!("{}\n", joined)
@@ -807,22 +758,6 @@ fn hunk_lines(h: &ConflictHunk) -> Vec<String> {
         Decision::BothTheirsFirst => h.theirs.iter().chain(h.ours.iter()).cloned().collect(),
         Decision::Manual(ls) => ls.clone(),
     }
-}
-
-fn sort_and_merge(mut ranges: Vec<std::ops::Range<usize>>) -> Vec<std::ops::Range<usize>> {
-    ranges.sort_by_key(|r| r.start);
-    let mut merged: Vec<std::ops::Range<usize>> = Vec::new();
-    for r in ranges {
-        match merged.last_mut() {
-            Some(last) if r.start <= last.end => {
-                if r.end > last.end {
-                    last.end = r.end;
-                }
-            }
-            _ => merged.push(r),
-        }
-    }
-    merged
 }
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────

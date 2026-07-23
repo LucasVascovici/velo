@@ -305,6 +305,9 @@ fn print_graph(history: &[LogEntry], current_parent: &str) {
         // Each lane = 2 chars: char + space (trailing space trimmed at end).
         let w = lanes.len();
         let mut row = String::new();
+        // `i` is a lane number compared against my_lane and used for colouring,
+        // not just indexing — an index loop is clearer than enumerate() here.
+        #[allow(clippy::needless_range_loop)]
         for i in 0..w {
             if i == my_lane {
                 row.push_str(&lane_colour(my_lane, if is_head { "●" } else { "○" }));
@@ -350,7 +353,7 @@ fn print_graph(history: &[LogEntry], current_parent: &str) {
 
         // Save state needed for connector rows.
         let pre_width = lanes.len();
-        let converging = pp_lane.map_or(false, |p| my_lane > p);
+        let converging = pp_lane.is_some_and(|p| my_lane > p);
         let pp_lane_idx = pp_lane;
 
         // Update my lane → track primary parent (or clear if converging/root).

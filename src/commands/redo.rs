@@ -50,11 +50,19 @@ pub fn run(root: &Path) -> Result<()> {
     // ── Move snapshot back from trash into snapshots ──────────────────────────
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at)
-         SELECT hash, message, branch, parent_hash, created_at FROM trash WHERE hash = ?",
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
+         SELECT hash, message, branch, parent_hash, merge_parent, created_at
+         FROM trash WHERE hash = ?",
         [&hash],
     )?;
     tx.execute("DELETE FROM trash WHERE hash = ?", [&hash])?;
+    // Restore any tags that `undo` shelved for this snapshot.
+    tx.execute(
+        "INSERT OR REPLACE INTO tags (name, snapshot_hash)
+         SELECT name, snapshot_hash FROM trash_tags WHERE snapshot_hash = ?",
+        [&hash],
+    )?;
+    tx.execute("DELETE FROM trash_tags WHERE snapshot_hash = ?", [&hash])?;
     tx.commit()?;
 
     // ── Restore working tree (restore::run writes PARENT itself) ─────────────

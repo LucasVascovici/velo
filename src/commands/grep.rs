@@ -168,6 +168,9 @@ fn print_matches(
             }
         }
 
+        // `i` is a line number used for display, dedup, and match comparison —
+        // not just indexing — so an index loop reads clearer than enumerate().
+        #[allow(clippy::needless_range_loop)]
         for i in start..end {
             if !printed.contains(&i) {
                 let line_no = style(format!("{:>4}", i + 1)).dim();

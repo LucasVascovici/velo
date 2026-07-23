@@ -53,6 +53,21 @@ pub fn run(root: &Path, keep_days: u32) -> Result<()> {
         );
     }
 
+    // ── 3b. Drop shelved tags whose snapshot is gone for good ────────────────
+    let stale_tags = conn.execute(
+        "DELETE FROM trash_tags
+         WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
+           AND snapshot_hash NOT IN (SELECT hash FROM trash)",
+        [],
+    )?;
+    if stale_tags > 0 {
+        println!(
+            "  {} Cleaned {} shelved tag(s) with no snapshot.",
+            style("~").yellow(),
+            stale_tags
+        );
+    }
+
     // ── 4. Prune stale index_cache entries ────────────────────────────────────
     // Remove entries for paths that no longer exist on disk.
     let stale_cache = conn.execute(

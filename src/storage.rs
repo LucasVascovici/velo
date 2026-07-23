@@ -15,7 +15,7 @@ pub fn hash_and_compress(file_path: &Path, objects_dir: &Path) -> Result<String>
     let size = meta.len();
 
     let hash = if size >= MMAP_THRESHOLD {
-        hash_mmap(file_path, size)?
+        hash_mmap(file_path)?
     } else {
         hash_small(file_path)?
     };
@@ -64,18 +64,15 @@ pub fn normalise_crlf(data: Vec<u8>) -> Vec<u8> {
     if !data.contains(&b'\r') {
         return data;
     }
+    // Drop every carriage return, keeping all other bytes. This turns "\r\n"
+    // into "\n" and removes bare "\r". (The previous hand-rolled index walk
+    // advanced past the "\n" after a "\r", silently deleting line breaks — so
+    // CRLF files were stored collapsed onto a single line.)
     let mut out = Vec::with_capacity(data.len());
-    let mut i = 0;
-    while i < data.len() {
-        if data[i] == b'\r' {
-            if i + 1 < data.len() && data[i + 1] == b'\n' {
-                i += 1; // skip \r, keep \n
-            }
-            // bare \r — skip it too
-        } else {
-            out.push(data[i]);
+    for &byte in &data {
+        if byte != b'\r' {
+            out.push(byte);
         }
-        i += 1;
     }
     out
 }
@@ -88,22 +85,29 @@ fn hash_small(path: &Path) -> Result<String> {
 
 /// Hash a large file via memory-mapped I/O.
 /// For files ≥ 1 MB uses blake3's rayon parallel hasher.
-fn hash_mmap(path: &Path, size: u64) -> Result<String> {
+///
+/// The content is CRLF-normalised *before* hashing so that the hash matches the
+/// normalised bytes that `hash_and_compress` actually stores, and so it agrees
+/// with `hash_small`/`fast_hash`. Without this, a large (≥256 KB) text file with
+/// `\r\n` line endings would hash differently here than everywhere else — making
+/// it appear permanently "modified" on Windows and breaking content-addressing.
+fn hash_mmap(path: &Path) -> Result<String> {
     let file = fs::File::open(path).map_err(VeloError::Io)?;
     // Safety: the file is read-only and we don't modify it during the map's
     // lifetime.  This is the standard pattern for read-only mmaps.
     let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(VeloError::Io)?;
+    let data = normalise_crlf(mmap.to_vec());
 
-    const PARALLEL_THRESHOLD: u64 = 1024 * 1024; // 1 MB
-    let hash = if size >= PARALLEL_THRESHOLD {
+    const PARALLEL_THRESHOLD: usize = 1024 * 1024; // 1 MB
+    let hash = if data.len() >= PARALLEL_THRESHOLD {
         // blake3's update_rayon splits the buffer across the global rayon pool.
         // Note: calling this from inside a rayon par_iter is safe — tasks are
         // queued on the same pool, not deadlocked.
         let mut hasher = blake3::Hasher::new();
-        hasher.update_rayon(&mmap);
+        hasher.update_rayon(&data);
         hasher.finalize().to_hex().to_string()
     } else {
-        blake3::hash(&mmap).to_hex().to_string()
+        blake3::hash(&data).to_hex().to_string()
     };
     Ok(hash)
 }

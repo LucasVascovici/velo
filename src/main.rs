@@ -30,7 +30,7 @@ fn styles() -> styling::Styles {
 #[command(
     verbatim_doc_comment,
     name    = "velo",
-    version = "2.2.0",
+    version = env!("CARGO_PKG_VERSION"),
     styles  = styles(),
     about   = "Velo — fast, safe, intuitive version control.",
     long_about = "\
@@ -794,10 +794,9 @@ fn run() -> Result<()> {
             } else {
                 // pathspec: diff only the listed paths
                 commands::diff::run_range(&root,
-                    &std::fs::read_to_string(root.join(".velo/PARENT"))
+                    std::fs::read_to_string(root.join(".velo/PARENT"))
                         .unwrap_or_default()
-                        .trim()
-                        .to_string(),
+                        .trim(),
                     None,
                     &paths)?;
             }

@@ -119,7 +119,7 @@ pub fn run(
         return Ok(());
     }
 
-    println!("{:<20} | {:<14} | {}", "Tag", "Snapshot", "Message");
+    println!("{:<20} | {:<14} | Message", "Tag", "Snapshot");
     println!("{}", "-".repeat(60));
     for (name, hash, msg) in &rows {
         println!(

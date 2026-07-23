@@ -177,7 +177,13 @@ pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String])
         }
     }
 
-    // New save invalidates the redo stack for this branch
+    // New save invalidates the redo stack for this branch. Drop the shelved
+    // tags belonging to those discarded snapshots too, so they don't linger.
+    tx.execute(
+        "DELETE FROM trash_tags WHERE snapshot_hash IN
+             (SELECT hash FROM trash WHERE branch = ?)",
+        [branch.trim()],
+    )?;
     tx.execute("DELETE FROM trash WHERE branch = ?", [branch.trim()])?;
     tx.commit()?;
 

@@ -18,6 +18,20 @@ pub fn run(root: &Path) -> Result<String> {
         )));
     }
 
+    // ── Safety: refuse to undo mid-merge or mid-rebase ────────────────────────
+    // These leave MERGE_HEAD / REBASE_STATE and conflict rows behind; removing
+    // the tip snapshot underneath them produces an inconsistent repository.
+    if root.join(".velo/MERGE_HEAD").exists() {
+        return Err(VeloError::InvalidInput(
+            "Undo is not available during a merge. Run 'velo merge --abort' first.".into(),
+        ));
+    }
+    if root.join(".velo/REBASE_STATE").exists() {
+        return Err(VeloError::InvalidInput(
+            "Undo is not available during a rebase. Run 'velo rebase --abort' first.".into(),
+        ));
+    }
+
     let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
     let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
 
@@ -45,12 +59,18 @@ pub fn run(root: &Path) -> Result<String> {
     // ── Atomically move snapshot to trash (preserves file_map for redo) ───────
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, created_at)
-         SELECT hash, message, branch, parent_hash, created_at
+        "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, merge_parent, created_at)
+         SELECT hash, message, branch, parent_hash, merge_parent, created_at
          FROM snapshots WHERE hash = ?",
         [&hash],
     )?;
-    // Tags on the deleted snapshot are removed (they point to non-existent snap)
+    // Shelve tags pointing at the removed snapshot so `redo` can restore them,
+    // then detach them from the (now absent) snapshot.
+    tx.execute(
+        "INSERT OR REPLACE INTO trash_tags (name, snapshot_hash)
+         SELECT name, snapshot_hash FROM tags WHERE snapshot_hash = ?",
+        [&hash],
+    )?;
     tx.execute("DELETE FROM tags WHERE snapshot_hash = ?", [&hash])?;
     tx.execute("DELETE FROM snapshots WHERE hash = ?", [&hash])?;
     tx.commit()?;
