@@ -2236,6 +2236,32 @@ mod tests {
     }
 
     #[test]
+    fn cherry_pick_auto_merges_nonoverlapping_edits() {
+        // Regression: cherry-pick used a naive classifier that flagged a false
+        // conflict when the picked commit and the current branch touched
+        // different lines of the same file. It must auto-merge instead.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "A\nB\nC\nD\nE\n");
+        save(&root, "ancestor");
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "A_CHANGED\nB\nC\nD\nE\n"); // picks: edits line 1
+        let fix = save(&root, "feature line1");
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "A\nB\nC\nD\nE_CHANGED\n"); // main: edits line 5
+        save(&root, "main line5");
+
+        commands::cherry_pick::run(&root, &fix).unwrap();
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "non-overlapping cherry-pick must not conflict");
+        assert!(!exists(&root, ".velo/MERGE_HEAD"));
+        assert_eq!(read(&root, "f.txt"), "A_CHANGED\nB\nC\nD\nE_CHANGED\n");
+    }
+
+    #[test]
     fn cherry_pick_aborts_on_dirty_tree() {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "base");
@@ -2545,6 +2571,28 @@ mod tests {
 
         // History should be linear: no REBASE_STATE file left
         assert!(!exists(&root, ".velo/REBASE_STATE"));
+    }
+
+    #[test]
+    fn rebase_auto_merges_nonoverlapping_edits() {
+        // Regression: rebase replay flagged a false conflict when a replayed
+        // commit and the new base touched different lines of the same file.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "A\nB\nC\nD\nE\n");
+        save(&root, "ancestor");
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "A_CHANGED\nB\nC\nD\nE\n"); // feature: edits line 1
+        save(&root, "feature line1");
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "A\nB\nC\nD\nE_CHANGED\n"); // main: edits line 5
+        save(&root, "main line5");
+        commands::switch::run(&root, "feature", false).unwrap();
+
+        commands::rebase::run(&root, "main", false, false).unwrap();
+
+        assert!(!exists(&root, ".velo/REBASE_STATE"), "clean rebase, no state left");
+        assert!(!exists(&root, ".velo/MERGE_HEAD"), "no conflict recorded");
+        assert_eq!(read(&root, "f.txt"), "A_CHANGED\nB\nC\nD\nE_CHANGED\n");
     }
 
     #[test]

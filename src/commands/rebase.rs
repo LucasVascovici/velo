@@ -354,28 +354,32 @@ fn apply_one(
         let anc_h = anc_files.get(path).map(|s| s.as_str()).unwrap_or("");
         let snp_h = snap_files.get(path).map(|s| s.as_str()).unwrap_or("");
         let cur_h = cur_files.get(path).map(|s| s.as_str()).unwrap_or("");
-
-        let snap_changed = snp_h != anc_h;
-        let cur_changed  = cur_h  != anc_h;
-
         let full = root.join(db::db_to_path(path));
 
-        match (snap_changed, cur_changed) {
-            (false, _) => {} // snapshot didn't change this file — leave ours
-            (true, false) => {
-                // Snapshot changed, we didn't — apply cleanly
-                if snp_h.is_empty() {
-                    if full.exists() { let _ = fs::remove_file(&full); del_count += 1; }
-                } else {
-                    let data = storage::read_object(&objects_dir, snp_h)?;
-                    if let Some(p) = full.parent() { let _ = fs::create_dir_all(p); }
-                    fs::write(&full, data)?;
-                    if anc_h.is_empty() { new_count += 1; } else { mod_count += 1; }
+        // "theirs" = the snapshot being replayed; "ours" = the current tree.
+        match crate::commands::reconcile_file(&objects_dir, anc_h, cur_h, snp_h)? {
+            crate::commands::Reconcile::Nothing | crate::commands::Reconcile::KeepOurs => {}
+            crate::commands::Reconcile::Delete => {
+                if full.exists() {
+                    let _ = fs::remove_file(&full);
+                    del_count += 1;
                 }
             }
-            (true, true) if snp_h == cur_h => {} // both changed to same — no conflict
-            (true, true) => {
-                // Both changed differently — conflict
+            crate::commands::Reconcile::TakeTheirs { hash, is_new } => {
+                if let Some(p) = full.parent() {
+                    let _ = fs::create_dir_all(p);
+                }
+                fs::write(&full, storage::read_object(&objects_dir, &hash)?)?;
+                if is_new { new_count += 1; } else { mod_count += 1; }
+            }
+            crate::commands::Reconcile::AutoMerged(bytes) => {
+                if let Some(p) = full.parent() {
+                    let _ = fs::create_dir_all(p);
+                }
+                fs::write(&full, bytes)?;
+                mod_count += 1;
+            }
+            crate::commands::Reconcile::Conflict => {
                 conflicts.push((
                     path.to_string(),
                     anc_h.to_string(),
