@@ -298,15 +298,46 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
                     );
                     took_count += 1;
                 } else {
-                    // Both modified to different content → store in conflict_files DB
-                    // The working file stays untouched (contains our version).
-                    conflicts.push((
-                        path.to_string(),
-                        anc_hash.to_string(),
-                        cur_hash.to_string(),
-                        tgt_hash.to_string(),
-                    ));
-                    println!("  {} Conflict: {}", style("!").yellow().bold(), path);
+                    // Both modified to different content. Attempt a line-level
+                    // 3-way merge: if the two sides' edits don't overlap we can
+                    // combine them automatically; only genuinely overlapping
+                    // edits become a recorded conflict for `velo resolve`.
+                    let anc_bytes = storage::read_object(&objects_dir, anc_hash)?;
+                    let our_bytes = storage::read_object(&objects_dir, cur_hash)?;
+                    let thr_bytes = storage::read_object(&objects_dir, tgt_hash)?;
+                    let is_binary = anc_bytes.contains(&0)
+                        || our_bytes.contains(&0)
+                        || thr_bytes.contains(&0);
+
+                    let merged = if is_binary {
+                        None
+                    } else {
+                        crate::commands::resolve::try_auto_merge(
+                            &String::from_utf8_lossy(&anc_bytes),
+                            &String::from_utf8_lossy(&our_bytes),
+                            &String::from_utf8_lossy(&thr_bytes),
+                        )
+                    };
+
+                    if let Some(merged) = merged {
+                        let full = root.join(crate::db::db_to_path(path));
+                        if let Some(p) = full.parent() {
+                            fs::create_dir_all(p)?;
+                        }
+                        fs::write(&full, merged)?;
+                        println!("  {} Auto-merged: {}", style("~").cyan(), path);
+                        took_count += 1;
+                    } else {
+                        // Overlapping edits → store in conflict_files DB.
+                        // The working file stays untouched (contains our version).
+                        conflicts.push((
+                            path.to_string(),
+                            anc_hash.to_string(),
+                            cur_hash.to_string(),
+                            tgt_hash.to_string(),
+                        ));
+                        println!("  {} Conflict: {}", style("!").yellow().bold(), path);
+                    }
                 }
             }
 

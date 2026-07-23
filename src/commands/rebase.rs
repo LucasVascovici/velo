@@ -155,11 +155,53 @@ fn do_abort(root: &Path) -> Result<()> {
         .unwrap_or_default()
         .trim()
         .to_string();
+    let onto = fs::read_to_string(root.join(".velo/REBASE_ONTO"))
+        .unwrap_or_default()
+        .trim()
+        .to_string();
 
-    // Clean up conflict state if any
+    // Clean up conflict state if any, and remove the snapshots created while
+    // replaying. Without this the replayed commits (which sit on top of `onto`)
+    // remain in the DB and, because branch-tip resolution orders by created_at,
+    // they'd masquerade as the branch tip even though PARENT is restored to the
+    // original head.
     if let Ok(conn) = db::get_conn_at_path(&root.join(".velo/velo.db")) {
         let _ = conn.execute("DELETE FROM hunk_decisions", []);
         let _ = conn.execute("DELETE FROM conflict_files",  []);
+
+        let branch_raw = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
+        let branch = branch_raw.trim();
+        let cur = fs::read_to_string(root.join(".velo/PARENT"))
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+
+        // Walk from the current tip back to `onto`, collecting the replayed
+        // commits on this branch (both auto-replayed and manually saved during
+        // a paused conflict).
+        let mut to_delete: Vec<String> = Vec::new();
+        let mut h = cur;
+        while !h.is_empty() && h != onto && h != orig_head {
+            let row: Option<(String, String)> = conn
+                .query_row(
+                    "SELECT branch, parent_hash FROM snapshots WHERE hash = ?",
+                    [&h],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .ok();
+            match row {
+                // Only delete commits that belong to the branch being rebased.
+                Some((b, parent)) if b == branch => {
+                    to_delete.push(h.clone());
+                    h = parent.trim().to_string();
+                }
+                _ => break,
+            }
+        }
+        for d in &to_delete {
+            let _ = conn.execute("DELETE FROM file_map  WHERE snapshot_hash = ?", [d]);
+            let _ = conn.execute("DELETE FROM snapshots WHERE hash = ?", [d]);
+        }
     }
     let _ = fs::remove_file(root.join(".velo/MERGE_HEAD"));
     let _ = fs::remove_file(root.join(".velo/REBASE_STATE"));
@@ -212,6 +254,19 @@ fn replay_next(
                 fs::write(root.join(".velo/REBASE_STATE"), rest.join("\n"))?;
             }
             Ok(ApplyResult::Conflict(n)) => {
+                // Drop this commit from the remaining state *now*: the user will
+                // finish it manually with `velo resolve` + `velo save`, so when
+                // `velo rebase --continue` runs it must resume with the *next*
+                // commit rather than replaying this one again.
+                let state_raw =
+                    fs::read_to_string(root.join(".velo/REBASE_STATE")).unwrap_or_default();
+                let rest: Vec<&str> = state_raw
+                    .lines()
+                    .skip(1)
+                    .filter(|l| !l.is_empty())
+                    .collect();
+                fs::write(root.join(".velo/REBASE_STATE"), rest.join("\n"))?;
+
                 println!(
                     "\n{} Conflict in {} file(s) while replaying {}.",
                     style("!").red().bold(),

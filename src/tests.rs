@@ -287,6 +287,57 @@ mod tests {
         assert_eq!(r.new_count, 2);
     }
 
+    #[test]
+    fn save_small_crlf_file_is_clean_and_preserves_lines() {
+        // A small (< mmap threshold) CRLF file must read as clean after saving,
+        // AND the stored content must keep its line breaks (as LF). A previous
+        // normalise_crlf bug collapsed CRLF files onto a single line while still
+        // looking "clean", because hashing and storage shared the same bug.
+        let (_tmp, root) = setup();
+        write(&root, "small.txt", "alpha\r\nbeta\r\ngamma\r\n");
+        save(&root, "add small crlf");
+        assert!(
+            commands::get_dirty_files(&root).is_empty(),
+            "small CRLF file should be clean right after save"
+        );
+
+        fs::remove_file(root.join("small.txt")).unwrap();
+        commands::restore::run(&root, &parent(&root), true, &[]).unwrap();
+        assert_eq!(read(&root, "small.txt"), "alpha\nbeta\ngamma\n");
+    }
+
+    #[test]
+    fn save_large_crlf_file_is_clean_after_save() {
+        // Regression: files >= 256 KB take the memory-mapped hashing path.
+        // That path used to hash raw (non-CRLF-normalised) bytes, disagreeing
+        // with the normalised hash used by status/fast_hash and by the stored
+        // object — so a large CRLF text file showed as permanently "Modified"
+        // on Windows and broke content-addressing. It must now read clean.
+        let (_tmp, root) = setup();
+        let mut big = String::with_capacity(400 * 1024);
+        for i in 0..40_000 {
+            big.push_str(&format!("line number {i} of a large crlf file\r\n"));
+        }
+        assert!(big.len() > 256 * 1024, "test file must exceed mmap threshold");
+        write(&root, "big.txt", &big);
+
+        let r = save(&root, "add big crlf");
+        assert!(!r.is_empty());
+        assert!(
+            commands::get_dirty_files(&root).is_empty(),
+            "large CRLF file should be clean right after save (mmap hash path)"
+        );
+
+        // Content-addressing invariant: the stored object holds CRLF-normalised
+        // (LF-only) content. Remove the working file and restore it from the
+        // object store to observe exactly what was stored.
+        fs::remove_file(root.join("big.txt")).unwrap();
+        commands::restore::run(&root, &parent(&root), true, &[]).unwrap();
+        let restored = read(&root, "big.txt");
+        assert!(!restored.contains('\r'), "stored content must be LF-normalised");
+        assert!(restored.starts_with("line number 0 of a large crlf file\n"));
+    }
+
     // =========================================================================
     // restore
     // =========================================================================
@@ -627,6 +678,99 @@ mod tests {
 
         let result = commands::redo::run(&root);
         assert!(result.is_err());
+    }
+
+    /// Helper: build a merge commit (via a real conflict) and return its hash.
+    fn make_merge_commit(root: &Path) -> String {
+        write(root, "f.txt", "base\n");
+        save(root, "base");
+        commands::switch::run(root, "feature", false).unwrap();
+        write(root, "f.txt", "theirs\n");
+        save(root, "feature");
+        commands::switch::run(root, "main", true).unwrap();
+        write(root, "f.txt", "ours\n");
+        save(root, "main");
+        commands::merge::run(root, Some("feature"), false).unwrap();
+        commands::resolve::run(root, None, Some(commands::resolve::TakeOption::Theirs), true)
+            .unwrap();
+        save(root, "Merge feature")
+    }
+
+    #[test]
+    fn undo_redo_preserves_merge_parent() {
+        // Regression: the trash table had no merge_parent column, so undoing
+        // then redoing a merge commit silently turned it into a single-parent
+        // commit, corrupting graph topology.
+        let (_tmp, root) = setup();
+        let merge_hash = make_merge_commit(&root);
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let mp_before: String = conn
+            .query_row(
+                "SELECT merge_parent FROM snapshots WHERE hash = ?",
+                [&merge_hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!mp_before.is_empty(), "merge commit should record a second parent");
+
+        commands::undo::run(&root).unwrap();
+        commands::redo::run(&root).unwrap();
+
+        let mp_after: String = conn
+            .query_row(
+                "SELECT merge_parent FROM snapshots WHERE hash = ?",
+                [&merge_hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mp_after, mp_before, "merge_parent must survive undo→redo");
+    }
+
+    #[test]
+    fn undo_redo_preserves_tags() {
+        // Regression: undo deleted tags on the removed snapshot and redo never
+        // restored them, so undo was not reversible for tags.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1");
+        save(&root, "s1");
+        write(&root, "f.txt", "v2");
+        let h2 = save(&root, "s2");
+        commands::tag::run(&root, Some("release".into()), None, None, false).unwrap();
+
+        commands::undo::run(&root).unwrap();
+        // Tag is gone from the live table while the snapshot is trashed.
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let live: i64 = conn
+            .query_row("SELECT count(*) FROM tags WHERE name = 'release'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(live, 0, "tag detached while snapshot is undone");
+
+        commands::redo::run(&root).unwrap();
+        let restored: String = conn
+            .query_row("SELECT snapshot_hash FROM tags WHERE name = 'release'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(restored, h2, "redo must restore the tag to its snapshot");
+    }
+
+    #[test]
+    fn undo_refuses_during_merge() {
+        // Regression: undo had no merge guard, so it could remove the tip while
+        // MERGE_HEAD and conflict rows dangled.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base\n");
+        save(&root, "base");
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "theirs\n");
+        save(&root, "feature");
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "ours\n");
+        save(&root, "main");
+        commands::merge::run(&root, Some("feature"), false).unwrap();
+        assert!(exists(&root, ".velo/MERGE_HEAD"));
+
+        let r = commands::undo::run(&root);
+        assert!(r.is_err(), "undo must refuse while a merge is in progress");
     }
 
     // =========================================================================
@@ -1250,6 +1394,129 @@ mod tests {
         save(&root, "snap");
         let result = commands::merge::run(&root, Some("ghost"), false);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn merge_nonoverlapping_edits_auto_merge() {
+        // Regression (critical): two branches editing DIFFERENT parts of the
+        // same file must auto-merge cleanly, keeping BOTH sides' changes — not
+        // flag a whole-file conflict and silently drop one side.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "A\nB\nC\nD\nE\n");
+        save(&root, "ancestor");
+
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "A_CHANGED\nB\nC\nD\nE\n"); // edits line 1
+        save(&root, "feature line1");
+
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "A\nB\nC\nD\nE_CHANGED\n"); // edits line 5
+        save(&root, "main line5");
+
+        commands::merge::run(&root, Some("feature"), false).unwrap();
+
+        // No conflict should have been recorded.
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "non-overlapping edits must not conflict");
+        assert!(!exists(&root, ".velo/MERGE_HEAD"), "clean merge leaves no MERGE_HEAD");
+
+        // Both sides' changes must be present.
+        assert_eq!(read(&root, "f.txt"), "A_CHANGED\nB\nC\nD\nE_CHANGED\n");
+    }
+
+    #[test]
+    fn merge_conflict_plus_theirs_only_region_preserves_both() {
+        // Regression: a file that has one genuine conflict AND a separate
+        // region only theirs changed. Resolving the conflict must NOT drop the
+        // theirs-only change elsewhere in the file.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "A\nB\nC\nD\nE\n");
+        save(&root, "ancestor");
+
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "A\nB_THEIRS\nC\nD\nE_THEIRS\n"); // changes B and E
+        save(&root, "feature");
+
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "A\nB_OURS\nC\nD\nE\n"); // changes only B (conflict on B)
+        save(&root, "main");
+
+        commands::merge::run(&root, Some("feature"), false).unwrap();
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let n: i64 = conn
+            .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1, "exactly one region (B) conflicts");
+
+        // Take ours for the conflict; the theirs-only change to E must survive.
+        commands::resolve::run(&root, None, Some(commands::resolve::TakeOption::Ours), true)
+            .unwrap();
+        assert_eq!(read(&root, "f.txt"), "A\nB_OURS\nC\nD\nE_THEIRS\n");
+    }
+
+    // =========================================================================
+    // 3-way merge core (diff3) — unit tests
+    // =========================================================================
+
+    #[test]
+    fn diff3_auto_merges_nonoverlapping_changes() {
+        let merged = commands::resolve::try_auto_merge(
+            "A\nB\nC\nD\nE\n",
+            "A_CHANGED\nB\nC\nD\nE\n",
+            "A\nB\nC\nD\nE_CHANGED\n",
+        );
+        assert_eq!(merged.as_deref(), Some("A_CHANGED\nB\nC\nD\nE_CHANGED\n"));
+    }
+
+    #[test]
+    fn diff3_theirs_only_change_is_applied() {
+        // Ours unchanged, theirs changed → auto-merge takes theirs.
+        let merged = commands::resolve::try_auto_merge(
+            "A\nB\nC\n",
+            "A\nB\nC\n",
+            "A\nB_NEW\nC\n",
+        );
+        assert_eq!(merged.as_deref(), Some("A\nB_NEW\nC\n"));
+    }
+
+    #[test]
+    fn diff3_overlapping_edits_do_not_auto_merge() {
+        // Both change the same line differently → not auto-mergeable.
+        let merged = commands::resolve::try_auto_merge("A\nB\nC\n", "A\nX\nC\n", "A\nY\nC\n");
+        assert!(merged.is_none());
+
+        let hunks = commands::resolve::compute_conflict_hunks("A\nB\nC\n", "A\nX\nC\n", "A\nY\nC\n");
+        assert_eq!(hunks.len(), 1, "one conflicting hunk expected");
+        assert_eq!(hunks[0].ours, vec!["X".to_string()]);
+        assert_eq!(hunks[0].theirs, vec!["Y".to_string()]);
+    }
+
+    #[test]
+    fn diff3_build_resolved_take_theirs_at_conflict_keeps_other_regions() {
+        // f.txt: conflict on line 2, theirs-only change on line 5.
+        let anc = "A\nB\nC\nD\nE\n";
+        let ours = "A\nB_OURS\nC\nD\nE\n";
+        let theirs = "A\nB_THEIRS\nC\nD\nE_THEIRS\n";
+
+        let mut hunks = commands::resolve::compute_conflict_hunks(anc, ours, theirs);
+        assert_eq!(hunks.len(), 1);
+        hunks[0].decision = Some(commands::resolve::Decision::Theirs);
+
+        let anc_l: Vec<&str> = anc.lines().collect();
+        let our_l: Vec<&str> = ours.lines().collect();
+        let thr_l: Vec<&str> = theirs.lines().collect();
+        let resolved = commands::resolve::build_resolved_content(&anc_l, &our_l, &thr_l, &hunks, true);
+        assert_eq!(resolved, "A\nB_THEIRS\nC\nD\nE_THEIRS\n");
+    }
+
+    #[test]
+    fn diff3_identical_edits_on_both_sides_do_not_conflict() {
+        // Both sides made the exact same change → no conflict, change applied.
+        let merged = commands::resolve::try_auto_merge("A\nB\nC\n", "A\nZ\nC\n", "A\nZ\nC\n");
+        assert_eq!(merged.as_deref(), Some("A\nZ\nC\n"));
     }
 
     // =========================================================================
@@ -2189,6 +2456,32 @@ mod tests {
         assert!(r.is_err());
     }
 
+    #[test]
+    fn squash_refuses_when_another_branch_depends_on_range() {
+        // Regression: squashing deleted snapshots without checking whether any
+        // other branch forked off one of them, orphaning that branch's history.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1\n");
+        save(&root, "s1");
+        write(&root, "f.txt", "v2\n");
+        save(&root, "s2"); // <- feature will fork from here
+        // Fork a branch off s2.
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "g.txt", "feature\n");
+        save(&root, "feature work");
+        // Back to main, add one more so we have >=3 to squash.
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "v3\n");
+        save(&root, "s3");
+
+        // Squashing main's last 3 (s1,s2,s3) would delete s2, which feature
+        // depends on → must be refused.
+        let r = commands::squash::run(&root, 3, "combined");
+        assert!(r.is_err(), "squash must refuse to orphan branch 'feature'");
+        // History must be intact.
+        assert!(snapshot_exists(&root, &parent(&root)));
+    }
+
     // ─── diff range ───────────────────────────────────────────────────────────
 
     #[test]
@@ -2289,6 +2582,46 @@ mod tests {
         save(&root, "s1");
         let r = commands::rebase::run(&root, "", false, true);
         assert!(r.is_err());
+    }
+
+    #[test]
+    fn rebase_abort_after_conflict_restores_tip_and_cleans_snapshots() {
+        // A conflicting rebase, aborted, must restore the branch tip to exactly
+        // the pre-rebase head with no replayed commits left masquerading as tip.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base\n");
+        save(&root, "base");
+
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "feature\n");
+        save(&root, "feature change");
+        let feature_head = parent(&root);
+
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "main conflict\n");
+        save(&root, "main conflict");
+
+        commands::switch::run(&root, "feature", false).unwrap();
+        let _ = commands::rebase::run(&root, "main", false, false); // conflicts
+
+        commands::rebase::run(&root, "", true, false).unwrap(); // abort
+
+        assert!(!exists(&root, ".velo/REBASE_STATE"));
+        assert!(!exists(&root, ".velo/MERGE_HEAD"));
+        assert_eq!(parent(&root), feature_head, "PARENT restored to feature head");
+
+        // The apparent branch tip must be the original feature head, not a
+        // leftover replayed commit.
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let tip: String = conn
+            .query_row(
+                "SELECT hash FROM snapshots WHERE branch = 'feature' \
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tip, feature_head, "no replayed snapshot may survive abort");
     }
 
     // ─── pathspec on save ─────────────────────────────────────────────────────

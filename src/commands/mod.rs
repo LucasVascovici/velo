@@ -348,36 +348,6 @@ pub fn get_conflict_files(root: &Path) -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[allow(dead_code)]
-fn walkdir_all(root: &Path) -> std::io::Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    for entry in fs::read_dir(root)? {
-        let entry = entry?;
-        let path = entry.path();
-        let n = entry.file_name();
-        let name = n.to_str().unwrap_or("");
-        if name == ".velo" || name == ".git" {
-            continue;
-        }
-        if path.is_dir() {
-            if let Ok(mut sub) = walkdir_all(&path) {
-                out.append(&mut sub);
-            }
-        } else {
-            out.push(path);
-        }
-    }
-    Ok(out)
-}
-
-// ─── Hashing (public for other modules) ──────────────────────────────────────
-
-/// Streaming content hash — delegates to `storage::fast_hash`.
-#[allow(dead_code)]
-pub fn stream_hash(path: &Path) -> String {
-    crate::storage::fast_hash(path)
-}
-
 /// Return `true` if the file likely contains binary data.
 pub fn is_binary(path: &Path) -> bool {
     if let Ok(mut file) = fs::File::open(path) {

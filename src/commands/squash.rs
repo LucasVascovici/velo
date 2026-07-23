@@ -70,6 +70,41 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
     let new_parent = &rows[rows.len() - 1].2; // parent of the oldest squashed snapshot
     let squashed_hashes: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
 
+    // ── Safety: refuse if a snapshot outside the range depends on one inside ──
+    // Another branch (or a merge commit) may point at a snapshot in the squash
+    // range via parent_hash / merge_parent. Deleting it would orphan that
+    // history, so refuse rather than corrupt the graph.
+    {
+        let placeholders = vec!["?"; squashed_hashes.len()].join(",");
+        let sql = format!(
+            "SELECT DISTINCT branch FROM snapshots
+             WHERE hash NOT IN ({ph})
+               AND (parent_hash IN ({ph}) OR merge_parent IN ({ph}))",
+            ph = placeholders
+        );
+        // Three IN clauses, each taking the full set of squashed hashes in order.
+        let mut params_vec: Vec<&dyn rusqlite::ToSql> =
+            Vec::with_capacity(squashed_hashes.len() * 3);
+        for _ in 0..3 {
+            for h in &squashed_hashes {
+                params_vec.push(h);
+            }
+        }
+        let mut stmt = conn.prepare(&sql)?;
+        let dependants: Vec<String> = stmt
+            .query_map(params_vec.as_slice(), |r| r.get::<_, String>(0))?
+            .filter_map(|r| r.ok())
+            .collect();
+        drop(stmt);
+        if !dependants.is_empty() {
+            return Err(VeloError::InvalidInput(format!(
+                "Cannot squash: snapshot(s) in the range are the base of branch(es) [{}]. \
+                 Squashing would orphan that history.",
+                dependants.join(", ")
+            )));
+        }
+    }
+
     println!(
         "\n{} Squashing {} snapshots on '{}'…",
         style("◆").cyan().bold(),

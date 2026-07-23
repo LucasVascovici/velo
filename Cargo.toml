@@ -1,6 +1,6 @@
 [package]
 name = "velo"
-version = "2.4.0"
+version = "2.3.5"
 edition = "2021"
 
 [dependencies]
@@ -10,7 +10,7 @@ zstd        = "0.13"
 rusqlite    = { version = "0.39", features = ["bundled"] }
 hex         = "0.4"
 rayon       = "1.11"
-similar     = "2.5"
+similar     = "3.1.1"
 console     = "0.16"
 chrono      = "0.4"
 ignore      = "0.4"

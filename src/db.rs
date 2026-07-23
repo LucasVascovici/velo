@@ -23,12 +23,18 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
             snapshot_hash TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS trash (
-            hash        TEXT PRIMARY KEY,
-            message     TEXT NOT NULL,
-            branch      TEXT NOT NULL,
-            parent_hash TEXT NOT NULL DEFAULT '',
-            created_at  DATETIME,
-            deleted_at  DATETIME DEFAULT CURRENT_TIMESTAMP
+            hash         TEXT PRIMARY KEY,
+            message      TEXT NOT NULL,
+            branch       TEXT NOT NULL,
+            parent_hash  TEXT NOT NULL DEFAULT '',
+            merge_parent TEXT NOT NULL DEFAULT '',
+            created_at   DATETIME,
+            deleted_at   DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        -- Tags removed by `undo`, held so `redo` can restore them.
+        CREATE TABLE IF NOT EXISTS trash_tags (
+            name          TEXT PRIMARY KEY,
+            snapshot_hash TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS index_cache (
             path     TEXT PRIMARY KEY,
@@ -99,6 +105,31 @@ fn apply_migrations(conn: &Connection) -> Result<()> {
             "ALTER TABLE snapshots ADD COLUMN merge_parent TEXT NOT NULL DEFAULT '';",
         )?;
     }
+
+    // Migration 2: add merge_parent to trash (2.4+) so undo→redo of a merge
+    // commit preserves its second parent instead of silently dropping it.
+    let trash_has_mp: bool = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('trash') WHERE name = 'merge_parent'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !trash_has_mp {
+        conn.execute_batch(
+            "ALTER TABLE trash ADD COLUMN merge_parent TEXT NOT NULL DEFAULT '';",
+        )?;
+    }
+
+    // Migration 3: trash_tags table (2.4+) so undo→redo restores tags.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS trash_tags (
+            name          TEXT PRIMARY KEY,
+            snapshot_hash TEXT NOT NULL
+        );",
+    )?;
+
     Ok(())
 }
 
