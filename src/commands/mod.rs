@@ -211,38 +211,36 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
         fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     // ── 1. Load snapshot's file map ───────────────────────────────────────────
-    let mut db_files: HashMap<String, String> = {
-        let mut stmt = conn
-            .prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")
-            .unwrap();
-        let collected: HashMap<String, String> = stmt
-            .query_map([parent_hash.trim()], |r| {
+    // Degrade gracefully: a transient DB error (e.g. a momentary lock) yields an
+    // empty map rather than panicking the whole command.
+    let mut db_files: HashMap<String, String> = conn
+        .prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map([parent_hash.trim()], |r| {
                 Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        collected
-    };
+            })?;
+            Ok(rows.filter_map(|r| r.ok()).collect::<HashMap<_, _>>())
+        })
+        .unwrap_or_default();
 
     // ── 2. Load index cache ───────────────────────────────────────────────────
-    let index: HashMap<String, CacheEntry> = {
-        let mut stmt = conn
-            .prepare("SELECT path, mtime_ns, size, hash FROM index_cache")
-            .unwrap();
-        stmt.query_map([], |r| {
-            Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, i64>(1)?,
-                r.get::<_, i64>(2)?,
-                r.get::<_, String>(3)?,
-            ))
+    let index: HashMap<String, CacheEntry> = conn
+        .prepare("SELECT path, mtime_ns, size, hash FROM index_cache")
+        .and_then(|mut stmt| {
+            let rows = stmt.query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ))
+            })?;
+            Ok(rows
+                .filter_map(|r| r.ok())
+                .map(|(p, m, s, h)| (p, CacheEntry { mtime_ns: m, size: s, hash: h }))
+                .collect::<HashMap<_, _>>())
         })
-        .unwrap()
-        .filter_map(|r| r.ok())
-        .map(|(p, m, s, h)| (p, CacheEntry { mtime_ns: m, size: s, hash: h }))
-        .collect()
-    };
+        .unwrap_or_default();
 
     // ── 3. Parallel walk ──────────────────────────────────────────────────────
     let entries = walk_with_meta(root);
@@ -251,10 +249,10 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
     // Returns (rel_path, current_hash, mtime_ns, size, was_cache_miss)
     let results: Vec<(String, String, i64, i64, bool)> = entries
         .into_par_iter()
-        .map(|e| {
-            let rel = crate::db::normalise(
-                e.path.strip_prefix(root).unwrap().to_str().unwrap(),
-            );
+        .filter_map(|e| {
+            // Skip paths that aren't under root or aren't valid UTF-8 rather
+            // than panicking on the (rare) non-UTF-8 path.
+            let rel = crate::db::normalise(e.path.strip_prefix(root).ok()?.to_str()?);
             let (hash, miss) = if let Some(cached) = index.get(&rel) {
                 if cached.mtime_ns == e.mtime_ns && cached.size == e.size {
                     (cached.hash.clone(), false) // cache hit — no disk read
@@ -264,7 +262,7 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
             } else {
                 (crate::storage::fast_hash(&e.path), true)
             };
-            (rel, hash, e.mtime_ns, e.size, miss)
+            Some((rel, hash, e.mtime_ns, e.size, miss))
         })
         .collect();
 
@@ -357,6 +355,87 @@ pub fn is_binary(path: &Path) -> bool {
         }
     }
     false
+}
+
+// ─── Three-way file reconciliation (shared by merge / cherry-pick / rebase) ───
+
+/// What to do with a single file when applying "theirs" on top of "ours",
+/// relative to a common ancestor. All inputs are object hashes ("" = absent).
+#[derive(Debug)]
+pub enum Reconcile {
+    /// Nothing to do — theirs made no change, or both sides already agree.
+    Nothing,
+    /// Take theirs verbatim: write object `hash` to the working tree.
+    /// `is_new` is true when the file did not exist in the ancestor.
+    TakeTheirs { hash: String, is_new: bool },
+    /// Theirs deleted a file ours left untouched — remove it.
+    Delete,
+    /// Both sides changed non-overlapping regions — write this merged content.
+    AutoMerged(Vec<u8>),
+    /// Theirs deleted a file ours modified — keep ours (surface to the caller).
+    KeepOurs,
+    /// Both sides changed the same region differently — a real conflict.
+    Conflict,
+}
+
+/// Decide how to reconcile one file across `anc` (ancestor), `our` (current),
+/// and `thr` (incoming) object hashes.
+///
+/// This is the single source of truth for merge/cherry-pick/rebase file
+/// classification. Non-overlapping text changes on both sides are auto-merged
+/// via a real 3-way merge; only genuinely overlapping edits (or binary files)
+/// become conflicts.
+pub fn reconcile_file(objects_dir: &Path, anc: &str, our: &str, thr: &str) -> Result<Reconcile> {
+    // Identical on both sides — nothing to bring in (covers the both-unchanged
+    // and both-made-the-same-change cases).
+    if thr == our {
+        return Ok(Reconcile::Nothing);
+    }
+    let our_changed = our != anc;
+    let thr_changed = thr != anc;
+
+    // Theirs introduced no change relative to the ancestor.
+    if !thr_changed {
+        return Ok(Reconcile::Nothing);
+    }
+    // Only theirs changed — apply it cleanly.
+    if !our_changed {
+        return Ok(if thr.is_empty() {
+            Reconcile::Delete
+        } else {
+            Reconcile::TakeTheirs { hash: thr.to_string(), is_new: anc.is_empty() }
+        });
+    }
+    // Both sides changed, to different content.
+    if thr.is_empty() {
+        return Ok(Reconcile::KeepOurs); // theirs deleted, ours modified
+    }
+    if our.is_empty() {
+        // ours deleted, theirs modified — restore theirs
+        return Ok(Reconcile::TakeTheirs { hash: thr.to_string(), is_new: false });
+    }
+
+    // Both modified to different non-empty content → attempt a line-level merge.
+    let anc_bytes = if anc.is_empty() {
+        Vec::new()
+    } else {
+        crate::storage::read_object(objects_dir, anc)?
+    };
+    let our_bytes = crate::storage::read_object(objects_dir, our)?;
+    let thr_bytes = crate::storage::read_object(objects_dir, thr)?;
+
+    if anc_bytes.contains(&0) || our_bytes.contains(&0) || thr_bytes.contains(&0) {
+        return Ok(Reconcile::Conflict); // binary — cannot auto-merge
+    }
+
+    match crate::commands::resolve::try_auto_merge(
+        &String::from_utf8_lossy(&anc_bytes),
+        &String::from_utf8_lossy(&our_bytes),
+        &String::from_utf8_lossy(&thr_bytes),
+    ) {
+        Some(merged) => Ok(Reconcile::AutoMerged(merged.into_bytes())),
+        None => Ok(Reconcile::Conflict),
+    }
 }
 
 // ─── Filesystem helpers ───────────────────────────────────────────────────────

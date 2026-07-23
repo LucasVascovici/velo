@@ -357,7 +357,7 @@ NOTES
     ///
     /// Tags are persistent labels pointing to a specific snapshot.
     /// They can be used anywhere a hash is accepted (restore, show,
-    /// cherry-pick, logs, etc.).
+    /// cherry-pick, history, etc.).
     ///
     /// Examples
     ///   velo tag                         # list all tags

@@ -233,127 +233,53 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
         let cur_hash = current_files.get(*path).map(|s| s.as_str()).unwrap_or("");
         let tgt_hash = target_files.get(*path).map(|s| s.as_str()).unwrap_or("");
         let anc_hash = ancestor_files.get(*path).map(|s| s.as_str()).unwrap_or("");
+        let full = root.join(crate::db::db_to_path(path));
 
-        // Same content on both tips — nothing to do regardless of ancestor
-        if cur_hash == tgt_hash {
-            continue;
-        }
-
-        let cur_changed = cur_hash != anc_hash; // current tip changed vs ancestor
-        let tgt_changed = tgt_hash != anc_hash; // target  tip changed vs ancestor
-
-        match (cur_changed, tgt_changed) {
-            // ── Only target changed since ancestor ────────────────────────────
-            (false, true) => {
-                let full = root.join(crate::db::db_to_path(path));
-                if tgt_hash.is_empty() {
-                    // Target deleted this file; current hasn't touched it → delete
-                    if full.exists() {
-                        fs::remove_file(&full)?;
-                    }
-                    println!("  {} Deleted: {}", style("-").red(), path);
-                    del_count += 1;
-                } else {
-                    // Target modified or added this file
-                    if let Some(p) = full.parent() {
-                        fs::create_dir_all(p)?;
-                    }
-                    let data = storage::read_object(&objects_dir, tgt_hash)?;
-                    fs::write(&full, data)?;
-                    if anc_hash.is_empty() {
-                        println!("  {} New file: {}", style("+").green(), path);
-                        new_count += 1;
-                    } else {
-                        println!("  {} Updated:  {}", style("~").cyan(), path);
-                        took_count += 1;
-                    }
+        match crate::commands::reconcile_file(&objects_dir, anc_hash, cur_hash, tgt_hash)? {
+            crate::commands::Reconcile::Nothing => {}
+            crate::commands::Reconcile::Delete => {
+                if full.exists() {
+                    fs::remove_file(&full)?;
                 }
+                println!("  {} Deleted: {}", style("-").red(), path);
+                del_count += 1;
             }
-
-            // ── Only current changed since ancestor ───────────────────────────
-            // The file is already correct on disk; nothing to write.
-            (true, false) => {}
-
-            // ── Both sides changed since ancestor → true conflict ─────────────
-            (true, true) => {
-                if tgt_hash.is_empty() {
-                    // Target deleted, current modified → keep current, warn
-                    println!(
-                        "  {} Delete/modify conflict: '{}' (keeping ours)",
-                        style("!").yellow().bold(),
-                        path
-                    );
-                } else if cur_hash.is_empty() {
-                    // Current deleted, target modified → take target's version
-                    let full = root.join(crate::db::db_to_path(path));
-                    if let Some(p) = full.parent() {
-                        fs::create_dir_all(p)?;
-                    }
-                    let data = storage::read_object(&objects_dir, tgt_hash)?;
-                    fs::write(&full, data)?;
-                    println!(
-                        "  {} Restored (deleted on ours, modified on theirs): {}",
-                        style("~").cyan(),
-                        path
-                    );
+            crate::commands::Reconcile::TakeTheirs { hash, is_new } => {
+                if let Some(p) = full.parent() {
+                    fs::create_dir_all(p)?;
+                }
+                fs::write(&full, storage::read_object(&objects_dir, &hash)?)?;
+                if is_new {
+                    println!("  {} New file: {}", style("+").green(), path);
+                    new_count += 1;
+                } else {
+                    println!("  {} Updated:  {}", style("~").cyan(), path);
                     took_count += 1;
-                } else {
-                    // Both modified to different content. Attempt a line-level
-                    // 3-way merge: if the two sides' edits don't overlap we can
-                    // combine them automatically; only genuinely overlapping
-                    // edits become a recorded conflict for `velo resolve`.
-                    let anc_bytes = storage::read_object(&objects_dir, anc_hash)?;
-                    let our_bytes = storage::read_object(&objects_dir, cur_hash)?;
-                    let thr_bytes = storage::read_object(&objects_dir, tgt_hash)?;
-                    let is_binary = anc_bytes.contains(&0)
-                        || our_bytes.contains(&0)
-                        || thr_bytes.contains(&0);
-
-                    let merged = if is_binary {
-                        None
-                    } else {
-                        crate::commands::resolve::try_auto_merge(
-                            &String::from_utf8_lossy(&anc_bytes),
-                            &String::from_utf8_lossy(&our_bytes),
-                            &String::from_utf8_lossy(&thr_bytes),
-                        )
-                    };
-
-                    if let Some(merged) = merged {
-                        let full = root.join(crate::db::db_to_path(path));
-                        if let Some(p) = full.parent() {
-                            fs::create_dir_all(p)?;
-                        }
-                        fs::write(&full, merged)?;
-                        println!("  {} Auto-merged: {}", style("~").cyan(), path);
-                        took_count += 1;
-                    } else {
-                        // Overlapping edits → store in conflict_files DB.
-                        // The working file stays untouched (contains our version).
-                        conflicts.push((
-                            path.to_string(),
-                            anc_hash.to_string(),
-                            cur_hash.to_string(),
-                            tgt_hash.to_string(),
-                        ));
-                        println!("  {} Conflict: {}", style("!").yellow().bold(), path);
-                    }
                 }
             }
-
-            // Defensive: both sides differ but no ancestor match — treat as conflict
-            (false, false) => {
+            crate::commands::Reconcile::AutoMerged(bytes) => {
+                if let Some(p) = full.parent() {
+                    fs::create_dir_all(p)?;
+                }
+                fs::write(&full, bytes)?;
+                println!("  {} Auto-merged: {}", style("~").cyan(), path);
+                took_count += 1;
+            }
+            crate::commands::Reconcile::KeepOurs => {
+                println!(
+                    "  {} Delete/modify conflict: '{}' (keeping ours)",
+                    style("!").yellow().bold(),
+                    path
+                );
+            }
+            crate::commands::Reconcile::Conflict => {
                 conflicts.push((
                     path.to_string(),
                     anc_hash.to_string(),
                     cur_hash.to_string(),
                     tgt_hash.to_string(),
                 ));
-                println!(
-                    "  {} Conflict (pre-ancestor): {}",
-                    style("!").yellow().bold(),
-                    path
-                );
+                println!("  {} Conflict: {}", style("!").yellow().bold(), path);
             }
         }
     }
