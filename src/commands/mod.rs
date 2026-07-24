@@ -19,6 +19,7 @@ pub mod blame;
 pub mod grep;
 pub mod squash;
 pub mod rebase;
+pub mod fsck;
 
 use std::collections::HashMap;
 use std::fs;
@@ -32,8 +33,57 @@ use rayon::prelude::*;
 
 use crate::error::{Result, VeloError};
 
-/// Number of hex characters used for snapshot hashes (48 bits of entropy).
-pub const SNAP_HASH_LEN: usize = 12;
+/// Number of hex characters used for snapshot hashes (64 bits of entropy).
+pub const SNAP_HASH_LEN: usize = 16;
+
+/// Compute a **content-addressed** snapshot id.
+///
+/// The id is derived from the full tree (every `path → object-hash` pair,
+/// sorted), the parent(s), the message, and the timestamp. Because it commits
+/// to the tree, a snapshot's hash can be *verified* against its contents (see
+/// `velo fsck`) and identical work yields an identical id — the property
+/// collaborative sync depends on. The older scheme hashed only metadata
+/// (message/branch/parent/time) and never the tree.
+///
+/// Deliberately excludes the branch: a snapshot's identity must not change when
+/// a branch label is renamed or soft-deleted (which rewrites the `branch`
+/// column), and — as in Git — the same commit reachable from two branches
+/// should have the same id.
+pub fn snapshot_id(
+    tree: &[(String, String)],
+    parent: &str,
+    merge_parent: &str,
+    message: &str,
+    timestamp: &str,
+) -> String {
+    let mut entries: Vec<&(String, String)> = tree.iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    let mut h = blake3::Hasher::new();
+    h.update(b"velo-snapshot-v1\n");
+    for (path, hash) in entries {
+        h.update(path.as_bytes());
+        h.update(b"\0");
+        h.update(hash.as_bytes());
+        h.update(b"\n");
+    }
+    h.update(b"parent\0");
+    h.update(parent.as_bytes());
+    h.update(b"\nmerge\0");
+    h.update(merge_parent.as_bytes());
+    h.update(b"\nmessage\0");
+    h.update(message.as_bytes());
+    h.update(b"\ntime\0");
+    h.update(timestamp.as_bytes());
+    h.finalize().to_hex().to_string()[..SNAP_HASH_LEN].to_string()
+}
+
+/// The timestamp format used both for a snapshot's `created_at` column and as an
+/// input to `snapshot_id`. Matches SQLite's `CURRENT_TIMESTAMP` (UTC, second
+/// precision) so new rows sort consistently with any pre-existing ones.
+pub fn snapshot_timestamp() -> String {
+    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
 
 // ─── File status ─────────────────────────────────────────────────────────────
 

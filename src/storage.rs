@@ -1,7 +1,39 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::error::{Result, VeloError};
+
+/// Monotonic counter giving each temp file a process-unique suffix so parallel
+/// writers (e.g. rayon threads storing objects) never collide on a temp name.
+static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Write `contents` to `path` atomically: write to a sibling temp file first,
+/// then rename it over the target. A crash mid-write can only ever leave a
+/// stray `*.tmp.*` file (cleaned by the next `gc`), never a truncated target.
+/// The rename is atomic within a filesystem on both Unix and Windows.
+pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    let tmp = temp_sibling(path);
+    fs::write(&tmp, contents)?;
+    match fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(e) => {
+            let _ = fs::remove_file(&tmp); // don't leak the temp on failure
+            Err(e)
+        }
+    }
+}
+
+fn temp_sibling(target: &Path) -> PathBuf {
+    let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let mut name = target
+        .file_name()
+        .map(|s| s.to_os_string())
+        .unwrap_or_default();
+    name.push(format!(".tmp.{pid}.{n}"));
+    target.with_file_name(name)
+}
 
 /// Threshold above which we use memory-mapped I/O instead of read-into-Vec.
 /// Avoids the kernel→userspace copy that `fs::read` incurs on large files.
@@ -30,7 +62,9 @@ pub fn hash_and_compress(file_path: &Path, objects_dir: &Path) -> Result<String>
         });
         let compressed = zstd::encode_all(&data[..], 1) // level 1: fast save
             .map_err(VeloError::Io)?;
-        fs::write(&obj_path, compressed).map_err(VeloError::Io)?;
+        // Atomic write: a crash can't leave a half-written object under its
+        // final content-addressed name (which would corrupt reads forever).
+        write_atomic(&obj_path, &compressed).map_err(VeloError::Io)?;
     }
     Ok(hash)
 }

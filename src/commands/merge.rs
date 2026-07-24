@@ -5,7 +5,7 @@ use std::path::Path;
 use console::style;
 use rusqlite::params;
 
-use crate::commands::{get_dirty_files, SNAP_HASH_LEN};
+use crate::commands::get_dirty_files;
 use crate::db;
 use crate::error::{Result, VeloError};
 use crate::storage;
@@ -293,9 +293,9 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
 
     if !conflicts.is_empty() {
         // Record merge state: write pre-merge PARENT hash so --abort can restore it
-        fs::write(
-            root.join(".velo/MERGE_HEAD"),
-            format!("{}:{}", pre_merge_parent.trim(), target_branch),
+        storage::write_atomic(
+            &root.join(".velo/MERGE_HEAD"),
+            format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
         )?;
         let conn2 = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         for (path, anc_h, our_h, thr_h) in &conflicts {
@@ -328,7 +328,21 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
             "Once resolved:        {}",
             style("velo save \"Merge <branch>\"").yellow().bold()
         );
+    } else if new_count + took_count + del_count == 0 {
+        // Nothing to apply — the branches already agree on every file.
+        println!(
+            "\n{} Already up to date — nothing to merge.",
+            style("✔").green()
+        );
     } else {
+        // Clean merge: still record MERGE_HEAD so the finalising `velo save`
+        // stamps this snapshot with a second parent (`merge_parent`). Without
+        // this a conflict-free merge would collapse to a single-parent commit
+        // and `velo history --graph` would draw it as linear.
+        storage::write_atomic(
+            &root.join(".velo/MERGE_HEAD"),
+            format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
+        )?;
         println!(
             "\n{} Clean merge! Run {} to finalise.",
             style("✔").green(),
@@ -354,24 +368,27 @@ fn do_fast_forward(
         style(target_hash).yellow()
     );
 
-    let now = chrono::Utc::now().to_rfc3339();
     let msg = format!("Fast-forward merge from '{}'", target_branch);
-    let ff_full_hex =
-        blake3::hash(format!("{}{}{}{}", msg, head_branch, current_hash, now).as_bytes())
-            .to_hex()
-            .to_string();
-    let new_hash = &ff_full_hex[..SNAP_HASH_LEN];
+    // The FF snapshot's tree is exactly the target's tree.
+    let tree: Vec<(String, String)> = load_file_map(conn, target_hash)?
+        .into_iter()
+        .collect();
+    let timestamp = crate::commands::snapshot_timestamp();
+    let new_hash = crate::commands::snapshot_id(&tree, current_hash, "", &msg, &timestamp);
+    let new_hash = new_hash.as_str();
 
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash) VALUES (?, ?, ?, ?)",
-        params![new_hash, &msg, head_branch, current_hash],
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at) VALUES (?, ?, ?, ?, ?)",
+        params![new_hash, &msg, head_branch, current_hash, timestamp],
     )?;
-    tx.execute(
-        "INSERT INTO file_map (snapshot_hash, path, hash)
-         SELECT ?, path, hash FROM file_map WHERE snapshot_hash = ?",
-        params![new_hash, target_hash],
-    )?;
+    {
+        let mut ins =
+            tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
+        for (p, h) in &tree {
+            ins.execute(params![new_hash, p, h])?;
+        }
+    }
     tx.commit()?;
 
     // restore::run writes PARENT itself

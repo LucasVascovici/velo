@@ -80,7 +80,7 @@ pub fn run(root: &Path) -> Result<String> {
 
     if new_parent.is_empty() {
         // The very first commit was undone — clear PARENT and delete all tracked files
-        fs::write(root.join(".velo/PARENT"), "")?;
+        crate::storage::write_atomic(&root.join(".velo/PARENT"), b"")?;
         for path in crate::commands::get_tracked_files(root) {
             let _ = fs::remove_file(&path);
         }

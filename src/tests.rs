@@ -9,6 +9,7 @@
 //!   - Helper assertions are defined at the bottom of the file.
 
 #[cfg(test)]
+#[allow(clippy::module_inception)]
 mod tests {
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1421,10 +1422,25 @@ mod tests {
             .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
             .unwrap();
         assert_eq!(n, 0, "non-overlapping edits must not conflict");
-        assert!(!exists(&root, ".velo/MERGE_HEAD"), "clean merge leaves no MERGE_HEAD");
+        // A clean merge still records MERGE_HEAD so the finalising save can
+        // stamp the second parent.
+        assert!(exists(&root, ".velo/MERGE_HEAD"), "clean merge records MERGE_HEAD until save");
 
         // Both sides' changes must be present.
         assert_eq!(read(&root, "f.txt"), "A_CHANGED\nB\nC\nD\nE_CHANGED\n");
+
+        // Finalise: the merge commit must carry a non-empty merge_parent and
+        // MERGE_HEAD must be cleared.
+        let merge_hash = save(&root, "Merge feature");
+        assert!(!exists(&root, ".velo/MERGE_HEAD"), "MERGE_HEAD cleared after save");
+        let mp: String = conn
+            .query_row(
+                "SELECT merge_parent FROM snapshots WHERE hash = ?",
+                [&merge_hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!mp.is_empty(), "clean merge commit records its second parent");
     }
 
     #[test]
@@ -2506,6 +2522,217 @@ mod tests {
         assert!(r.is_err(), "squash must refuse to orphan branch 'feature'");
         // History must be intact.
         assert!(snapshot_exists(&root, &parent(&root)));
+    }
+
+    // =========================================================================
+    // repo lock
+    // =========================================================================
+
+    #[test]
+    fn repo_lock_refuses_second_holder_and_frees_on_drop() {
+        let (_tmp, root) = setup();
+        let guard = crate::lock::RepoLock::acquire(&root).unwrap();
+        // A second acquisition while the first is held must be refused.
+        assert!(
+            crate::lock::RepoLock::acquire(&root).is_err(),
+            "a concurrent lock must be refused"
+        );
+        drop(guard);
+        // Once released, the lock is available again.
+        assert!(
+            crate::lock::RepoLock::acquire(&root).is_ok(),
+            "lock must be re-acquirable after release"
+        );
+    }
+
+    // =========================================================================
+    // fsck
+    // =========================================================================
+
+    #[test]
+    fn fsck_passes_on_healthy_repo() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "A\nB\nC\n");
+        save(&root, "s1");
+        commands::switch::run(&root, "feat", false).unwrap();
+        write(&root, "f.txt", "A2\nB\nC\n");
+        save(&root, "s2");
+        commands::switch::run(&root, "main", true).unwrap();
+        write(&root, "f.txt", "A\nB\nC2\n");
+        save(&root, "s3");
+        commands::merge::run(&root, Some("feat"), false).unwrap();
+        save(&root, "merge");
+        commands::tag::run(&root, Some("v1".into()), None, None, false).unwrap();
+
+        assert!(commands::fsck::run(&root).is_ok(), "healthy repo must pass fsck");
+    }
+
+    #[test]
+    fn fsck_detects_content_addressing_and_dangling_refs() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "hello\n");
+        let h = save(&root, "s1");
+
+        // Snapshot id must verify against its content.
+        assert!(commands::fsck::run(&root).is_ok());
+
+        // A corrupt object is detected.
+        let obj = fs::read_dir(root.join(".velo/objects"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.is_file())
+            .unwrap();
+        fs::write(&obj, b"not valid zstd").unwrap();
+        assert!(commands::fsck::run(&root).is_err(), "corrupt object must fail fsck");
+        fs::remove_file(&obj).ok(); // restore-ish
+
+        // A tag pointing at a missing snapshot is detected.
+        let (_t2, root2) = setup();
+        write(&root2, "g.txt", "x\n");
+        save(&root2, "s1");
+        let conn = db::get_conn_at_path(&root2.join(".velo/velo.db")).unwrap();
+        conn.execute(
+            "INSERT INTO tags (name, snapshot_hash) VALUES ('ghost', 'deadbeefdeadbeef')",
+            [],
+        )
+        .unwrap();
+        assert!(commands::fsck::run(&root2).is_err(), "dangling tag must fail fsck");
+
+        let _ = h;
+    }
+
+    // =========================================================================
+    // object store — roundtrip property tests
+    // =========================================================================
+    mod storage_props {
+        use crate::storage;
+        use proptest::prelude::*;
+        use tempfile::TempDir;
+
+        /// Save `bytes` as an object and read it back.
+        fn roundtrip(bytes: &[u8]) -> Vec<u8> {
+            let tmp = TempDir::new().unwrap();
+            let objects = tmp.path().join("objects");
+            std::fs::create_dir_all(&objects).unwrap();
+            let file = tmp.path().join("input.bin");
+            std::fs::write(&file, bytes).unwrap();
+            let hash = storage::hash_and_compress(&file, &objects).unwrap();
+            storage::read_object(&objects, &hash).unwrap()
+        }
+
+        proptest! {
+            /// Binary content (contains a NUL) must round-trip byte-for-byte —
+            /// no CRLF normalisation, no compression loss.
+            #[test]
+            fn binary_roundtrips_exactly(mut bytes in prop::collection::vec(any::<u8>(), 0..4096)) {
+                // Guarantee it's treated as binary.
+                bytes.push(0);
+                prop_assert_eq!(roundtrip(&bytes), bytes);
+            }
+
+            /// Text content round-trips modulo CRLF→LF normalisation: the stored
+            /// bytes equal the input with all '\r' stripped.
+            #[test]
+            fn text_roundtrips_modulo_crlf(s in "[ -~\r\n]{0,4096}") {
+                let bytes = s.into_bytes();
+                let expected: Vec<u8> = bytes.iter().copied().filter(|b| *b != b'\r').collect();
+                prop_assert_eq!(roundtrip(&bytes), expected);
+            }
+
+            /// Identical content always hashes to the same object name.
+            #[test]
+            fn identical_content_same_hash(bytes in prop::collection::vec(any::<u8>(), 0..2048)) {
+                let tmp = TempDir::new().unwrap();
+                let objects = tmp.path().join("objects");
+                std::fs::create_dir_all(&objects).unwrap();
+                let f1 = tmp.path().join("a"); let f2 = tmp.path().join("b");
+                std::fs::write(&f1, &bytes).unwrap();
+                std::fs::write(&f2, &bytes).unwrap();
+                let h1 = storage::hash_and_compress(&f1, &objects).unwrap();
+                let h2 = storage::hash_and_compress(&f2, &objects).unwrap();
+                prop_assert_eq!(h1, h2);
+            }
+        }
+    }
+
+    // =========================================================================
+    // 3-way merge engine — property tests (randomised, with shrinking)
+    // =========================================================================
+    mod merge_props {
+        use super::commands::resolve::try_auto_merge;
+        use proptest::prelude::*;
+
+        /// Join lines into a file body (trailing newline, like a real file).
+        fn body(lines: &[String]) -> String {
+            let mut s = lines.join("\n");
+            s.push('\n');
+            s
+        }
+
+        /// A non-empty run of short lowercase lines (never collides with the
+        /// uppercase ANCHOR markers used to separate edit regions).
+        fn lines() -> impl Strategy<Value = Vec<String>> {
+            prop::collection::vec("[a-z]{1,5}", 1..6)
+        }
+
+        fn cat(a: &[String], b: &[String], c: &[String]) -> Vec<String> {
+            let mut v = Vec::with_capacity(a.len() + b.len() + c.len());
+            v.extend_from_slice(a);
+            v.extend_from_slice(b);
+            v.extend_from_slice(c);
+            v
+        }
+
+        proptest! {
+            /// If our side made no change, the merge must equal theirs exactly.
+            #[test]
+            fn ours_unchanged_yields_theirs(anc in lines(), theirs in lines()) {
+                let a = body(&anc);
+                let t = body(&theirs);
+                prop_assert_eq!(try_auto_merge(&a, &a, &t), Some(t));
+            }
+
+            /// Symmetric: if their side made no change, the merge equals ours.
+            #[test]
+            fn theirs_unchanged_yields_ours(anc in lines(), ours in lines()) {
+                let a = body(&anc);
+                let o = body(&ours);
+                prop_assert_eq!(try_auto_merge(&a, &o, &a), Some(o));
+            }
+
+            /// Both sides making the identical change is not a conflict.
+            #[test]
+            fn identical_change_on_both_sides(anc in lines(), both in lines()) {
+                let a = body(&anc);
+                let b = body(&both);
+                prop_assert_eq!(try_auto_merge(&a, &b, &b), Some(b));
+            }
+
+            /// No silent data loss: when ours edits only a prefix region and
+            /// theirs edits only a disjoint suffix region (separated by a stable
+            /// anchor block neither touches), the merge must keep BOTH edits.
+            #[test]
+            fn disjoint_edits_preserve_both_sides(
+                pre_a in lines(), suf_a in lines(),
+                pre_o in lines(), suf_t in lines(),
+            ) {
+                let anchor: Vec<String> = (0..4).map(|i| format!("ANCHOR{i}")).collect();
+                let ancestor = body(&cat(&pre_a, &anchor, &suf_a));
+                let ours     = body(&cat(&pre_o, &anchor, &suf_a)); // changed prefix only
+                let theirs   = body(&cat(&pre_a, &anchor, &suf_t)); // changed suffix only
+                let expected = body(&cat(&pre_o, &anchor, &suf_t)); // both, no loss
+
+                prop_assert_eq!(try_auto_merge(&ancestor, &ours, &theirs), Some(expected));
+            }
+
+            /// The merge is a pure function of its inputs.
+            #[test]
+            fn deterministic(anc in lines(), ours in lines(), theirs in lines()) {
+                let (a, o, t) = (body(&anc), body(&ours), body(&theirs));
+                prop_assert_eq!(try_auto_merge(&a, &o, &t), try_auto_merge(&a, &o, &t));
+            }
+        }
     }
 
     // ─── diff range ───────────────────────────────────────────────────────────
