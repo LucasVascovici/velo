@@ -50,21 +50,23 @@ pub const SNAP_HASH_LEN: usize = 16;
 /// column), and — as in Git — the same commit reachable from two branches
 /// should have the same id.
 pub fn snapshot_id(
-    tree: &[(String, String)],
+    tree: &[(String, String, i64)],
     parent: &str,
     merge_parent: &str,
     message: &str,
     timestamp: &str,
 ) -> String {
-    let mut entries: Vec<&(String, String)> = tree.iter().collect();
+    let mut entries: Vec<&(String, String, i64)> = tree.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut h = blake3::Hasher::new();
     h.update(b"velo-snapshot-v1\n");
-    for (path, hash) in entries {
+    for (path, hash, mode) in entries {
         h.update(path.as_bytes());
         h.update(b"\0");
         h.update(hash.as_bytes());
+        h.update(b"\0");
+        h.update(mode.to_string().as_bytes());
         h.update(b"\n");
     }
     h.update(b"parent\0");
@@ -78,11 +80,13 @@ pub fn snapshot_id(
     h.finalize().to_hex().to_string()[..SNAP_HASH_LEN].to_string()
 }
 
-/// The timestamp format used both for a snapshot's `created_at` column and as an
-/// input to `snapshot_id`. Matches SQLite's `CURRENT_TIMESTAMP` (UTC, second
-/// precision) so new rows sort consistently with any pre-existing ones.
+/// The timestamp used both for a snapshot's `created_at` column and as an input
+/// to `snapshot_id`. UTC with millisecond precision: the fixed-width
+/// `YYYY-MM-DD HH:MM:SS.mmm` form still sorts lexicographically = chronologically
+/// (and sorts correctly against any older second-precision rows), while the
+/// sub-second component removes the same-second id-collision foot-gun.
 pub fn snapshot_timestamp() -> String {
-    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S").to_string()
+    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
 // ─── File status ─────────────────────────────────────────────────────────────
@@ -172,6 +176,7 @@ struct WalkEntry {
     path: PathBuf,
     mtime_ns: i64,
     size: i64,
+    mode: i64,
 }
 
 /// Build a `WalkBuilder` with the standard ignore rules applied.
@@ -187,14 +192,16 @@ fn make_walker(root: &Path) -> WalkBuilder {
     b
 }
 
-/// Return all tracked file paths under `root` using the parallel walker.
+/// Return all tracked paths (regular files and symlinks) under `root`.
 pub fn get_tracked_files(root: &Path) -> Vec<PathBuf> {
     let acc: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
     make_walker(root).build_parallel().run(|| {
         Box::new(|res| {
             if let Ok(e) = res {
-                if e.path().is_file() {
-                    acc.lock().push(e.into_path());
+                if let Ok(meta) = fs::symlink_metadata(e.path()) {
+                    if meta.is_file() || meta.file_type().is_symlink() {
+                        acc.lock().push(e.into_path());
+                    }
                 }
             }
             WalkState::Continue
@@ -203,15 +210,18 @@ pub fn get_tracked_files(root: &Path) -> Vec<PathBuf> {
     acc.into_inner()
 }
 
-/// Parallel walk that collects both the path and its filesystem metadata.
+/// Parallel walk collecting each entry's path, lstat metadata, and mode.
+/// Uses `symlink_metadata` so symlinks are recorded as symlinks (mode 2) rather
+/// than being followed to their target.
 fn walk_with_meta(root: &Path) -> Vec<WalkEntry> {
     let acc: Mutex<Vec<WalkEntry>> = Mutex::new(Vec::new());
     make_walker(root).build_parallel().run(|| {
         Box::new(|res| {
             if let Ok(entry) = res {
                 let path = entry.into_path();
-                if let Ok(meta) = path.metadata() {
-                    if meta.is_file() {
+                if let Ok(meta) = fs::symlink_metadata(&path) {
+                    let is_symlink = meta.file_type().is_symlink();
+                    if meta.is_file() || is_symlink {
                         let mtime_ns = meta
                             .modified()
                             .ok()
@@ -219,7 +229,8 @@ fn walk_with_meta(root: &Path) -> Vec<WalkEntry> {
                             .map(|d| d.as_nanos() as i64)
                             .unwrap_or(0);
                         let size = meta.len() as i64;
-                        acc.lock().push(WalkEntry { path, mtime_ns, size });
+                        let mode = crate::storage::capture_mode(&path);
+                        acc.lock().push(WalkEntry { path, mtime_ns, size, mode });
                     }
                 }
             }
@@ -307,10 +318,10 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
                 if cached.mtime_ns == e.mtime_ns && cached.size == e.size {
                     (cached.hash.clone(), false) // cache hit — no disk read
                 } else {
-                    (crate::storage::fast_hash(&e.path), true)
+                    (crate::storage::hash_for(&e.path, e.mode), true)
                 }
             } else {
-                (crate::storage::fast_hash(&e.path), true)
+                (crate::storage::hash_for(&e.path, e.mode), true)
             };
             Some((rel, hash, e.mtime_ns, e.size, miss))
         })
@@ -409,19 +420,23 @@ pub fn is_binary(path: &Path) -> bool {
 
 // ─── Three-way file reconciliation (shared by merge / cherry-pick / rebase) ───
 
+/// A file's identity within a tree: its object hash ("" = absent) and mode.
+pub type FileRef<'a> = (&'a str, i64);
+
 /// What to do with a single file when applying "theirs" on top of "ours",
-/// relative to a common ancestor. All inputs are object hashes ("" = absent).
+/// relative to a common ancestor.
 #[derive(Debug)]
 pub enum Reconcile {
     /// Nothing to do — theirs made no change, or both sides already agree.
     Nothing,
-    /// Take theirs verbatim: write object `hash` to the working tree.
-    /// `is_new` is true when the file did not exist in the ancestor.
-    TakeTheirs { hash: String, is_new: bool },
+    /// Take theirs verbatim: write object `hash` with `mode` to the working
+    /// tree. `is_new` is true when the file did not exist in the ancestor.
+    TakeTheirs { hash: String, mode: i64, is_new: bool },
     /// Theirs deleted a file ours left untouched — remove it.
     Delete,
-    /// Both sides changed non-overlapping regions — write this merged content.
-    AutoMerged(Vec<u8>),
+    /// Both sides changed non-overlapping regions — write this merged content
+    /// with `mode`.
+    AutoMerged { content: Vec<u8>, mode: i64 },
     /// Theirs deleted a file ours modified — keep ours (surface to the caller).
     KeepOurs,
     /// Both sides changed the same region differently — a real conflict.
@@ -429,50 +444,62 @@ pub enum Reconcile {
 }
 
 /// Decide how to reconcile one file across `anc` (ancestor), `our` (current),
-/// and `thr` (incoming) object hashes.
+/// and `thr` (incoming), each a `(object-hash, mode)` pair.
 ///
 /// This is the single source of truth for merge/cherry-pick/rebase file
 /// classification. Non-overlapping text changes on both sides are auto-merged
-/// via a real 3-way merge; only genuinely overlapping edits (or binary files)
-/// become conflicts.
-pub fn reconcile_file(objects_dir: &Path, anc: &str, our: &str, thr: &str) -> Result<Reconcile> {
-    // Identical on both sides — nothing to bring in (covers the both-unchanged
-    // and both-made-the-same-change cases).
+/// via a real 3-way merge; overlapping edits, binary files, and symlinks (which
+/// can't be line-merged) become conflicts. A file's mode is part of its
+/// identity, so an executable-bit or file↔symlink change counts as a change.
+pub fn reconcile_file(
+    objects_dir: &Path,
+    anc: FileRef,
+    our: FileRef,
+    thr: FileRef,
+) -> Result<Reconcile> {
+    // Identical on both sides (content AND mode) — nothing to bring in.
     if thr == our {
         return Ok(Reconcile::Nothing);
     }
-    let our_changed = our != anc;
     let thr_changed = thr != anc;
+    let our_changed = our != anc;
 
-    // Theirs introduced no change relative to the ancestor.
     if !thr_changed {
         return Ok(Reconcile::Nothing);
     }
-    // Only theirs changed — apply it cleanly.
+    // Only theirs changed — apply it cleanly (content and/or mode).
     if !our_changed {
-        return Ok(if thr.is_empty() {
+        return Ok(if thr.0.is_empty() {
             Reconcile::Delete
         } else {
-            Reconcile::TakeTheirs { hash: thr.to_string(), is_new: anc.is_empty() }
+            Reconcile::TakeTheirs { hash: thr.0.to_string(), mode: thr.1, is_new: anc.0.is_empty() }
         });
     }
-    // Both sides changed, to different content.
-    if thr.is_empty() {
+    // Both sides changed.
+    if thr.0.is_empty() {
         return Ok(Reconcile::KeepOurs); // theirs deleted, ours modified
     }
-    if our.is_empty() {
+    if our.0.is_empty() {
         // ours deleted, theirs modified — restore theirs
-        return Ok(Reconcile::TakeTheirs { hash: thr.to_string(), is_new: false });
+        return Ok(Reconcile::TakeTheirs { hash: thr.0.to_string(), mode: thr.1, is_new: false });
+    }
+    // Same content, differing mode only → take theirs' mode (no content merge).
+    if our.0 == thr.0 {
+        return Ok(Reconcile::TakeTheirs { hash: thr.0.to_string(), mode: thr.1, is_new: false });
+    }
+    // Symlinks can't be line-merged.
+    if our.1 == crate::storage::MODE_SYMLINK || thr.1 == crate::storage::MODE_SYMLINK {
+        return Ok(Reconcile::Conflict);
     }
 
     // Both modified to different non-empty content → attempt a line-level merge.
-    let anc_bytes = if anc.is_empty() {
+    let anc_bytes = if anc.0.is_empty() {
         Vec::new()
     } else {
-        crate::storage::read_object(objects_dir, anc)?
+        crate::storage::read_object(objects_dir, anc.0)?
     };
-    let our_bytes = crate::storage::read_object(objects_dir, our)?;
-    let thr_bytes = crate::storage::read_object(objects_dir, thr)?;
+    let our_bytes = crate::storage::read_object(objects_dir, our.0)?;
+    let thr_bytes = crate::storage::read_object(objects_dir, thr.0)?;
 
     if anc_bytes.contains(&0) || our_bytes.contains(&0) || thr_bytes.contains(&0) {
         return Ok(Reconcile::Conflict); // binary — cannot auto-merge
@@ -483,7 +510,7 @@ pub fn reconcile_file(objects_dir: &Path, anc: &str, our: &str, thr: &str) -> Re
         &String::from_utf8_lossy(&our_bytes),
         &String::from_utf8_lossy(&thr_bytes),
     ) {
-        Some(merged) => Ok(Reconcile::AutoMerged(merged.into_bytes())),
+        Some(merged) => Ok(Reconcile::AutoMerged { content: merged.into_bytes(), mode: thr.1 }),
         None => Ok(Reconcile::Conflict),
     }
 }

@@ -16,7 +16,7 @@ use crate::db;
 use crate::error::{Result, VeloError};
 use crate::storage;
 
-pub fn run(root: &Path) -> Result<()> {
+pub fn run(root: &Path, repair: bool) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
     let objects_dir = root.join(".velo/objects");
     let mut problems: Vec<String> = Vec::new();
@@ -165,10 +165,100 @@ pub fn run(root: &Path) -> Result<()> {
     check_ref_table(&conn, "stash", "name", &all_snaps, &mut problems)?;
     report_line(problems.len() - before_refs, "Refs: PARENT, tags, stash");
 
+    // ── 4. Repairable state (cruft / broken in-progress state) ────────────────
+    // These are warnings, not corruption: they don't fail the exit code, and
+    // `--repair` cleans them up.
+    let orphan_hunks: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM hunk_decisions
+             WHERE file_path NOT IN (SELECT path FROM conflict_files)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let orphan_tags: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM trash_tags
+             WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
+               AND snapshot_hash NOT IN (SELECT hash FROM trash)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    let conflicts_cnt: i64 = conn
+        .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
+        .unwrap_or(0);
+    let broken_conflict = conflicts_cnt > 0 && !root.join(".velo/MERGE_HEAD").exists();
+
+    let mut warnings: Vec<String> = Vec::new();
+    if orphan_hunks > 0 {
+        warnings.push(format!("{} orphaned hunk-decision row(s)", orphan_hunks));
+    }
+    if orphan_tags > 0 {
+        warnings.push(format!("{} shelved tag(s) with no snapshot", orphan_tags));
+    }
+    if broken_conflict {
+        warnings.push(format!(
+            "{} conflict row(s) with no merge in progress (broken merge state)",
+            conflicts_cnt
+        ));
+    }
+
+    let mut repaired: Vec<String> = Vec::new();
+    if repair && !warnings.is_empty() {
+        if orphan_hunks > 0 {
+            conn.execute(
+                "DELETE FROM hunk_decisions WHERE file_path NOT IN (SELECT path FROM conflict_files)",
+                [],
+            )?;
+            repaired.push(format!("pruned {} orphaned hunk-decision row(s)", orphan_hunks));
+        }
+        if orphan_tags > 0 {
+            conn.execute(
+                "DELETE FROM trash_tags
+                 WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
+                   AND snapshot_hash NOT IN (SELECT hash FROM trash)",
+                [],
+            )?;
+            repaired.push(format!("pruned {} orphaned shelved tag(s)", orphan_tags));
+        }
+        if broken_conflict {
+            conn.execute("DELETE FROM conflict_files", [])?;
+            conn.execute("DELETE FROM hunk_decisions", [])?;
+            repaired.push("cleared broken conflict state".into());
+        }
+    }
+    if repaired.is_empty() && warnings.is_empty() {
+        report_line(0, "State: no cruft");
+    } else if repair {
+        report_line(0, "State: repaired");
+    } else {
+        report_line(warnings.len(), "State");
+    }
+
     // ── Summary ────────────────────────────────────────────────────────────────
     println!();
+    for w in &warnings {
+        let mark = if repair { style("~").green() } else { style("!").yellow() };
+        println!("  {} {}", mark, w);
+    }
+    for r in &repaired {
+        println!("  {} {}", style("✔").green(), r);
+    }
     if problems.is_empty() {
-        println!("{} No problems found — repository is healthy.", style("✔").green().bold());
+        if warnings.is_empty() || repair {
+            println!(
+                "\n{} Repository is healthy.",
+                style("✔").green().bold()
+            );
+        } else {
+            println!(
+                "\n{} No corruption; {} cleanup item(s) — run {} to tidy.",
+                style("✔").green(),
+                warnings.len(),
+                style("velo fsck --repair").cyan()
+            );
+        }
         Ok(())
     } else {
         for p in &problems {
@@ -189,11 +279,13 @@ fn report_line(problem_count: usize, label: &str) {
     }
 }
 
-/// Load a snapshot's tree (path, object-hash pairs) for id verification.
-fn load_tree(conn: &rusqlite::Connection, snap: &str) -> Result<Vec<(String, String)>> {
-    let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+/// Load a snapshot's tree (path, object-hash, mode) for id verification.
+fn load_tree(conn: &rusqlite::Connection, snap: &str) -> Result<Vec<(String, String, i64)>> {
+    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let tree = stmt
-        .query_map([snap], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .query_map([snap], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+        })?
         .filter_map(|r| r.ok())
         .collect();
     Ok(tree)

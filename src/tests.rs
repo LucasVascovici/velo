@@ -2564,7 +2564,7 @@ mod tests {
         save(&root, "merge");
         commands::tag::run(&root, Some("v1".into()), None, None, false).unwrap();
 
-        assert!(commands::fsck::run(&root).is_ok(), "healthy repo must pass fsck");
+        assert!(commands::fsck::run(&root, false).is_ok(), "healthy repo must pass fsck");
     }
 
     #[test]
@@ -2574,7 +2574,7 @@ mod tests {
         let h = save(&root, "s1");
 
         // Snapshot id must verify against its content.
-        assert!(commands::fsck::run(&root).is_ok());
+        assert!(commands::fsck::run(&root, false).is_ok());
 
         // A corrupt object is detected.
         let obj = fs::read_dir(root.join(".velo/objects"))
@@ -2584,7 +2584,7 @@ mod tests {
             .find(|p| p.is_file())
             .unwrap();
         fs::write(&obj, b"not valid zstd").unwrap();
-        assert!(commands::fsck::run(&root).is_err(), "corrupt object must fail fsck");
+        assert!(commands::fsck::run(&root, false).is_err(), "corrupt object must fail fsck");
         fs::remove_file(&obj).ok(); // restore-ish
 
         // A tag pointing at a missing snapshot is detected.
@@ -2597,9 +2597,118 @@ mod tests {
             [],
         )
         .unwrap();
-        assert!(commands::fsck::run(&root2).is_err(), "dangling tag must fail fsck");
+        assert!(commands::fsck::run(&root2, false).is_err(), "dangling tag must fail fsck");
 
         let _ = h;
+    }
+
+    #[test]
+    fn fsck_repair_prunes_orphaned_state() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "x\n");
+        save(&root, "s1");
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        // An orphaned hunk-decision (no matching conflict_files row) is cruft,
+        // not corruption: report-only fsck still passes.
+        conn.execute(
+            "INSERT INTO hunk_decisions (file_path, hunk_id, decision, manual_content)
+             VALUES ('ghost.txt', 0, 'ours', NULL)",
+            [],
+        )
+        .unwrap();
+        assert!(commands::fsck::run(&root, false).is_ok(), "cruft must not fail fsck");
+        let before: i64 = conn
+            .query_row("SELECT count(*) FROM hunk_decisions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+
+        // --repair prunes it.
+        commands::fsck::run(&root, true).unwrap();
+        let after: i64 = conn
+            .query_row("SELECT count(*) FROM hunk_decisions", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(after, 0, "repair must prune the orphaned row");
+    }
+
+    // =========================================================================
+    // file model — mode (exec bit) + symlinks
+    // =========================================================================
+
+    #[test]
+    fn file_mode_regular_defaults_zero_and_fsck_ok() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "x\n");
+        let h = save(&root, "s1");
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let mode: i64 = conn
+            .query_row(
+                "SELECT mode FROM file_map WHERE snapshot_hash = ? AND path = 'a.txt'",
+                [&h],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(mode, 0, "a regular file records mode 0");
+        assert!(commands::fsck::run(&root, false).is_ok(), "fsck must pass with modes present");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_mode_exec_bit_roundtrips() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, root) = setup();
+        write(&root, "run.sh", "#!/bin/sh\necho hi\n");
+        let p = root.join("run.sh");
+        let mut perms = fs::metadata(&p).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&p, perms).unwrap();
+
+        let h = save(&root, "add script");
+        fs::remove_file(&p).unwrap();
+        commands::restore::run(&root, &h, true, &[]).unwrap();
+
+        let mode = fs::metadata(&p).unwrap().permissions().mode();
+        assert!(mode & 0o111 != 0, "executable bit must survive save→restore");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_mode_symlink_roundtrips() {
+        let (_tmp, root) = setup();
+        write(&root, "target.txt", "hello\n");
+        std::os::unix::fs::symlink("target.txt", root.join("link.txt")).unwrap();
+
+        let h = save(&root, "add symlink");
+        fs::remove_file(root.join("link.txt")).unwrap();
+        commands::restore::run(&root, &h, true, &[]).unwrap();
+
+        let meta = fs::symlink_metadata(root.join("link.txt")).unwrap();
+        assert!(meta.file_type().is_symlink(), "symlink must be restored as a symlink");
+        assert_eq!(
+            fs::read_link(root.join("link.txt")).unwrap().to_string_lossy(),
+            "target.txt"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn file_mode_exec_survives_ff_merge() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_tmp, root) = setup();
+        write(&root, "base.txt", "b\n");
+        save(&root, "base");
+        commands::switch::run(&root, "feat", false).unwrap();
+        write(&root, "run.sh", "#!/bin/sh\n");
+        let p = root.join("run.sh");
+        let mut perms = fs::metadata(&p).unwrap().permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&p, perms).unwrap();
+        save(&root, "add exec on feat");
+
+        commands::switch::run(&root, "main", true).unwrap();
+        commands::merge::run(&root, Some("feat"), false).unwrap(); // fast-forward
+
+        let mode = fs::metadata(root.join("run.sh")).unwrap().permissions().mode();
+        assert!(mode & 0o111 != 0, "exec bit must survive a fast-forward merge");
     }
 
     // =========================================================================

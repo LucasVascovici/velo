@@ -64,26 +64,33 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
         .map(|(p, _)| p.clone())
         .collect();
 
-    let hashed: Result<Vec<(String, String)>> = files_to_hash
+    let hashed: Result<Vec<(String, String, i64)>> = files_to_hash
         .into_par_iter()
         .map(|rel| {
-            let h = storage::hash_and_compress(&root.join(&rel), &objects_dir)?;
-            Ok((rel, h))
+            let full = root.join(&rel);
+            let mode = storage::capture_mode(&full);
+            let hash = if mode == storage::MODE_SYMLINK {
+                storage::store_raw(&objects_dir, &storage::read_symlink_target(&full)?)?
+            } else {
+                storage::hash_and_compress(&full, &objects_dir)?
+            };
+            Ok((rel, hash, mode))
         })
         .collect();
     let hashed = hashed?;
 
     // Assemble the stash's tree: unchanged files carried from the parent plus
     // the freshly hashed dirty files.
-    let mut tree: Vec<(String, String)> = {
-        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
-        let collected: Vec<(String, String)> = stmt
+    let mut tree: Vec<(String, String, i64)> = {
+        let mut stmt =
+            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+        let collected: Vec<(String, String, i64)> = stmt
             .query_map([parent_hash.trim()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
             })?
             .filter_map(|r| r.ok())
-            .filter(|(p, _)| dirty.get(p.as_str()) != Some(&FileStatus::Deleted))
-            .filter(|(p, _)| !hashed.iter().any(|(rp, _)| rp == p))
+            .filter(|(p, _, _)| dirty.get(p.as_str()) != Some(&FileStatus::Deleted))
+            .filter(|(p, _, _)| !hashed.iter().any(|(rp, _, _)| rp == p))
             .collect();
         collected
     };
@@ -106,10 +113,10 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
     )?;
 
     {
-        let mut ins =
-            tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
-        for (p, h) in &tree {
-            ins.execute(params![snap_hash, p, h])?;
+        let mut ins = tx
+            .prepare("INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)")?;
+        for (p, h, m) in &tree {
+            ins.execute(params![snap_hash, p, h, m])?;
         }
     }
 
