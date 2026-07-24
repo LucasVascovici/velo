@@ -18,7 +18,7 @@ use console::style;
 use rayon::prelude::*;
 use rusqlite::params;
 
-use crate::commands::{get_dirty_files, get_tracked_files, FileStatus, SNAP_HASH_LEN};
+use crate::commands::{get_dirty_files, get_tracked_files, FileStatus};
 use crate::db;
 use crate::error::{Result, VeloError};
 use crate::storage;
@@ -73,55 +73,43 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
         .collect();
     let hashed = hashed?;
 
-    // Build snapshot hash
-    let now = Utc::now().to_rfc3339();
-    let full_hex = blake3::hash(
-        format!(
-            "stash{}{}{}{}",
-            shelf_name,
-            branch.trim(),
-            parent_hash.trim(),
-            now
-        )
-        .as_bytes(),
-    )
-    .to_hex()
-    .to_string();
-    let snap_hash = &full_hex[..SNAP_HASH_LEN];
+    // Assemble the stash's tree: unchanged files carried from the parent plus
+    // the freshly hashed dirty files.
+    let mut tree: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+        let collected: Vec<(String, String)> = stmt
+            .query_map([parent_hash.trim()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|(p, _)| dirty.get(p.as_str()) != Some(&FileStatus::Deleted))
+            .filter(|(p, _)| !hashed.iter().any(|(rp, _)| rp == p))
+            .collect();
+        collected
+    };
+    tree.extend(hashed.iter().cloned());
+
+    // Content-addressed id for the stash snapshot.
+    let message = format!("stash: {}", shelf_name);
+    let timestamp = crate::commands::snapshot_timestamp();
+    let snap_hash =
+        crate::commands::snapshot_id(&tree, parent_hash.trim(), "", &message, &timestamp);
+    let snap_hash = snap_hash.as_str();
 
     let tx = conn.transaction()?;
 
     // Insert a snapshot row on the hidden '_stash' branch
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash) VALUES (?, ?, '_stash', ?)",
-        params![
-            snap_hash,
-            format!("stash: {}", shelf_name),
-            parent_hash.trim()
-        ],
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at)
+         VALUES (?, ?, '_stash', ?, ?)",
+        params![snap_hash, message, parent_hash.trim(), timestamp],
     )?;
 
-    // Copy unchanged files from parent, insert hashed files
     {
-        let parent_files: Vec<(String, String)> = {
-            let mut stmt = tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
-            let collected: Vec<(String, String)> = stmt
-                .query_map([parent_hash.trim()], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .filter(|(p, _)| dirty.get(p.as_str()) != Some(&FileStatus::Deleted))
-                .filter(|(p, _)| !hashed.iter().any(|(rp, _)| rp == p))
-                .collect();
-            collected
-        };
         let mut ins =
             tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
-        for (p, h) in &parent_files {
+        for (p, h) in &tree {
             ins.execute(params![snap_hash, p, h])?;
-        }
-        for (rel, h) in &hashed {
-            ins.execute(params![snap_hash, rel, h])?;
         }
     }
 

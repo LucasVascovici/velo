@@ -64,7 +64,7 @@ pub fn run(root: &Path, branch_name: &str, force: bool) -> Result<()> {
         .ok();
 
     // ── Update HEAD ───────────────────────────────────────────────────────────
-    fs::write(root.join(".velo/HEAD"), branch_name)?;
+    crate::storage::write_atomic(&root.join(".velo/HEAD"), branch_name.as_bytes())?;
 
     if let Some(hash) = latest_hash {
         println!(

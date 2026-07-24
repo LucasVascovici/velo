@@ -17,6 +17,8 @@ ignore      = "0.4"
 memmap2     = "0.9"
 parking_lot = "0.12"
 regex       = "1.12"
+fs2         = "0.4"
 
 [dev-dependencies]
 tempfile  = "3.27"
+proptest  = "1"

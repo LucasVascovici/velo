@@ -133,9 +133,9 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
         // Record conflict state; the user resolves then `velo save`s.
         // MERGE_HEAD format "pre_hash:cherry-pick/<snap>" enables --abort.
         let pre_cp_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-        fs::write(
-            root.join(".velo/MERGE_HEAD"),
-            format!("{}:cherry-pick/{}", pre_cp_parent.trim(), &snap_hash[..8]),
+        storage::write_atomic(
+            &root.join(".velo/MERGE_HEAD"),
+            format!("{}:cherry-pick/{}", pre_cp_parent.trim(), &snap_hash[..8]).as_bytes(),
         )?;
         for (path, anc_h, our_h, thr_h) in &conflicts {
             conn.execute(

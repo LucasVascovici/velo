@@ -10,7 +10,6 @@ use std::path::Path;
 use console::style;
 use rusqlite::params;
 
-use crate::commands::SNAP_HASH_LEN;
 use crate::db;
 use crate::error::{Result, VeloError};
 
@@ -120,30 +119,40 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
         style("─".repeat(40)).dim()
     );
 
-    // Build the new snapshot hash (same content as HEAD, new message, new parent)
-    let now = chrono::Utc::now().to_rfc3339();
-    let full_hex = blake3::hash(
-        format!("{}{}{}{}", message.trim(), branch, new_parent, now).as_bytes(),
-    )
-    .to_hex()
-    .to_string();
-    let new_hash = &full_hex[..SNAP_HASH_LEN];
+    // The squashed snapshot has the same tree as HEAD (the net result), a new
+    // message, and the oldest squashed snapshot's parent. Capture HEAD's tree
+    // before touching the DB, then content-address the new snapshot.
+    let tree: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+        let collected = stmt
+            .query_map([head_hash.as_str()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        collected
+    };
+    let timestamp = crate::commands::snapshot_timestamp();
+    let new_hash = crate::commands::snapshot_id(&tree, new_parent, "", message.trim(), &timestamp);
+    let new_hash = new_hash.as_str();
 
     let tx = conn.transaction()?;
 
     // Insert new snapshot
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent)
-         VALUES (?, ?, ?, ?, '')",
-        params![new_hash, message.trim(), branch, new_parent],
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
+         VALUES (?, ?, ?, ?, '', ?)",
+        params![new_hash, message.trim(), branch, new_parent, timestamp],
     )?;
 
-    // Copy file_map from HEAD to the new snapshot
-    tx.execute(
-        "INSERT INTO file_map (snapshot_hash, path, hash)
-         SELECT ?, path, hash FROM file_map WHERE snapshot_hash = ?",
-        params![new_hash, head_hash],
-    )?;
+    // Copy the captured tree into the new snapshot's file_map.
+    {
+        let mut ins =
+            tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
+        for (p, h) in &tree {
+            ins.execute(params![new_hash, p, h])?;
+        }
+    }
 
     // Remove all squashed snapshots and their file maps
     // (Objects are left in the store; gc will clean them up)
@@ -163,7 +172,7 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
     tx.commit()?;
 
     // Update PARENT to point at the new snapshot
-    fs::write(root.join(".velo/PARENT"), new_hash)?;
+    crate::storage::write_atomic(&root.join(".velo/PARENT"), new_hash.as_bytes())?;
 
     println!(
         "{} Squashed into {} — \"{}\"",

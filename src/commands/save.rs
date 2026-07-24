@@ -5,7 +5,7 @@ use std::path::Path;
 use rayon::prelude::*;
 use rusqlite::params;
 
-use crate::commands::{FileStatus, SNAP_HASH_LEN};
+use crate::commands::FileStatus;
 use crate::error::{Result, VeloError};
 use crate::{db, storage};
 
@@ -118,14 +118,39 @@ pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String])
         .collect();
     let hashed_files = hash_results?;
 
-    // ── Build snapshot hash ───────────────────────────────────────────────────
-    let now = chrono::Utc::now().to_rfc3339();
-    let full_hex = blake3::hash(
-        format!("{}{}{}{}", message, branch.trim(), effective_parent, now).as_bytes(),
-    )
-    .to_hex()
-    .to_string();
-    let snapshot_hash = &full_hex[..SNAP_HASH_LEN];
+    // ── Assemble the complete tree for this snapshot ──────────────────────────
+    // Carry forward every unchanged file from the *dirty base* (the snapshot the
+    // working tree was diffed against, i.e. PARENT — which for an amend is the
+    // snapshot being replaced, NOT its parent), then add the freshly hashed
+    // files. Carrying from PARENT rather than the effective parent is what keeps
+    // an amend from dropping files the replaced snapshot introduced.
+    let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _)| p.as_str()).collect();
+    let mut tree: Vec<(String, String)> = {
+        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+        let carried: Vec<(String, String)> = stmt
+            .query_map([parent_hash.trim()], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            })?
+            .filter_map(|r| r.ok())
+            .filter(|(p, _)| {
+                !modified_paths.contains(p.as_str())
+                    && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
+            })
+            .collect();
+        carried
+    };
+    tree.extend(hashed_files.iter().cloned());
+
+    // ── Content-addressed snapshot id ─────────────────────────────────────────
+    let timestamp = crate::commands::snapshot_timestamp();
+    let snapshot_hash = crate::commands::snapshot_id(
+        &tree,
+        effective_parent.trim(),
+        merge_parent.as_str(),
+        message,
+        &timestamp,
+    );
+    let snapshot_hash = snapshot_hash.as_str();
 
     // ── DB transaction ────────────────────────────────────────────────────────
     let tx = conn.transaction()?;
@@ -139,41 +164,17 @@ pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String])
     }
 
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent) VALUES (?, ?, ?, ?, ?)",
-        params![snapshot_hash, message, branch.trim(), effective_parent.as_str(), merge_parent.as_str()],
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
+         VALUES (?, ?, ?, ?, ?, ?)",
+        params![snapshot_hash, message, branch.trim(), effective_parent.as_str(), merge_parent.as_str(), timestamp],
     )?;
 
-    // Copy forward unchanged files from the effective parent
     {
-        let modified_paths: HashSet<&str> =
-            hashed_files.iter().map(|(p, _)| p.as_str()).collect();
-
-        let parent_files: Vec<(String, String)> = {
-            let mut stmt =
-                tx.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
-            let collected: Vec<(String, String)> = stmt
-                .query_map([effective_parent.as_str()], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                })?
-                .filter_map(|r| r.ok())
-                .filter(|(p, _)| {
-                    !modified_paths.contains(p.as_str())
-                        && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
-                })
-                .collect();
-            collected
-        };
-
-        {
-            let mut ins = tx.prepare(
-                "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
-            )?;
-            for (p, h) in &parent_files {
-                ins.execute(params![snapshot_hash, p, h])?;
-            }
-            for (rel, hash) in &hashed_files {
-                ins.execute(params![snapshot_hash, rel, hash])?;
-            }
+        let mut ins = tx.prepare(
+            "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
+        )?;
+        for (p, h) in &tree {
+            ins.execute(params![snapshot_hash, p, h])?;
         }
     }
 
@@ -187,7 +188,7 @@ pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String])
     tx.execute("DELETE FROM trash WHERE branch = ?", [branch.trim()])?;
     tx.commit()?;
 
-    fs::write(root.join(".velo/PARENT"), snapshot_hash)?;
+    storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
 
     // If a merge was in progress, this save finalises it — clear the merge state
     let merge_head = root.join(".velo/MERGE_HEAD");

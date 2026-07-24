@@ -181,7 +181,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
 
     // ── Update PARENT (full restore only) ─────────────────────────────────────
     if !partial {
-        fs::write(root.join(".velo/PARENT"), snapshot_hash)?;
+        crate::storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
 
         let (message, branch): (String, String) = conn
             .query_row(

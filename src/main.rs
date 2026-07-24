@@ -3,6 +3,7 @@ use clap::{builder::styling, Parser, Subcommand};
 mod db;
 mod error;
 mod storage;
+mod lock;
 mod commands;
 
 #[cfg(test)]
@@ -647,6 +648,18 @@ NOTES
         #[arg(long, default_value_t = 30, value_name = "DAYS", help = "Retain undo history for N days [default: 30]")]
         keep_days: u32,
     },
+
+    /// Verify repository integrity (read-only).
+    ///
+    /// Checks that every referenced object exists and re-hashes to its own
+    /// name, that snapshot parents resolve, that content-addressed snapshot ids
+    /// recompute correctly, and that all refs (PARENT, tags, stash, conflicts)
+    /// point at something real. Exits non-zero if any problem is found.
+    ///
+    /// Example
+    ///   velo fsck
+    #[command(verbatim_doc_comment)]
+    Fsck,
 }
 
 // ─── Stash subcommands ────────────────────────────────────────────────────────
@@ -735,6 +748,22 @@ fn main() {
     }
 }
 
+/// Commands that never mutate the repository — they skip the repo lock so a
+/// long-running write (e.g. `gc`) never blocks a `status` or `history`.
+fn is_read_only(cmd: &Commands) -> bool {
+    matches!(
+        cmd,
+        Commands::Status { .. }
+            | Commands::History { .. }
+            | Commands::Diff { .. }
+            | Commands::Show { .. }
+            | Commands::Blame { .. }
+            | Commands::Grep { .. }
+            | Commands::DiffRange { .. }
+            | Commands::Fsck
+    )
+}
+
 fn run() -> Result<()> {
     let cli = Cli::parse();
     let current_dir = std::env::current_dir().map_err(VeloError::Io)?;
@@ -744,6 +773,15 @@ fn run() -> Result<()> {
     }
 
     let root = commands::find_repo_root(&current_dir).ok_or(VeloError::NotARepo)?;
+
+    // Serialise mutating commands against other velo processes. Read-only
+    // commands skip the lock so they never block on a long-running mutation.
+    // Held until the command returns (guard drops at the end of `run`).
+    let _lock = if is_read_only(&cli.command) {
+        None
+    } else {
+        Some(lock::RepoLock::acquire(&root)?)
+    };
 
     match cli.command {
         Commands::Init => unreachable!(),
@@ -873,6 +911,10 @@ fn run() -> Result<()> {
 
         Commands::Gc { keep_days } => {
             commands::gc::run(&root, keep_days)?;
+        }
+
+        Commands::Fsck => {
+            commands::fsck::run(&root)?;
         }
     }
 
