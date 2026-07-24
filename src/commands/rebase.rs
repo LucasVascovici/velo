@@ -351,13 +351,13 @@ fn apply_one(
     let mut del_count = 0usize;
 
     for path in all_paths {
-        let anc_h = anc_files.get(path).map(|s| s.as_str()).unwrap_or("");
-        let snp_h = snap_files.get(path).map(|s| s.as_str()).unwrap_or("");
-        let cur_h = cur_files.get(path).map(|s| s.as_str()).unwrap_or("");
+        let anc = anc_files.get(path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let snp = snap_files.get(path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let cur = cur_files.get(path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
         let full = root.join(db::db_to_path(path));
 
         // "theirs" = the snapshot being replayed; "ours" = the current tree.
-        match crate::commands::reconcile_file(&objects_dir, anc_h, cur_h, snp_h)? {
+        match crate::commands::reconcile_file(&objects_dir, anc, cur, snp)? {
             crate::commands::Reconcile::Nothing | crate::commands::Reconcile::KeepOurs => {}
             crate::commands::Reconcile::Delete => {
                 if full.exists() {
@@ -365,26 +365,26 @@ fn apply_one(
                     del_count += 1;
                 }
             }
-            crate::commands::Reconcile::TakeTheirs { hash, is_new } => {
+            crate::commands::Reconcile::TakeTheirs { hash, mode, is_new } => {
                 if let Some(p) = full.parent() {
                     let _ = fs::create_dir_all(p);
                 }
-                fs::write(&full, storage::read_object(&objects_dir, &hash)?)?;
+                storage::apply_file(&full, mode, &storage::read_object(&objects_dir, &hash)?)?;
                 if is_new { new_count += 1; } else { mod_count += 1; }
             }
-            crate::commands::Reconcile::AutoMerged(bytes) => {
+            crate::commands::Reconcile::AutoMerged { content, mode } => {
                 if let Some(p) = full.parent() {
                     let _ = fs::create_dir_all(p);
                 }
-                fs::write(&full, bytes)?;
+                storage::apply_file(&full, mode, &content)?;
                 mod_count += 1;
             }
             crate::commands::Reconcile::Conflict => {
                 conflicts.push((
                     path.to_string(),
-                    anc_h.to_string(),
-                    cur_h.to_string(),
-                    snp_h.to_string(),
+                    anc.0.to_string(),
+                    cur.0.to_string(),
+                    snp.0.to_string(),
                 ));
             }
         }
@@ -421,13 +421,15 @@ fn apply_one(
 fn load_file_map(
     conn:  &rusqlite::Connection,
     hash:  &str,
-) -> Result<HashMap<String, String>> {
+) -> Result<HashMap<String, (String, i64)>> {
     if hash.is_empty() { return Ok(HashMap::new()); }
     let mut stmt = conn.prepare(
-        "SELECT path, hash FROM file_map WHERE snapshot_hash = ?"
+        "SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?"
     )?;
-    let result: HashMap<String, String> = stmt
-        .query_map([hash], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+    let result: HashMap<String, (String, i64)> = stmt
+        .query_map([hash], |r| {
+            Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+        })?
         .filter_map(|r| r.ok())
         .collect();
     Ok(result)
@@ -436,7 +438,7 @@ fn load_file_map(
 fn load_file_map_from_parent(
     root: &Path,
     conn: &rusqlite::Connection,
-) -> Result<HashMap<String, String>> {
+) -> Result<HashMap<String, (String, i64)>> {
     let parent = fs::read_to_string(root.join(".velo/PARENT"))
         .unwrap_or_default();
     load_file_map(conn, parent.trim())

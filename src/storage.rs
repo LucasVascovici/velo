@@ -39,6 +39,102 @@ fn temp_sibling(target: &Path) -> PathBuf {
 /// Avoids the kernel→userspace copy that `fs::read` incurs on large files.
 const MMAP_THRESHOLD: u64 = 256 * 1024; // 256 KB
 
+// ─── File modes ────────────────────────────────────────────────────────────────
+// A file's mode is part of its identity in the tree (see `snapshot_id`).
+pub const MODE_REGULAR: i64 = 0;
+pub const MODE_EXEC: i64 = 1;
+pub const MODE_SYMLINK: i64 = 2;
+
+/// Determine a path's mode from the filesystem.
+///
+/// Symlinks are detected on every platform. The executable bit is only
+/// observable on Unix; on other platforms regular files always report
+/// `MODE_REGULAR` (callers make the bit "sticky" via the parent tree so it
+/// survives edits on Windows).
+pub fn capture_mode(path: &Path) -> i64 {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => MODE_SYMLINK,
+        Ok(_meta) => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if _meta.permissions().mode() & 0o111 != 0 {
+                    return MODE_EXEC;
+                }
+            }
+            MODE_REGULAR
+        }
+        Err(_) => MODE_REGULAR,
+    }
+}
+
+/// Read a symlink's target as normalised (forward-slash) bytes — the content we
+/// store for a symlink object.
+pub fn read_symlink_target(path: &Path) -> Result<Vec<u8>> {
+    let target = fs::read_link(path).map_err(VeloError::Io)?;
+    Ok(crate::db::normalise(&target.to_string_lossy()).into_bytes())
+}
+
+/// Hash and store arbitrary bytes verbatim (no CRLF normalisation). Used for
+/// symlink targets. Returns the object's BLAKE3 name.
+pub fn store_raw(objects_dir: &Path, data: &[u8]) -> Result<String> {
+    let hash = blake3::hash(data).to_hex().to_string();
+    let obj_path = objects_dir.join(&hash);
+    if !obj_path.exists() {
+        let compressed = zstd::encode_all(data, 1).map_err(VeloError::Io)?;
+        write_atomic(&obj_path, &compressed).map_err(VeloError::Io)?;
+    }
+    Ok(hash)
+}
+
+/// Write object `content` to `dest` honouring `mode`: create a symlink for
+/// `MODE_SYMLINK` (falling back to a regular file where symlinks can't be
+/// created, e.g. unprivileged Windows), set the executable bit for `MODE_EXEC`
+/// on Unix, otherwise write a plain file.
+pub fn apply_file(dest: &Path, mode: i64, content: &[u8]) -> Result<()> {
+    if mode == MODE_SYMLINK {
+        let target = String::from_utf8_lossy(content).to_string();
+        // A symlink can't be created over an existing entry.
+        let _ = fs::remove_file(dest);
+        if create_symlink(&target, dest).is_ok() {
+            return Ok(());
+        }
+        // Fallback: preserve the target text as a regular file so nothing is
+        // lost when the platform won't let us make a real link.
+        fs::write(dest, content).map_err(VeloError::Io)?;
+        return Ok(());
+    }
+
+    fs::write(dest, content).map_err(VeloError::Io)?;
+
+    #[cfg(unix)]
+    if mode == MODE_EXEC {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(dest).map_err(VeloError::Io)?.permissions();
+        perms.set_mode(perms.mode() | 0o755);
+        fs::set_permissions(dest, perms).map_err(VeloError::Io)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn create_symlink(target: &str, dest: &Path) -> std::io::Result<()> {
+    std::os::unix::fs::symlink(target, dest)
+}
+
+#[cfg(windows)]
+fn create_symlink(target: &str, dest: &Path) -> std::io::Result<()> {
+    std::os::windows::fs::symlink_file(target, dest)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn create_symlink(_target: &str, _dest: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "symlinks unsupported on this platform",
+    ))
+}
+
 /// Hash `file_path` with BLAKE3 and compress it into `objects_dir`.
 /// For files ≥ 256 KB the file is memory-mapped to avoid double-buffering.
 /// For very large files (≥ 1 MB) blake3's built-in rayon parallelism is used.
@@ -150,6 +246,19 @@ fn read_mmap(path: &Path) -> Result<Vec<u8>> {
     let file = fs::File::open(path).map_err(VeloError::Io)?;
     let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(VeloError::Io)?;
     Ok(mmap.to_vec())
+}
+
+/// Mode-aware content hash for dirty checks: a symlink hashes to its target,
+/// everything else to its (CRLF-normalised) file content.
+pub fn hash_for(path: &Path, mode: i64) -> String {
+    if mode == MODE_SYMLINK {
+        match read_symlink_target(path) {
+            Ok(target) => blake3::hash(&target).to_hex().to_string(),
+            Err(_) => String::new(),
+        }
+    } else {
+        fast_hash(path)
+    }
 }
 
 /// Fast content hash used during dirty-checks.

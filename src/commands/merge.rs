@@ -70,11 +70,12 @@ fn do_abort(root: &Path) -> Result<()> {
 fn load_file_map(
     conn: &rusqlite::Connection,
     snapshot_hash: &str,
-) -> Result<HashMap<String, String>> {
-    let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
-    let collected: HashMap<String, String> = stmt
+) -> Result<HashMap<String, (String, i64)>> {
+    let mut stmt =
+        conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+    let collected: HashMap<String, (String, i64)> = stmt
         .query_map([snapshot_hash], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+            Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -230,12 +231,12 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
         .collect();
 
     for path in &all_paths {
-        let cur_hash = current_files.get(*path).map(|s| s.as_str()).unwrap_or("");
-        let tgt_hash = target_files.get(*path).map(|s| s.as_str()).unwrap_or("");
-        let anc_hash = ancestor_files.get(*path).map(|s| s.as_str()).unwrap_or("");
+        let cur = current_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let tgt = target_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let anc = ancestor_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
         let full = root.join(crate::db::db_to_path(path));
 
-        match crate::commands::reconcile_file(&objects_dir, anc_hash, cur_hash, tgt_hash)? {
+        match crate::commands::reconcile_file(&objects_dir, anc, cur, tgt)? {
             crate::commands::Reconcile::Nothing => {}
             crate::commands::Reconcile::Delete => {
                 if full.exists() {
@@ -244,11 +245,11 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
                 println!("  {} Deleted: {}", style("-").red(), path);
                 del_count += 1;
             }
-            crate::commands::Reconcile::TakeTheirs { hash, is_new } => {
+            crate::commands::Reconcile::TakeTheirs { hash, mode, is_new } => {
                 if let Some(p) = full.parent() {
                     fs::create_dir_all(p)?;
                 }
-                fs::write(&full, storage::read_object(&objects_dir, &hash)?)?;
+                storage::apply_file(&full, mode, &storage::read_object(&objects_dir, &hash)?)?;
                 if is_new {
                     println!("  {} New file: {}", style("+").green(), path);
                     new_count += 1;
@@ -257,11 +258,11 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
                     took_count += 1;
                 }
             }
-            crate::commands::Reconcile::AutoMerged(bytes) => {
+            crate::commands::Reconcile::AutoMerged { content, mode } => {
                 if let Some(p) = full.parent() {
                     fs::create_dir_all(p)?;
                 }
-                fs::write(&full, bytes)?;
+                storage::apply_file(&full, mode, &content)?;
                 println!("  {} Auto-merged: {}", style("~").cyan(), path);
                 took_count += 1;
             }
@@ -275,9 +276,9 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
             crate::commands::Reconcile::Conflict => {
                 conflicts.push((
                     path.to_string(),
-                    anc_hash.to_string(),
-                    cur_hash.to_string(),
-                    tgt_hash.to_string(),
+                    anc.0.to_string(),
+                    cur.0.to_string(),
+                    tgt.0.to_string(),
                 ));
                 println!("  {} Conflict: {}", style("!").yellow().bold(), path);
             }
@@ -369,10 +370,18 @@ fn do_fast_forward(
     );
 
     let msg = format!("Fast-forward merge from '{}'", target_branch);
-    // The FF snapshot's tree is exactly the target's tree.
-    let tree: Vec<(String, String)> = load_file_map(conn, target_hash)?
-        .into_iter()
-        .collect();
+    // The FF snapshot's tree is exactly the target's tree (with modes).
+    let tree: Vec<(String, String, i64)> = {
+        let mut stmt =
+            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+        let v = stmt
+            .query_map([target_hash], |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+            })?
+            .filter_map(|r| r.ok())
+            .collect();
+        v
+    };
     let timestamp = crate::commands::snapshot_timestamp();
     let new_hash = crate::commands::snapshot_id(&tree, current_hash, "", &msg, &timestamp);
     let new_hash = new_hash.as_str();
@@ -383,10 +392,10 @@ fn do_fast_forward(
         params![new_hash, &msg, head_branch, current_hash, timestamp],
     )?;
     {
-        let mut ins =
-            tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
-        for (p, h) in &tree {
-            ins.execute(params![new_hash, p, h])?;
+        let mut ins = tx
+            .prepare("INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)")?;
+        for (p, h, m) in &tree {
+            ins.execute(params![new_hash, p, h, m])?;
         }
     }
     tx.commit()?;

@@ -79,12 +79,13 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
         )));
     }
 
-    // Load target snapshot's file map
-    let mut snapshot_files: Vec<(String, String)> = {
-        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
-        let collected: Vec<(String, String)> = stmt
+    // Load target snapshot's file map (path, object-hash, mode)
+    let mut snapshot_files: Vec<(String, String, i64)> = {
+        let mut stmt =
+            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+        let collected: Vec<(String, String, i64)> = stmt
             .query_map(params![snapshot_hash], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -94,7 +95,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
     // Filter to requested paths for partial restore
     if partial {
         let normalised_paths: Vec<String> = paths.iter().map(|p| crate::db::normalise(p)).collect();
-        snapshot_files.retain(|(rel, _)| {
+        snapshot_files.retain(|(rel, _, _)| {
             normalised_paths
                 .iter()
                 .any(|p| rel.starts_with(p.as_str()) || rel == p.as_str())
@@ -110,7 +111,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
     }
 
     let snapshot_set: std::collections::HashSet<&str> =
-        snapshot_files.iter().map(|(p, _)| p.as_str()).collect();
+        snapshot_files.iter().map(|(p, _, _)| p.as_str()).collect();
 
     let objects_dir = root.join(".velo/objects");
 
@@ -148,7 +149,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
     // ── Write snapshot files in parallel ──────────────────────────────────────
     let write_errors: Vec<String> = snapshot_files
         .par_iter()
-        .filter_map(|(rel_path, hash)| {
+        .filter_map(|(rel_path, hash, mode)| {
             let full_path = root.join(crate::db::db_to_path(rel_path));
             if let Some(parent) = full_path.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
@@ -156,7 +157,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
                 }
             }
             match storage::read_object(&objects_dir, hash) {
-                Ok(data) => match fs::write(&full_path, &data) {
+                Ok(data) => match storage::apply_file(&full_path, *mode, &data) {
                     Ok(_) => None,
                     Err(e) => Some(format!("write '{}': {} (is the file locked?)", rel_path, e)),
                 },
@@ -176,7 +177,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
     }
 
     // Invalidate index cache for written paths
-    let written_paths: Vec<String> = snapshot_files.iter().map(|(p, _)| p.clone()).collect();
+    let written_paths: Vec<String> = snapshot_files.iter().map(|(p, _, _)| p.clone()).collect();
     crate::commands::invalidate_cache_entries(root, &written_paths);
 
     // ── Update PARENT (full restore only) ─────────────────────────────────────

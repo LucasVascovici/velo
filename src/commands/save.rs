@@ -109,14 +109,22 @@ pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String])
         .map(|(p, _)| p.clone())
         .collect();
 
-    let hash_results: Result<Vec<(String, String)>> = files_to_hash
+    // Hash each changed file, capturing its mode. Symlinks store their target
+    // string (not the pointed-at content); regular files store content.
+    let hash_results: Result<Vec<(String, String, i64)>> = files_to_hash
         .into_par_iter()
         .map(|rel| {
-            let h = storage::hash_and_compress(&root.join(&rel), &objects_dir)?;
-            Ok((rel, h))
+            let full = root.join(&rel);
+            let mode = storage::capture_mode(&full);
+            let hash = if mode == storage::MODE_SYMLINK {
+                storage::store_raw(&objects_dir, &storage::read_symlink_target(&full)?)?
+            } else {
+                storage::hash_and_compress(&full, &objects_dir)?
+            };
+            Ok((rel, hash, mode))
         })
         .collect();
-    let hashed_files = hash_results?;
+    let mut hashed_files = hash_results?;
 
     // ── Assemble the complete tree for this snapshot ──────────────────────────
     // Carry forward every unchanged file from the *dirty base* (the snapshot the
@@ -124,21 +132,39 @@ pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String])
     // snapshot being replaced, NOT its parent), then add the freshly hashed
     // files. Carrying from PARENT rather than the effective parent is what keeps
     // an amend from dropping files the replaced snapshot introduced.
-    let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _)| p.as_str()).collect();
-    let mut tree: Vec<(String, String)> = {
-        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
-        let carried: Vec<(String, String)> = stmt
+    let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _, _)| p.as_str()).collect();
+    let mut tree: Vec<(String, String, i64)> = {
+        let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+        let carried: Vec<(String, String, i64)> = stmt
             .query_map([parent_hash.trim()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
             })?
             .filter_map(|r| r.ok())
-            .filter(|(p, _)| {
+            .filter(|(p, _, _)| {
                 !modified_paths.contains(p.as_str())
                     && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
             })
             .collect();
         carried
     };
+
+    // On platforms that can't observe the executable bit (Windows), keep it
+    // "sticky": a regular file that was executable in the parent stays
+    // executable across content edits, since the filesystem can't tell us.
+    #[cfg(not(unix))]
+    {
+        use std::collections::HashMap;
+        let parent_modes: HashMap<&str, i64> =
+            tree.iter().map(|(p, _, m)| (p.as_str(), *m)).collect();
+        for (rel, _h, mode) in hashed_files.iter_mut() {
+            if *mode == storage::MODE_REGULAR {
+                if let Some(&storage::MODE_EXEC) = parent_modes.get(rel.as_str()) {
+                    *mode = storage::MODE_EXEC;
+                }
+            }
+        }
+    }
+
     tree.extend(hashed_files.iter().cloned());
 
     // ── Content-addressed snapshot id ─────────────────────────────────────────
@@ -171,10 +197,10 @@ pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String])
 
     {
         let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)",
+            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
         )?;
-        for (p, h) in &tree {
-            ins.execute(params![snapshot_hash, p, h])?;
+        for (p, h, m) in &tree {
+            ins.execute(params![snapshot_hash, p, h, m])?;
         }
     }
 

@@ -656,10 +656,16 @@ NOTES
     /// recompute correctly, and that all refs (PARENT, tags, stash, conflicts)
     /// point at something real. Exits non-zero if any problem is found.
     ///
-    /// Example
+    /// Examples
     ///   velo fsck
+    ///   velo fsck --repair   # also clean up inconsistent in-progress state
     #[command(verbatim_doc_comment)]
-    Fsck,
+    Fsck {
+        /// Fix what can be fixed safely: prune orphaned conflict/hunk/shelved-tag
+        /// rows and clear a broken (MERGE_HEAD-less) conflict state.
+        #[arg(long, help = "Repair safely-fixable inconsistencies")]
+        repair: bool,
+    },
 }
 
 // ─── Stash subcommands ────────────────────────────────────────────────────────
@@ -760,7 +766,8 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Blame { .. }
             | Commands::Grep { .. }
             | Commands::DiffRange { .. }
-            | Commands::Fsck
+            // fsck is read-only unless it's going to repair (which mutates).
+            | Commands::Fsck { repair: false }
     )
 }
 
@@ -913,8 +920,8 @@ fn run() -> Result<()> {
             commands::gc::run(&root, keep_days)?;
         }
 
-        Commands::Fsck => {
-            commands::fsck::run(&root)?;
+        Commands::Fsck { repair } => {
+            commands::fsck::run(&root, repair)?;
         }
     }
 

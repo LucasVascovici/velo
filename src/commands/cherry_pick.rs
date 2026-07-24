@@ -73,9 +73,9 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
 
     // Apply each file's reconciled outcome to the working tree.
     for path in &all_paths {
-        let cur = current_files.get(*path).map(|s| s.as_str()).unwrap_or("");
-        let tgt = their_files.get(*path).map(|s| s.as_str()).unwrap_or("");
-        let anc = ancestor_files.get(*path).map(|s| s.as_str()).unwrap_or("");
+        let cur = current_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let tgt = their_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let anc = ancestor_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
         let full = root.join(db::db_to_path(path));
 
         match reconcile_file(&objects_dir, anc, cur, tgt)? {
@@ -86,22 +86,22 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
                 }
                 del_count += 1;
             }
-            Reconcile::TakeTheirs { hash, is_new } => {
+            Reconcile::TakeTheirs { hash, mode, is_new } => {
                 if let Some(p) = full.parent() {
                     fs::create_dir_all(p)?;
                 }
-                fs::write(&full, storage::read_object(&objects_dir, &hash)?)?;
+                storage::apply_file(&full, mode, &storage::read_object(&objects_dir, &hash)?)?;
                 if is_new {
                     new_count += 1;
                 } else {
                     changed_count += 1;
                 }
             }
-            Reconcile::AutoMerged(bytes) => {
+            Reconcile::AutoMerged { content, mode } => {
                 if let Some(p) = full.parent() {
                     fs::create_dir_all(p)?;
                 }
-                fs::write(&full, bytes)?;
+                storage::apply_file(&full, mode, &content)?;
                 changed_count += 1;
             }
             Reconcile::KeepOurs => {
@@ -114,9 +114,9 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
             Reconcile::Conflict => {
                 conflicts.push((
                     path.to_string(),
-                    anc.to_string(),
-                    cur.to_string(),
-                    tgt.to_string(),
+                    anc.0.to_string(),
+                    cur.0.to_string(),
+                    tgt.0.to_string(),
                 ));
                 println!("  {} Conflict: {}", style("!").yellow().bold(), path);
             }
@@ -182,13 +182,19 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
     Ok(())
 }
 
-fn load_file_map(conn: &rusqlite::Connection, snap_hash: &str) -> Result<HashMap<String, String>> {
+fn load_file_map(
+    conn: &rusqlite::Connection,
+    snap_hash: &str,
+) -> Result<HashMap<String, (String, i64)>> {
     if snap_hash.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
-    let collected: HashMap<String, String> = stmt
-        .query_map([snap_hash], |r| Ok((r.get(0)?, r.get(1)?)))?
+    let mut stmt =
+        conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+    let collected: HashMap<String, (String, i64)> = stmt
+        .query_map([snap_hash], |r| {
+            Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+        })?
         .filter_map(|r| r.ok())
         .collect();
     Ok(collected)

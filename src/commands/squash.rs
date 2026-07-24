@@ -122,11 +122,12 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
     // The squashed snapshot has the same tree as HEAD (the net result), a new
     // message, and the oldest squashed snapshot's parent. Capture HEAD's tree
     // before touching the DB, then content-address the new snapshot.
-    let tree: Vec<(String, String)> = {
-        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
+    let tree: Vec<(String, String, i64)> = {
+        let mut stmt =
+            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
         let collected = stmt
             .query_map([head_hash.as_str()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -147,10 +148,10 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
 
     // Copy the captured tree into the new snapshot's file_map.
     {
-        let mut ins =
-            tx.prepare("INSERT INTO file_map (snapshot_hash, path, hash) VALUES (?, ?, ?)")?;
-        for (p, h) in &tree {
-            ins.execute(params![new_hash, p, h])?;
+        let mut ins = tx
+            .prepare("INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)")?;
+        for (p, h, m) in &tree {
+            ins.execute(params![new_hash, p, h, m])?;
         }
     }
 

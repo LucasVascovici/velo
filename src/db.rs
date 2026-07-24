@@ -16,7 +16,8 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
         CREATE TABLE IF NOT EXISTS file_map (
             snapshot_hash TEXT NOT NULL,
             path          TEXT NOT NULL,
-            hash          TEXT NOT NULL
+            hash          TEXT NOT NULL,
+            mode          INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS tags (
             name          TEXT PRIMARY KEY,
@@ -129,6 +130,20 @@ fn apply_migrations(conn: &Connection) -> Result<()> {
             snapshot_hash TEXT NOT NULL
         );",
     )?;
+
+    // Migration 4: add mode to file_map (0=regular, 1=executable, 2=symlink)
+    // so the file model tracks the executable bit and symlinks.
+    let fm_has_mode: bool = conn
+        .query_row(
+            "SELECT count(*) FROM pragma_table_info('file_map') WHERE name = 'mode'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    if !fm_has_mode {
+        conn.execute_batch("ALTER TABLE file_map ADD COLUMN mode INTEGER NOT NULL DEFAULT 0;")?;
+    }
 
     Ok(())
 }
