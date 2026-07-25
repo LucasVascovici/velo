@@ -185,6 +185,26 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
             |r| r.get(0),
         )
         .unwrap_or(0);
+    // Remote-tracking refs can outlive their snapshot (e.g. after `gc` prunes
+    // history that was only reachable from a stale tracking ref). Not
+    // corruption — the next `fetch` re-establishes them.
+    let stale_remote_refs: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM remote_refs
+             WHERE hash NOT IN (SELECT hash FROM snapshots)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    // A tracking ref for a remote that no longer exists is pure cruft.
+    let orphan_remote_refs: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM remote_refs
+             WHERE remote NOT IN (SELECT name FROM remotes)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
     let conflicts_cnt: i64 = conn
         .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
         .unwrap_or(0);
@@ -201,6 +221,18 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
         warnings.push(format!(
             "{} conflict row(s) with no merge in progress (broken merge state)",
             conflicts_cnt
+        ));
+    }
+    if stale_remote_refs > 0 {
+        warnings.push(format!(
+            "{} remote-tracking ref(s) pointing at absent snapshots (re-fetch to refresh)",
+            stale_remote_refs
+        ));
+    }
+    if orphan_remote_refs > 0 {
+        warnings.push(format!(
+            "{} remote-tracking ref(s) for removed remote(s)",
+            orphan_remote_refs
         ));
     }
 
@@ -226,6 +258,23 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
             conn.execute("DELETE FROM conflict_files", [])?;
             conn.execute("DELETE FROM hunk_decisions", [])?;
             repaired.push("cleared broken conflict state".into());
+        }
+        if stale_remote_refs > 0 {
+            conn.execute(
+                "DELETE FROM remote_refs WHERE hash NOT IN (SELECT hash FROM snapshots)",
+                [],
+            )?;
+            repaired.push(format!("pruned {} stale remote-tracking ref(s)", stale_remote_refs));
+        }
+        if orphan_remote_refs > 0 {
+            conn.execute(
+                "DELETE FROM remote_refs WHERE remote NOT IN (SELECT name FROM remotes)",
+                [],
+            )?;
+            repaired.push(format!(
+                "pruned {} remote-tracking ref(s) for removed remote(s)",
+                orphan_remote_refs
+            ));
         }
     }
     if repaired.is_empty() && warnings.is_empty() {

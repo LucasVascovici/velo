@@ -233,6 +233,95 @@ fn clone_push_pull_full_collaboration_loop() {
 }
 
 #[test]
+fn sync_over_streaming_child_protocol() {
+    // Exercises the full client↔server pack protocol (transport::StreamRemote +
+    // serve-upload/serve-receive) via the `child:` scheme, which runs the server
+    // as a local subprocess — the same path ssh uses, minus the network.
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velo(&origin, &["init"]).1);
+    write(&origin, "shared.txt", "base\n");
+    assert!(velo(&origin, &["save", "C0"]).1);
+    let origin_url = format!("child:{}", origin.to_str().unwrap());
+
+    // Clone over the streaming protocol.
+    let (out, ok) = velo(root.path(), &["clone", &origin_url, "A"]);
+    assert!(ok, "streaming clone failed:\n{out}");
+    let (out, ok) = velo(root.path(), &["clone", &origin_url, "B"]);
+    assert!(ok, "streaming clone B failed:\n{out}");
+    let a = root.path().join("A");
+    let b = root.path().join("B");
+
+    // A pushes over the protocol (fast-forward).
+    write(&a, "a.txt", "a\n");
+    assert!(velo(&a, &["save", "A1"]).1);
+    let (out, ok) = velo(&a, &["push"]);
+    assert!(ok && out.contains("Pushed"), "streaming push failed:\n{out}");
+
+    // B diverges → its push is rejected by the server.
+    write(&b, "b.txt", "b\n");
+    assert!(velo(&b, &["save", "B1"]).1);
+    let (out, ok) = velo(&b, &["push"]);
+    assert!(!ok && out.to_lowercase().contains("rejected"), "streaming non-ff must be rejected:\n{out}");
+
+    // B pulls (diverged), merges, and pushes.
+    let (out, ok) = velo(&b, &["pull"]);
+    assert!(ok && out.to_lowercase().contains("diverged"), "streaming pull should report divergence:\n{out}");
+    assert!(velo(&b, &["merge", "origin/main"]).1);
+    assert!(velo(&b, &["save", "merge"]).1);
+    let (out, ok) = velo(&b, &["push"]);
+    assert!(ok && out.contains("Pushed"), "streaming push after merge failed:\n{out}");
+
+    // A pulls → fast-forward and gains b.txt.
+    let (out, ok) = velo(&a, &["pull"]);
+    assert!(ok && out.to_lowercase().contains("fast-forward"), "streaming pull ff failed:\n{out}");
+    assert!(a.join("b.txt").exists() && a.join("a.txt").exists());
+
+    assert!(velo(&a, &["fsck"]).1);
+    assert!(velo(&b, &["fsck"]).1);
+}
+
+#[test]
+fn status_reports_ahead_behind_and_diverged() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velo(&origin, &["init"]).1);
+    write(&origin, "f.txt", "base\n");
+    assert!(velo(&origin, &["save", "C0"]).1);
+    let origin_s = origin.to_str().unwrap();
+
+    assert!(velo(root.path(), &["clone", origin_s, "A"]).1);
+    assert!(velo(root.path(), &["clone", origin_s, "B"]).1);
+    let a = root.path().join("A");
+    let b = root.path().join("B");
+
+    // Fresh clone → in sync.
+    let (out, _) = velo(&a, &["status"]);
+    assert!(out.contains("up to date with origin/main"), "fresh clone should be in sync:\n{out}");
+
+    // A commits → ahead.
+    write(&a, "a.txt", "a\n");
+    assert!(velo(&a, &["save", "A1"]).1);
+    let (out, _) = velo(&a, &["status"]);
+    assert!(out.contains("1 ahead of origin/main"), "should report ahead:\n{out}");
+
+    // A pushes; B fetches → behind.
+    assert!(velo(&a, &["push"]).1);
+    assert!(velo(&b, &["fetch"]).1);
+    let (out, _) = velo(&b, &["status"]);
+    assert!(out.contains("1 behind origin/main"), "should report behind:\n{out}");
+
+    // B also commits → diverged.
+    write(&b, "b.txt", "b\n");
+    assert!(velo(&b, &["save", "B1"]).1);
+    let (out, _) = velo(&b, &["status"]);
+    assert!(out.contains("diverged from origin/main"), "should report divergence:\n{out}");
+    assert!(out.contains("1 ahead, 1 behind"), "should show both counts:\n{out}");
+}
+
+#[test]
 fn fetch_is_readonly_and_tracks_remote() {
     let root = TempDir::new().unwrap();
     let origin = root.path().join("origin");
