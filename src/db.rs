@@ -145,6 +145,20 @@ fn apply_migrations(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE file_map ADD COLUMN mode INTEGER NOT NULL DEFAULT 0;")?;
     }
 
+    // Migration 5: remotes + remote-tracking refs (v3 / sync).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS remotes (
+            name TEXT PRIMARY KEY,
+            url  TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS remote_refs (
+            remote TEXT NOT NULL,
+            branch TEXT NOT NULL,
+            hash   TEXT NOT NULL,
+            PRIMARY KEY (remote, branch)
+        );",
+    )?;
+
     Ok(())
 }
 

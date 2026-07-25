@@ -20,6 +20,9 @@ pub mod grep;
 pub mod squash;
 pub mod rebase;
 pub mod fsck;
+pub mod bundle;
+pub mod remote;
+pub mod sync;
 
 use std::collections::HashMap;
 use std::fs;
@@ -163,10 +166,54 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
         return Ok(h);
     }
 
+    // 4. Try as a remote-tracking ref "<remote>/<branch>" (e.g. origin/main).
+    if let Some((remote, branch)) = input.split_once('/') {
+        if let Ok(h) = conn.query_row(
+            "SELECT hash FROM remote_refs WHERE remote = ? AND branch = ?",
+            [remote, branch],
+            |r| r.get::<_, String>(0),
+        ) {
+            return Ok(h);
+        }
+    }
+
     Err(VeloError::InvalidInput(format!(
         "No snapshot, tag, or branch found matching '{}'.",
         input
     )))
+}
+
+/// The most recent snapshot on `branch`, if any.
+pub fn branch_tip(conn: &rusqlite::Connection, branch: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        [branch],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
+/// All real branches (excluding the internal `_stash` and remote-tracking
+/// `remotes/*` branches) paired with their current tip.
+pub fn all_branch_tips(conn: &rusqlite::Connection) -> Vec<(String, String)> {
+    let branches: Vec<String> = {
+        let mut stmt = match conn.prepare(
+            "SELECT DISTINCT branch FROM snapshots
+             WHERE branch <> '_stash' AND branch NOT LIKE 'remotes/%'",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let collected = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+            .unwrap_or_default();
+        collected
+    };
+    branches
+        .into_iter()
+        .filter_map(|b| branch_tip(conn, &b).map(|t| (b, t)))
+        .collect()
 }
 
 // ─── Filesystem enumeration ───────────────────────────────────────────────────

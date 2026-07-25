@@ -126,15 +126,14 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
             ))
         })?;
 
-    let target_hash: String = conn
-        .query_row(
-            "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            [target_branch],
-            |r| r.get(0),
-        )
-        .map_err(|_| {
+    // Resolve the merge source to a snapshot. Prefer an exact local-branch tip
+    // (so a short branch name can't be mis-read as a hash prefix), then fall
+    // back to tags / hash prefixes / remote-tracking refs like `origin/main`.
+    let target_hash: String = crate::commands::branch_tip(&conn, target_branch)
+        .or_else(|| crate::commands::resolve_snapshot_id(root, target_branch).ok())
+        .ok_or_else(|| {
             VeloError::InvalidInput(format!(
-                "Branch '{}' not found or has no snapshots.",
+                "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
                 target_branch
             ))
         })?;
