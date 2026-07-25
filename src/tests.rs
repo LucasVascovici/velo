@@ -2712,6 +2712,92 @@ mod tests {
     }
 
     // =========================================================================
+    // bundle (offline transfer)
+    // =========================================================================
+
+    #[test]
+    fn bundle_roundtrip_transfers_history_and_verifies() {
+        let (_ta, a) = setup();
+        write(&a, "f.txt", "v1\n");
+        save(&a, "s1");
+        write(&a, "f.txt", "v2\n");
+        let h2 = save(&a, "s2");
+        commands::tag::run(&a, Some("rel".into()), None, None, false).unwrap();
+
+        let bd = TempDir::new().unwrap();
+        let bundle = bd.path().join("out.velo");
+        let bundle = bundle.to_str().unwrap();
+        commands::bundle::create(&a, bundle, None).unwrap();
+
+        // Apply into a fresh repo.
+        let (_tb, b) = setup();
+        commands::bundle::apply(&b, bundle).unwrap();
+
+        // Content-addressed: the imported snapshot has the *same* hash as in A.
+        assert!(snapshot_exists(&b, &h2), "imported snapshot must exist in B with the same id");
+        // The tag came along.
+        let conn = db::get_conn_at_path(&b.join(".velo/velo.db")).unwrap();
+        let tagged: String = conn
+            .query_row("SELECT snapshot_hash FROM tags WHERE name = 'rel'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(tagged, h2);
+        // The receiver is internally consistent.
+        assert!(commands::fsck::run(&b, false).is_ok(), "receiver must pass fsck");
+        // Re-applying is a no-op (idempotent).
+        commands::bundle::apply(&b, bundle).unwrap();
+        assert!(commands::fsck::run(&b, false).is_ok());
+    }
+
+    #[test]
+    fn bundle_create_with_ref_is_self_contained() {
+        let (_ta, a) = setup();
+        write(&a, "f.txt", "v1\n");
+        save(&a, "s1");
+        commands::switch::run(&a, "feature", false).unwrap();
+        write(&a, "g.txt", "feat\n");
+        let hf = save(&a, "feat");
+        commands::switch::run(&a, "main", true).unwrap();
+        write(&a, "f.txt", "v2\n");
+        save(&a, "main2");
+
+        // Bundle only feature's ancestry.
+        let bd = TempDir::new().unwrap();
+        let bundle = bd.path().join("f.velo");
+        let bundle = bundle.to_str().unwrap();
+        commands::bundle::create(&a, bundle, Some("feature")).unwrap();
+
+        let (_tb, b) = setup();
+        commands::bundle::apply(&b, bundle).unwrap();
+        assert!(snapshot_exists(&b, &hf), "feature tip must be present");
+        // Self-contained (walked to root) → receiver is consistent.
+        assert!(commands::fsck::run(&b, false).is_ok());
+    }
+
+    #[test]
+    fn bundle_apply_rejects_corrupt_or_truncated() {
+        let (_ta, a) = setup();
+        write(&a, "f.txt", "x\n");
+        save(&a, "s1");
+        let bd = TempDir::new().unwrap();
+        let bundle = bd.path().join("out.velo");
+        commands::bundle::create(&a, bundle.to_str().unwrap(), None).unwrap();
+
+        // Truncated bundle → rejected.
+        let mut bytes = fs::read(&bundle).unwrap();
+        bytes.truncate(bytes.len() / 2);
+        fs::write(&bundle, &bytes).unwrap();
+        let (_tb, b) = setup();
+        assert!(
+            commands::bundle::apply(&b, bundle.to_str().unwrap()).is_err(),
+            "a truncated bundle must be rejected"
+        );
+
+        // Not a bundle at all → rejected.
+        fs::write(&bundle, b"definitely not a velo bundle").unwrap();
+        assert!(commands::bundle::apply(&b, bundle.to_str().unwrap()).is_err());
+    }
+
+    // =========================================================================
     // object store — roundtrip property tests
     // =========================================================================
     mod storage_props {

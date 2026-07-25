@@ -666,6 +666,120 @@ NOTES
         #[arg(long, help = "Repair safely-fixable inconsistencies")]
         repair: bool,
     },
+
+    /// Pack history into a single file, or apply one (offline transfer).
+    ///
+    /// A bundle is self-contained: it carries the requested snapshots, every
+    /// object they reference, and their tags. Apply it in another repository to
+    /// import that history — no network required.
+    ///
+    /// Examples
+    ///   velo bundle create backup.velo          # whole repo
+    ///   velo bundle create feature.velo feature # everything reachable from 'feature'
+    ///   velo bundle apply backup.velo           # import into this repo
+    #[command(verbatim_doc_comment)]
+    Bundle {
+        #[command(subcommand)]
+        cmd: BundleSub,
+    },
+
+    /// Copy a repository from a path into a new local repository.
+    ///
+    /// Imports all history, sets up an 'origin' remote, and checks out the
+    /// remote's default branch.
+    ///
+    /// Example
+    ///   velo clone /shared/project        # → ./project
+    ///   velo clone /shared/project myproj # → ./myproj
+    #[command(verbatim_doc_comment)]
+    Clone {
+        /// Path to the source repository.
+        #[arg(value_name = "URL")]
+        url: String,
+        /// Directory to create (default: the source's basename).
+        #[arg(value_name = "DIR")]
+        dir: Option<String>,
+    },
+
+    /// Download history from a remote into remotes/<remote>/* tracking branches.
+    ///
+    /// Read-only with respect to your branches and working tree.
+    #[command(verbatim_doc_comment)]
+    Fetch {
+        /// Remote name (default: origin).
+        #[arg(value_name = "REMOTE", default_value = "origin")]
+        remote: String,
+    },
+
+    /// Send a branch's commits to a remote (fast-forward only).
+    #[command(verbatim_doc_comment)]
+    Push {
+        /// Remote name (default: origin).
+        #[arg(value_name = "REMOTE", default_value = "origin")]
+        remote: String,
+        /// Branch to push (default: the current branch).
+        #[arg(value_name = "BRANCH")]
+        branch: Option<String>,
+    },
+
+    /// Fetch the current branch and fast-forward, or advise a merge if diverged.
+    #[command(verbatim_doc_comment)]
+    Pull {
+        /// Remote name (default: origin).
+        #[arg(value_name = "REMOTE", default_value = "origin")]
+        remote: String,
+    },
+
+    /// Manage remotes (named paths to other repositories).
+    ///
+    /// Examples
+    ///   velo remote add origin /shared/project
+    ///   velo remote
+    ///   velo remote remove origin
+    #[command(verbatim_doc_comment)]
+    Remote {
+        #[command(subcommand)]
+        cmd: Option<RemoteSub>,
+    },
+}
+
+// ─── Bundle subcommands ────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum BundleSub {
+    /// Create a bundle file from history (all of it, or reachable from a ref).
+    Create {
+        /// Output file path.
+        #[arg(value_name = "FILE")]
+        file: String,
+        /// Snapshot, tag, or branch to bundle history up to (default: everything).
+        #[arg(value_name = "REF")]
+        target: Option<String>,
+    },
+    /// Apply a bundle file into this repository.
+    Apply {
+        /// Bundle file to import.
+        #[arg(value_name = "FILE")]
+        file: String,
+    },
+}
+
+// ─── Remote subcommands ────────────────────────────────────────────────────────
+
+#[derive(Subcommand)]
+enum RemoteSub {
+    /// Add a remote.
+    Add {
+        #[arg(value_name = "NAME")]
+        name: String,
+        #[arg(value_name = "URL")]
+        url: String,
+    },
+    /// Remove a remote.
+    Remove {
+        #[arg(value_name = "NAME")]
+        name: String,
+    },
 }
 
 // ─── Stash subcommands ────────────────────────────────────────────────────────
@@ -775,8 +889,13 @@ fn run() -> Result<()> {
     let cli = Cli::parse();
     let current_dir = std::env::current_dir().map_err(VeloError::Io)?;
 
-    if matches!(cli.command, Commands::Init) {
-        return commands::init::run(&current_dir);
+    // Commands that don't require (or create) an enclosing repo run first.
+    match &cli.command {
+        Commands::Init => return commands::init::run(&current_dir),
+        Commands::Clone { url, dir } => {
+            return commands::sync::clone(url, dir.as_deref());
+        }
+        _ => {}
     }
 
     let root = commands::find_repo_root(&current_dir).ok_or(VeloError::NotARepo)?;
@@ -791,7 +910,7 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
-        Commands::Init => unreachable!(),
+        Commands::Init | Commands::Clone { .. } => unreachable!(),
 
         Commands::Save { message, amend, paths } => {
             match commands::save::run_with_paths(&root, &message, amend, &paths)? {
@@ -923,6 +1042,30 @@ fn run() -> Result<()> {
         Commands::Fsck { repair } => {
             commands::fsck::run(&root, repair)?;
         }
+
+        Commands::Bundle { cmd } => match cmd {
+            BundleSub::Create { file, target } => {
+                commands::bundle::create(&root, &file, target.as_deref())?;
+            }
+            BundleSub::Apply { file } => {
+                commands::bundle::apply(&root, &file)?;
+            }
+        },
+
+        Commands::Fetch { remote } => {
+            commands::sync::fetch(&root, &remote)?;
+        }
+        Commands::Push { remote, branch } => {
+            commands::sync::push(&root, &remote, branch.as_deref())?;
+        }
+        Commands::Pull { remote } => {
+            commands::sync::pull(&root, &remote)?;
+        }
+        Commands::Remote { cmd } => match cmd {
+            None => commands::remote::list(&root)?,
+            Some(RemoteSub::Add { name, url }) => commands::remote::add(&root, &name, &url)?,
+            Some(RemoteSub::Remove { name }) => commands::remote::remove(&root, &name)?,
+        },
     }
 
     Ok(())
