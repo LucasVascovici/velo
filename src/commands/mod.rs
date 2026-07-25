@@ -183,6 +183,32 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
     )))
 }
 
+/// How far `local` is ahead of / behind `remote`, counted in snapshots.
+/// Both tips must already exist locally (fetch first); ancestry is walked over
+/// local history, so this never touches the network — same as Git.
+pub fn ahead_behind(conn: &rusqlite::Connection, local: &str, remote: &str) -> (usize, usize) {
+    let l = bundle::reachable_ancestry(conn, local);
+    let r = bundle::reachable_ancestry(conn, remote);
+    let ahead = l.difference(&r).count();
+    let behind = r.difference(&l).count();
+    (ahead, behind)
+}
+
+/// The remote-tracking ref for `branch`, if any: `(remote, tip_hash)`.
+/// Prefers `origin` when several remotes track the same branch.
+pub fn tracking_ref(conn: &rusqlite::Connection, branch: &str) -> Option<(String, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT remote, hash FROM remote_refs WHERE branch = ?
+             ORDER BY (remote <> 'origin'), remote LIMIT 1",
+        )
+        .ok()?;
+    stmt.query_row([branch], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    })
+    .ok()
+}
+
 /// The most recent snapshot on `branch`, if any.
 pub fn branch_tip(conn: &rusqlite::Connection, branch: &str) -> Option<String> {
     conn.query_row(

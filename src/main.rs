@@ -4,6 +4,8 @@ mod db;
 mod error;
 mod storage;
 mod lock;
+mod transport;
+mod serve;
 mod commands;
 
 #[cfg(test)]
@@ -730,16 +732,31 @@ NOTES
         remote: String,
     },
 
-    /// Manage remotes (named paths to other repositories).
+    /// Manage remotes (paths, or ssh://host/path URLs).
     ///
     /// Examples
     ///   velo remote add origin /shared/project
+    ///   velo remote add origin ssh://user@host/srv/project
     ///   velo remote
     ///   velo remote remove origin
     #[command(verbatim_doc_comment)]
     Remote {
         #[command(subcommand)]
         cmd: Option<RemoteSub>,
+    },
+
+    /// Internal: serve a fetch over stdin/stdout (invoked on the remote host).
+    #[command(hide = true)]
+    ServeUpload {
+        #[arg(value_name = "PATH")]
+        path: String,
+    },
+
+    /// Internal: serve a push over stdin/stdout (invoked on the remote host).
+    #[command(hide = true)]
+    ServeReceive {
+        #[arg(value_name = "PATH")]
+        path: String,
     },
 }
 
@@ -890,11 +907,15 @@ fn run() -> Result<()> {
     let current_dir = std::env::current_dir().map_err(VeloError::Io)?;
 
     // Commands that don't require (or create) an enclosing repo run first.
+    // The serve-* commands operate on an explicit path and speak a binary
+    // protocol on stdout — they must emit nothing else.
     match &cli.command {
         Commands::Init => return commands::init::run(&current_dir),
         Commands::Clone { url, dir } => {
             return commands::sync::clone(url, dir.as_deref());
         }
+        Commands::ServeUpload { path } => return serve::upload(path),
+        Commands::ServeReceive { path } => return serve::receive(path),
         _ => {}
     }
 
@@ -910,7 +931,10 @@ fn run() -> Result<()> {
     };
 
     match cli.command {
-        Commands::Init | Commands::Clone { .. } => unreachable!(),
+        Commands::Init
+        | Commands::Clone { .. }
+        | Commands::ServeUpload { .. }
+        | Commands::ServeReceive { .. } => unreachable!(),
 
         Commands::Save { message, amend, paths } => {
             match commands::save::run_with_paths(&root, &message, amend, &paths)? {

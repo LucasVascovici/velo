@@ -2798,6 +2798,95 @@ mod tests {
     }
 
     // =========================================================================
+    // sync negotiation (minimal transfer)
+    // =========================================================================
+
+    #[test]
+    fn negotiation_sends_only_objects_the_peer_lacks() {
+        // A one-file change in a 20-file project must ship ONE object, not the
+        // whole tree — a snapshot's file_map references every file, so without
+        // exclusion every push/fetch re-sends the entire project.
+        let (_tmp, root) = setup();
+        for i in 0..20 {
+            write(&root, &format!("f{i}.txt"), &format!("content {i}\n"));
+        }
+        let s1 = save(&root, "initial");
+        write(&root, "f0.txt", "changed\n");
+        let s2 = save(&root, "touch one file");
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let objects = root.join(".velo/objects");
+
+        // Self-contained pack (what `bundle create` produces): whole tree.
+        let all = commands::bundle::reachable_ancestry(&conn, &s2);
+        let full = commands::bundle::build_pack(&conn, &objects, &all).unwrap();
+        assert!(
+            full.objects.len() >= 20,
+            "a self-contained pack must carry the whole tree, got {}",
+            full.objects.len()
+        );
+
+        // Minimal pack for a peer that already has s1: just the changed file.
+        let peer_has = commands::bundle::reachable_ancestry(&conn, &s1);
+        let mut new_only = all.clone();
+        for h in &peer_has {
+            new_only.remove(h);
+        }
+        let minimal =
+            commands::bundle::build_pack_excluding(&conn, &objects, &new_only, &peer_has).unwrap();
+        assert_eq!(minimal.snapshots.len(), 1, "only the new snapshot is sent");
+        assert_eq!(
+            minimal.objects.len(),
+            1,
+            "only the changed file's object is sent, got {}",
+            minimal.objects.len()
+        );
+    }
+
+    #[test]
+    fn bundle_create_stays_self_contained_despite_negotiation() {
+        // Regression guard: the exclusion path must never leak into bundles.
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "1\n");
+        save(&root, "s1");
+        write(&root, "a.txt", "2\n");
+        save(&root, "s2");
+
+        let bd = TempDir::new().unwrap();
+        let bundle_path = bd.path().join("out.velo");
+        commands::bundle::create(&root, bundle_path.to_str().unwrap(), None).unwrap();
+
+        // A completely fresh repo can import it and verify.
+        let (_tb, b) = setup();
+        commands::bundle::apply(&b, bundle_path.to_str().unwrap()).unwrap();
+        assert!(commands::fsck::run(&b, false).is_ok());
+    }
+
+    #[test]
+    fn ahead_behind_counts_divergence() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base\n");
+        let base = save(&root, "base");
+        // Two commits on main.
+        write(&root, "f.txt", "one\n");
+        save(&root, "m1");
+        write(&root, "f.txt", "two\n");
+        let main_tip = save(&root, "m2");
+        // One commit on a branch off base.
+        commands::switch::run(&root, "side", false).unwrap();
+        commands::restore::run(&root, &base, true, &[]).unwrap();
+        write(&root, "g.txt", "side\n");
+        let side_tip = save(&root, "s1");
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        // main is 2 ahead / 1 behind relative to side.
+        let (ahead, behind) = commands::ahead_behind(&conn, &main_tip, &side_tip);
+        assert_eq!((ahead, behind), (2, 1), "got ahead={ahead} behind={behind}");
+        // Identical tips → no divergence.
+        assert_eq!(commands::ahead_behind(&conn, &main_tip, &main_tip), (0, 0));
+    }
+
+    // =========================================================================
     // object store — roundtrip property tests
     // =========================================================================
     mod storage_props {

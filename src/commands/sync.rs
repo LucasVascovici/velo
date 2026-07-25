@@ -1,93 +1,75 @@
-//! `velo clone` / `fetch` / `push` / `pull` — filesystem-remote sync.
+//! `velo clone` / `fetch` / `push` / `pull` — repository sync.
 //!
-//! A remote is another Velo repository reachable by path. All four verbs reuse
-//! the Phase-1 pack machinery (`bundle::build_pack` / `import_pack`): sync is
-//! "build a pack of what's missing from one repo, import it into the other".
+//! Transport-agnostic: every verb talks to a [`transport::Remote`] obtained
+//! from `transport::open(url)`, which is a local path (direct DB access), an
+//! `ssh://…` URL, or a `child:…` local subprocess. The branch-namespacing and
+//! `remote_refs` bookkeeping live here, on the client side.
 //!
 //! Model (deliberately Git-like):
 //! - `clone` — copy all history, local branches = remote branches, checkout.
 //! - `fetch` — import remote-only history under `remotes/<remote>/<branch>`
 //!   tracking branches; update `remote_refs`. Never touches local branches or
 //!   the working tree.
-//! - `push` — fast-forward-only: refuse if the remote branch has commits you
-//!   don't; otherwise send your commits into the remote.
-//! - `pull` — fetch the current branch, then fast-forward if you're behind, or
-//!   (if diverged) leave `remotes/<remote>/<branch>` for you to
-//!   `velo merge <remote>/<branch>`.
+//! - `push` — fast-forward-only (the remote enforces it).
+//! - `pull` — fetch the current branch, then fast-forward if behind, or (if
+//!   diverged) leave `remotes/<remote>/<branch>` to `velo merge`.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use console::style;
 
-use crate::commands::{
-    all_branch_tips, branch_tip, bundle, get_dirty_files, remote as remotemod,
-};
+use crate::commands::{branch_tip, bundle, get_dirty_files, remote as remotemod};
 use crate::db;
 use crate::error::{Result, VeloError};
-use crate::{lock, storage};
+use crate::transport::{self, PushOutcome};
+use crate::storage;
 
 // ─── clone ────────────────────────────────────────────────────────────────────
 
 pub fn clone(url: &str, dir: Option<&str>) -> Result<()> {
-    let remote_root = remotemod::resolve_remote_root(url)?;
     let target = PathBuf::from(dir.map(String::from).unwrap_or_else(|| default_dir(url)));
-
     if target.join(".velo").exists() {
         return Err(VeloError::InvalidInput(format!(
             "'{}' already contains a Velo repository.",
             target.display()
         )));
     }
-    std::fs::create_dir_all(&target)?;
-    crate::commands::init::run(&target)?;
 
     println!("Cloning {} → {}…", style(url).cyan(), style(target.display()).cyan());
 
-    let remote_conn = db::get_conn_at_path(&remote_root.join(".velo/velo.db"))?;
-    let remote_objects = remote_root.join(".velo/objects");
-    let remote_tips = all_branch_tips(&remote_conn);
-    if remote_tips.is_empty() {
+    // Pull everything from the remote (empty have-set = send it all).
+    let mut remote = transport::open(url)?;
+    let (refs, pack) = remote.fetch(&HashSet::new())?;
+    if refs.is_empty() {
         return Err(VeloError::InvalidInput("Remote has no branches to clone.".into()));
     }
 
-    // Pack all history reachable from every remote branch, import as-is so the
-    // remote branches become local branches.
-    let mut snap_set: HashSet<String> = HashSet::new();
-    for (_b, tip) in &remote_tips {
-        snap_set.extend(bundle::reachable_ancestry(&remote_conn, tip));
-    }
-    let pack = bundle::build_pack(&remote_conn, &remote_objects, &snap_set)?;
-
+    std::fs::create_dir_all(&target)?;
+    crate::commands::init::run(&target)?;
     let mut conn = db::get_conn_at_path(&target.join(".velo/velo.db"))?;
     let (snaps, objs) = bundle::import_pack(&mut conn, &target.join(".velo/objects"), &pack)?;
 
-    // Record the remote and its tracking refs.
-    conn.execute(
-        "INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)",
-        [url],
-    )?;
-    for (b, tip) in &remote_tips {
-        remotemod::set_remote_ref(&conn, "origin", b, tip)?;
+    conn.execute("INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)", [url])?;
+    for r in &refs {
+        remotemod::set_remote_ref(&conn, "origin", &r.branch, &r.hash)?;
     }
 
-    // Checkout the remote's default branch.
-    let default_branch = std::fs::read_to_string(remote_root.join(".velo/HEAD"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "main".into());
-    let default_branch = if default_branch.is_empty() { "main".into() } else { default_branch };
-
-    if let Some(tip) = branch_tip(&conn, &default_branch) {
-        storage::write_atomic(&target.join(".velo/HEAD"), default_branch.as_bytes())?;
-        crate::commands::restore::run(&target, &tip, true, &[])?;
-    }
+    // Checkout: prefer 'main', else the first advertised branch.
+    let default = refs
+        .iter()
+        .find(|r| r.branch == "main")
+        .or_else(|| refs.first())
+        .unwrap();
+    storage::write_atomic(&target.join(".velo/HEAD"), default.branch.as_bytes())?;
+    crate::commands::restore::run(&target, &default.hash, true, &[])?;
 
     println!(
         "{} Cloned {} snapshot(s), {} object(s), {} branch(es) into {}",
         style("✔").green().bold(),
         snaps,
         objs,
-        remote_tips.len(),
+        refs.len(),
         style(target.display()).cyan()
     );
     Ok(())
@@ -96,30 +78,21 @@ pub fn clone(url: &str, dir: Option<&str>) -> Result<()> {
 // ─── fetch ────────────────────────────────────────────────────────────────────
 
 pub fn fetch(root: &Path, remote_name: &str) -> Result<()> {
-    let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let url = remotemod::remote_url(&conn, remote_name)?;
-    let remote_root = remotemod::resolve_remote_root(&url)?;
-    let remote_conn = db::get_conn_at_path(&remote_root.join(".velo/velo.db"))?;
-    let remote_objects = remote_root.join(".velo/objects");
-
-    let remote_tips = all_branch_tips(&remote_conn);
-    let mut snap_set: HashSet<String> = HashSet::new();
-    for (_b, tip) in &remote_tips {
-        snap_set.extend(bundle::reachable_ancestry(&remote_conn, tip));
-    }
+    let url = remote_url(root, remote_name)?;
+    let mut remote = transport::open(&url)?;
+    let have = local_snapshots(root)?;
+    let (refs, mut pack) = remote.fetch(&have)?;
 
     // Namespace imported history under remotes/<remote>/<branch> so it never
-    // collides with local branches. (Shared snapshots already present locally
-    // are skipped by import, so only remote-only commits get the tracking name.)
-    let mut pack = bundle::build_pack(&remote_conn, &remote_objects, &snap_set)?;
+    // collides with local branches. (Snapshots already present locally are
+    // skipped by import, so only remote-only commits take the tracking name.)
     for s in &mut pack.snapshots {
         s.branch = format!("remotes/{}/{}", remote_name, s.branch);
     }
-
     let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
     let (snaps, objs) = bundle::import_pack(&mut conn, &root.join(".velo/objects"), &pack)?;
-    for (b, tip) in &remote_tips {
-        remotemod::set_remote_ref(&conn, remote_name, b, tip)?;
+    for r in &refs {
+        remotemod::set_remote_ref(&conn, remote_name, &r.branch, &r.hash)?;
     }
 
     println!(
@@ -129,8 +102,13 @@ pub fn fetch(root: &Path, remote_name: &str) -> Result<()> {
         snaps,
         objs
     );
-    for (b, tip) in &remote_tips {
-        println!("  {}/{}  →  {}", remote_name, style(b).cyan(), style(&tip[..12.min(tip.len())]).yellow());
+    for r in &refs {
+        println!(
+            "  {}/{}  →  {}",
+            remote_name,
+            style(&r.branch).cyan(),
+            style(&r.hash[..12.min(r.hash.len())]).yellow()
+        );
     }
     Ok(())
 }
@@ -139,62 +117,65 @@ pub fn fetch(root: &Path, remote_name: &str) -> Result<()> {
 
 pub fn push(root: &Path, remote_name: &str, branch: Option<&str>) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let branch = match branch {
-        Some(b) => b.to_string(),
-        None => current_branch(root),
-    };
-    let url = remotemod::remote_url(&conn, remote_name)?;
-    let remote_root = remotemod::resolve_remote_root(&url)?;
-
+    let branch = branch.map(String::from).unwrap_or_else(|| current_branch(root));
     let local_tip = branch_tip(&conn, &branch).ok_or_else(|| {
         VeloError::InvalidInput(format!("Local branch '{}' has no snapshots to push.", branch))
     })?;
 
-    // Hold the remote's lock for the whole read-check-then-write.
-    let _remote_lock = lock::RepoLock::acquire(&remote_root)?;
-    let mut remote_conn = db::get_conn_at_path(&remote_root.join(".velo/velo.db"))?;
-    let remote_objects = remote_root.join(".velo/objects");
-    let remote_tip = branch_tip(&remote_conn, &branch);
+    let url = remote_url(root, remote_name)?;
+    let objects_dir = root.join(".velo/objects");
+    let mut remote = transport::open(&url)?;
 
-    if remote_tip.as_deref() == Some(local_tip.as_str()) {
-        println!("{} '{}' is already up to date on '{}'.", style("✔").green(), branch, remote_name);
-        return Ok(());
-    }
-
-    // Fast-forward-only: the remote's tip (if any) must be in our ancestry.
-    if let Some(rt) = &remote_tip {
-        let local_reach = bundle::reachable_ancestry(&conn, &local_tip);
-        if !local_reach.contains(rt) {
-            return Err(VeloError::InvalidInput(format!(
-                "Push rejected — '{}' on '{}' has commits you don't have (non-fast-forward).\n  \
-                 Run 'velo pull {}' and reconcile, then push again.",
-                branch, remote_name, remote_name
-            )));
+    // Build the pack once the remote has told us what it already has, so we
+    // send only new commits and only objects it lacks.
+    let mut build = |refs: &[transport::RemoteRef]| -> Result<bundle::Bundle> {
+        let mut peer_has: HashSet<String> = HashSet::new();
+        for r in refs {
+            // Only walk tips we actually have locally; ancestry of an unknown
+            // hash tells us nothing (and must not be claimed as "has").
+            if snapshot_exists(&conn, &r.hash) {
+                peer_has.extend(bundle::reachable_ancestry(&conn, &r.hash));
+            }
         }
+        let mut snap_set = bundle::reachable_ancestry(&conn, &local_tip);
+        for h in &peer_has {
+            snap_set.remove(h);
+        }
+        bundle::build_pack_excluding(&conn, &objects_dir, &snap_set, &peer_has)
+    };
+
+    match remote.push(&branch, &local_tip, &mut build)? {
+        PushOutcome::Ok { new_snapshots, new_objects } => {
+            remotemod::set_remote_ref(&conn, remote_name, &branch, &local_tip)?;
+            if new_snapshots == 0 && new_objects == 0 {
+                println!(
+                    "{} '{}' is already up to date on '{}'.",
+                    style("✔").green(),
+                    branch,
+                    remote_name
+                );
+            } else {
+                println!(
+                    "{} Pushed '{}' to '{}' — {} snapshot(s), {} object(s).",
+                    style("✔").green().bold(),
+                    branch,
+                    remote_name,
+                    new_snapshots,
+                    new_objects
+                );
+                println!(
+                    "  {} the remote's working tree is unchanged; it updates on its next {}.",
+                    style("note:").dim(),
+                    style("velo pull").cyan()
+                );
+            }
+            Ok(())
+        }
+        PushOutcome::Rejected(reason) => Err(VeloError::InvalidInput(format!(
+            "Push rejected — {}\n  Run 'velo pull {}' and reconcile, then push again.",
+            reason, remote_name
+        ))),
     }
-
-    let snap_set = bundle::reachable_ancestry(&conn, &local_tip);
-    let pack = bundle::build_pack(&conn, &root.join(".velo/objects"), &snap_set)?;
-    let (snaps, objs) = bundle::import_pack(&mut remote_conn, &remote_objects, &pack)?;
-
-    // We now know the remote is at our tip.
-    remotemod::set_remote_ref(&conn, remote_name, &branch, &local_tip)?;
-
-    println!(
-        "{} Pushed '{}' to '{}' — {} snapshot(s), {} object(s).",
-        style("✔").green().bold(),
-        branch,
-        remote_name,
-        snaps,
-        objs
-    );
-    println!(
-        "  {} the remote's working tree is unchanged; it updates on its next {} or {}.",
-        style("note:").dim(),
-        style("velo pull").cyan(),
-        style("velo restore").cyan()
-    );
-    Ok(())
 }
 
 // ─── pull ─────────────────────────────────────────────────────────────────────
@@ -206,32 +187,41 @@ pub fn pull(root: &Path, remote_name: &str) -> Result<()> {
         ));
     }
     let branch = current_branch(root);
-    let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let url = remotemod::remote_url(&conn, remote_name)?;
-    let remote_root = remotemod::resolve_remote_root(&url)?;
-    let remote_conn = db::get_conn_at_path(&remote_root.join(".velo/velo.db"))?;
-    let remote_objects = remote_root.join(".velo/objects");
+    let url = remote_url(root, remote_name)?;
 
-    let remote_tip = branch_tip(&remote_conn, &branch).ok_or_else(|| {
-        VeloError::InvalidInput(format!("Remote '{}' has no branch '{}'.", remote_name, branch))
-    })?;
-    let local_tip = branch_tip(&conn, &branch);
+    let mut remote = transport::open(&url)?;
+    let have = local_snapshots(root)?;
+    let (refs, pack) = remote.fetch(&have)?;
+
+    let remote_tip = refs
+        .iter()
+        .find(|r| r.branch == branch)
+        .map(|r| r.hash.clone())
+        .ok_or_else(|| {
+            VeloError::InvalidInput(format!("Remote '{}' has no branch '{}'.", remote_name, branch))
+        })?;
+
+    let local_tip = {
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
+        branch_tip(&conn, &branch)
+    };
 
     if local_tip.as_deref() == Some(remote_tip.as_str()) {
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         remotemod::set_remote_ref(&conn, remote_name, &branch, &remote_tip)?;
         println!("{} Already up to date.", style("✔").green());
         return Ok(());
     }
 
-    let remote_reach = bundle::reachable_ancestry(&remote_conn, &remote_tip);
+    // Is the pull a fast-forward? The pack is everything reachable from the
+    // remote tips minus what we have; the remote tip's ancestry is fully
+    // described by (pack ∪ local). If our tip is in that ancestry, we're behind.
     let is_ff = match &local_tip {
         None => true,
-        Some(lt) => remote_reach.contains(lt),
+        Some(lt) => pack_reaches(&pack, &remote_tip, lt) || pack.snapshots.iter().any(|s| &s.hash == lt),
     };
 
     if is_ff {
-        // Import the remote history onto the local branch and move to its tip.
-        let pack = bundle::build_pack(&remote_conn, &remote_objects, &remote_reach)?;
         let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         bundle::import_pack(&mut conn, &root.join(".velo/objects"), &pack)?;
         remotemod::set_remote_ref(&conn, remote_name, &branch, &remote_tip)?;
@@ -244,9 +234,8 @@ pub fn pull(root: &Path, remote_name: &str) -> Result<()> {
             style(&remote_tip[..12.min(remote_tip.len())]).yellow()
         );
     } else {
-        // Diverged: bring the remote history in as a tracking branch and let the
-        // user reconcile with the existing merge engine.
-        let mut pack = bundle::build_pack(&remote_conn, &remote_objects, &remote_reach)?;
+        // Diverged: import under a tracking branch and let the user reconcile.
+        let mut pack = pack;
         for s in &mut pack.snapshots {
             s.branch = format!("remotes/{}/{}", remote_name, s.branch);
         }
@@ -265,15 +254,66 @@ pub fn pull(root: &Path, remote_name: &str) -> Result<()> {
             style(format!("velo merge {}/{}", remote_name, branch)).cyan(),
             style("velo save \"Merge …\"").cyan()
         );
-        println!(
-            "  or replay your work with {}",
-            style(format!("velo rebase {}/{}", remote_name, branch)).cyan()
-        );
     }
     Ok(())
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────────
+
+fn remote_url(root: &Path, remote_name: &str) -> Result<String> {
+    let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
+    remotemod::remote_url(&conn, remote_name)
+}
+
+fn snapshot_exists(conn: &rusqlite::Connection, hash: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+        [hash],
+        |r| r.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
+fn local_snapshots(root: &Path) -> Result<HashSet<String>> {
+    let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
+    let mut stmt = conn.prepare("SELECT hash FROM snapshots")?;
+    let set = stmt
+        .query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(set)
+}
+
+/// Does `target`'s ancestry (as described by `pack`'s parent links) reach
+/// `needle`? Used to detect fast-forward when the pack was already filtered by
+/// our have-set (so `needle` may not itself be *in* the pack).
+fn pack_reaches(pack: &bundle::Bundle, target: &str, needle: &str) -> bool {
+    use std::collections::HashMap;
+    let by_hash: HashMap<&str, (&str, &str)> = pack
+        .snapshots
+        .iter()
+        .map(|s| (s.hash.as_str(), (s.parent_hash.as_str(), s.merge_parent.as_str())))
+        .collect();
+    let mut stack = vec![target.to_string()];
+    let mut seen = HashSet::new();
+    while let Some(h) = stack.pop() {
+        if h == needle {
+            return true;
+        }
+        if !seen.insert(h.clone()) {
+            continue;
+        }
+        if let Some((p, m)) = by_hash.get(h.as_str()) {
+            if !p.is_empty() {
+                stack.push(p.to_string());
+            }
+            if !m.is_empty() {
+                stack.push(m.to_string());
+            }
+        }
+    }
+    false
+}
 
 fn current_branch(root: &Path) -> String {
     std::fs::read_to_string(root.join(".velo/HEAD"))
@@ -282,7 +322,10 @@ fn current_branch(root: &Path) -> String {
 }
 
 fn default_dir(url: &str) -> String {
-    let trimmed = url.trim_end_matches(['/', '\\']);
+    let trimmed = url
+        .trim_start_matches("ssh://")
+        .trim_start_matches("child:")
+        .trim_end_matches(['/', '\\']);
     Path::new(trimmed)
         .file_name()
         .and_then(|s| s.to_str())

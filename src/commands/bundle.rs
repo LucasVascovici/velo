@@ -108,12 +108,31 @@ pub fn create(root: &Path, file: &str, target: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-/// Build a self-contained pack for `snap_set` from `conn`/`objects_dir`.
-/// Shared by `bundle create`, `push`, `fetch`, and `clone`.
+/// Build a **self-contained** pack for `snap_set` (every referenced object is
+/// included). Used by `bundle create`, where the output must stand alone.
 pub(crate) fn build_pack(
     conn: &rusqlite::Connection,
     objects_dir: &Path,
     snap_set: &HashSet<String>,
+) -> Result<Bundle> {
+    build_pack_excluding(conn, objects_dir, snap_set, &HashSet::new())
+}
+
+/// Build a pack for `snap_set`, omitting objects the peer demonstrably already
+/// has — i.e. any object referenced by a snapshot in `peer_has`.
+///
+/// This is the minimal-transfer path for `fetch`/`push`. Without it, a one-line
+/// change in a 1000-file project ships all 1000 objects, because a snapshot's
+/// file_map references its *whole* tree, not just what changed.
+///
+/// Correctness note: this trusts that a peer holding a snapshot also holds that
+/// snapshot's objects — the invariant `velo fsck` enforces. `bundle create`
+/// deliberately passes an empty `peer_has` so bundles stay self-contained.
+pub(crate) fn build_pack_excluding(
+    conn: &rusqlite::Connection,
+    objects_dir: &Path,
+    snap_set: &HashSet<String>,
+    peer_has: &HashSet<String>,
 ) -> Result<Bundle> {
     let mut snapshots = Vec::new();
     {
@@ -137,8 +156,11 @@ pub(crate) fn build_pack(
         }
     }
 
+    // One pass over file_map: collect the rows we're sending, the objects they
+    // need, and (separately) the objects the peer already holds via `peer_has`.
     let mut file_map = Vec::new();
     let mut object_hashes: HashSet<String> = HashSet::new();
+    let mut peer_objects: HashSet<String> = HashSet::new();
     {
         let mut stmt = conn.prepare("SELECT snapshot_hash, path, hash, mode FROM file_map")?;
         let rows = stmt.query_map([], |r| {
@@ -153,8 +175,13 @@ pub(crate) fn build_pack(
             if snap_set.contains(&row.snapshot_hash) {
                 object_hashes.insert(row.hash.clone());
                 file_map.push(row);
+            } else if peer_has.contains(&row.snapshot_hash) {
+                peer_objects.insert(row.hash);
             }
         }
+    }
+    for h in &peer_objects {
+        object_hashes.remove(h);
     }
 
     let mut tags = Vec::new();
@@ -348,7 +375,7 @@ pub(crate) fn reachable_ancestry(conn: &rusqlite::Connection, tip: &str) -> Hash
 
 // ─── Encoding ────────────────────────────────────────────────────────────────────
 
-fn encode(b: &Bundle) -> Vec<u8> {
+pub(crate) fn encode(b: &Bundle) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
     put_u32(&mut out, FORMAT_VERSION);
@@ -386,7 +413,7 @@ fn encode(b: &Bundle) -> Vec<u8> {
     out
 }
 
-fn decode(data: &[u8]) -> Result<Bundle> {
+pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
     let mut r = Reader { data, pos: 0 };
     let magic = r.bytes(8)?;
     if magic != MAGIC {

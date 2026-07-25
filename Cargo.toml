@@ -1,6 +1,6 @@
 [package]
 name = "velo"
-version = "2.3.8"
+version = "3.0.0"
 edition = "2021"
 
 [dependencies]
