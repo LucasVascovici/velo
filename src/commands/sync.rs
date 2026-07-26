@@ -141,7 +141,18 @@ pub fn push(root: &Path, remote_name: &str, branch: Option<&str>) -> Result<()> 
         for h in &peer_has {
             snap_set.remove(h);
         }
-        bundle::build_pack_excluding(&conn, &objects_dir, &snap_set, &peer_has)
+        let mut pack = bundle::build_pack_excluding(&conn, &objects_dir, &snap_set, &peer_has)?;
+        // Send commits under their real branch name: a commit we obtained via
+        // `fetch` carries our local `remotes/<remote>/<branch>` label, which is
+        // bookkeeping local to us and meaningless to the receiver.
+        for s in &mut pack.snapshots {
+            if let Some(rest) = s.branch.strip_prefix("remotes/") {
+                if let Some((_, original)) = rest.split_once('/') {
+                    s.branch = original.to_string();
+                }
+            }
+        }
+        Ok(pack)
     };
 
     match remote.push(&branch, &local_tip, &mut build)? {
@@ -201,29 +212,33 @@ pub fn pull(root: &Path, remote_name: &str) -> Result<()> {
             VeloError::InvalidInput(format!("Remote '{}' has no branch '{}'.", remote_name, branch))
         })?;
 
-    let local_tip = {
-        let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-        branch_tip(&conn, &branch)
-    };
+    let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
+    let local_tip = branch_tip(&conn, &branch);
 
     if local_tip.as_deref() == Some(remote_tip.as_str()) {
-        let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         remotemod::set_remote_ref(&conn, remote_name, &branch, &remote_tip)?;
         println!("{} Already up to date.", style("✔").green());
         return Ok(());
     }
 
-    // Is the pull a fast-forward? The pack is everything reachable from the
-    // remote tips minus what we have; the remote tip's ancestry is fully
-    // described by (pack ∪ local). If our tip is in that ancestry, we're behind.
+    // Is the pull a fast-forward? i.e. is our tip an ancestor of the remote's?
+    // The walk must span (pack ∪ local history): the pack omits commits we
+    // already have, and a previous `velo fetch` may have already imported the
+    // remote's commits locally (leaving the pack empty).
     let is_ff = match &local_tip {
         None => true,
-        Some(lt) => pack_reaches(&pack, &remote_tip, lt) || pack.snapshots.iter().any(|s| &s.hash == lt),
+        Some(lt) => transport::reaches(&conn, &pack, &remote_tip, lt),
     };
+    drop(conn);
 
     if is_ff {
         let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         bundle::import_pack(&mut conn, &root.join(".velo/objects"), &pack)?;
+        // A previous `velo fetch` may already have imported these commits under
+        // the remote-tracking branch. Since Velo derives branch tips from the
+        // `branch` column, the label has to move with the branch — otherwise the
+        // fast-forward wouldn't actually advance `main`.
+        adopt_tracking_commits(&conn, remote_name, &branch, &remote_tip)?;
         remotemod::set_remote_ref(&conn, remote_name, &branch, &remote_tip)?;
         drop(conn);
         crate::commands::restore::run(root, &remote_tip, false, &[])?;
@@ -284,35 +299,26 @@ fn local_snapshots(root: &Path) -> Result<HashSet<String>> {
     Ok(set)
 }
 
-/// Does `target`'s ancestry (as described by `pack`'s parent links) reach
-/// `needle`? Used to detect fast-forward when the pack was already filtered by
-/// our have-set (so `needle` may not itself be *in* the pack).
-fn pack_reaches(pack: &bundle::Bundle, target: &str, needle: &str) -> bool {
-    use std::collections::HashMap;
-    let by_hash: HashMap<&str, (&str, &str)> = pack
-        .snapshots
-        .iter()
-        .map(|s| (s.hash.as_str(), (s.parent_hash.as_str(), s.merge_parent.as_str())))
-        .collect();
-    let mut stack = vec![target.to_string()];
-    let mut seen = HashSet::new();
-    while let Some(h) = stack.pop() {
-        if h == needle {
-            return true;
-        }
-        if !seen.insert(h.clone()) {
-            continue;
-        }
-        if let Some((p, m)) = by_hash.get(h.as_str()) {
-            if !p.is_empty() {
-                stack.push(p.to_string());
-            }
-            if !m.is_empty() {
-                stack.push(m.to_string());
-            }
-        }
+/// Re-label commits that a previous `fetch` parked on `remotes/<remote>/<branch>`
+/// onto the local `branch`, for everything reachable from `remote_tip`.
+///
+/// Only the tracking branch for *this* branch is touched, so commits that
+/// arrived on other tracking branches (e.g. a merged-in feature) keep their own
+/// labels.
+fn adopt_tracking_commits(
+    conn: &rusqlite::Connection,
+    remote_name: &str,
+    branch: &str,
+    remote_tip: &str,
+) -> Result<()> {
+    let tracking = format!("remotes/{}/{}", remote_name, branch);
+    let reach = bundle::reachable_ancestry(conn, remote_tip);
+    let mut stmt =
+        conn.prepare("UPDATE snapshots SET branch = ? WHERE hash = ? AND branch = ?")?;
+    for h in &reach {
+        stmt.execute(rusqlite::params![branch, h, tracking])?;
     }
-    false
+    Ok(())
 }
 
 fn current_branch(root: &Path) -> String {

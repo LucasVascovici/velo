@@ -145,22 +145,43 @@ pub(crate) fn fast_forward_check(
         return None; // already up to date
     }
 
+    if reaches(conn, pack, new_tip, &old) {
+        return None; // reachable → fast-forward
+    }
+    Some(format!(
+        "'{}' has commits you don't have (non-fast-forward). Pull and reconcile first.",
+        branch
+    ))
+}
+
+/// Is `needle` an ancestor of `from`, walking parent links over `pack` **unioned
+/// with** the local database?
+///
+/// Both halves are required: a minimal pack omits commits the receiver already
+/// has (so the walk must fall through to the DB), while the DB lacks the commits
+/// still in flight (so the pack must be consulted first).
+pub(crate) fn reaches(
+    conn: &rusqlite::Connection,
+    pack: &Bundle,
+    from: &str,
+    needle: &str,
+) -> bool {
     let pack_parents: std::collections::HashMap<&str, (&str, &str)> = pack
         .snapshots
         .iter()
         .map(|s| (s.hash.as_str(), (s.parent_hash.as_str(), s.merge_parent.as_str())))
         .collect();
 
-    let mut stack = vec![new_tip.to_string()];
+    let mut stack = vec![from.to_string()];
     let mut seen: HashSet<String> = HashSet::new();
     while let Some(h) = stack.pop() {
-        if h == old {
-            return None; // reachable → fast-forward
+        if h == needle {
+            return true;
         }
         if !seen.insert(h.clone()) {
             continue;
         }
-        // Prefer the pack (new commits), then fall back to local history.
+        // Prefer the pack (commits in flight), then fall back to local history.
         let parents = if let Some((p, m)) = pack_parents.get(h.as_str()) {
             Some((p.to_string(), m.to_string()))
         } else {
@@ -180,10 +201,7 @@ pub(crate) fn fast_forward_check(
             }
         }
     }
-    Some(format!(
-        "'{}' has commits you don't have (non-fast-forward). Pull and reconcile first.",
-        branch
-    ))
+    false
 }
 
 // ─── Streaming (subprocess) transport ──────────────────────────────────────────
