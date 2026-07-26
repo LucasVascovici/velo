@@ -12,6 +12,10 @@
   Git's power — without Git's sharp edges.
 </p>
 
+<p align="center">
+  <em>v3 — now with collaboration: clone, push, pull, and offline bundles.</em>
+</p>
+
 > **Note:** Velo was vibe-coded for fun — high-level intent, modern tech stack, tight feedback loop with an AI assistant. It's a real working tool, but built as an experiment in what's possible with that workflow, not as a production-grade Git replacement.
 
 ---
@@ -34,6 +38,9 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | **Branch history** | `git log --all --graph --oneline --decorate` | `velo history --all --graph` |
 | **View a snapshot** | `git show <hash>` | `velo show <hash>` |
 | **Apply one commit** | `git cherry-pick <hash>` | `velo cherry-pick <hash>` |
+| **Accidental force-push** | `git push --force` overwrites remote history | `velo push` is fast-forward-only — divergence is refused with instructions |
+| **Surprise rebases on pull** | `git pull` may merge or rebase depending on config | `velo pull` fast-forwards or stops and tells you — never silently rewrites |
+| **Verify the repo** | `git fsck` (cryptic output) | `velo fsck` — plain-English report, `--repair` for fixable cruft |
 
 ---
 
@@ -94,6 +101,20 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Drop a stash | `git stash drop stash@{2}` | `velo stash drop <name>` |
 | Inspect a stash | `git stash show stash@{2} -p` | `velo stash show <name>` |
 
+### Collaboration
+
+| Task | Git | Velo |
+| :--- | :--- | :--- |
+| Copy a repository | `git clone <url>` | `velo clone <url>` |
+| Add a remote | `git remote add origin <url>` | `velo remote add origin <url>` |
+| List remotes | `git remote -v` | `velo remote` |
+| Download without merging | `git fetch` | `velo fetch` |
+| Publish your commits | `git push` | `velo push` (fast-forward only) |
+| Integrate remote commits | `git pull` | `velo pull` |
+| See if you're ahead/behind | `git status` (after fetch) | `velo status` (after fetch) |
+| Share history without a server | `git bundle create` | `velo bundle create <file>` |
+| Import a shared history file | `git bundle unbundle` | `velo bundle apply <file>` |
+
 ### Tags & maintenance
 
 | Task | Git | Velo |
@@ -103,6 +124,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | List tags | `git tag` | `velo tag` |
 | Delete a tag | `git tag -d v1.0` | `velo tag --delete v1.0` |
 | Clean up old data | `git gc` | `velo gc` |
+| Check repository integrity | `git fsck` | `velo fsck` / `velo fsck --repair` |
 
 ---
 
@@ -116,7 +138,11 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 **Named stash shelves.** `git stash apply stash@{2}` requires you to remember an index in a list. `velo stash pop wip-auth` is self-documenting.
 
-**Branch names resolve everywhere.** Any command that accepts a hash or tag (`show`, `cherry-pick`, `restore`) also accepts a branch name — it resolves to the branch tip automatically.
+**Branch names resolve everywhere.** Any command that accepts a hash or tag (`show`, `cherry-pick`, `restore`) also accepts a branch name — it resolves to the branch tip automatically. Remote-tracking refs work too: `velo merge origin/main`, `velo show origin/main`.
+
+**Sync that refuses to surprise you.** `velo push` is fast-forward-only: if the remote has commits you don't, the push is refused with the exact commands to fix it — there is no `--force` footgun. `velo pull` either fast-forwards or stops and tells you the branches diverged; it never silently merges or rewrites your history. Reconciliation is always an explicit `velo merge origin/<branch>` or `velo rebase origin/<branch>`.
+
+**Verifiable snapshots.** A snapshot's ID is a BLAKE3 hash of its *content* — the full file tree (paths, object hashes, and modes) plus its parents, message, and timestamp. That means a snapshot can be checked against what it claims to contain, which is exactly what `velo fsck` does, and what makes importing history from another machine safe: every object is re-hashed and every snapshot ID recomputed on arrival before anything is trusted.
 
 ---
 
@@ -209,6 +235,11 @@ velo save "Add login page"
 velo switch main
 velo merge feature/login
 velo save "Merge feature/login"
+
+# Share it
+velo remote add origin /shared/app     # or ssh://user@host/srv/app
+velo push
+velo pull
 ```
 
 ---
@@ -302,12 +333,38 @@ velo save "Merge feature/login"
 | `velo tag` | List all tags |
 | `velo tag --delete <name>` | Delete a tag |
 
+### Collaboration & sync
+
+| Command | Description |
+| :--- | :--- |
+| `velo clone <url> [dir]` | Copy a repository, set up `origin`, and check out its default branch |
+| `velo remote add <name> <url>` | Add a remote (a filesystem path or `ssh://[user@]host[:port]/path`) |
+| `velo remote` | List configured remotes |
+| `velo remote remove <name>` | Remove a remote and its tracking refs |
+| `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
+| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work) |
+| `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
+
+Remote defaults to `origin`, and branch defaults to the current branch.
+After a `fetch`, `velo status` shows ahead/behind, and `origin/<branch>`
+can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff-range`).
+
+### Offline transfer
+
+| Command | Description |
+| :--- | :--- |
+| `velo bundle create <file>` | Pack the entire repository into one self-contained file |
+| `velo bundle create <file> <ref>` | Pack only the history reachable from a snapshot, tag, or branch |
+| `velo bundle apply <file>` | Import a bundle into this repository (verified, idempotent) |
+
 ### Maintenance
 
 | Command | Description |
 | :--- | :--- |
 | `velo gc` | Remove orphaned objects and stale undo/conflict state |
 | `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
+| `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
+| `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
 
 ---
 
@@ -345,15 +402,164 @@ velo save "Merge feature/payments"
 The `--graph` flag shows the merge in history:
 
 ```
-●  a1b2c3d4  (main)   2026-03-22  Merge feature/payments
-│╲
-│ ○  e5f6a7b8  (feature/payments)  2026-03-22  Add payment config
+●  a709f1062fbec2f1  (main)  2026-07-25 13:51:25  Merge feature/payments
+│ ╲
+│ │
+○ │  3ca49fa15b5d1461  (main)  2026-07-25 13:51:25  Set test payment key
+│ │
+│ ○  7ba17e5444285026  (feature/payments)  2026-07-25 13:51:24  Add payment config
 │ ╱
 │
-○  c9d0e1f2  (main)   2026-03-22  Set test payment key
-│
-○  a3b4c5d6  (main)   2026-03-22  Initial commit
+○  b663407a874fb830  (main)  2026-07-25 13:51:24  Initial commit
 ```
+
+### Conflicts only when the changes really overlap
+
+Velo performs a real line-level 3-way merge. If both branches touched the same
+file but in different places, both sets of changes are combined automatically —
+you are only asked to resolve regions that genuinely overlap:
+
+```bash
+# ancestor:  DEBUG = False  …  RETRIES = 3
+# feature/payments changed line 3;  main changed line 5
+velo merge feature/payments
+```
+```
+Merging 'feature/payments' into 'main' (ancestor: 38735ed3e87fca9f)…
+  ~ Auto-merged: config.py
+
+Merge summary
+  New:      0
+  Updated:  1
+  Deleted:  0
+  Conflicts: 0
+
+✔ Clean merge! Run velo save "Merge <branch>" to finalise.
+```
+
+The merged file keeps **both** sides — `DEBUG = True` from the feature branch and
+`RETRIES = 5` from main. The same engine backs `cherry-pick` and `rebase`.
+
+---
+
+## Collaboration
+
+Velo repositories can be shared over a filesystem path (including a network or
+shared drive), over SSH, or as a single self-contained file — no server to run.
+
+### Clone, push, pull
+
+```bash
+# Clone from a path or over SSH
+velo clone /shared/project
+velo clone ssh://user@host/srv/project        # ssh://[user@]host[:port]/path
+
+# Everyday loop
+velo save "Add login page"
+velo push                  # fast-forward only
+velo pull                  # fast-forward, or tells you it diverged
+
+# Remotes
+velo remote add origin /shared/project
+velo remote                             # list
+velo remote remove origin
+
+# Download without touching your branches or working tree
+velo fetch
+```
+
+`velo status` tells you where you stand relative to the last-fetched remote state
+(no network access needed):
+
+```
+Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
+  ↑ 1 ahead of origin/main — velo push to publish
+```
+```
+  ↓ 1 behind origin/main — velo pull to catch up
+  ↕ diverged from origin/main (1 ahead, 1 behind) — velo pull then velo merge origin/main
+  ✔ up to date with origin/main
+```
+
+### When two people diverge
+
+```bash
+velo push
+# → Push rejected — 'main' has commits you don't have (non-fast-forward).
+#   Run 'velo pull origin' and reconcile, then push again.
+
+velo pull
+# → ! 'main' and 'origin/main' have diverged.
+#     Reconcile with velo merge origin/main then velo save "Merge …"
+
+velo merge origin/main     # the normal 3-way merge — auto-merges what it can
+velo save "Merge origin/main"
+velo push                  # now a fast-forward
+```
+
+Nothing is ever force-overwritten, and `pull` never rewrites your history behind
+your back.
+
+### Offline transfer with bundles
+
+A bundle is one self-contained file carrying snapshots, all the objects they
+reference, and their tags. Useful for air-gapped machines, backups, or emailing a
+branch to someone.
+
+```bash
+velo bundle create backup.velo              # whole repository
+velo bundle create feature.velo feature     # everything reachable from a ref
+velo bundle apply backup.velo               # import into another repository
+```
+
+Applying a bundle is **idempotent** — re-applying imports nothing and reports
+that you're already up to date.
+
+### Only what's missing goes over the wire
+
+Both `push` and `fetch` negotiate: the peer's known snapshots are subtracted, and
+objects the peer already holds are skipped. A one-line change in a 20-file project
+transfers a single object, not the whole tree — a snapshot references its entire
+file tree, so naive syncing would resend everything on every push. (`bundle create`
+deliberately opts out of this, since a bundle must stand alone.)
+
+---
+
+## Integrity & safety
+
+```bash
+velo fsck            # verify everything (read-only)
+velo fsck --repair   # also tidy safely-fixable cruft
+```
+
+```
+Checking repository integrity…
+  ✔ Objects: 4 referenced, 4 verified
+  ✔ Snapshots: 3 checked, 3 ids verified
+  ✔ Refs: PARENT, tags, stash
+  ✔ State: no cruft
+
+✔ Repository is healthy.
+```
+
+`fsck` checks that every referenced object exists **and re-hashes to its own
+name**, that every snapshot's content-addressed ID recomputes correctly, that
+parents and merge parents resolve, and that all refs (`PARENT`, tags, stash,
+remote-tracking) point at something real. It exits non-zero when it finds
+corruption, so it works in scripts and CI. Cruft (orphaned conflict rows, stale
+tracking refs) is reported as a warning and cleaned up by `--repair`.
+
+Underneath, a few things protect your data:
+
+- **Atomic writes.** Objects and refs (`PARENT`, `HEAD`, `MERGE_HEAD`) are written
+  to a temp file and renamed into place, so a crash mid-write can never leave a
+  truncated ref or a half-written object.
+- **Repository lock.** Mutating commands take an advisory lock on `.velo/lock`, so
+  two concurrent `velo` processes can't race (a `gc` can't delete an object a
+  `save` is still committing). Read-only commands never block.
+- **Verified imports.** Anything received from a bundle or a remote is fully
+  verified — objects re-hashed, snapshot IDs recomputed — inside one transaction
+  before it is trusted.
 
 ---
 
@@ -363,10 +569,16 @@ The `--graph` flag shows the merge in history:
 | :--- | :--- | :--- |
 | Hashing | BLAKE3 | Collision-proof, 10× faster than SHA-1; `rayon` parallelises large files |
 | Compression | Zstd level 1 | Fast compression on save; transparent decompression on restore |
-| Metadata | SQLite (WAL mode) | Snapshots, branches, tags, ancestry, conflicts, stash — indexed queries |
+| Metadata | SQLite (WAL mode) | Snapshots, branches, tags, ancestry, conflicts, stash, remotes — indexed queries |
 | Mtime cache | `index_cache` table | `(path, mtime_ns, size, hash)` — skips rehashing unchanged files |
 | Concurrency | Rayon | Parallel filesystem walk, hash-and-compress, and file writes on restore |
 | I/O | memmap2 | Memory-maps files ≥256 KB to avoid kernel→userspace copy |
+| Locking | fs2 advisory lock | Serialises mutating commands across processes (`.velo/lock`) |
+| Transport | Filesystem · SSH · bundle | Direct path access, a pack protocol over `ssh`, or a self-contained file |
+
+**Content-addressed snapshots.** A snapshot's ID is `BLAKE3(tree ‖ parents ‖ message ‖ timestamp)`, truncated to 16 hex characters (64 bits), where *tree* is every `(path, object-hash, mode)` triple in sorted order. Because the ID commits to the tree, it can be verified against its contents — the property `fsck` checks and that makes accepting history from another machine safe. The branch is deliberately **not** hashed, so renaming or deleting a branch never changes the identity of its commits.
+
+**File model.** Each tree entry records a mode: regular, executable, or symlink. The executable bit survives save→restore (on Unix), and symlinks are stored as their target and recreated as real links rather than being followed and flattened into copies. On Windows the executable bit isn't observable from the filesystem, so it is carried through history unchanged, and symlink creation falls back to a regular file when the platform disallows it.
 
 **Delta storage.** Each snapshot records only changed files. Unchanged files are stored as references to the same object from the parent. A 1000-file project where 10 files change creates 10 new objects, not 1000.
 
@@ -382,13 +594,39 @@ The `--graph` flag shows the merge in history:
 
 ```
 .velo/
-├── velo.db       # SQLite database: snapshots, branches, tags, ancestry, stash, conflicts
+├── velo.db       # SQLite: snapshots, file trees, branches, tags, stash,
+│                 #         conflicts, remotes, remote-tracking refs
 ├── objects/      # Content-addressed object store (Zstd-compressed, named by BLAKE3 hash)
 ├── HEAD          # Current branch name
 ├── PARENT        # Hash of the current snapshot
-└── MERGE_HEAD    # Present only during an in-progress merge or cherry-pick
-                  # Format: "<pre-merge-hash>:<source-branch>"
+├── lock          # Advisory lock held by mutating commands
+├── MERGE_HEAD    # Present only during an in-progress merge or cherry-pick
+│                 # Format: "<pre-merge-hash>:<source-branch>"
+└── REBASE_STATE  # Present only during an in-progress rebase
+                  # (alongside REBASE_ONTO and REBASE_ORIG_HEAD)
 ```
+
+Remote-tracking history is stored on internal branches named
+`remotes/<remote>/<branch>`, with each remote's last-known tips in the
+`remote_refs` table. Your local branches are never touched by `fetch`.
+
+---
+
+## Development
+
+See [DEVELOPING.md](DEVELOPING.md) for the full build/test/release guide.
+
+```bash
+cargo build --release       # binary at target/release/velo
+cargo test                  # unit + integration tests
+./workflow_sim.sh           # end-to-end, two-developer workflow simulation
+```
+
+The test suite has three layers: unit and property tests (including randomised
+3-way-merge and object-store round-trip properties), CLI integration tests that
+drive the real binary and assert its output, and `workflow_sim.sh` — a scripted
+simulation of a long-lived project that exercises every command in sequence and
+ends by verifying the repository with `fsck`.
 
 ---
 

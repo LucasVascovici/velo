@@ -350,6 +350,47 @@ fn fetch_is_readonly_and_tracks_remote() {
 }
 
 #[test]
+fn fetch_then_pull_still_fast_forwards() {
+    // Regression: `fetch` parks incoming commits on the remote-tracking branch.
+    // A following `pull` used to (a) report divergence, because its ancestry walk
+    // only consulted the (now-empty) pack, and (b) not advance the local branch,
+    // because Velo derives branch tips from the `branch` column and nothing
+    // re-labelled the fetched commits onto it.
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velo(&origin, &["init"]).1);
+    write(&origin, "f.txt", "one\n");
+    assert!(velo(&origin, &["save", "first"]).1);
+    let origin_s = origin.to_str().unwrap();
+
+    assert!(velo(root.path(), &["clone", origin_s, "C"]).1);
+    let c = root.path().join("C");
+
+    // Origin advances.
+    write(&origin, "g.txt", "two\n");
+    assert!(velo(&origin, &["save", "second"]).1);
+
+    // Fetch first (read-only), then pull.
+    assert!(velo(&c, &["fetch"]).1);
+    let (out, ok) = velo(&c, &["pull"]);
+    assert!(ok, "pull after fetch failed:\n{out}");
+    assert!(
+        out.to_lowercase().contains("fast-forward"),
+        "pull after fetch must fast-forward, not report divergence:\n{out}"
+    );
+    assert!(c.join("g.txt").exists(), "pull must bring the new file into the tree");
+
+    // The local branch really advanced: status is up to date, not behind.
+    let (out, _) = velo(&c, &["status"]);
+    assert!(
+        out.contains("up to date with origin/main"),
+        "local branch must have advanced after the fast-forward:\n{out}"
+    );
+    assert!(velo(&c, &["fsck"]).1);
+}
+
+#[test]
 fn fsck_fails_and_repairs_are_exit_coded() {
     let tmp = repo();
     let d = tmp.path();
