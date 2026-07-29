@@ -1,28 +1,28 @@
-pub mod init;
-pub mod save;
-pub mod restore;
-pub mod status;
-pub mod history;
-pub mod undo;
-pub mod redo;
-pub mod diff;
-pub mod switch;
-pub mod tag;
-pub mod merge;
-pub mod resolve;
-pub mod branches;
-pub mod gc;
-pub mod stash;
-pub mod show;
-pub mod cherry_pick;
 pub mod blame;
-pub mod grep;
-pub mod squash;
-pub mod rebase;
-pub mod fsck;
+pub mod branches;
 pub mod bundle;
+pub mod cherry_pick;
+pub mod diff;
+pub mod fsck;
+pub mod gc;
+pub mod grep;
+pub mod history;
+pub mod init;
+pub mod merge;
+pub mod rebase;
+pub mod redo;
 pub mod remote;
+pub mod resolve;
+pub mod restore;
+pub mod save;
+pub mod show;
+pub mod squash;
+pub mod stash;
+pub mod status;
+pub mod switch;
 pub mod sync;
+pub mod tag;
+pub mod undo;
 
 use std::collections::HashMap;
 use std::fs;
@@ -89,7 +89,9 @@ pub fn snapshot_id(
 /// (and sorts correctly against any older second-precision rows), while the
 /// sub-second component removes the same-second id-collision foot-gun.
 pub fn snapshot_timestamp() -> String {
-    chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+    chrono::Utc::now()
+        .format("%Y-%m-%d %H:%M:%S%.3f")
+        .to_string()
 }
 
 // ─── File status ─────────────────────────────────────────────────────────────
@@ -139,8 +141,7 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
 
     // 2. Try as exact or prefix hash
     let rows: Vec<String> = {
-        let mut stmt =
-            conn.prepare("SELECT hash FROM snapshots WHERE hash LIKE ? || '%'")?;
+        let mut stmt = conn.prepare("SELECT hash FROM snapshots WHERE hash LIKE ? || '%'")?;
         let collected: Vec<String> = stmt
             .query_map([input], |r| r.get(0))?
             .filter_map(|r| r.ok())
@@ -150,10 +151,12 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
 
     match rows.len() {
         1 => return Ok(rows.into_iter().next().unwrap()),
-        n if n > 1 => return Err(VeloError::InvalidInput(format!(
-            "Ambiguous prefix '{}' matches {} snapshots. Use more characters.",
-            input, n
-        ))),
+        n if n > 1 => {
+            return Err(VeloError::InvalidInput(format!(
+                "Ambiguous prefix '{}' matches {} snapshots. Use more characters.",
+                input, n
+            )))
+        }
         _ => {}
     }
 
@@ -362,7 +365,12 @@ fn walk_with_meta(root: &Path) -> Vec<WalkEntry> {
                             .unwrap_or(0);
                         let size = meta.len() as i64;
                         let mode = crate::storage::capture_mode(&path);
-                        acc.lock().push(WalkEntry { path, mtime_ns, size, mode });
+                        acc.lock().push(WalkEntry {
+                            path,
+                            mtime_ns,
+                            size,
+                            mode,
+                        });
                     }
                 }
             }
@@ -400,8 +408,7 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
         Ok(c) => c,
         Err(_) => return dirty,
     };
-    let parent_hash =
-        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     // ── 1. Load snapshot's file map ───────────────────────────────────────────
     // Degrade gracefully: a transient DB error (e.g. a momentary lock) yields an
@@ -430,7 +437,16 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
             })?;
             Ok(rows
                 .filter_map(|r| r.ok())
-                .map(|(p, m, s, h)| (p, CacheEntry { mtime_ns: m, size: s, hash: h }))
+                .map(|(p, m, s, h)| {
+                    (
+                        p,
+                        CacheEntry {
+                            mtime_ns: m,
+                            size: s,
+                            hash: h,
+                        },
+                    )
+                })
                 .collect::<HashMap<_, _>>())
         })
         .unwrap_or_default();
@@ -460,10 +476,7 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
         .collect();
 
     // ── 5. Batch-write cache misses back to DB ────────────────────────────────
-    let misses: Vec<_> = results
-        .iter()
-        .filter(|(_, _, _, _, miss)| *miss)
-        .collect();
+    let misses: Vec<_> = results.iter().filter(|(_, _, _, _, miss)| *miss).collect();
 
     if !misses.is_empty() {
         if let Ok(tx) = conn.unchecked_transaction() {
@@ -472,9 +485,7 @@ pub fn get_dirty_files(root: &Path) -> HashMap<String, FileStatus> {
                  VALUES (?, ?, ?, ?)",
             ) {
                 for (rel, hash, mtime, size, _) in &misses {
-                    let _ = stmt.execute(
-                        rusqlite::params![rel, mtime, size, hash],
-                    );
+                    let _ = stmt.execute(rusqlite::params![rel, mtime, size, hash]);
                 }
             }
             let _ = tx.commit();
@@ -510,9 +521,7 @@ pub fn invalidate_cache_entries(root: &Path, paths: &[String]) {
     let db_path = root.join(".velo/velo.db");
     if let Ok(conn) = crate::db::get_conn_at_path(&db_path) {
         if let Ok(tx) = conn.unchecked_transaction() {
-            if let Ok(mut stmt) =
-                tx.prepare("DELETE FROM index_cache WHERE path = ?")
-            {
+            if let Ok(mut stmt) = tx.prepare("DELETE FROM index_cache WHERE path = ?") {
                 for p in paths {
                     let _ = stmt.execute([p]);
                 }
@@ -525,7 +534,9 @@ pub fn invalidate_cache_entries(root: &Path, paths: &[String]) {
 /// Return the list of files with active merge conflicts (reads from DB).
 pub fn get_conflict_files(root: &Path) -> Vec<String> {
     let db_path = root.join(".velo/velo.db");
-    if !db_path.exists() { return vec![]; }
+    if !db_path.exists() {
+        return vec![];
+    }
     let conn = match crate::db::get_conn_at_path(&db_path) {
         Ok(c) => c,
         Err(_) => return vec![],
@@ -563,7 +574,11 @@ pub enum Reconcile {
     Nothing,
     /// Take theirs verbatim: write object `hash` with `mode` to the working
     /// tree. `is_new` is true when the file did not exist in the ancestor.
-    TakeTheirs { hash: String, mode: i64, is_new: bool },
+    TakeTheirs {
+        hash: String,
+        mode: i64,
+        is_new: bool,
+    },
     /// Theirs deleted a file ours left untouched — remove it.
     Delete,
     /// Both sides changed non-overlapping regions — write this merged content
@@ -604,7 +619,11 @@ pub fn reconcile_file(
         return Ok(if thr.0.is_empty() {
             Reconcile::Delete
         } else {
-            Reconcile::TakeTheirs { hash: thr.0.to_string(), mode: thr.1, is_new: anc.0.is_empty() }
+            Reconcile::TakeTheirs {
+                hash: thr.0.to_string(),
+                mode: thr.1,
+                is_new: anc.0.is_empty(),
+            }
         });
     }
     // Both sides changed.
@@ -613,11 +632,19 @@ pub fn reconcile_file(
     }
     if our.0.is_empty() {
         // ours deleted, theirs modified — restore theirs
-        return Ok(Reconcile::TakeTheirs { hash: thr.0.to_string(), mode: thr.1, is_new: false });
+        return Ok(Reconcile::TakeTheirs {
+            hash: thr.0.to_string(),
+            mode: thr.1,
+            is_new: false,
+        });
     }
     // Same content, differing mode only → take theirs' mode (no content merge).
     if our.0 == thr.0 {
-        return Ok(Reconcile::TakeTheirs { hash: thr.0.to_string(), mode: thr.1, is_new: false });
+        return Ok(Reconcile::TakeTheirs {
+            hash: thr.0.to_string(),
+            mode: thr.1,
+            is_new: false,
+        });
     }
     // Symlinks can't be line-merged.
     if our.1 == crate::storage::MODE_SYMLINK || thr.1 == crate::storage::MODE_SYMLINK {
@@ -642,7 +669,10 @@ pub fn reconcile_file(
         &String::from_utf8_lossy(&our_bytes),
         &String::from_utf8_lossy(&thr_bytes),
     ) {
-        Some(merged) => Ok(Reconcile::AutoMerged { content: merged.into_bytes(), mode: thr.1 }),
+        Some(merged) => Ok(Reconcile::AutoMerged {
+            content: merged.into_bytes(),
+            mode: thr.1,
+        }),
         None => Ok(Reconcile::Conflict),
     }
 }

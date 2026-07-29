@@ -57,7 +57,10 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
     for h in &referenced {
         let path = objects_dir.join(h);
         if !path.exists() {
-            problems.push(format!("object {} is referenced but missing from the store", h));
+            problems.push(format!(
+                "object {} is referenced but missing from the store",
+                h
+            ));
             continue;
         }
         match storage::read_object(&objects_dir, h) {
@@ -76,7 +79,14 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
             Err(_) => problems.push(format!("object {} could not be decompressed (corrupt)", h)),
         }
     }
-    report_line(problems.len(), &format!("Objects: {} referenced, {} verified", referenced.len(), verified));
+    report_line(
+        problems.len(),
+        &format!(
+            "Objects: {} referenced, {} verified",
+            referenced.len(),
+            verified
+        ),
+    );
 
     // ── 2. Snapshots: parents resolve; content-addressed ids recompute ────────
     let all_snaps: HashSet<String> = {
@@ -112,7 +122,10 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
 
         for (hash, message, branch, parent, merge_parent, created_at) in &snaps {
             if !parent.is_empty() && !all_snaps.contains(parent) {
-                problems.push(format!("snapshot {} has parent {} which does not exist", hash, parent));
+                problems.push(format!(
+                    "snapshot {} has parent {} which does not exist",
+                    hash, parent
+                ));
             }
             if !merge_parent.is_empty() && !all_snaps.contains(merge_parent) {
                 problems.push(format!(
@@ -243,7 +256,10 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
                 "DELETE FROM hunk_decisions WHERE file_path NOT IN (SELECT path FROM conflict_files)",
                 [],
             )?;
-            repaired.push(format!("pruned {} orphaned hunk-decision row(s)", orphan_hunks));
+            repaired.push(format!(
+                "pruned {} orphaned hunk-decision row(s)",
+                orphan_hunks
+            ));
         }
         if orphan_tags > 0 {
             conn.execute(
@@ -264,7 +280,10 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
                 "DELETE FROM remote_refs WHERE hash NOT IN (SELECT hash FROM snapshots)",
                 [],
             )?;
-            repaired.push(format!("pruned {} stale remote-tracking ref(s)", stale_remote_refs));
+            repaired.push(format!(
+                "pruned {} stale remote-tracking ref(s)",
+                stale_remote_refs
+            ));
         }
         if orphan_remote_refs > 0 {
             conn.execute(
@@ -288,7 +307,11 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
     // ── Summary ────────────────────────────────────────────────────────────────
     println!();
     for w in &warnings {
-        let mark = if repair { style("~").green() } else { style("!").yellow() };
+        let mark = if repair {
+            style("~").green()
+        } else {
+            style("!").yellow()
+        };
         println!("  {} {}", mark, w);
     }
     for r in &repaired {
@@ -296,10 +319,7 @@ pub fn run(root: &Path, repair: bool) -> Result<()> {
     }
     if problems.is_empty() {
         if warnings.is_empty() || repair {
-            println!(
-                "\n{} Repository is healthy.",
-                style("✔").green().bold()
-            );
+            println!("\n{} Repository is healthy.", style("✔").green().bold());
         } else {
             println!(
                 "\n{} No corruption; {} cleanup item(s) — run {} to tidy.",
@@ -324,7 +344,12 @@ fn report_line(problem_count: usize, label: &str) {
     if problem_count == 0 {
         println!("  {} {}", style("✔").green(), label);
     } else {
-        println!("  {} {} ({} problem(s))", style("✖").red().bold(), label, problem_count);
+        println!(
+            "  {} {} ({} problem(s))",
+            style("✖").red().bold(),
+            label,
+            problem_count
+        );
     }
 }
 
@@ -333,7 +358,11 @@ fn load_tree(conn: &rusqlite::Connection, snap: &str) -> Result<Vec<(String, Str
     let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let tree = stmt
         .query_map([snap], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, i64>(2)?,
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -356,7 +385,10 @@ fn check_ref_table(
         .collect();
     for (name, hash) in rows {
         if !hash.is_empty() && !snaps.contains(&hash) {
-            problems.push(format!("{} '{}' points to snapshot {} which does not exist", table, name, hash));
+            problems.push(format!(
+                "{} '{}' points to snapshot {} which does not exist",
+                table, name, hash
+            ));
         }
     }
     Ok(())

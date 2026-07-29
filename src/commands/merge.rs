@@ -71,11 +71,13 @@ fn load_file_map(
     conn: &rusqlite::Connection,
     snapshot_hash: &str,
 ) -> Result<HashMap<String, (String, i64)>> {
-    let mut stmt =
-        conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let collected: HashMap<String, (String, i64)> = stmt
         .query_map([snapshot_hash], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, String>(1)?, r.get::<_, i64>(2)?),
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -260,9 +262,18 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
         .collect();
 
     for path in &all_paths {
-        let cur = current_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
-        let tgt = target_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
-        let anc = ancestor_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let cur = current_files
+            .get(*path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
+        let tgt = target_files
+            .get(*path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
+        let anc = ancestor_files
+            .get(*path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
         let full = root.join(crate::db::db_to_path(path));
 
         match crate::commands::reconcile_file(&objects_dir, anc, cur, tgt)? {
@@ -405,7 +416,11 @@ fn do_fast_forward(
             conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
         let v = stmt
             .query_map([target_hash], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -421,8 +436,9 @@ fn do_fast_forward(
         params![new_hash, &msg, head_branch, current_hash, timestamp],
     )?;
     {
-        let mut ins = tx
-            .prepare("INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)")?;
+        let mut ins = tx.prepare(
+            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+        )?;
         for (p, h, m) in &tree {
             ins.execute(params![new_hash, p, h, m])?;
         }

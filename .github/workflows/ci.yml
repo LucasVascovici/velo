@@ -40,14 +40,15 @@ jobs:
       - name: Run tests
         run: cargo test --locked
 
-  # ── Lint (advisory — does not block merges) ────────────────────────────────
-  # Run `cargo fmt --all` and `cargo clippy` locally before pushing to keep
-  # this job green.  It is intentionally set to continue-on-error so that a
-  # formatting miss never blocks a legitimate fix from landing.
-  lint:
-    name: Lint
+  # ── Clippy (blocking) ──────────────────────────────────────────────────────
+  # Clippy catches real defects (this project has had genuine bugs surfaced by
+  # it), so a new warning must fail the build.  Keep it green locally with:
+  #   cargo clippy --all-targets --all-features -- -D warnings
+  # It is deliberately a separate job from formatting: when the two shared one
+  # job, a formatting nit turned the whole thing red and hid clippy's signal.
+  clippy:
+    name: Clippy
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -55,7 +56,7 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy, rustfmt
+          components: clippy
 
       - name: Cache Cargo artefacts
         uses: actions/cache@v4
@@ -65,11 +66,27 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: lint-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: lint-cargo-
-
-      - name: Check formatting
-        run: cargo fmt --all -- --check
+          key: clippy-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: clippy-cargo-
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
+
+  # ── Formatting (advisory) ──────────────────────────────────────────────────
+  # Style only — never blocks a legitimate fix from landing.  Fix with:
+  #   cargo fmt --all
+  fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check

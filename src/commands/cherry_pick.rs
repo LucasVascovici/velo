@@ -73,9 +73,18 @@ pub fn run(root: &Path, target: &str) -> Result<()> {
 
     // Apply each file's reconciled outcome to the working tree.
     for path in &all_paths {
-        let cur = current_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
-        let tgt = their_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
-        let anc = ancestor_files.get(*path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let cur = current_files
+            .get(*path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
+        let tgt = their_files
+            .get(*path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
+        let anc = ancestor_files
+            .get(*path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
         let full = root.join(db::db_to_path(path));
 
         match reconcile_file(&objects_dir, anc, cur, tgt)? {
@@ -189,11 +198,13 @@ fn load_file_map(
     if snap_hash.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut stmt =
-        conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let collected: HashMap<String, (String, i64)> = stmt
         .query_map([snap_hash], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, String>(1)?, r.get::<_, i64>(2)?),
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();

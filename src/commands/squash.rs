@@ -65,7 +65,7 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
         )));
     }
 
-    let head_hash  = &rows[0].0;
+    let head_hash = &rows[0].0;
     let new_parent = &rows[rows.len() - 1].2; // parent of the oldest squashed snapshot
     let squashed_hashes: Vec<&str> = rows.iter().map(|r| r.0.as_str()).collect();
 
@@ -112,12 +112,14 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
     );
     for (i, (h, msg, _)) in rows.iter().enumerate() {
         let marker = if i == 0 { "HEAD" } else { "    " };
-        println!("  {} {} {}", style(marker).dim(), style(&h[..8]).yellow(), style(msg).dim());
+        println!(
+            "  {} {} {}",
+            style(marker).dim(),
+            style(&h[..8]).yellow(),
+            style(msg).dim()
+        );
     }
-    println!(
-        "  {} → new snapshot",
-        style("─".repeat(40)).dim()
-    );
+    println!("  {} → new snapshot", style("─".repeat(40)).dim());
 
     // The squashed snapshot has the same tree as HEAD (the net result), a new
     // message, and the oldest squashed snapshot's parent. Capture HEAD's tree
@@ -127,7 +129,11 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
             conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
         let collected = stmt
             .query_map([head_hash.as_str()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -148,8 +154,9 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
 
     // Copy the captured tree into the new snapshot's file_map.
     {
-        let mut ins = tx
-            .prepare("INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)")?;
+        let mut ins = tx.prepare(
+            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+        )?;
         for (p, h, m) in &tree {
             ins.execute(params![new_hash, p, h, m])?;
         }
@@ -159,7 +166,7 @@ pub fn run(root: &Path, count: usize, message: &str) -> Result<()> {
     // (Objects are left in the store; gc will clean them up)
     for h in &squashed_hashes {
         tx.execute("DELETE FROM file_map  WHERE snapshot_hash = ?", [h])?;
-        tx.execute("DELETE FROM snapshots WHERE hash = ?",          [h])?;
+        tx.execute("DELETE FROM snapshots WHERE hash = ?", [h])?;
     }
 
     // Redirect any tag pointing at a squashed snapshot to the new one

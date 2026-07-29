@@ -457,10 +457,12 @@ fn open_in_editor(
     let filename = cf.path.replace(['/', '\\'], "_");
     let tmp_path = tmp_dir.join(format!("velo_hunk_{}.txt", filename));
 
-    let mut content = "# VELO conflict hunk — edit the RESOLUTION section below, then save and exit.\n\
+    let mut content =
+        "# VELO conflict hunk — edit the RESOLUTION section below, then save and exit.\n\
          # Do NOT change the lines starting with '#'.\n\
          #\n\
-         # ── OURS ─────────────────────────────────────────────────────────────\n".to_string();
+         # ── OURS ─────────────────────────────────────────────────────────────\n"
+            .to_string();
     for line in &hunk.ours {
         content.push_str(&format!("# {}\n", line));
     }
@@ -594,7 +596,10 @@ fn diff3_segments(ancestor: &str, ours: &str, theirs: &str) -> Vec<Segment> {
         // The slot strictly between the two anchors.
         let anc_start = (a_anc + 1) as usize;
         let anc_end = b_anc as usize; // exclusive
-        let anc_slot: Vec<String> = anc[anc_start..anc_end].iter().map(|s| s.to_string()).collect();
+        let anc_slot: Vec<String> = anc[anc_start..anc_end]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         let our_slot: Vec<String> = our[(a_our + 1) as usize..b_our as usize]
             .iter()
             .map(|s| s.to_string())

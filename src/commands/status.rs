@@ -43,7 +43,11 @@ fn print_tracking_status(root: &Path, branch: &str) {
 
     let (ahead, behind) = crate::commands::ahead_behind(&conn, &local_tip, &remote_tip);
     match (ahead, behind) {
-        (0, 0) => println!("  {} up to date with {}", style("✔").green(), style(&label).cyan()),
+        (0, 0) => println!(
+            "  {} up to date with {}",
+            style("✔").green(),
+            style(&label).cyan()
+        ),
         (a, 0) => println!(
             "  {} {} ahead of {} — {} to publish",
             style("↑").green().bold(),
@@ -71,10 +75,8 @@ fn print_tracking_status(root: &Path, branch: &str) {
 }
 
 pub fn run(root: &Path, paths: &[String]) -> Result<()> {
-    let branch =
-        fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
-    let parent_hash =
-        fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
+    let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let parent_hash = parent_hash.trim();
 
     // ── Header ────────────────────────────────────────────────────────────────
@@ -92,11 +94,11 @@ pub fn run(root: &Path, paths: &[String]) -> Result<()> {
     // Show the message of the current snapshot if one exists
     if !parent_hash.is_empty() {
         let conn = crate::db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-        if let Ok(msg) =
-            conn.query_row("SELECT message FROM snapshots WHERE hash = ?", [parent_hash], |r| {
-                r.get::<_, String>(0)
-            })
-        {
+        if let Ok(msg) = conn.query_row(
+            "SELECT message FROM snapshots WHERE hash = ?",
+            [parent_hash],
+            |r| r.get::<_, String>(0),
+        ) {
             print!("  \"{}\"", style(&msg).dim());
         }
     }
@@ -115,11 +117,7 @@ pub fn run(root: &Path, paths: &[String]) -> Result<()> {
             conflicts.len()
         );
         for c in &conflicts {
-            println!(
-                "  {} {}",
-                style("[Conflict]").red().bold(),
-                c
-            );
+            println!("  {} {}", style("[Conflict]").red().bold(), c);
         }
         println!(
             "  Run {} or {} to resolve, then {}",
@@ -132,13 +130,14 @@ pub fn run(root: &Path, paths: &[String]) -> Result<()> {
 
     // ── Dirty files ───────────────────────────────────────────────────────────
     let raw_dirty2 = get_dirty_files(root);
-    let dirty: std::collections::HashMap<String, FileStatus> =
-        if paths.is_empty() { raw_dirty2 }
-        else {
-            raw_dirty2.into_iter()
-                .filter(|(p, _)| paths.iter().any(|spec| p.starts_with(spec.as_str())))
-                .collect()
-        };
+    let dirty: std::collections::HashMap<String, FileStatus> = if paths.is_empty() {
+        raw_dirty2
+    } else {
+        raw_dirty2
+            .into_iter()
+            .filter(|(p, _)| paths.iter().any(|spec| p.starts_with(spec.as_str())))
+            .collect()
+    };
 
     if dirty.is_empty() && conflicts.is_empty() {
         println!("  {}", style("Working directory clean.").dim());
@@ -162,19 +161,31 @@ pub fn run(root: &Path, paths: &[String]) -> Result<()> {
     deleted.sort_unstable();
 
     if !new_files.is_empty() {
-        println!("\n  {} {} file(s):", style("New").green().bold(), new_files.len());
+        println!(
+            "\n  {} {} file(s):",
+            style("New").green().bold(),
+            new_files.len()
+        );
         for f in &new_files {
             println!("    {}", style(f).green());
         }
     }
     if !modified.is_empty() {
-        println!("\n  {} {} file(s):", style("Modified").yellow().bold(), modified.len());
+        println!(
+            "\n  {} {} file(s):",
+            style("Modified").yellow().bold(),
+            modified.len()
+        );
         for f in &modified {
             println!("    {}", style(f).yellow());
         }
     }
     if !deleted.is_empty() {
-        println!("\n  {} {} file(s):", style("Deleted").red().bold(), deleted.len());
+        println!(
+            "\n  {} {} file(s):",
+            style("Deleted").red().bold(),
+            deleted.len()
+        );
         for f in &deleted {
             println!("    {}", style(f).red());
         }

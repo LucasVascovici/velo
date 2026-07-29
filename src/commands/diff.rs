@@ -5,7 +5,7 @@ use std::path::Path;
 use console::style;
 use similar::{ChangeTag, TextDiff};
 
-use crate::commands::{is_binary, get_dirty_files, FileStatus};
+use crate::commands::{get_dirty_files, is_binary, FileStatus};
 use crate::db;
 use crate::error::{Result, VeloError};
 use crate::storage;
@@ -105,10 +105,7 @@ fn is_path_like(root: &Path, arg: &str) -> bool {
         .unwrap_or(false)
 }
 
-pub fn run(
-    root: &Path,
-    target_file: &Option<String>,
-) -> Result<()> {
+pub fn run(root: &Path, target_file: &Option<String>) -> Result<()> {
     match target_file {
         Some(file) => {
             let dirty = get_dirty_files(root);
@@ -125,10 +122,7 @@ pub fn run(
             for file in keys {
                 println!(
                     "\n{}",
-                    style(format!("── {} ", file))
-                        .bold()
-                        .cyan()
-                        .underlined()
+                    style(format!("── {} ", file)).bold().cyan().underlined()
                 );
                 diff_one(root, file, &dirty)?;
             }
@@ -137,18 +131,10 @@ pub fn run(
     }
 }
 
-fn diff_one(
-    root: &Path,
-    rel_path: &str,
-    dirty: &HashMap<String, FileStatus>,
-) -> Result<()> {
+fn diff_one(root: &Path, rel_path: &str, dirty: &HashMap<String, FileStatus>) -> Result<()> {
     // ── Deleted file shortcut ─────────────────────────────────────────────────
     if dirty.get(rel_path) == Some(&FileStatus::Deleted) {
-        println!(
-            "{} '{}' was deleted.",
-            style("[-]").red().bold(),
-            rel_path
-        );
+        println!("{} '{}' was deleted.", style("[-]").red().bold(), rel_path);
         return Ok(());
     }
 
@@ -165,8 +151,7 @@ fn diff_one(
 
     // ── Gather old and new content ────────────────────────────────────────────
     let (old_content, new_content, label_old, label_new) = {
-        let parent_hash =
-            fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+        let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
         let last_hash: Option<String> = conn
             .query_row(
@@ -178,14 +163,18 @@ fn diff_one(
 
         let old = if let Some(h) = last_hash {
             let objects_dir = root.join(".velo/objects");
-            String::from_utf8_lossy(&storage::read_object(&objects_dir, &h)?)
-                .into_owned()
+            String::from_utf8_lossy(&storage::read_object(&objects_dir, &h)?).into_owned()
         } else {
             String::new()
         };
 
         let new = fs::read_to_string(&full_path).unwrap_or_default();
-        (old, new, "last saved".to_string(), "working tree".to_string())
+        (
+            old,
+            new,
+            "last saved".to_string(),
+            "working tree".to_string(),
+        )
     };
 
     let old_norm = normalise(&old_content);
@@ -259,12 +248,7 @@ fn normalise(s: &str) -> String {
 /// Diff between two snapshots (or a snapshot and the working tree).
 /// `a` and `b` are resolved snapshot IDs.  If `b` is None, compare `a` against
 /// the working tree.
-pub fn run_range(
-    root:  &Path,
-    a_raw: &str,
-    b_raw: Option<&str>,
-    paths: &[String],
-) -> Result<()> {
+pub fn run_range(root: &Path, a_raw: &str, b_raw: Option<&str>, paths: &[String]) -> Result<()> {
     use console::style;
 
     use crate::commands::resolve_snapshot_id;
@@ -276,14 +260,12 @@ pub fn run_range(
     let a_hash = resolve_snapshot_id(root, a_raw)?;
     let b_hash_opt = match b_raw {
         Some(b) => Some(resolve_snapshot_id(root, b)?),
-        None    => None,
+        None => None,
     };
 
     // Load file maps
     let a_files: std::collections::HashMap<String, String> = {
-        let mut stmt = conn.prepare(
-            "SELECT path, hash FROM file_map WHERE snapshot_hash = ?"
-        )?;
+        let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
         let x: std::collections::HashMap<String, String> = stmt
             .query_map([&a_hash], |r| Ok((r.get(0)?, r.get(1)?)))?
             .filter_map(|r| r.ok())
@@ -296,9 +278,8 @@ pub fn run_range(
     match &b_hash_opt {
         Some(b_hash) => {
             let b_files: std::collections::HashMap<String, String> = {
-                let mut stmt = conn.prepare(
-                    "SELECT path, hash FROM file_map WHERE snapshot_hash = ?"
-                )?;
+                let mut stmt =
+                    conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
                 let result: std::collections::HashMap<String, String> = stmt
                     .query_map([b_hash], |r| Ok((r.get(0)?, r.get(1)?)))?
                     .filter_map(|r| r.ok())
@@ -307,7 +288,8 @@ pub fn run_range(
             };
 
             let label_b = format!("{} ({})", b_raw.unwrap(), &b_hash[..8]);
-            let mut all_paths: Vec<&str> = a_files.keys()
+            let mut all_paths: Vec<&str> = a_files
+                .keys()
                 .chain(b_files.keys())
                 .map(|s| s.as_str())
                 .collect();
@@ -333,13 +315,21 @@ pub fn run_range(
                     }
                     None => String::new(),
                 };
-                if old_text == new_text { continue; }
+                if old_text == new_text {
+                    continue;
+                }
 
-                println!("\n{}",
-                    style(format!("── {} ", path)).bold().cyan().underlined());
-                println!("{} {}    {} {}",
-                    style("---").red(), style(&label_a).dim(),
-                    style("+++").green(), style(&label_b).dim());
+                println!(
+                    "\n{}",
+                    style(format!("── {} ", path)).bold().cyan().underlined()
+                );
+                println!(
+                    "{} {}    {} {}",
+                    style("---").red(),
+                    style(&label_a).dim(),
+                    style("+++").green(),
+                    style(&label_b).dim()
+                );
                 print_diff_hunks(&old_text, &new_text);
             }
         }
@@ -352,7 +342,9 @@ pub fn run_range(
 
             let dirty = crate::commands::get_dirty_files(root);
             // Only diff files that are either in snapshot a or dirty
-            let mut candidates: Vec<String> = a_files.keys().cloned()
+            let mut candidates: Vec<String> = a_files
+                .keys()
+                .cloned()
                 .chain(dirty.keys().cloned())
                 .collect();
             candidates.sort();
@@ -368,13 +360,21 @@ pub fn run_range(
                 };
                 let full = root.join(db::db_to_path(path));
                 let new_text = std::fs::read_to_string(&full).unwrap_or_default();
-                if old_text == new_text { continue; }
+                if old_text == new_text {
+                    continue;
+                }
 
-                println!("\n{}",
-                    style(format!("── {} ", path)).bold().cyan().underlined());
-                println!("{} {}    {} {}",
-                    style("---").red(), style(&label_a).dim(),
-                    style("+++").green(), style(label_b).dim());
+                println!(
+                    "\n{}",
+                    style(format!("── {} ", path)).bold().cyan().underlined()
+                );
+                println!(
+                    "{} {}    {} {}",
+                    style("---").red(),
+                    style(&label_a).dim(),
+                    style("+++").green(),
+                    style(label_b).dim()
+                );
                 print_diff_hunks(&old_text, &new_text);
             }
         }
@@ -384,33 +384,41 @@ pub fn run_range(
 }
 
 fn print_diff_hunks(old: &str, new: &str) {
-
     let old_n = normalise(old);
     let new_n = normalise(new);
-    let diff  = TextDiff::from_lines(&old_n, &new_n);
+    let diff = TextDiff::from_lines(&old_n, &new_n);
     for hunk in diff.grouped_ops(3) {
         let old_start = hunk.first().map(|o| o.old_range().start + 1).unwrap_or(1);
         let old_count: usize = hunk.iter().map(|o| o.old_range().len()).sum();
         let new_start = hunk.first().map(|o| o.new_range().start + 1).unwrap_or(1);
         let new_count: usize = hunk.iter().map(|o| o.new_range().len()).sum();
-        println!("{}", console::style(
-            format!("@@ -{},{} +{},{} @@", old_start, old_count, new_start, new_count)
-        ).cyan());
+        println!(
+            "{}",
+            console::style(format!(
+                "@@ -{},{} +{},{} @@",
+                old_start, old_count, new_start, new_count
+            ))
+            .cyan()
+        );
         for op in &hunk {
             for change in diff.iter_changes(op) {
                 let tag: ChangeTag = change.tag();
                 let (sign, col) = match tag {
                     ChangeTag::Delete => ("-", console::Color::Red),
                     ChangeTag::Insert => ("+", console::Color::Green),
-                    ChangeTag::Equal  => (" ", console::Color::White),
+                    ChangeTag::Equal => (" ", console::Color::White),
                 };
                 let ln = change.new_index().or(change.old_index()).map(|i| i + 1);
-                print!("{:>5} {} ",
+                print!(
+                    "{:>5} {} ",
                     console::style(format!("{}", ln.unwrap_or(0))).dim(),
-                    console::style(sign).fg(col).bold());
+                    console::style(sign).fg(col).bold()
+                );
                 let line = change.value();
                 print!("{}", console::style(line).fg(col));
-                if !line.ends_with('\n') { println!(); }
+                if !line.ends_with('\n') {
+                    println!();
+                }
             }
         }
     }

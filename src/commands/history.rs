@@ -230,8 +230,8 @@ fn print_full(history: &[LogEntry], current_parent: &str, refs: &Decorations) {
     const GAP: usize = 3;
     const BRANCH_W: usize = 18;
     const DATE_W: usize = 19;
-    let hash_w = crate::commands::SNAP_HASH_LEN
-        .max(history.iter().map(|e| e.hash.len()).max().unwrap_or(0));
+    let hash_w =
+        crate::commands::SNAP_HASH_LEN.max(history.iter().map(|e| e.hash.len()).max().unwrap_or(0));
 
     // Rule spans the fixed columns plus the widest message actually shown.
     let fixed_w = PREFIX_W + hash_w + GAP + BRANCH_W + GAP + DATE_W + GAP;

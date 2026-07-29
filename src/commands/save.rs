@@ -48,7 +48,8 @@ pub fn run_with_paths(
     let dirty: std::collections::HashMap<String, FileStatus> = if paths.is_empty() {
         full_dirty
     } else {
-        full_dirty.into_iter()
+        full_dirty
+            .into_iter()
             .filter(|(p, _)| paths.iter().any(|spec| p.starts_with(spec.as_str())))
             .collect()
     };
@@ -136,9 +137,15 @@ pub fn run_with_paths(
     };
 
     // ── Count changes ─────────────────────────────────────────────────────────
-    let new_count      = dirty.values().filter(|s| **s == FileStatus::New).count();
-    let modified_count = dirty.values().filter(|s| **s == FileStatus::Modified).count();
-    let deleted_count  = dirty.values().filter(|s| **s == FileStatus::Deleted).count();
+    let new_count = dirty.values().filter(|s| **s == FileStatus::New).count();
+    let modified_count = dirty
+        .values()
+        .filter(|s| **s == FileStatus::Modified)
+        .count();
+    let deleted_count = dirty
+        .values()
+        .filter(|s| **s == FileStatus::Deleted)
+        .count();
 
     // ── Parallel hash + compress ───────────────────────────────────────────────
     let objects_dir = root.join(".velo/objects");
@@ -173,10 +180,15 @@ pub fn run_with_paths(
     // an amend from dropping files the replaced snapshot introduced.
     let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _, _)| p.as_str()).collect();
     let mut tree: Vec<(String, String, i64)> = {
-        let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+        let mut stmt =
+            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
         let carried: Vec<(String, String, i64)> = stmt
             .query_map([parent_hash.trim()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
             })?
             .filter_map(|r| r.ok())
             .filter(|(p, _, _)| {
@@ -223,7 +235,7 @@ pub fn run_with_paths(
     // If amending, delete the old snapshot and its file_map first
     if let Some((old_hash, _)) = &amend_hash {
         tx.execute("DELETE FROM file_map WHERE snapshot_hash = ?", [old_hash])?;
-        tx.execute("DELETE FROM snapshots   WHERE hash = ?",       [old_hash])?;
+        tx.execute("DELETE FROM snapshots   WHERE hash = ?", [old_hash])?;
         // Also remove from trash (shouldn't be there, but be safe)
         tx.execute("DELETE FROM trash WHERE hash = ?", [old_hash])?;
     }
@@ -231,7 +243,14 @@ pub fn run_with_paths(
     tx.execute(
         "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
          VALUES (?, ?, ?, ?, ?, ?)",
-        params![snapshot_hash, message, branch.trim(), effective_parent.as_str(), merge_parent.as_str(), timestamp],
+        params![
+            snapshot_hash,
+            message,
+            branch.trim(),
+            effective_parent.as_str(),
+            merge_parent.as_str(),
+            timestamp
+        ],
     )?;
 
     {
