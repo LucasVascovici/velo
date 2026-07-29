@@ -62,9 +62,9 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Annotate file with blame | `git blame <file>` | `velo blame <file>` |
 | Search tracked files | `git grep <pattern>` | `velo grep <pattern>` |
 | Squash last N commits | interactive rebase | `velo squash <n> "msg"` |
-| Diff two commits | `git diff <a> <b>` | `velo diff-range <a>..<b>` |
+| Diff two commits | `git diff <a> <b>` | `velo diff <a> <b>` |
 | Rebase branch | `git rebase <target>` | `velo rebase <target>` |
-| Fix the last commit message | `git commit --amend` | `velo save "new msg" --amend` |
+| Amend the last commit | `git commit --amend --no-edit` | `velo save --amend` |
 
 ### Branches
 
@@ -253,10 +253,11 @@ velo pull
 | `velo init` | Initialise a new repository in the current directory |
 | `velo save "<message>"` | Snapshot all tracked files with a description |
 | `velo save "<message>" -- <path>` | Snapshot only the listed paths; other changes remain unsaved |
-| `velo save "<message>" --amend` | Replace the last snapshot (keeps same parent) |
+| `velo save --amend` | Fold changes into the last snapshot, keeping its message |
+| `velo save "<message>" --amend` | Replace the last snapshot and reword it (keeps same parent) |
 | `velo status` | Show new, modified, and deleted files vs the last snapshot |
 | `velo status -- <path>` | Restrict status output to specific paths |
-| `velo diff [<file>]` | Show line-level diff against the last snapshot |
+| `velo diff [<file>]` | Show line-level diff against the last snapshot (see below for comparing snapshots) |
 | `velo show <target>` | Inspect a past snapshot without restoring — hash, prefix, tag, or branch name |
 | `velo show <target> -- <path>` | Restrict the diff to a specific file or directory |
 | `velo blame <file>` | Annotate each line with the snapshot that last changed it |
@@ -282,9 +283,10 @@ velo pull
 | `velo restore <target>` | Restore the working tree to a hash, prefix, tag, or branch name |
 | `velo restore <target> --force` | Restore, discarding any unsaved changes |
 | `velo restore <target> -- <path>` | Restore only specific files (PARENT is not updated) |
-| `velo diff-range <a>..<b>` | Diff between two snapshots; hash prefixes, tags, and branch names accepted |
-| `velo diff-range <a>..<b> -- <path>` | Restrict the diff to specific paths |
-| `velo diff-range <a>` | Compare a snapshot against the current working tree |
+| `velo diff <a> <b>` | Diff between two snapshots; hash prefixes, tags, branches, and remote refs accepted |
+| `velo diff <a>..<b>` | Same, using range syntax |
+| `velo diff <a>` | Compare a snapshot against the current working tree |
+| `velo diff <a> <b> -- <path>` | Restrict the diff to specific paths |
 | `velo squash <n> "<msg>"` | Collapse the last N snapshots into one with a new message |
 | `velo undo` | Remove the most recent snapshot and rewind the working tree |
 | `velo redo` | Re-apply the most recently undone snapshot |
@@ -347,7 +349,7 @@ velo pull
 
 Remote defaults to `origin`, and branch defaults to the current branch.
 After a `fetch`, `velo status` shows ahead/behind, and `origin/<branch>`
-can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff-range`).
+can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 
 ### Offline transfer
 

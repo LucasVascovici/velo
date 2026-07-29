@@ -137,12 +137,17 @@ pub fn run(
         return Ok(());
     }
 
+    // Which branches point at each commit — the "decorations", like Git's
+    // `--decorate`. Since branches are refs, several can label one commit (and a
+    // commit's originating `branch` column is not the same thing).
+    let refs = branch_decorations(root);
+
     if graph {
-        print_graph(&history, current_parent);
+        print_graph(&history, current_parent, &refs);
     } else if oneline {
-        print_oneline(&history, current_parent);
+        print_oneline(&history, current_parent, &refs);
     } else {
-        print_full(&history, current_parent);
+        print_full(&history, current_parent, &refs);
     }
 
     println!();
@@ -150,6 +155,65 @@ pub fn run(
 }
 
 // ─── Formatters ───────────────────────────────────────────────────────────────
+
+/// Which branches point at each commit, pre-rendered for display — e.g.
+/// `(HEAD → main, init)`. Because branches are refs, several can label the same
+/// commit; a commit's originating `branch` column is a different thing entirely.
+type Decorations = std::collections::HashMap<String, String>;
+
+fn branch_decorations(root: &std::path::Path) -> Decorations {
+    let conn = match crate::db::get_conn_at_path(&root.join(".velo/velo.db")) {
+        Ok(c) => c,
+        Err(_) => return Decorations::new(),
+    };
+    let head = std::fs::read_to_string(root.join(".velo/HEAD"))
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+
+    // Group branch names by the commit they point at, current branch first.
+    let mut by_commit: std::collections::HashMap<String, Vec<String>> =
+        std::collections::HashMap::new();
+    for (branch, tip) in crate::commands::all_branch_tips(&conn) {
+        let entry = by_commit.entry(tip).or_default();
+        if branch == head {
+            entry.insert(0, branch);
+        } else {
+            entry.push(branch);
+        }
+    }
+
+    by_commit
+        .into_iter()
+        .map(|(hash, names)| {
+            let rendered: Vec<String> = names
+                .iter()
+                .map(|n| {
+                    if *n == head {
+                        style(format!("HEAD → {}", n)).green().bold().to_string()
+                    } else {
+                        style(n).cyan().bold().to_string()
+                    }
+                })
+                .collect();
+            (hash, format!(" ({})", rendered.join(", ")))
+        })
+        .collect()
+}
+
+/// The decoration for `hash`, or an empty string.
+fn decorate(refs: &Decorations, hash: &str) -> String {
+    refs.get(hash).cloned().unwrap_or_default()
+}
+
+/// For the header-less views: show the branches pointing at this commit, or —
+/// when none do — the branch it was originally committed on, so mid-history
+/// commits still carry context without repeating a name twice.
+fn refs_or_origin(refs: &Decorations, hash: &str, origin: &str) -> String {
+    match refs.get(hash) {
+        Some(d) => d.trim_start().to_string(),
+        None => style(format!("({})", origin)).dim().to_string(),
+    }
+}
 
 fn safe_date(s: &str) -> &str {
     if s.len() >= 19 {
@@ -159,26 +223,43 @@ fn safe_date(s: &str) -> &str {
     }
 }
 
-fn print_full(history: &[LogEntry], current_parent: &str) {
-    // Column widths (fixed so header and data stay in lock-step)
-    // Prefix: 4 chars ("-->" + space, or 4 spaces)
-    // Hash:   12 chars
-    // Branch: 18 chars
-    // Date:   19 chars
-    // Message: remainder
-    let sep = "─".repeat(78);
+fn print_full(history: &[LogEntry], current_parent: &str, refs: &Decorations) {
+    // Column widths. The hash column is derived from SNAP_HASH_LEN so it can't
+    // drift out of step with the header when the hash length changes.
+    const PREFIX_W: usize = 2; // "→ " or "  "
+    const GAP: usize = 3;
+    const BRANCH_W: usize = 18;
+    const DATE_W: usize = 19;
+    let hash_w = crate::commands::SNAP_HASH_LEN
+        .max(history.iter().map(|e| e.hash.len()).max().unwrap_or(0));
+
+    // Rule spans the fixed columns plus the widest message actually shown.
+    let fixed_w = PREFIX_W + hash_w + GAP + BRANCH_W + GAP + DATE_W + GAP;
+    let msg_w = history
+        .iter()
+        .map(|e| e.message.chars().count())
+        .max()
+        .unwrap_or(0)
+        .clamp(7, 40); // at least as wide as "Message"
+    let sep = "─".repeat(fixed_w + msg_w);
+
     println!(
-        "  {:<12}   {:<18}   {:<19}   {}",
+        "  {:<hash_w$}{:GAP$}{:<BRANCH_W$}{:GAP$}{:<DATE_W$}{:GAP$}{}",
         console::style("Hash").dim().bold(),
+        "",
         console::style("Branch").dim().bold(),
+        "",
         console::style("Date").dim().bold(),
+        "",
         console::style("Message").dim().bold(),
     );
     println!("{}", console::style(&sep).dim());
 
     for e in history {
-        let branch_disp = if e.branch.len() > 18 {
-            format!("{}..", &e.branch[..16])
+        // Truncate on char boundaries — branch names may be non-ASCII.
+        let branch_disp = if e.branch.chars().count() > BRANCH_W {
+            let keep: String = e.branch.chars().take(BRANCH_W - 2).collect();
+            format!("{}..", keep)
         } else {
             e.branch.clone()
         };
@@ -202,19 +283,23 @@ fn print_full(history: &[LogEntry], current_parent: &str) {
         };
 
         println!(
-            "{} {:<12}   {:<18}   {:<19}   {}{}",
+            "{} {:<hash_w$}{:GAP$}{:<BRANCH_W$}{:GAP$}{:<DATE_W$}{:GAP$}{}{}{}",
             arrow,
             hash_styled,
+            "",
             console::style(&branch_disp).dim(),
+            "",
             console::style(safe_date(&e.date)).dim(),
+            "",
             console::style(&e.message).white(),
+            decorate(refs, &e.hash),
             tag_str,
         );
     }
     println!("{}", console::style(&sep).dim());
 }
 
-fn print_oneline(history: &[LogEntry], current_parent: &str) {
+fn print_oneline(history: &[LogEntry], current_parent: &str, refs: &Decorations) {
     for e in history {
         let marker = if e.hash == current_parent { "* " } else { "  " };
         let tag_str = match &e.tag {
@@ -225,7 +310,7 @@ fn print_oneline(history: &[LogEntry], current_parent: &str) {
             "{}{} {}{}  {}",
             marker,
             style(&e.hash).yellow(),
-            style(&e.branch).dim(),
+            refs_or_origin(refs, &e.hash, &e.branch),
             tag_str,
             e.message
         );
@@ -268,7 +353,7 @@ fn v_row(lanes: &[Option<String>]) -> String {
     s.trim_end().to_string()
 }
 
-fn print_graph(history: &[LogEntry], current_parent: &str) {
+fn print_graph(history: &[LogEntry], current_parent: &str, refs: &Decorations) {
     use std::collections::HashSet;
     if history.is_empty() {
         return;
@@ -326,7 +411,8 @@ fn print_graph(history: &[LogEntry], current_parent: &str) {
         } else {
             style(hash).white().to_string()
         };
-        let branch_s = style(format!("({})", entry.branch)).cyan().to_string();
+        // Branches pointing here, or the originating branch when none do.
+        let branch_s = refs_or_origin(refs, hash, &entry.branch);
         let date_s = style(safe_date(&entry.date)).dim().to_string();
         let tag_s = entry
             .tag

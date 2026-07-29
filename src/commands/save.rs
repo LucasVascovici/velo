@@ -21,14 +21,23 @@ pub struct SaveResult {
 /// Returns `Ok(None)` when there is nothing to save.
 /// When `amend = true`, the most recent snapshot on this branch is replaced.
 pub fn run(root: &Path, message: &str, amend: bool) -> Result<Option<SaveResult>> {
-    run_with_paths(root, message, amend, &[])
+    run_with_paths(root, Some(message), amend, &[])
 }
 
 /// Same as `run` but only snapshots files that match at least one entry in `paths`.
 /// Files outside the pathspec remain dirty (unsaved).
-pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String]) -> Result<Option<SaveResult>> {
-    let message = message.trim();
-    if message.is_empty() {
+///
+/// `message` may be `None` only when amending, in which case the amended
+/// snapshot keeps its existing message — so fixing a forgotten file doesn't
+/// force you to retype it.
+pub fn run_with_paths(
+    root: &Path,
+    message: Option<&str>,
+    amend: bool,
+    paths: &[String],
+) -> Result<Option<SaveResult>> {
+    let provided = message.map(str::trim).filter(|m| !m.is_empty());
+    if provided.is_none() && !amend {
         return Err(VeloError::InvalidInput(
             "Snapshot message cannot be empty. Use: velo save \"<description>\"".into(),
         ));
@@ -56,17 +65,47 @@ pub fn run_with_paths(root: &Path, message: &str, amend: bool, paths: &[String])
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     // ── Amend: find the snapshot to replace ──────────────────────────────────
-    let amend_hash: Option<(String, String)> = if amend {
+    // Its message is captured too, so `velo save --amend` with no message can
+    // reuse it.
+    let amend_target: Option<(String, String, String)> = if amend {
         conn.query_row(
-            "SELECT hash, parent_hash FROM snapshots
+            "SELECT hash, parent_hash, message FROM snapshots
              WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
             [branch.trim()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok()
     } else {
         None
     };
+    let amend_hash: Option<(String, String)> = amend_target
+        .as_ref()
+        .map(|(h, p, _)| (h.clone(), p.clone()));
+
+    // ── Resolve the message ───────────────────────────────────────────────────
+    let message: String = match provided {
+        Some(m) => m.to_string(),
+        None => match &amend_target {
+            Some((_, _, previous)) => previous.clone(),
+            None => {
+                return Err(VeloError::InvalidInput(format!(
+                    "Nothing to amend on branch '{}' — it has no snapshots yet.",
+                    branch.trim()
+                )))
+            }
+        },
+    };
+    let message = message.as_str();
+
+    // Amending with neither new content nor a new message would only churn the
+    // snapshot's hash, so say so instead.
+    if amend && dirty.is_empty() && provided.is_none() {
+        println!(
+            "{}",
+            console::style("Nothing to amend — no changes staged and no new message.").dim()
+        );
+        return Ok(None);
+    }
 
     // The effective parent for the new snapshot: amend keeps the original
     // snapshot's parent so history stays linear.

@@ -113,30 +113,60 @@ fn do_merge(root: &Path, target_branch: &str) -> Result<()> {
     }
 
     // ── Resolve tip hashes ────────────────────────────────────────────────────
-    let current_hash: String = conn
-        .query_row(
-            "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            [head_branch],
-            |r| r.get(0),
-        )
-        .map_err(|_| {
-            VeloError::InvalidInput(format!(
-                "Current branch '{}' has no snapshots. Save something first.",
-                head_branch
-            ))
-        })?;
+    // Resolve the merge source first, so an unborn current branch can adopt it.
+    let target_probe = crate::commands::branch_tip(&conn, target_branch)
+        .or_else(|| crate::commands::resolve_snapshot_id(root, target_branch).ok());
 
-    // Resolve the merge source to a snapshot. Prefer an exact local-branch tip
-    // (so a short branch name can't be mis-read as a hash prefix), then fall
-    // back to tags / hash prefixes / remote-tracking refs like `origin/main`.
-    let target_hash: String = crate::commands::branch_tip(&conn, target_branch)
-        .or_else(|| crate::commands::resolve_snapshot_id(root, target_branch).ok())
-        .ok_or_else(|| {
-            VeloError::InvalidInput(format!(
-                "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
-                target_branch
-            ))
-        })?;
+    let current_hash: String = match crate::commands::branch_tip(&conn, head_branch) {
+        Some(h) => h,
+        None => {
+            // The current branch has no commits yet. Merging into an unborn
+            // branch simply starts it at the target (Git does the same) — there
+            // is nothing of our own to reconcile.
+            let target_hash = target_probe.ok_or_else(|| {
+                VeloError::InvalidInput(format!(
+                    "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
+                    target_branch
+                ))
+            })?;
+            crate::commands::set_branch_tip(&conn, head_branch, &target_hash)?;
+            drop(conn);
+            // The working tree often already matches (we just branched from it);
+            // only touch it when it genuinely differs.
+            if pre_merge_parent.trim() != target_hash {
+                crate::commands::restore::run(root, &target_hash, true, &[])?;
+            }
+            println!(
+                "{} Fast-forwarded '{}' to {} — the branch had no commits of its own.",
+                style("✔").green().bold(),
+                head_branch,
+                style(&target_hash).yellow()
+            );
+            return Ok(());
+        }
+    };
+
+    // The merge source, resolved above: an exact local-branch tip is preferred
+    // (so a short branch name can't be mis-read as a hash prefix), falling back
+    // to tags / hash prefixes / remote-tracking refs like `origin/main`.
+    let target_hash: String = target_probe.ok_or_else(|| {
+        VeloError::InvalidInput(format!(
+            "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
+            target_branch
+        ))
+    })?;
+
+    // Nothing to do when both branches already point at the same snapshot
+    // (common right after branching, before either side has diverged).
+    if current_hash == target_hash {
+        println!(
+            "{} Already up to date — '{}' and '{}' point at the same snapshot.",
+            style("✔").green(),
+            head_branch,
+            target_branch
+        );
+        return Ok(());
+    }
 
     // ── Fast-forward check ────────────────────────────────────────────────────
     let is_ff: bool = conn

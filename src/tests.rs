@@ -2712,6 +2712,94 @@ mod tests {
     }
 
     // =========================================================================
+    // branch refs & untracked-file safety
+    // =========================================================================
+
+    #[test]
+    fn main_exists_from_init_and_is_mergeable() {
+        // Regression: branches used to exist only as a `branch` value stamped on
+        // snapshots, so committing your first work on another branch left `main`
+        // nonexistent — `velo merge` then failed with "has no snapshots" even
+        // though PARENT pointed at a real commit.
+        let (_tmp, root) = setup();
+        write(&root, "a.py", "x\n");
+        commands::switch::run(&root, "init", false).unwrap();
+        let first = save(&root, "first commit");
+
+        commands::switch::run(&root, "main", false).unwrap();
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        // Visiting a branch must not move it: main stays unborn until something
+        // explicitly advances it.
+        assert!(
+            commands::branch_tip(&conn, "main").is_none(),
+            "switching to a branch must not silently give it commits"
+        );
+        // Merging into an unborn branch starts it at the target (not an error,
+        // which is what used to happen).
+        commands::merge::run(&root, Some("init"), false).unwrap();
+        assert_eq!(
+            commands::branch_tip(&conn, "main").as_deref(),
+            Some(first.as_str()),
+            "merge must fast-forward the unborn branch to the target"
+        );
+
+        // Now diverge and merge for real.
+        commands::switch::run(&root, "init", false).unwrap();
+        write(&root, "feature.py", "feature\n");
+        save(&root, "add feature");
+        commands::switch::run(&root, "main", false).unwrap();
+        commands::merge::run(&root, Some("init"), false).unwrap();
+        assert!(exists(&root, "feature.py"), "merge brought the work into main");
+        assert!(commands::fsck::run(&root, false).is_ok());
+    }
+
+    #[test]
+    fn switch_does_not_block_on_or_delete_untracked_files() {
+        // Regression: brand-new files counted as "unsaved changes", so switching
+        // demanded --force — and --force then deleted them. They exist in no
+        // object, so that loss was unrecoverable.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1\n");
+        save(&root, "c1");
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "v2\n");
+        save(&root, "c2");
+        commands::switch::run(&root, "main", true).unwrap();
+
+        write(&root, "brand_new.txt", "IMPORTANT\n");
+        // No --force needed, and the file survives the switch.
+        commands::switch::run(&root, "feature", false).unwrap();
+        assert!(exists(&root, "brand_new.txt"), "untracked file must survive a switch");
+        assert_eq!(read(&root, "brand_new.txt"), "IMPORTANT\n");
+        assert_eq!(read(&root, "f.txt"), "v2\n", "tracked file still switched");
+
+        // Even with --force, untracked work is never destroyed.
+        commands::switch::run(&root, "main", true).unwrap();
+        assert!(exists(&root, "brand_new.txt"), "--force must not delete untracked files");
+    }
+
+    #[test]
+    fn switch_still_guards_tracked_modifications() {
+        // The guard must remain for changes that a switch would overwrite.
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "v1\n");
+        save(&root, "c1");
+        commands::switch::run(&root, "feature", false).unwrap();
+        write(&root, "f.txt", "v2\n");
+        save(&root, "c2");
+        commands::switch::run(&root, "main", true).unwrap();
+
+        write(&root, "f.txt", "uncommitted edit\n");
+        commands::switch::run(&root, "feature", false).unwrap();
+        assert_eq!(
+            read(&root, "f.txt"),
+            "uncommitted edit\n",
+            "switch must refuse and leave the tracked edit intact"
+        );
+        assert_eq!(head(&root), "main", "and must not have switched branches");
+    }
+
+    // =========================================================================
     // bundle (offline transfer)
     // =========================================================================
 
@@ -3022,6 +3110,108 @@ mod tests {
     // ─── diff range ───────────────────────────────────────────────────────────
 
     #[test]
+    fn amend_without_a_message_keeps_the_existing_one() {
+        // Folding a forgotten file into the last snapshot shouldn't force you to
+        // retype the message.
+        let (_tmp, root) = setup();
+        write(&root, "a.py", "a\n");
+        save(&root, "Add login feature");
+
+        write(&root, "forgotten.py", "b\n");
+        let r = commands::save::run_with_paths(&root, None, true, &[])
+            .unwrap()
+            .expect("amend should produce a snapshot");
+        assert_eq!(r.new_count, 1, "the forgotten file is folded in");
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let msg: String = conn
+            .query_row("SELECT message FROM snapshots WHERE hash = ?", [&r.hash], |x| x.get(0))
+            .unwrap();
+        assert_eq!(msg, "Add login feature", "message carried over");
+        let count: i64 = conn
+            .query_row("SELECT count(*) FROM snapshots WHERE branch = 'main'", [], |x| x.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "amend replaces rather than adds");
+
+        // A message may still be supplied to reword.
+        write(&root, "a.py", "a2\n");
+        let r2 = commands::save::run_with_paths(&root, Some("Reworded"), true, &[])
+            .unwrap()
+            .unwrap();
+        let msg2: String = conn
+            .query_row("SELECT message FROM snapshots WHERE hash = ?", [&r2.hash], |x| x.get(0))
+            .unwrap();
+        assert_eq!(msg2, "Reworded");
+    }
+
+    #[test]
+    fn amend_needs_something_to_do_and_save_still_needs_a_message() {
+        let (_tmp, root) = setup();
+        write(&root, "a.py", "a\n");
+        save(&root, "first");
+
+        // Clean tree + no new message → nothing to amend (no pointless rehash).
+        assert!(
+            commands::save::run_with_paths(&root, None, true, &[]).unwrap().is_none(),
+            "amending nothing should be a no-op"
+        );
+        // A plain save still requires a message.
+        assert!(commands::save::run_with_paths(&root, None, false, &[]).is_err());
+
+        // Amending a branch with no snapshots is a clear error, not a panic.
+        let (_t2, root2) = setup();
+        write(&root2, "x.txt", "x\n");
+        assert!(commands::save::run_with_paths(&root2, None, true, &[]).is_err());
+    }
+
+    #[test]
+    fn diff_dispatch_covers_every_form() {
+        // `velo diff` is one command for every comparison; these are the shapes
+        // the CLI hands to the dispatcher.
+        let (_tmp, root) = setup();
+        write(&root, "a.py", "l1\nl2\n");
+        write(&root, "b.txt", "x\n");
+        let h1 = save(&root, "c1");
+        write(&root, "a.py", "l1\nCHANGED\n");
+        let h2 = save(&root, "c2");
+        commands::tag::run(&root, Some("v1".into()), None, None, false).unwrap();
+        write(&root, "a.py", "l1\nWORKING\n");
+
+        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+
+        // No args: working tree vs last snapshot.
+        commands::diff::dispatch(&root, &[], &[]).unwrap();
+        // Pathspec only.
+        commands::diff::dispatch(&root, &[], &s(&["a.py"])).unwrap();
+        // A lone existing filename is a file, not a ref.
+        commands::diff::dispatch(&root, &s(&["a.py"]), &[]).unwrap();
+        // A lone ref: snapshot vs working tree (hash, and by tag).
+        commands::diff::dispatch(&root, &s(&[&h1]), &[]).unwrap();
+        commands::diff::dispatch(&root, &s(&["v1"]), &[]).unwrap();
+        // Two refs, and the equivalent range syntax.
+        commands::diff::dispatch(&root, &s(&[&h1, &h2]), &[]).unwrap();
+        commands::diff::dispatch(&root, &s(&[&format!("{}..{}", h1, h2)]), &[]).unwrap();
+        // Two refs restricted to a path.
+        commands::diff::dispatch(&root, &s(&[&h1, &h2]), &s(&["a.py"])).unwrap();
+
+        // Something that is neither a file nor a ref is a clear error.
+        assert!(commands::diff::dispatch(&root, &s(&["no_such_thing"]), &[]).is_err());
+    }
+
+    #[test]
+    fn diff_prefers_file_over_ref_for_ambiguous_name() {
+        // A short filename must not be swallowed by a hash-prefix match: files
+        // are checked before refs precisely so `velo diff a` means the file.
+        let (_tmp, root) = setup();
+        write(&root, "a", "one\n");
+        save(&root, "c1");
+        write(&root, "a", "two\n");
+        // Resolves as the file (and therefore succeeds even though a hash may
+        // well begin with 'a').
+        commands::diff::dispatch(&root, &["a".to_string()], &[]).unwrap();
+    }
+
+    #[test]
     fn diff_range_two_snapshots() {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "version 1\n");
@@ -3196,7 +3386,7 @@ mod tests {
         write(&root, "b.txt", "b2\n");
 
         // Only save a.txt
-        commands::save::run_with_paths(&root, "only a", false, &["a.txt".to_string()]).unwrap();
+        commands::save::run_with_paths(&root, Some("only a"), false, &["a.txt".to_string()]).unwrap();
 
         // a.txt should be saved, b.txt should still be dirty
         let dirty = commands::get_dirty_files(&root);
