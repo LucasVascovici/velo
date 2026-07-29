@@ -7,8 +7,103 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::commands::{is_binary, get_dirty_files, FileStatus};
 use crate::db;
-use crate::error::Result;
+use crate::error::{Result, VeloError};
 use crate::storage;
+
+/// Entry point for `velo diff`, which covers every comparison in one command:
+///
+/// ```text
+/// velo diff                  working tree vs the last snapshot
+/// velo diff <file>           just that file, working tree vs last snapshot
+/// velo diff <a>              snapshot <a> vs the working tree
+/// velo diff <a> <b>          snapshot <a> vs snapshot <b>
+/// velo diff <a>..<b>         same as `velo diff <a> <b>`
+/// velo diff -- <paths>       restrict any of the above to paths
+/// ```
+///
+/// A single argument is a *file* when one exists by that name, otherwise it is
+/// resolved as a snapshot / tag / branch / remote ref. Checking the filesystem
+/// first matters: a short filename like `a` could otherwise be swallowed by a
+/// hash prefix. Use `--` to force path interpretation.
+pub fn dispatch(root: &Path, args: &[String], paths: &[String]) -> Result<()> {
+    let parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let parent = parent.trim().to_string();
+
+    match args {
+        // velo diff [-- paths]
+        [] => {
+            if paths.is_empty() {
+                run(root, &None)
+            } else {
+                run_range(root, &parent, None, paths)
+            }
+        }
+
+        // velo diff <a>..<b> | <file> | <ref>
+        [one] => {
+            if let Some((a, b)) = split_range(one) {
+                return run_range(root, a, Some(b), paths);
+            }
+            if is_path_like(root, one) {
+                // A file: fold it in with any explicit pathspec.
+                if paths.is_empty() {
+                    run(root, &Some(one.clone()))
+                } else {
+                    let mut all = vec![one.clone()];
+                    all.extend_from_slice(paths);
+                    run_range(root, &parent, None, &all)
+                }
+            } else {
+                // A snapshot/tag/branch: compare it against the working tree.
+                crate::commands::resolve_snapshot_id(root, one).map_err(|_| {
+                    VeloError::InvalidInput(format!(
+                        "'{}' is neither a file nor a snapshot, tag, or branch.\n  \
+                         To diff a path that doesn't exist any more, use: velo diff -- {}",
+                        one, one
+                    ))
+                })?;
+                run_range(root, one, None, paths)
+            }
+        }
+
+        // velo diff <a> <b>
+        [a, b] => run_range(root, a, Some(b), paths),
+
+        _ => Err(VeloError::InvalidInput(
+            "velo diff takes at most two snapshots. Put file paths after '--'.".into(),
+        )),
+    }
+}
+
+/// Split `a..b` into its ends. Returns `None` when there's no range separator.
+fn split_range(spec: &str) -> Option<(&str, &str)> {
+    let (a, b) = spec.split_once("..")?;
+    if a.is_empty() || b.is_empty() {
+        None
+    } else {
+        Some((a, b))
+    }
+}
+
+/// Does `arg` name something on disk, or a path tracked by the current snapshot?
+fn is_path_like(root: &Path, arg: &str) -> bool {
+    if root.join(arg).exists() {
+        return true;
+    }
+    // Also treat a path that was tracked but has since been deleted as a path.
+    let parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let normalised = db::normalise(arg);
+    db::get_conn_at_path(&root.join(".velo/velo.db"))
+        .and_then(|conn| {
+            conn.query_row(
+                "SELECT EXISTS(SELECT 1 FROM file_map
+                  WHERE snapshot_hash = ? AND (path = ? OR path LIKE ? || '/%'))",
+                rusqlite::params![parent.trim(), normalised, normalised],
+                |r| r.get::<_, bool>(0),
+            )
+        })
+        .unwrap_or(false)
+}
 
 pub fn run(
     root: &Path,

@@ -89,17 +89,20 @@ NOTES
     ///
     /// Examples
     ///   velo save "Fix login bug"
-    ///   velo save "Tweak config" --amend
+    ///   velo save --amend                  # fold changes in, keep the message
+    ///   velo save "Better wording" --amend # ...and reword it
     #[command(verbatim_doc_comment, after_help = "\
 NOTES
-    · The message cannot be empty or whitespace-only.
+    · The message is required, except with --amend, which reuses the
+      amended snapshot's message when you don't give a new one.
     · --amend replaces the previous snapshot in-place and keeps the
       same parent, preserving a linear history.  Objects from the
       replaced snapshot are cleaned up by `velo gc`.")]
     Save {
-        /// Short description of what changed in this snapshot.
+        /// Short description of what changed. Optional with --amend, which
+        /// then keeps the existing message.
         #[arg(value_name = "MESSAGE")]
-        message: String,
+        message: Option<String>,
 
         /// Replace the most recent snapshot on this branch instead of
         /// creating a new one.  Useful to fix a typo or include a
@@ -155,8 +158,7 @@ NOTES
     /// Examples
     ///   velo status
     ///   velo status -- src/    # only show src/ changes
-    ///   velo st        # alias
-    #[command(verbatim_doc_comment, alias = "st", after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Velo uses an mtime+size cache to skip rehashing unchanged files.
       The first call after a large change is slower; subsequent calls
@@ -241,26 +243,31 @@ NOTES
     · Redo aborts if there are unsaved changes.")]
     Redo,
 
-    /// Show line-level changes vs the last snapshot.
+    /// Show line-level changes — between snapshots, or against the working tree.
     ///
-    /// Without a file argument, diffs all dirty files in the working tree.
-    /// Use `velo resolve <file>` to inspect and resolve merge conflicts
-    /// interactively.
+    /// One command covers every comparison. A lone argument is treated as a file
+    /// when one exists by that name, otherwise as a snapshot, tag, or branch.
     ///
     /// Examples
-    ///   velo diff                  # all changed files
-    ///   velo diff src/auth.py      # one file
+    ///   velo diff                        # working tree vs the last snapshot
+    ///   velo diff src/auth.py            # just that file
+    ///   velo diff v1.0                   # snapshot vs the working tree
+    ///   velo diff v1.0 main              # snapshot vs snapshot
+    ///   velo diff v1.0..main             # same, range syntax
+    ///   velo diff -- src/ tests/         # restrict to paths
+    ///   velo diff v1.0 main -- src/      # both at once
     #[command(verbatim_doc_comment, after_help = "\
 NOTES
+    · Accepts a full hash, unique prefix, tag, branch, or remote ref (origin/main).
     · Binary files are detected automatically and their diffs are omitted.
     · Diff output uses unified format with 3 lines of context per hunk.
     · To inspect merge conflicts, use `velo resolve <file>` (interactive TUI).")]
     Diff {
-        /// File to diff (relative to repo root). Omit to diff all dirty files.
-        #[arg(value_name = "FILE", help = "File to diff (defaults to all modified files)")]
-        file: Option<String>,
+        /// Snapshot(s) to compare, or a single file. At most two.
+        #[arg(value_name = "REF_OR_FILE", num_args = 0..=2)]
+        args: Vec<String>,
 
-        /// Restrict diff to these paths.
+        /// Restrict the diff to these paths.
         #[arg(last = true, value_name = "PATH")]
         paths: Vec<String>,
     },
@@ -342,9 +349,8 @@ NOTES
     ///
     /// Examples
     ///   velo branches
-    ///   velo branch                         # alias
     ///   velo branches --delete feature/old
-    #[command(verbatim_doc_comment, alias = "branch", after_help = "\
+    #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · Branch deletion is a soft delete — history is preserved in the
       database and purged only by `velo gc`.
@@ -437,7 +443,7 @@ NOTES
     ///   velo resolve src/auth.py --take theirs    # accept incoming version
     ///   velo resolve src/auth.py --take ours      # keep current version
     ///   velo resolve src/auth.py                  # mark manually edited file as resolved
-    ///   velo resolve --all --take theirs           # resolve all conflicts at once
+    ///   velo resolve --all --take theirs          # resolve all conflicts at once
     #[command(verbatim_doc_comment, after_help = "\
 NOTES
     · After resolving all conflicts, run `velo save \"Merge <branch>\"`.
@@ -570,29 +576,6 @@ NOTES
         /// Message for the new combined snapshot.
         #[arg(value_name = "MESSAGE")]
         message: String,
-    },
-
-    /// Diff two snapshots, or a snapshot against the working tree.
-    ///
-    /// Accepts a <from>..<to> range or a single snapshot compared against
-    /// the working tree.  Optionally restrict to specific paths.
-    ///
-    /// Examples
-    ///   velo diff abc123..def456
-    ///   velo diff abc123                   # snapshot vs working tree
-    ///   velo diff abc123..def456 -- src/   # restrict to src/
-    #[command(verbatim_doc_comment, name = "diff-range", alias = "dr", after_help = "\
-NOTES
-    · Hash prefixes, tags, and branch names are all accepted.
-    · If only one hash is given, the working tree is used as the second side.")]
-    DiffRange {
-        /// Range in the form <a>..<b>, or a single hash.
-        #[arg(value_name = "RANGE")]
-        range: String,
-
-        /// Restrict diff to these paths.
-        #[arg(last = true, value_name = "PATH")]
-        paths: Vec<String>,
     },
 
     /// Replay commits from the current branch on top of another.
@@ -896,7 +879,6 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Show { .. }
             | Commands::Blame { .. }
             | Commands::Grep { .. }
-            | Commands::DiffRange { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
     )
@@ -937,7 +919,7 @@ fn run() -> Result<()> {
         | Commands::ServeReceive { .. } => unreachable!(),
 
         Commands::Save { message, amend, paths } => {
-            match commands::save::run_with_paths(&root, &message, amend, &paths)? {
+            match commands::save::run_with_paths(&root, message.as_deref(), amend, &paths)? {
                 None => {}
                 Some(r) => {
                     let verb = if amend { "Amended" } else { "Saved" };
@@ -976,18 +958,8 @@ fn run() -> Result<()> {
 
         Commands::Redo => commands::redo::run(&root)?,
 
-        Commands::Diff { file, paths } => {
-            if paths.is_empty() {
-                commands::diff::run(&root, &file)?;
-            } else {
-                // pathspec: diff only the listed paths
-                commands::diff::run_range(&root,
-                    std::fs::read_to_string(root.join(".velo/PARENT"))
-                        .unwrap_or_default()
-                        .trim(),
-                    None,
-                    &paths)?;
-            }
+        Commands::Diff { args, paths } => {
+            commands::diff::dispatch(&root, &args, &paths)?;
         }
 
         Commands::Show { target, paths } => {
@@ -1038,15 +1010,6 @@ fn run() -> Result<()> {
 
         Commands::Squash { count, message } => {
             commands::squash::run(&root, count, &message)?;
-        }
-
-        Commands::DiffRange { range, paths } => {
-            // Parse "a..b" or just "a"
-            if let Some((a, b)) = range.split_once("..") {
-                commands::diff::run_range(&root, a, Some(b), &paths)?;
-            } else {
-                commands::diff::run_range(&root, &range, None, &paths)?;
-            }
         }
 
         Commands::Rebase { target, abort, cont } => {

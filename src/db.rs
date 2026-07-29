@@ -145,6 +145,37 @@ fn apply_migrations(conn: &Connection) -> Result<()> {
         conn.execute_batch("ALTER TABLE file_map ADD COLUMN mode INTEGER NOT NULL DEFAULT 0;")?;
     }
 
+    // Migration 6: branches as first-class refs.
+    //
+    // Branch tips used to be derived purely from `snapshots.branch`, so a branch
+    // you had created but not yet committed to simply didn't exist — `velo init`
+    // followed by `velo switch other` left `main` unresolvable, and commands that
+    // look up a branch tip (merge, push, …) failed with "has no snapshots" even
+    // though PARENT pointed at a real commit. This table records where a branch
+    // points independently of whether anything has been committed on it yet.
+    // Existing repos are backfilled from their snapshots below.
+    let had_branches: bool = conn
+        .query_row(
+            "SELECT count(*) FROM sqlite_master WHERE type='table' AND name='branches'",
+            [],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS branches (
+            name TEXT PRIMARY KEY,
+            tip  TEXT NOT NULL DEFAULT ''
+        );",
+    )?;
+    if !had_branches {
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO branches (name, tip)
+             SELECT branch, '' FROM snapshots
+             WHERE branch <> '_stash' AND branch NOT LIKE 'remotes/%';",
+        )?;
+    }
+
     // Migration 5: remotes + remote-tracking refs (v3 / sync).
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS remotes (

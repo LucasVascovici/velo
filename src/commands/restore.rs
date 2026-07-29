@@ -116,13 +116,35 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
     let objects_dir = root.join(".velo/objects");
 
     // ── Remove ghost files (full restore only) ────────────────────────────────
+    // A "ghost" is a file the *current* snapshot tracks that the target snapshot
+    // does not — it has to go so the tree matches the target. Files on disk that
+    // belong to neither snapshot are untracked: they were never committed, exist
+    // in no object, and deleting them would be unrecoverable data loss. Git's
+    // --force discards tracked modifications but never removes untracked files;
+    // Velo now does the same.
     if !partial {
+        let source_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+        let source_set: std::collections::HashSet<String> = {
+            let mut stmt =
+                conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
+            let set = stmt
+                .query_map([source_hash.trim()], |r| r.get::<_, String>(0))?
+                .filter_map(|r| r.ok())
+                .collect();
+            set
+        };
+
         let current_files = get_tracked_files(root);
         let ghosts: Vec<_> = current_files
             .iter()
             .filter(|p| {
-                let rel = crate::db::normalise(p.strip_prefix(root).unwrap().to_str().unwrap());
-                !snapshot_set.contains(rel.as_str())
+                let rel = match p.strip_prefix(root).ok().and_then(|r| r.to_str()) {
+                    Some(r) => crate::db::normalise(r),
+                    None => return false,
+                };
+                // Tracked by the snapshot we're leaving, but absent from the
+                // one we're moving to.
+                source_set.contains(&rel) && !snapshot_set.contains(rel.as_str())
             })
             .collect();
 
@@ -184,13 +206,18 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
     if !partial {
         crate::storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
 
-        let (message, branch): (String, String) = conn
+        let message: String = conn
             .query_row(
-                "SELECT message, branch FROM snapshots WHERE hash = ?",
+                "SELECT message FROM snapshots WHERE hash = ?",
                 [snapshot_hash],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| r.get(0),
             )
-            .unwrap_or_else(|_| ("(unknown)".into(), "(unknown)".into()));
+            .unwrap_or_else(|_| "(unknown)".into());
+        // Report the branch we're *on*, not the one that happened to create the
+        // snapshot — branches legitimately share commits.
+        let branch = fs::read_to_string(root.join(".velo/HEAD"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "(unknown)".into());
 
         println!(
             "{} Restored to {} on {} — \"{}\"",

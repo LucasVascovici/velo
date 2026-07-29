@@ -23,45 +23,49 @@ pub fn run(root: &Path, branch_name: &str, force: bool) -> Result<()> {
         return Ok(());
     }
 
-    // ── Dirty check ───────────────────────────────────────────────────────────
-    let dirty = get_dirty_files(root);
-    if !dirty.is_empty() {
-        if !force {
-            println!(
-                "{} Unsaved changes detected — aborting switch.",
-                style("✖").red().bold()
-            );
-            let mut keys: Vec<_> = dirty.keys().collect();
-            keys.sort();
-            for k in &keys {
-                println!("  {}", style(k).yellow());
-            }
-            println!(
-                "Use {} to switch anyway (changes will be discarded).",
-                style(format!("velo switch {} --force", branch_name)).cyan()
-            );
-            return Ok(());
-        }
-        println!(
-            "{} Discarding {} unsaved change(s).",
-            style("!").yellow().bold(),
-            dirty.len()
-        );
-    }
-
     // ── Save current PARENT so the new branch can inherit it if it's new ──────
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
 
-    // ── Find the latest snapshot on the target branch ─────────────────────────
-    let latest_hash: Option<String> = conn
-        .query_row(
-            "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-            [branch_name],
-            |r| r.get(0),
-        )
-        .ok();
+    // ── Find where the target branch points ───────────────────────────────────
+    let latest_hash: Option<String> = crate::commands::branch_tip(&conn, branch_name);
+
+    // ── Dirty check ───────────────────────────────────────────────────────────
+    // Only *tracked* changes are at risk: switching restores the target
+    // snapshot over them. Brand-new files aren't in any snapshot, so they're
+    // simply carried along — blocking on them (and then deleting them under
+    // --force) was both surprising and destructive. Creating a branch that
+    // inherits the current position restores nothing, so it never blocks.
+    let dirty = get_dirty_files(root);
+    let at_risk: Vec<&String> = dirty
+        .iter()
+        .filter(|(_, s)| **s != crate::commands::FileStatus::New)
+        .map(|(p, _)| p)
+        .collect();
+
+    if latest_hash.is_some() && !at_risk.is_empty() && !force {
+        println!(
+            "{} Unsaved changes to tracked files — aborting switch.",
+            style("✖").red().bold()
+        );
+        let mut keys: Vec<&&String> = at_risk.iter().collect();
+        keys.sort();
+        for k in keys {
+            println!("  {}", style(k).yellow());
+        }
+        println!(
+            "Save them first, or use {} to discard them.",
+            style(format!("velo switch {} --force", branch_name)).cyan()
+        );
+        return Ok(());
+    }
+
+    // Record that the branch exists, but leave it unborn: merely visiting a
+    // branch must never move it. It starts pointing somewhere only when you
+    // explicitly save on it, or merge/pull into it.
+    let already_known = crate::commands::branch_exists(&conn, branch_name);
+    crate::commands::register_branch(&conn, branch_name, "")?;
 
     // ── Update HEAD ───────────────────────────────────────────────────────────
     crate::storage::write_atomic(&root.join(".velo/HEAD"), branch_name.as_bytes())?;
@@ -74,19 +78,29 @@ pub fn run(root: &Path, branch_name: &str, force: bool) -> Result<()> {
         );
         crate::commands::restore::run(root, &hash, true, &[])?;
     } else {
-        // New branch — inherit working tree state from current position
+        // The branch has no commits yet, so there is nothing to restore — the
+        // working tree carries over. It stays unborn until you save on it (which
+        // starts it from where you are now) or merge into it.
+        let verb = if already_known { "Switched to" } else { "Created and switched to" };
         let from = parent_hash.trim();
-        let from_display = if from.is_empty() {
-            "(empty)".to_string()
+        if from.is_empty() {
+            println!(
+                "{} {} branch '{}' — no commits yet, so your first {} starts its history.",
+                style("✨").bold(),
+                verb,
+                style(branch_name).cyan().bold(),
+                style("velo save").cyan()
+            );
         } else {
-            from.to_string()
-        };
-        println!(
-            "{} Created and switched to new branch '{}' (inheriting from {}).",
-            style("✨").bold(),
-            style(branch_name).cyan().bold(),
-            style(&from_display).yellow()
-        );
+            println!(
+                "{} {} branch '{}' — no commits yet; your first {} will start it from {}.",
+                style("✨").bold(),
+                verb,
+                style(branch_name).cyan().bold(),
+                style("velo save").cyan(),
+                style(from).yellow()
+            );
+        }
     }
     Ok(())
 }

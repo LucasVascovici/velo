@@ -157,12 +157,9 @@ pub fn resolve_snapshot_id(root: &Path, input: &str) -> Result<String> {
         _ => {}
     }
 
-    // 3. Try as a branch name — resolve to its most recent snapshot
-    if let Ok(h) = conn.query_row(
-        "SELECT hash FROM snapshots WHERE branch = ?          ORDER BY created_at DESC, rowid DESC LIMIT 1",
-        [input],
-        |r| r.get::<_, String>(0),
-    ) {
+    // 3. Try as a branch name — resolve to wherever that branch points
+    //    (its own latest snapshot, or the position it was created at).
+    if let Some(h) = branch_tip(&conn, input) {
         return Ok(h);
     }
 
@@ -209,37 +206,99 @@ pub fn tracking_ref(conn: &rusqlite::Connection, branch: &str) -> Option<(String
     .ok()
 }
 
-/// The most recent snapshot on `branch`, if any.
+/// Where `branch` currently points, if anywhere.
+///
+/// A branch's own most recent snapshot wins. If it has none — a branch created
+/// by `switch` that hasn't been committed to yet, including `main` in a fresh
+/// repository — fall back to the tip recorded in the `branches` table, which is
+/// the position the branch was created at.
 pub fn branch_tip(conn: &rusqlite::Connection, branch: &str) -> Option<String> {
-    conn.query_row(
-        "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
-        [branch],
-        |r| r.get::<_, String>(0),
-    )
+    let derived = conn
+        .query_row(
+            "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            [branch],
+            |r| r.get::<_, String>(0),
+        )
+        .ok();
+    if derived.is_some() {
+        return derived;
+    }
+    conn.query_row("SELECT tip FROM branches WHERE name = ?", [branch], |r| {
+        r.get::<_, String>(0)
+    })
     .ok()
+    .filter(|t| !t.is_empty())
 }
 
-/// All real branches (excluding the internal `_stash` and remote-tracking
-/// `remotes/*` branches) paired with their current tip.
-pub fn all_branch_tips(conn: &rusqlite::Connection) -> Vec<(String, String)> {
-    let branches: Vec<String> = {
-        let mut stmt = match conn.prepare(
-            "SELECT DISTINCT branch FROM snapshots
-             WHERE branch <> '_stash' AND branch NOT LIKE 'remotes/%'",
-        ) {
-            Ok(s) => s,
-            Err(_) => return Vec::new(),
-        };
-        let collected = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-            .unwrap_or_default();
-        collected
+/// Every branch that exists — those with snapshots plus those merely recorded by
+/// `switch` — excluding the internal `_stash`, remote-tracking `remotes/*`, and
+/// soft-deleted `_deleted_*` branches.
+pub fn all_branch_names(conn: &rusqlite::Connection) -> Vec<String> {
+    let mut names: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut collect = |sql: &str| {
+        if let Ok(mut stmt) = conn.prepare(sql) {
+            if let Ok(rows) = stmt.query_map([], |r| r.get::<_, String>(0)) {
+                for n in rows.flatten() {
+                    names.insert(n);
+                }
+            }
+        }
     };
-    branches
+    collect(
+        "SELECT DISTINCT branch FROM snapshots
+         WHERE branch <> '_stash' AND branch NOT LIKE 'remotes/%'
+           AND branch NOT LIKE '_deleted_%'",
+    );
+    collect(
+        "SELECT name FROM branches
+         WHERE name <> '_stash' AND name NOT LIKE 'remotes/%'
+           AND name NOT LIKE '_deleted_%'",
+    );
+    names.into_iter().collect()
+}
+
+/// All real branches paired with their current tip (branches that point nowhere
+/// yet are omitted).
+pub fn all_branch_tips(conn: &rusqlite::Connection) -> Vec<(String, String)> {
+    all_branch_names(conn)
         .into_iter()
         .filter_map(|b| branch_tip(conn, &b).map(|t| (b, t)))
         .collect()
+}
+
+/// Record that `branch` exists, pointing at `tip` (empty = "exists, unborn").
+/// Never moves a branch that is already recorded — use [`set_branch_tip`] for
+/// that.
+pub fn register_branch(conn: &rusqlite::Connection, branch: &str, tip: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR IGNORE INTO branches (name, tip) VALUES (?, ?)",
+        [branch, tip],
+    )?;
+    Ok(())
+}
+
+/// Move `branch` to point at `tip`, creating the ref if needed.
+///
+/// Only ever called for an explicit, user-initiated move (a merge that
+/// fast-forwards an unborn branch). Simply visiting a branch never moves it.
+pub fn set_branch_tip(conn: &rusqlite::Connection, branch: &str, tip: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO branches (name, tip) VALUES (?1, ?2)
+         ON CONFLICT(name) DO UPDATE SET tip = ?2",
+        [branch, tip],
+    )?;
+    Ok(())
+}
+
+/// Does `branch` exist as a ref (even if it has no commits yet)?
+pub fn branch_exists(conn: &rusqlite::Connection, branch: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM branches WHERE name = ?)",
+        [branch],
+        |r| r.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+        || branch_tip(conn, branch).is_some()
 }
 
 // ─── Filesystem enumeration ───────────────────────────────────────────────────

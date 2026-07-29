@@ -64,6 +64,13 @@ pub fn run(root: &Path) -> Result<()> {
     fs::write(velo_dir.join("HEAD"), "main")?;
     fs::write(velo_dir.join("PARENT"), "")?;
 
+    // 'main' exists from the moment the repository does, even before the first
+    // save — so switching away and back, or merging into it, behaves sanely.
+    {
+        let conn = crate::db::get_conn_at_path(&velo_dir.join("velo.db"))?;
+        crate::commands::register_branch(&conn, "main", "")?;
+    }
+
     // ── Write a default .veloignore if none exists ────────────────────────────
     let veloignore = root.join(".veloignore");
     if !veloignore.exists() {

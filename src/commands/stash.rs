@@ -128,6 +128,20 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
 
     tx.commit()?;
 
+    // Clear the brand-new files we just shelved. `restore` deliberately leaves
+    // untracked files alone (they exist in no snapshot, so removing them would
+    // be unrecoverable) — but here they *are* safely stored in the shelf, so
+    // clearing them is what "shelve my work" means.
+    for (rel, status) in &dirty {
+        if *status == FileStatus::New {
+            let full = root.join(db::db_to_path(rel));
+            let _ = fs::remove_file(&full);
+            if let Some(parent) = full.parent() {
+                crate::commands::remove_empty_parents(parent, root);
+            }
+        }
+    }
+
     // Restore working tree to the clean parent state
     if parent_hash.trim().is_empty() {
         // No parent — just remove all tracked files

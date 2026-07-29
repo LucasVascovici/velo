@@ -30,7 +30,10 @@ pub fn run(root: &Path, delete: Option<String>) -> Result<()> {
             "UPDATE snapshots SET branch = ?1 WHERE branch = ?2",
             params![format!("_deleted_{}", del), del],
         )?;
-        if rows == 0 {
+        // Drop the ref too, so a branch with no commits of its own can also be
+        // deleted (and a deleted branch stops being listed).
+        let refs = conn.execute("DELETE FROM branches WHERE name = ?", [&del])?;
+        if rows == 0 && refs == 0 {
             return Err(VeloError::InvalidInput(format!(
                 "Branch '{}' not found.",
                 del
@@ -52,33 +55,28 @@ pub fn run(root: &Path, delete: Option<String>) -> Result<()> {
         last_date: Option<String>,
     }
 
-    // Collect distinct non-deleted branch names (from DB + current HEAD)
-    let mut stmt =
-        conn.prepare("SELECT DISTINCT branch FROM snapshots WHERE branch NOT LIKE '_deleted_%'")?;
-    let mut branches: Vec<String> = stmt
-        .query_map([], |r| r.get(0))?
-        .filter_map(|r| r.ok())
-        .collect();
-
-    // The current branch might not have any snapshots yet
+    // Every branch that exists: those with snapshots and those merely recorded.
+    let mut branches = crate::commands::all_branch_names(&conn);
     if !branches.iter().any(|b| b.trim() == current) {
         branches.push(current.to_string());
     }
     branches.sort();
+    branches.dedup();
 
-    // Fetch the latest snapshot for each branch
+    // Describe each branch by the snapshot it points at (which, for a branch
+    // with no commits of its own, is the one it was created from).
     let infos: Vec<BranchInfo> = branches
         .into_iter()
         .map(|name| {
-            let row: Option<(String, String, String)> = conn
-                .query_row(
-                    "SELECT hash, message, created_at FROM snapshots
-                     WHERE branch = ?
-                     ORDER BY created_at DESC, rowid DESC LIMIT 1",
-                    [&name],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )
-                .ok();
+            let row: Option<(String, String, String)> = crate::commands::branch_tip(&conn, &name)
+                .and_then(|tip| {
+                    conn.query_row(
+                        "SELECT hash, message, created_at FROM snapshots WHERE hash = ?",
+                        [&tip],
+                        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+                    )
+                    .ok()
+                });
             if let Some((hash, msg, date)) = row {
                 let date_short = if date.len() >= 10 {
                     date[..10].to_string()
@@ -119,7 +117,7 @@ pub fn run(root: &Path, delete: Option<String>) -> Result<()> {
                 style(d).dim(),
                 style(m).dim()
             ),
-            _ => style("  (no snapshots)").dim().to_string(),
+            _ => style("  (no commits yet)").dim().to_string(),
         };
 
         println!("  {}{}{}", prefix, name_str, meta);
