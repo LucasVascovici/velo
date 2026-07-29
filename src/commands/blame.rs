@@ -46,7 +46,8 @@ pub fn run(root: &Path, file: &str, at: Option<&str>) -> Result<()> {
     let tip_hash = tip_hash.ok_or_else(|| {
         VeloError::InvalidInput(format!(
             "'{}' is not tracked in snapshot {}.",
-            file, &start_hash[..8]
+            file,
+            &start_hash[..8]
         ))
     })?;
 
@@ -66,12 +67,11 @@ pub fn run(root: &Path, file: &str, at: Option<&str>) -> Result<()> {
         }
 
         // Load this snapshot's file content + its parent's
-        let (parent_hash, snap_date, snap_msg): (String, String, String) = match conn
-            .query_row(
-                "SELECT parent_hash, created_at, message FROM snapshots WHERE hash = ?",
-                [&walk_hash],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            ) {
+        let (parent_hash, snap_date, snap_msg): (String, String, String) = match conn.query_row(
+            "SELECT parent_hash, created_at, message FROM snapshots WHERE hash = ?",
+            [&walk_hash],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        ) {
             Ok(v) => v,
             Err(_) => break,
         };
@@ -129,8 +129,11 @@ pub fn run(root: &Path, file: &str, at: Option<&str>) -> Result<()> {
         for our_idx in &changed_in_our {
             if let Some(&tip_idx) = our_to_tip.get(our_idx) {
                 if tip_idx < annotations.len() && annotations[tip_idx].is_none() {
-                    annotations[tip_idx] =
-                        Some((walk_hash[..8].to_string(), snap_date.clone(), snap_msg.clone()));
+                    annotations[tip_idx] = Some((
+                        walk_hash[..8].to_string(),
+                        snap_date.clone(),
+                        snap_msg.clone(),
+                    ));
                     remaining -= 1;
                 }
             }
@@ -140,7 +143,11 @@ pub fn run(root: &Path, file: &str, at: Option<&str>) -> Result<()> {
             // Root commit — attribute all remaining lines to it
             for ann in annotations.iter_mut() {
                 if ann.is_none() {
-                    *ann = Some((walk_hash[..8].to_string(), snap_date.clone(), snap_msg.clone()));
+                    *ann = Some((
+                        walk_hash[..8].to_string(),
+                        snap_date.clone(),
+                        snap_msg.clone(),
+                    ));
                     remaining -= 1;
                 }
             }
@@ -154,18 +161,14 @@ pub fn run(root: &Path, file: &str, at: Option<&str>) -> Result<()> {
     let max_msg = 28usize;
     for (i, line) in lines.iter().enumerate() {
         let (hash_s, date_s, msg_s) = match &annotations[i] {
-            Some((h, d, m)) => (
-                style(h).yellow().to_string(),
-                style(d).dim().to_string(),
-                {
-                    let truncated = if m.len() > max_msg {
-                        format!("{}…", &m[..max_msg - 1])
-                    } else {
-                        m.clone()
-                    };
-                    style(truncated).dim().to_string()
-                },
-            ),
+            Some((h, d, m)) => (style(h).yellow().to_string(), style(d).dim().to_string(), {
+                let truncated = if m.len() > max_msg {
+                    format!("{}…", &m[..max_msg - 1])
+                } else {
+                    m.clone()
+                };
+                style(truncated).dim().to_string()
+            }),
             None => (
                 style("????????").dim().to_string(),
                 style("                ").dim().to_string(),
@@ -192,7 +195,12 @@ fn line_map(old: &str, new: &str) -> HashMap<usize, usize> {
     let diff = TextDiff::from_slices(&old_lines, &new_lines);
     let mut map = HashMap::new();
     for op in diff.ops() {
-        if let similar::DiffOp::Equal { old_index, new_index, .. } = op {
+        if let similar::DiffOp::Equal {
+            old_index,
+            new_index,
+            ..
+        } = op
+        {
             let len = op.old_range().len();
             for i in 0..len {
                 map.insert(new_index + i, old_index + i);

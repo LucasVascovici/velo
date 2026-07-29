@@ -13,12 +13,12 @@ use crate::error::{Result, VeloError};
 use crate::storage;
 
 pub fn run(
-    root:     &Path,
-    pattern:  &str,
+    root: &Path,
+    pattern: &str,
     snapshot: Option<&str>,
-    case:     bool,   // -i: case-insensitive
+    case: bool,       // -i: case-insensitive
     files_only: bool, // -l: only print file names
-    context:  usize,  // -C: context lines
+    context: usize,   // -C: context lines
 ) -> Result<()> {
     // Compile the pattern
     let re = build_regex(pattern, case)?;
@@ -33,19 +33,17 @@ pub fn run(
 // ── Working tree search ────────────────────────────────────────────────────────
 
 fn grep_working_tree(
-    root:       &Path,
-    re:         &regex::Regex,
-    pattern:    &str,
+    root: &Path,
+    re: &regex::Regex,
+    pattern: &str,
     files_only: bool,
-    context:    usize,
+    context: usize,
 ) -> Result<()> {
     let entries = crate::commands::walk_with_meta(root);
     let mut any = false;
 
     for entry in entries {
-        let rel = db::normalise(
-            entry.path.strip_prefix(root).unwrap().to_str().unwrap(),
-        );
+        let rel = db::normalise(entry.path.strip_prefix(root).unwrap().to_str().unwrap());
         let content = match std::fs::read_to_string(&entry.path) {
             Ok(s) => s,
             Err(_) => continue, // binary / unreadable
@@ -64,12 +62,12 @@ fn grep_working_tree(
 // ── Snapshot search ────────────────────────────────────────────────────────────
 
 fn grep_snapshot(
-    root:       &Path,
-    re:         &regex::Regex,
-    target:     &str,
-    pattern:    &str,
+    root: &Path,
+    re: &regex::Regex,
+    target: &str,
+    pattern: &str,
     files_only: bool,
-    context:    usize,
+    context: usize,
 ) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
     let objects_dir = root.join(".velo/objects");
@@ -90,9 +88,8 @@ fn grep_snapshot(
         style(snap_msg).dim()
     );
 
-    let mut stmt = conn.prepare(
-        "SELECT path, hash FROM file_map WHERE snapshot_hash = ? ORDER BY path",
-    )?;
+    let mut stmt =
+        conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ? ORDER BY path")?;
     let files: Vec<(String, String)> = stmt
         .query_map(params![snap_hash], |r| Ok((r.get(0)?, r.get(1)?)))?
         .filter_map(|r| r.ok())
@@ -125,12 +122,12 @@ fn grep_snapshot(
 /// Print matches in `content` for file at `rel_path`.
 /// Returns true if any match was found.
 fn print_matches(
-    rel_path:   &str,
-    content:    &str,
-    re:         &regex::Regex,
-    _pattern:   &str,
+    rel_path: &str,
+    content: &str,
+    re: &regex::Regex,
+    _pattern: &str,
     files_only: bool,
-    context:    usize,
+    context: usize,
 ) -> bool {
     let lines: Vec<&str> = content.lines().collect();
     let matching: Vec<usize> = lines
@@ -144,10 +141,7 @@ fn print_matches(
         return false;
     }
 
-    println!(
-        "\n{}",
-        style(rel_path).cyan().bold().underlined()
-    );
+    println!("\n{}", style(rel_path).cyan().bold().underlined());
 
     if files_only {
         return true;
@@ -158,7 +152,7 @@ fn print_matches(
 
     for &mi in &matching {
         let start = mi.saturating_sub(context);
-        let end   = (mi + context + 1).min(lines.len());
+        let end = (mi + context + 1).min(lines.len());
 
         // Separator if there's a gap
         if !printed.is_empty() {
@@ -213,7 +207,6 @@ fn build_regex(pattern: &str, case_insensitive: bool) -> Result<regex::Regex> {
     } else {
         pattern.to_string()
     };
-    regex::Regex::new(&p).map_err(|e| {
-        VeloError::InvalidInput(format!("Invalid regex '{}': {}", pattern, e))
-    })
+    regex::Regex::new(&p)
+        .map_err(|e| VeloError::InvalidInput(format!("Invalid regex '{}': {}", pattern, e)))
 }

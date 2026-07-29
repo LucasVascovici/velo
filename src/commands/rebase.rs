@@ -135,7 +135,9 @@ fn do_continue(root: &Path) -> Result<()> {
         .iter()
         .map(|h| {
             let msg: String = conn
-                .query_row("SELECT message FROM snapshots WHERE hash = ?", [h], |r| r.get(0))
+                .query_row("SELECT message FROM snapshots WHERE hash = ?", [h], |r| {
+                    r.get(0)
+                })
                 .unwrap_or_default();
             (h.to_string(), msg)
         })
@@ -167,7 +169,7 @@ fn do_abort(root: &Path) -> Result<()> {
     // original head.
     if let Ok(conn) = db::get_conn_at_path(&root.join(".velo/velo.db")) {
         let _ = conn.execute("DELETE FROM hunk_decisions", []);
-        let _ = conn.execute("DELETE FROM conflict_files",  []);
+        let _ = conn.execute("DELETE FROM conflict_files", []);
 
         let branch_raw = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
         let branch = branch_raw.trim();
@@ -224,8 +226,8 @@ fn do_abort(root: &Path) -> Result<()> {
 // ── Core replay loop ──────────────────────────────────────────────────────────
 
 fn replay_next(
-    root:    &Path,
-    conn:    &rusqlite::Connection,
+    root: &Path,
+    conn: &rusqlite::Connection,
     _branch: &str,
     commits: &[(String, String)],
 ) -> Result<()> {
@@ -245,9 +247,10 @@ fn replay_next(
                 // Auto-save with the original message
                 crate::commands::save::run(root, msg, false)?;
                 // Advance the state file (remove the first entry)
-                let state_raw = fs::read_to_string(root.join(".velo/REBASE_STATE"))
-                    .unwrap_or_default();
-                let rest: Vec<&str> = state_raw.lines()
+                let state_raw =
+                    fs::read_to_string(root.join(".velo/REBASE_STATE")).unwrap_or_default();
+                let rest: Vec<&str> = state_raw
+                    .lines()
                     .skip(1)
                     .filter(|l| !l.is_empty())
                     .collect();
@@ -282,10 +285,7 @@ fn replay_next(
                     "  Then continue with {}",
                     style("velo rebase --continue").cyan()
                 );
-                println!(
-                    "  Or give up with {}",
-                    style("velo rebase --abort").cyan()
-                );
+                println!("  Or give up with {}", style("velo rebase --abort").cyan());
                 return Ok(());
             }
             Err(e) => return Err(e),
@@ -320,11 +320,7 @@ enum ApplyResult {
     Conflict(usize),
 }
 
-fn apply_one(
-    root:      &Path,
-    conn:      &rusqlite::Connection,
-    snap_hash: &str,
-) -> Result<ApplyResult> {
+fn apply_one(root: &Path, conn: &rusqlite::Connection, snap_hash: &str) -> Result<ApplyResult> {
     let objects_dir = root.join(".velo/objects");
 
     let parent_hash: String = conn
@@ -335,11 +331,12 @@ fn apply_one(
         )
         .map_err(|_| VeloError::InvalidInput(format!("Snapshot {} not found.", snap_hash)))?;
 
-    let anc_files  = load_file_map(conn, &parent_hash)?;
+    let anc_files = load_file_map(conn, &parent_hash)?;
     let snap_files = load_file_map(conn, snap_hash)?;
-    let cur_files  = load_file_map_from_parent(root, conn)?;
+    let cur_files = load_file_map_from_parent(root, conn)?;
 
-    let all_paths: HashSet<&str> = anc_files.keys()
+    let all_paths: HashSet<&str> = anc_files
+        .keys()
         .chain(snap_files.keys())
         .chain(cur_files.keys())
         .map(|s| s.as_str())
@@ -351,9 +348,18 @@ fn apply_one(
     let mut del_count = 0usize;
 
     for path in all_paths {
-        let anc = anc_files.get(path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
-        let snp = snap_files.get(path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
-        let cur = cur_files.get(path).map(|(h, m)| (h.as_str(), *m)).unwrap_or(("", 0));
+        let anc = anc_files
+            .get(path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
+        let snp = snap_files
+            .get(path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
+        let cur = cur_files
+            .get(path)
+            .map(|(h, m)| (h.as_str(), *m))
+            .unwrap_or(("", 0));
         let full = root.join(db::db_to_path(path));
 
         // "theirs" = the snapshot being replayed; "ours" = the current tree.
@@ -370,7 +376,11 @@ fn apply_one(
                     let _ = fs::create_dir_all(p);
                 }
                 storage::apply_file(&full, mode, &storage::read_object(&objects_dir, &hash)?)?;
-                if is_new { new_count += 1; } else { mod_count += 1; }
+                if is_new {
+                    new_count += 1;
+                } else {
+                    mod_count += 1;
+                }
             }
             crate::commands::Reconcile::AutoMerged { content, mode } => {
                 if let Some(p) = full.parent() {
@@ -397,8 +407,7 @@ fn apply_one(
     }
 
     // Store conflicts in DB and write MERGE_HEAD for resolve/abort
-    let pre_parent = fs::read_to_string(root.join(".velo/PARENT"))
-        .unwrap_or_default();
+    let pre_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     storage::write_atomic(
         &root.join(".velo/MERGE_HEAD"),
         format!("{}:rebase/{}", pre_parent.trim(), &snap_hash[..8]).as_bytes(),
@@ -419,16 +428,19 @@ fn apply_one(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn load_file_map(
-    conn:  &rusqlite::Connection,
-    hash:  &str,
+    conn: &rusqlite::Connection,
+    hash: &str,
 ) -> Result<HashMap<String, (String, i64)>> {
-    if hash.is_empty() { return Ok(HashMap::new()); }
-    let mut stmt = conn.prepare(
-        "SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?"
-    )?;
+    if hash.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let result: HashMap<String, (String, i64)> = stmt
         .query_map([hash], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get::<_, String>(1)?, r.get::<_, i64>(2)?)))
+            Ok((
+                r.get::<_, String>(0)?,
+                (r.get::<_, String>(1)?, r.get::<_, i64>(2)?),
+            ))
         })?
         .filter_map(|r| r.ok())
         .collect();
@@ -439,16 +451,15 @@ fn load_file_map_from_parent(
     root: &Path,
     conn: &rusqlite::Connection,
 ) -> Result<HashMap<String, (String, i64)>> {
-    let parent = fs::read_to_string(root.join(".velo/PARENT"))
-        .unwrap_or_default();
+    let parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     load_file_map(conn, parent.trim())
 }
 
 /// Walk history from `start` stopping when a hash in `stop_set` is reached.
 /// Returns commits in replay order (oldest first).
 fn branch_linear_history(
-    conn:     &rusqlite::Connection,
-    start:    &str,
+    conn: &rusqlite::Connection,
+    start: &str,
     stop_set: &HashSet<String>,
 ) -> Vec<(String, String)> {
     let mut result = Vec::new();
@@ -481,11 +492,14 @@ fn ancestry(conn: &rusqlite::Connection, hash: &str) -> HashSet<String> {
     let mut set = HashSet::new();
     let mut stack = vec![hash.to_string()];
     while let Some(h) = stack.pop() {
-        if set.contains(&h) || h.is_empty() { continue; }
+        if set.contains(&h) || h.is_empty() {
+            continue;
+        }
         set.insert(h.clone());
         if let Ok(p) = conn.query_row(
             "SELECT parent_hash FROM snapshots WHERE hash = ?",
-            [&h], |r| r.get::<_, String>(0),
+            [&h],
+            |r| r.get::<_, String>(0),
         ) {
             stack.push(p);
         }

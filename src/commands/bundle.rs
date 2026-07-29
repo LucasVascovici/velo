@@ -61,8 +61,8 @@ pub(crate) struct FileMapRow {
 pub(crate) struct Bundle {
     pub snapshots: Vec<SnapshotRow>,
     pub file_map: Vec<FileMapRow>,
-    pub tags: Vec<(String, String)>,      // (name, snapshot_hash)
-    pub objects: Vec<(String, Vec<u8>)>,  // (hash, raw compressed bytes)
+    pub tags: Vec<(String, String)>,     // (name, snapshot_hash)
+    pub objects: Vec<(String, Vec<u8>)>, // (hash, raw compressed bytes)
 }
 
 // ─── create ─────────────────────────────────────────────────────────────────────
@@ -187,8 +187,7 @@ pub(crate) fn build_pack_excluding(
     let mut tags = Vec::new();
     {
         let mut stmt = conn.prepare("SELECT name, snapshot_hash FROM tags")?;
-        let rows =
-            stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
         for (name, hash) in rows.flatten() {
             if snap_set.contains(&hash) {
                 tags.push((name, hash));
@@ -204,15 +203,19 @@ pub(crate) fn build_pack_excluding(
         objects.push((h.clone(), bytes));
     }
 
-    Ok(Bundle { snapshots, file_map, tags, objects })
+    Ok(Bundle {
+        snapshots,
+        file_map,
+        tags,
+        objects,
+    })
 }
 
 // ─── apply ──────────────────────────────────────────────────────────────────────
 
 pub fn apply(root: &Path, file: &str) -> Result<()> {
-    let raw = fs::read(file).map_err(|e| {
-        VeloError::InvalidInput(format!("Cannot read bundle '{}': {}", file, e))
-    })?;
+    let raw = fs::read(file)
+        .map_err(|e| VeloError::InvalidInput(format!("Cannot read bundle '{}': {}", file, e)))?;
     let bundle = decode(&raw)?;
 
     let mut conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
@@ -283,7 +286,10 @@ pub(crate) fn import_pack(
     // Group file_map rows by snapshot for per-snapshot insertion + id checks.
     let mut fm_by_snap: HashMap<&str, Vec<&FileMapRow>> = HashMap::new();
     for row in &bundle.file_map {
-        fm_by_snap.entry(row.snapshot_hash.as_str()).or_default().push(row);
+        fm_by_snap
+            .entry(row.snapshot_hash.as_str())
+            .or_default()
+            .push(row);
     }
 
     let tx = conn.transaction()?;
@@ -304,7 +310,11 @@ pub(crate) fn import_pack(
             // Verify the snapshot id matches its content before trusting it.
             let tree: Vec<(String, String, i64)> = fm_by_snap
                 .get(s.hash.as_str())
-                .map(|rows| rows.iter().map(|r| (r.path.clone(), r.hash.clone(), r.mode)).collect())
+                .map(|rows| {
+                    rows.iter()
+                        .map(|r| (r.path.clone(), r.hash.clone(), r.mode))
+                        .collect()
+                })
                 .unwrap_or_default();
             let recomputed = crate::commands::snapshot_id(
                 &tree,
@@ -468,7 +478,12 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
         objects.push((hash, data));
     }
 
-    Ok(Bundle { snapshots, file_map, tags, objects })
+    Ok(Bundle {
+        snapshots,
+        file_map,
+        tags,
+        objects,
+    })
 }
 
 fn put_u32(out: &mut Vec<u8>, n: u32) {

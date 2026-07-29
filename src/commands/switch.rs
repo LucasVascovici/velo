@@ -81,7 +81,11 @@ pub fn run(root: &Path, branch_name: &str, force: bool) -> Result<()> {
         // The branch has no commits yet, so there is nothing to restore — the
         // working tree carries over. It stays unborn until you save on it (which
         // starts it from where you are now) or merge into it.
-        let verb = if already_known { "Switched to" } else { "Created and switched to" };
+        let verb = if already_known {
+            "Switched to"
+        } else {
+            "Created and switched to"
+        };
         let from = parent_hash.trim();
         if from.is_empty() {
             println!(

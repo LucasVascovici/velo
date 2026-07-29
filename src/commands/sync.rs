@@ -22,8 +22,8 @@ use console::style;
 use crate::commands::{branch_tip, bundle, get_dirty_files, remote as remotemod};
 use crate::db;
 use crate::error::{Result, VeloError};
-use crate::transport::{self, PushOutcome};
 use crate::storage;
+use crate::transport::{self, PushOutcome};
 
 // ─── clone ────────────────────────────────────────────────────────────────────
 
@@ -36,13 +36,23 @@ pub fn clone(url: &str, dir: Option<&str>) -> Result<()> {
         )));
     }
 
-    println!("Cloning {} → {}…", style(url).cyan(), style(target.display()).cyan());
+    println!(
+        "Cloning {} → {}…",
+        style(url).cyan(),
+        style(target.display()).cyan()
+    );
 
     // Pull everything from the remote (empty have-set = send it all).
     let mut remote = transport::open(url)?;
     let (refs, pack) = remote.fetch(&HashSet::new())?;
     if refs.is_empty() {
-        return Err(VeloError::InvalidInput("Remote has no branches to clone.".into()));
+        return Err(VeloError::InvalidInput(format!(
+            "'{}' has no commits yet, so there is nothing to clone.\n  \
+             Publish to it first from a repository that has history:\n    \
+             velo remote add origin {}\n    \
+             velo push",
+            url, url
+        )));
     }
 
     std::fs::create_dir_all(&target)?;
@@ -50,7 +60,10 @@ pub fn clone(url: &str, dir: Option<&str>) -> Result<()> {
     let mut conn = db::get_conn_at_path(&target.join(".velo/velo.db"))?;
     let (snaps, objs) = bundle::import_pack(&mut conn, &target.join(".velo/objects"), &pack)?;
 
-    conn.execute("INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)", [url])?;
+    conn.execute(
+        "INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)",
+        [url],
+    )?;
     for r in &refs {
         remotemod::set_remote_ref(&conn, "origin", &r.branch, &r.hash)?;
     }
@@ -117,9 +130,14 @@ pub fn fetch(root: &Path, remote_name: &str) -> Result<()> {
 
 pub fn push(root: &Path, remote_name: &str, branch: Option<&str>) -> Result<()> {
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
-    let branch = branch.map(String::from).unwrap_or_else(|| current_branch(root));
+    let branch = branch
+        .map(String::from)
+        .unwrap_or_else(|| current_branch(root));
     let local_tip = branch_tip(&conn, &branch).ok_or_else(|| {
-        VeloError::InvalidInput(format!("Local branch '{}' has no snapshots to push.", branch))
+        VeloError::InvalidInput(format!(
+            "Local branch '{}' has no snapshots to push.",
+            branch
+        ))
     })?;
 
     let url = remote_url(root, remote_name)?;
@@ -127,8 +145,13 @@ pub fn push(root: &Path, remote_name: &str, branch: Option<&str>) -> Result<()> 
     let mut remote = transport::open(&url)?;
 
     // Build the pack once the remote has told us what it already has, so we
-    // send only new commits and only objects it lacks.
+    // send only new commits and only objects it lacks. The advertised refs also
+    // tell us whether we're creating the branch there for the first time.
+    let created_branch = std::cell::Cell::new(false);
+    let remote_was_empty = std::cell::Cell::new(false);
     let mut build = |refs: &[transport::RemoteRef]| -> Result<bundle::Bundle> {
+        created_branch.set(!refs.iter().any(|r| r.branch == branch));
+        remote_was_empty.set(refs.is_empty());
         let mut peer_has: HashSet<String> = HashSet::new();
         for r in refs {
             // Only walk tips we actually have locally; ancestry of an unknown
@@ -156,7 +179,10 @@ pub fn push(root: &Path, remote_name: &str, branch: Option<&str>) -> Result<()> 
     };
 
     match remote.push(&branch, &local_tip, &mut build)? {
-        PushOutcome::Ok { new_snapshots, new_objects } => {
+        PushOutcome::Ok {
+            new_snapshots,
+            new_objects,
+        } => {
             remotemod::set_remote_ref(&conn, remote_name, &branch, &local_tip)?;
             if new_snapshots == 0 && new_objects == 0 {
                 println!(
@@ -174,6 +200,20 @@ pub fn push(root: &Path, remote_name: &str, branch: Option<&str>) -> Result<()> 
                     new_snapshots,
                     new_objects
                 );
+                if created_branch.get() {
+                    let what = if remote_was_empty.get() {
+                        "was empty; it now has its first history"
+                    } else {
+                        "did not have this branch; it was created there"
+                    };
+                    println!(
+                        "  {} '{}' {}. Others can now {}.",
+                        style("note:").dim(),
+                        remote_name,
+                        what,
+                        style(format!("velo clone <url> / velo pull {}", remote_name)).cyan()
+                    );
+                }
                 println!(
                     "  {} the remote's working tree is unchanged; it updates on its next {}.",
                     style("note:").dim(),
@@ -209,7 +249,10 @@ pub fn pull(root: &Path, remote_name: &str) -> Result<()> {
         .find(|r| r.branch == branch)
         .map(|r| r.hash.clone())
         .ok_or_else(|| {
-            VeloError::InvalidInput(format!("Remote '{}' has no branch '{}'.", remote_name, branch))
+            VeloError::InvalidInput(format!(
+                "Remote '{}' has no branch '{}'.",
+                remote_name, branch
+            ))
         })?;
 
     let conn = db::get_conn_at_path(&root.join(".velo/velo.db"))?;
@@ -313,8 +356,7 @@ fn adopt_tracking_commits(
 ) -> Result<()> {
     let tracking = format!("remotes/{}/{}", remote_name, branch);
     let reach = bundle::reachable_ancestry(conn, remote_tip);
-    let mut stmt =
-        conn.prepare("UPDATE snapshots SET branch = ? WHERE hash = ? AND branch = ?")?;
+    let mut stmt = conn.prepare("UPDATE snapshots SET branch = ? WHERE hash = ? AND branch = ?")?;
     for h in &reach {
         stmt.execute(rusqlite::params![branch, h, tracking])?;
     }

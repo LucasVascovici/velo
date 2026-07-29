@@ -36,7 +36,10 @@ pub struct RemoteRef {
 }
 
 pub enum PushOutcome {
-    Ok { new_snapshots: usize, new_objects: usize },
+    Ok {
+        new_snapshots: usize,
+        new_objects: usize,
+    },
     Rejected(String),
 }
 
@@ -64,7 +67,9 @@ pub trait Remote {
 /// subprocess; anything else is treated as a local filesystem path.
 pub fn open(url: &str) -> Result<Box<dyn Remote>> {
     if url.starts_with("ssh://") || url.starts_with("child:") {
-        Ok(Box::new(StreamRemote { url: url.to_string() }))
+        Ok(Box::new(StreamRemote {
+            url: url.to_string(),
+        }))
     } else {
         Ok(Box::new(LocalRemote {
             root: crate::commands::remote::resolve_remote_root(url)?,
@@ -120,7 +125,10 @@ impl Remote for LocalRemote {
             Some(reason) => Ok(PushOutcome::Rejected(reason)),
             None => {
                 let (s, o) = bundle::import_pack(&mut conn, &objects, &pack)?;
-                Ok(PushOutcome::Ok { new_snapshots: s, new_objects: o })
+                Ok(PushOutcome::Ok {
+                    new_snapshots: s,
+                    new_objects: o,
+                })
             }
         }
     }
@@ -169,7 +177,12 @@ pub(crate) fn reaches(
     let pack_parents: std::collections::HashMap<&str, (&str, &str)> = pack
         .snapshots
         .iter()
-        .map(|s| (s.hash.as_str(), (s.parent_hash.as_str(), s.merge_parent.as_str())))
+        .map(|s| {
+            (
+                s.hash.as_str(),
+                (s.parent_hash.as_str(), s.merge_parent.as_str()),
+            )
+        })
         .collect();
 
     let mut stack = vec![from.to_string()];
@@ -248,7 +261,9 @@ impl Remote for StreamRemote {
         // C→S branch, new_tip, pack, then EOF
         write_string(&mut stdin, branch)?;
         write_string(&mut stdin, new_tip)?;
-        stdin.write_all(&bundle::encode(&pack)).map_err(VeloError::Io)?;
+        stdin
+            .write_all(&bundle::encode(&pack))
+            .map_err(VeloError::Io)?;
         stdin.flush().ok();
         drop(stdin);
         // S→C status
@@ -264,7 +279,10 @@ fn parse_status(status: &str) -> Result<PushOutcome> {
         let mut it = rest.split_whitespace();
         let s = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
         let o = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
-        Ok(PushOutcome::Ok { new_snapshots: s, new_objects: o })
+        Ok(PushOutcome::Ok {
+            new_snapshots: s,
+            new_objects: o,
+        })
     } else if let Some(reason) = status.strip_prefix("REJECT ") {
         Ok(PushOutcome::Rejected(reason.to_string()))
     } else {
@@ -285,9 +303,7 @@ fn spawn(url: &str, op: &str) -> Result<Child> {
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit())
         .spawn()
-        .map_err(|e| {
-            VeloError::InvalidInput(format!("Failed to start '{}': {}", program, e))
-        })
+        .map_err(|e| VeloError::InvalidInput(format!("Failed to start '{}': {}", program, e)))
 }
 
 /// Translate a streaming URL into a command to spawn.
@@ -297,7 +313,10 @@ fn command_for(url: &str, op: &str) -> Result<(String, Vec<String>)> {
     if let Some(path) = url.strip_prefix("child:") {
         let exe = std::env::current_exe()
             .map_err(|e| VeloError::InvalidInput(format!("cannot locate velo binary: {}", e)))?;
-        return Ok((exe.to_string_lossy().into_owned(), vec![op.to_string(), path.to_string()]));
+        return Ok((
+            exe.to_string_lossy().into_owned(),
+            vec![op.to_string(), path.to_string()],
+        ));
     }
     if let Some(rest) = url.strip_prefix("ssh://") {
         // Split host[:port] from the path at the first '/'.
@@ -326,7 +345,10 @@ fn command_for(url: &str, op: &str) -> Result<(String, Vec<String>)> {
         args.push(path.to_string());
         return Ok((ssh, args));
     }
-    Err(VeloError::InvalidInput(format!("Not a streaming URL: {}", url)))
+    Err(VeloError::InvalidInput(format!(
+        "Not a streaming URL: {}",
+        url
+    )))
 }
 
 /// Split a trailing `:port` off `[user@]host` if present and numeric.
@@ -350,7 +372,8 @@ fn finish(mut child: Child) -> Result<()> {
 // ─── Protocol I/O primitives (shared with serve.rs) ─────────────────────────────
 
 pub(crate) fn write_string<W: Write>(w: &mut W, s: &str) -> Result<()> {
-    w.write_all(&(s.len() as u32).to_le_bytes()).map_err(VeloError::Io)?;
+    w.write_all(&(s.len() as u32).to_le_bytes())
+        .map_err(VeloError::Io)?;
     w.write_all(s.as_bytes()).map_err(VeloError::Io)?;
     Ok(())
 }
@@ -381,9 +404,7 @@ pub(crate) fn read_string_opt<R: Read>(r: &mut R) -> Result<Option<String>> {
     if fill(r, &mut buf)? != len {
         return Err(proto_err());
     }
-    Ok(Some(
-        String::from_utf8(buf).map_err(|_| proto_err())?,
-    ))
+    Ok(Some(String::from_utf8(buf).map_err(|_| proto_err())?))
 }
 
 pub(crate) fn read_string<R: Read>(r: &mut R) -> Result<String> {
@@ -391,7 +412,8 @@ pub(crate) fn read_string<R: Read>(r: &mut R) -> Result<String> {
 }
 
 pub(crate) fn write_refs<W: Write>(w: &mut W, refs: &[(String, String)]) -> Result<()> {
-    w.write_all(&(refs.len() as u32).to_le_bytes()).map_err(VeloError::Io)?;
+    w.write_all(&(refs.len() as u32).to_le_bytes())
+        .map_err(VeloError::Io)?;
     for (branch, hash) in refs {
         write_string(w, branch)?;
         write_string(w, hash)?;
@@ -441,7 +463,10 @@ mod tests {
     fn ssh_url_with_port_uses_dash_p() {
         let (prog, args) = command_for("ssh://host:2222/repo", "serve-receive").unwrap();
         assert_eq!(prog, "ssh");
-        assert_eq!(args, vec!["-p", "2222", "host", "velo", "serve-receive", "/repo"]);
+        assert_eq!(
+            args,
+            vec!["-p", "2222", "host", "velo", "serve-receive", "/repo"]
+        );
     }
 
     #[test]

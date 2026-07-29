@@ -118,9 +118,7 @@ fn apply_migrations(conn: &Connection) -> Result<()> {
         .unwrap_or(0)
         > 0;
     if !trash_has_mp {
-        conn.execute_batch(
-            "ALTER TABLE trash ADD COLUMN merge_parent TEXT NOT NULL DEFAULT '';",
-        )?;
+        conn.execute_batch("ALTER TABLE trash ADD COLUMN merge_parent TEXT NOT NULL DEFAULT '';")?;
     }
 
     // Migration 3: trash_tags table (2.4+) so undo→redo restores tags.

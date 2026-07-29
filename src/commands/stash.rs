@@ -86,7 +86,11 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
             conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
         let collected: Vec<(String, String, i64)> = stmt
             .query_map([parent_hash.trim()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
             })?
             .filter_map(|r| r.ok())
             .filter(|(p, _, _)| dirty.get(p.as_str()) != Some(&FileStatus::Deleted))
@@ -113,8 +117,9 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
     )?;
 
     {
-        let mut ins = tx
-            .prepare("INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)")?;
+        let mut ins = tx.prepare(
+            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+        )?;
         for (p, h, m) in &tree {
             ins.execute(params![snap_hash, p, h, m])?;
         }

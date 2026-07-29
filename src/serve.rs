@@ -57,7 +57,8 @@ pub fn upload(path: &str) -> Result<()> {
     }
     // Skip objects the client already holds via the snapshots it reported.
     let pack = bundle::build_pack_excluding(&conn, &objects, &snap_set, &have)?;
-    out.write_all(&bundle::encode(&pack)).map_err(VeloError::Io)?;
+    out.write_all(&bundle::encode(&pack))
+        .map_err(VeloError::Io)?;
     out.flush().map_err(VeloError::Io)?;
     Ok(())
 }

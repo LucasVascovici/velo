@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 #[derive(Debug)]
 pub enum VeloError {
-    NotARepo,
+    /// Not inside a repository. Carries guidance tailored to the command that
+    /// was attempted — the way out differs between "start tracking this folder"
+    /// and "get a working copy of someone else's repository".
+    NotARepo(&'static str),
     AlreadyInitialized,
     NestedRepo(PathBuf),
     InvalidInput(String),
@@ -15,10 +18,13 @@ pub enum VeloError {
 impl fmt::Display for VeloError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            VeloError::NotARepo => write!(
-                f,
-                "Not a Velo repository. Run 'velo init' to initialize one here."
-            ),
+            VeloError::NotARepo(hint) => {
+                write!(
+                    f,
+                    "Not a Velo repository (no .velo found here or above).\n{}",
+                    hint
+                )
+            }
             VeloError::AlreadyInitialized => {
                 write!(f, "Repository already initialized in this directory.")
             }

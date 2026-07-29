@@ -85,7 +85,11 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
             conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
         let collected: Vec<(String, String, i64)> = stmt
             .query_map(params![snapshot_hash], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
             })?
             .filter_map(|r| r.ok())
             .collect();
@@ -125,8 +129,7 @@ pub fn run(root: &Path, snapshot_hash: &str, force: bool, paths: &[String]) -> R
     if !partial {
         let source_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
         let source_set: std::collections::HashSet<String> = {
-            let mut stmt =
-                conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
+            let mut stmt = conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
             let set = stmt
                 .query_map([source_hash.trim()], |r| r.get::<_, String>(0))?
                 .filter_map(|r| r.ok())
