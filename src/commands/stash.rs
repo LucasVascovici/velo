@@ -41,7 +41,7 @@ pub fn push(root: &Path, name: Option<String>) -> Result<()> {
 
     // Auto-generate a name if none supplied
     let shelf_name =
-        name.unwrap_or_else(|| format!("stash-{}", &Utc::now().format("%Y%m%d-%H%M%S")));
+        name.unwrap_or_else(|| format!("stash-{}", Utc::now().format("%Y%m%d-%H%M%S")));
 
     // Check for name collision
     let existing: bool = conn.query_row(
