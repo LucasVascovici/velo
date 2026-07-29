@@ -170,6 +170,10 @@ pub fn run_with_paths(
             Ok((rel, hash, mode))
         })
         .collect();
+    // `mut` is only needed by the non-Unix sticky-exec-bit pass below; on Unix
+    // nothing mutates this, so silence the lint there rather than diverge the
+    // two platforms' code paths.
+    #[cfg_attr(unix, allow(unused_mut))]
     let mut hashed_files = hash_results?;
 
     // ── Assemble the complete tree for this snapshot ──────────────────────────

@@ -46,9 +46,17 @@ jobs:
   #   cargo clippy --all-targets --all-features -- -D warnings
   # It is deliberately a separate job from formatting: when the two shared one
   # job, a formatting nit turned the whole thing red and hid clippy's signal.
+  # Linted on every OS on purpose: this codebase has `#[cfg(unix)]` /
+  # `#[cfg(not(unix))]` branches (file modes, symlinks), so a single-platform
+  # run only ever checks half of them.  A Linux-only job missed an `unused_mut`
+  # that existed solely because the mutation lived in the non-Unix branch.
   clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
+    name: Clippy · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
 
     steps:
       - uses: actions/checkout@v4
@@ -66,8 +74,8 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: clippy-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: clippy-cargo-
+          key: ${{ runner.os }}-clippy-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-clippy-cargo-
 
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
