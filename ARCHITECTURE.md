@@ -157,10 +157,9 @@ command and passes it to `hint_for`, so no command is ever told about a flag it
 would reject.
 
 **Known gap: no progress reporting.** A command that returns data can only be
-rendered once it finishes, so a long `rebase` prints nothing until the last
-commit lands. Velo rebases are usually a handful of commits, so this is
-acceptable for now, but the real answer is an optional observer/callback on the
-long-running operations. Worth designing deliberately rather than bolting on.
+rendered once it finishes, so a long `rebase` or a `pull` over `ssh://` prints
+nothing until it completes. Designed in [2.0](#20-progress-reporting-) below;
+not yet implemented.
 
 **Batch 3 completion also closed three long-standing TODOs:**
 
@@ -318,6 +317,130 @@ follow-up task. The existing fixture helpers *are* the first version of
 ## Phase 2 — Make it useful to non-CLI consumers 🔴
 
 The capability work. Without 2.1 every consumer marshals through temp files.
+
+### 2.0 Progress reporting 🟡
+
+The one thing Phase 1 made worse: returning data means nothing can be rendered
+until the operation finishes. Fixing it is the last piece of "core reports,
+caller presents".
+
+**The trait.** Every method defaults to a no-op, so an implementation overrides
+only what it uses.
+
+```rust
+/// Where a long operation reports its progress.
+///
+/// Calls may arrive from several threads at once — hashing and writing files are
+/// parallel — and arrive once per item. An implementation must therefore be
+/// cheap and do its own rate limiting: core does not throttle, because how often
+/// to redraw is a presentation decision.
+pub trait Observer: Send + Sync {
+    /// A phase began. `total` is `None` when the size isn't known in advance.
+    fn begin(&self, _phase: Phase, _total: Option<u64>) {}
+
+    /// `by` more items of `phase` are done.
+    ///
+    /// A delta rather than a running total: deltas are race-free when several
+    /// rayon workers report at once, a cumulative count is not.
+    fn advance(&self, _phase: Phase, _by: u64) {}
+
+    /// The phase finished. Always called, including on the error path.
+    fn finish(&self, _phase: Phase) {}
+}
+
+/// What a long operation is currently doing.
+///
+/// `#[non_exhaustive]`: a new phase is not a breaking change, and an observer
+/// that doesn't recognise one can fall back on `Display`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Phase {
+    /// Hashing and compressing working-tree files.
+    Hashing,
+    /// Writing files into the working tree.
+    Writing,
+    /// Three-way reconciling files (merge, cherry-pick, rebase).
+    Reconciling,
+    /// Replaying commits onto a new base.
+    Replaying,
+    /// Assembling a pack to send.
+    Packing,
+    /// Moving a pack over the wire. Indeterminate — see below.
+    Transferring,
+    /// Verifying and inserting received objects.
+    Importing,
+    /// Re-hashing stored objects to check integrity.
+    Verifying,
+    /// Scanning the object store for unreachable objects.
+    Collecting,
+}
+```
+
+`Phase` carries a `Display` giving a default plain-English label, the same way
+[`Error`] and [`fsck::Cruft`] already own their wording — an observer gets
+something printable for free and can override any of it.
+
+**How it is supplied.** Configured on the `Repo`, consumed by value so there is
+no mutating setter and no interior mutability:
+
+```rust
+let repo = Repo::open(&root)?.observing(bar);   // or `.observing_none()` implicitly
+let guard = repo.write()?;
+sync::pull(&guard, "origin", &spawn)?;          // signature unchanged
+```
+
+Commands reach it through the `&Repo` / `&WriteGuard` they already take, so **no
+command signature changes**. `sync::clone` is the exception — it has no
+repository yet, so it takes the observer as a parameter alongside `Spawn`:
+
+```rust
+sync::clone(url, dir, &spawn, Some(&bar))?;
+```
+
+That asymmetry is real but honest: clone genuinely has nothing to configure until
+it has created the repository.
+
+**Three deliberate exclusions.**
+
+*Phases are flat, never nested.* A rebase reports `Replaying` once per commit and
+stays silent about the `Reconciling` happening inside each one. Nesting roughly
+doubles the trait surface and forces every consumer to handle depth; git's
+progress is flat for the same reason.
+
+*No cancellation.* Returning `ControlFlow` from `advance` would make it nearly
+free, but "what state is left behind when a fetch is cancelled halfway" is a
+correctness question that deserves its own design — and the answer depends on
+2.1. Adding it later is not a breaking change.
+
+*`Transferring` is indeterminate.* `transport` currently moves a pack with a
+single `read_to_end` / `write_all`, so there is no loop to report from. Byte
+counts need the transport restructured into chunked I/O, which is a self-contained
+follow-up (touching `transport.rs` and both directions of `serve.rs`) and is where
+progress would matter most, since the wire is the slowest phase over `ssh://`.
+Until then the phase is announced with `total: None` so a consumer can show a
+spinner.
+
+**Sites to wire.** Each already has a loop; none needs restructuring.
+
+| Site | Phase | Total known | Parallel |
+|---|---|---|---|
+| `save` | `Hashing` | yes | **yes** |
+| `restore` (write, ghosts) | `Writing` | yes | **yes** |
+| `stash` push/pop | `Hashing` / `Writing` | yes | **yes** |
+| `merge`, `cherry-pick`, `rebase` via `apply` | `Reconciling` | yes | no |
+| `rebase` | `Replaying` | yes | no |
+| `bundle`/`fetch`/`push` import | `Importing` | yes | no |
+| `bundle create`, `push` | `Packing` | yes | no |
+| `fsck` | `Verifying` | yes | no |
+| `gc` | `Collecting` | no (streams a dir) | no |
+
+The three parallel sites are what force `Send + Sync` on the trait.
+
+**CLI side.** `velo-cli` implements `Observer` over a progress bar, rate-limited
+in the implementation rather than in core. It must respect the existing rule that
+`serve-upload`/`serve-receive` emit nothing but protocol on stdout — the server
+paths get no observer, and a non-TTY stdout gets a silent one so piped output
+stays clean.
 
 ### 2.1 In-memory trees 🔴
 ```rust
