@@ -38,7 +38,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Run tests
-        run: cargo test --locked
+        # `--workspace` is not optional: `default-members` is velo-cli, so a bare
+        # `cargo test` runs only that crate's 19 integration tests and silently
+        # skips velo-core's ~300 unit tests.
+        run: cargo test --workspace --locked
 
   # ── Clippy (blocking) ──────────────────────────────────────────────────────
   # Clippy catches real defects (this project has had genuine bugs surfaced by
