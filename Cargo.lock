@@ -428,12 +428,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
-name = "hex"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
-
-[[package]]
 name = "iana-time-zone"
 version = "0.1.65"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -991,15 +985,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
-name = "velo"
-version = "3.0.0"
+name = "velo-cli"
+version = "3.1.0"
 dependencies = [
- "blake3",
  "chrono",
  "clap",
  "console",
+ "similar",
+ "tempfile",
+ "velo-core",
+ "velo-merge",
+ "velo-testkit",
+ "velo-tui",
+]
+
+[[package]]
+name = "velo-core"
+version = "3.1.0"
+dependencies = [
+ "blake3",
+ "chrono",
  "fs2",
- "hex",
  "ignore",
  "memmap2",
  "parking_lot",
@@ -1009,7 +1015,32 @@ dependencies = [
  "rusqlite",
  "similar",
  "tempfile",
+ "velo-merge",
  "zstd",
+]
+
+[[package]]
+name = "velo-merge"
+version = "3.1.0"
+dependencies = [
+ "proptest",
+ "similar",
+]
+
+[[package]]
+name = "velo-testkit"
+version = "3.1.0"
+dependencies = [
+ "tempfile",
+ "velo-core",
+]
+
+[[package]]
+name = "velo-tui"
+version = "3.1.0"
+dependencies = [
+ "console",
+ "velo-core",
 ]
 
 [[package]]

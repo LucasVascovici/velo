@@ -1,24 +1,41 @@
-[package]
-name = "velo"
-version = "3.0.0"
+[workspace]
+resolver = "2"
+members = [
+    "crates/velo-merge",
+    "crates/velo-core",
+    "crates/velo-tui",
+    "crates/velo-cli",
+    "crates/velo-testkit",
+]
+
+# `cargo build` / `cargo run` at the workspace root builds the CLI.
+default-members = ["crates/velo-cli"]
+
+[workspace.package]
+version = "3.1.0"
 edition = "2021"
+license = "MIT"
+repository = "https://github.com/LucasVascovici/velo"
 
-[dependencies]
-clap        = { version = "4.6",  features = ["derive"] }
-blake3      = { version = "1.8",  features = ["rayon"] }
-zstd        = "0.13"
-rusqlite    = { version = "0.39", features = ["bundled"] }
-hex         = "0.4"
-rayon       = "1.11"
-similar     = "3.1.1"
-console     = "0.16"
-chrono      = "0.4"
-ignore      = "0.4"
-memmap2     = "0.9"
+# Single source of truth for dependency versions across the workspace.
+[workspace.dependencies]
+velo-core = { path = "crates/velo-core", version = "3.1.0" }
+velo-merge = { path = "crates/velo-merge", version = "3.1.0" }
+velo-tui = { path = "crates/velo-tui", version = "3.1.0" }
+velo-testkit = { path = "crates/velo-testkit", version = "3.1.0" }
+
+blake3 = { version = "1.8", features = ["rayon"] }
+chrono = "0.4"
+clap = { version = "4.6", features = ["derive"] }
+console = "0.16"
+fs2 = "0.4"
+ignore = "0.4"
+memmap2 = "0.9"
 parking_lot = "0.12"
-regex       = "1.12"
-fs2         = "0.4"
-
-[dev-dependencies]
-tempfile  = "3.27"
-proptest  = "1"
+proptest = "1"
+rayon = "1.11"
+regex = "1.12"
+rusqlite = { version = "0.39", features = ["bundled"] }
+similar = "3.1.1"
+tempfile = "3.27"
+zstd = "0.13"

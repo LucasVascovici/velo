@@ -1,0 +1,25 @@
+[package]
+name = "velo-cli"
+description = "Command-line interface for Velo — a fast, safe, intuitive version control system."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "velo"
+path = "src/main.rs"
+
+[dependencies]
+velo-core = { workspace = true, features = ["bundle", "ssh"] }
+velo-merge.workspace = true
+velo-tui.workspace = true
+
+chrono.workspace = true
+clap.workspace = true
+console.workspace = true
+similar.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+velo-testkit.workspace = true

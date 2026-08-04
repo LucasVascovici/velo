@@ -1,0 +1,11 @@
+[package]
+name = "velo-testkit"
+description = "Test fixtures for Velo: temporary repositories and helpers for downstream test suites."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+velo-core = { workspace = true, features = ["bundle"] }
+tempfile.workspace = true
