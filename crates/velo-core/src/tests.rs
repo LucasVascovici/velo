@@ -7302,7 +7302,10 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("l"),
                     parent: Some(&base),
-                    message: "m",
+                    // Distinct messages: identity excludes the branch, so with
+                    // one message these two would be the *same snapshot* whenever
+                    // both saves land in the same millisecond.
+                    message: "by value",
                     entries: by_value,
                     meta: SnapshotMeta::new(),
                 })
@@ -7311,7 +7314,7 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("r"),
                     parent: Some(&base),
-                    message: "m",
+                    message: "by reference",
                     entries: by_reference,
                     meta: SnapshotMeta::new(),
                 })
@@ -7394,6 +7397,75 @@ beta
             repo.branch_tip(&unborn).unwrap().is_none(),
             "but nothing has been saved on it"
         );
+    }
+
+    /// Re-recording an identical snapshot returns the same id instead of failing.
+    ///
+    /// Identity covers the tree, parents, message, metadata and timestamp, but
+    /// deliberately not the branch — so the same content saved to two branches
+    /// inside one millisecond is one snapshot. That used to surface as a raw
+    /// SQLite `UNIQUE constraint failed`, which is a poor answer to a legitimate
+    /// call. Caught by CI, which is faster than this machine and hit the window
+    /// that a local run mostly missed.
+    #[test]
+    fn saving_an_identical_snapshot_twice_is_idempotent() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let spec = |branch| SaveTree {
+            branch,
+            parent: None,
+            message: "same",
+            entries: vec![TreeEntry::file(
+                "a.txt",
+                b"x
+"
+                .to_vec(),
+            )],
+            meta: SnapshotMeta::new(),
+        };
+
+        let (one, two) = (branch_name("one"), branch_name("two"));
+        let guard = repo.write().unwrap();
+        let first = guard.save_tree(spec(&one)).unwrap();
+        // Same content, same message, no parent — and a different branch, which
+        // identity ignores. Back to back, so the timestamp is almost certainly
+        // the same millisecond.
+        let second = guard.save_tree(spec(&two)).unwrap();
+        drop(guard);
+
+        if first == second {
+            // The window we are testing: one snapshot, and both branches see it.
+            let rows: i64 = repo
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM snapshots WHERE hash = ?",
+                    [&first],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(rows, 1, "the snapshot must not be duplicated");
+            let files: i64 = repo
+                .conn()
+                .query_row(
+                    "SELECT count(*) FROM file_map WHERE snapshot_hash = ?",
+                    [&first],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(files, 1, "its tree must not be duplicated either");
+            assert_eq!(
+                repo.branch_tip(&two).unwrap(),
+                Some(first.clone()),
+                "the second branch still gets the tip it asked for"
+            );
+        }
+
+        // Either way the repository is consistent.
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
     }
 
     // ─── format v2 ────────────────────────────────────────────────────────────
