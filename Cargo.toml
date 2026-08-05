@@ -6,6 +6,7 @@ members = [
     "crates/velo-tui",
     "crates/velo-cli",
     "crates/velo-testkit",
+    "examples/prompt-registry",
 ]
 
 # `cargo build` / `cargo run` at the workspace root builds the CLI.
