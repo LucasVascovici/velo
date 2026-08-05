@@ -77,5 +77,14 @@ unaffected.
 
 ### Fixed
 
+- **A merge resolved entirely in favour of your own side can be recorded.**
+  `velo resolve --take ours --all` leaves the working tree unchanged, so `save`
+  reported "Nothing to save", exited 0 without recording the merge, and left
+  `MERGE_HEAD` in place. That wedged the repository — every later merge, rebase,
+  undo, redo and cherry-pick refused with "a merge is already in progress", and
+  the only escape was `merge --abort`, which discards the merge. A merge is real
+  information regardless of the resulting tree, because it records the second
+  parent, so it now gets a snapshot. A clean tree with no merge pending still
+  reports nothing to save.
 - `Display` for the id newtypes uses `f.pad`, so `{:<20}` aligns them. `write_str`
   silently ignores width, which had un-aligned `velo tag`'s table.

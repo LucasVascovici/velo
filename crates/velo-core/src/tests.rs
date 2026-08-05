@@ -6991,6 +6991,111 @@ beta
         assert!(dirty.contains_key("b.txt"), "b.txt should still be dirty");
     }
 
+    /// Resolving every conflict in favour of our own side leaves the working tree
+    /// unchanged, which used to make `save` return `NothingToSave` — refusing to
+    /// record the merge *and* leaving `MERGE_HEAD` behind. That wedged the
+    /// repository: every later merge, rebase, undo, redo and cherry-pick refused
+    /// with "a merge is already in progress", and the only way out was
+    /// `merge --abort`, which discards the merge.
+    #[test]
+    fn a_merge_resolved_to_ours_is_still_recorded() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base\n");
+        save(&root, "base");
+
+        with_write(&root, |vr| commands::switch::run(vr, "feature", false)).unwrap();
+        write(&root, "f.txt", "theirs\n");
+        let theirs = save(&root, "theirs");
+
+        with_write(&root, |vr| commands::switch::run(vr, "main", false)).unwrap();
+        write(&root, "f.txt", "ours\n");
+        let ours = save(&root, "ours");
+
+        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        resolve_take(&root, None, commands::resolve::TakeOption::Ours, true).unwrap();
+
+        // The tree now matches `ours` exactly, so nothing is dirty.
+        assert!(
+            with_repo(&root, commands::get_dirty_files).is_empty(),
+            "resolving to ours must leave the tree clean — that is the whole point \
+             of this test"
+        );
+
+        let outcome =
+            with_write(&root, |vr| commands::save::run(vr, "merge feature", false)).unwrap();
+        let merged = outcome
+            .into_result()
+            .expect("the merge must be recorded even though the tree is unchanged");
+
+        // Both parents, because the merge is what this snapshot is *for*.
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let (parent, merge_parent): (String, String) = conn
+            .query_row(
+                "SELECT parent_hash, merge_parent FROM snapshots WHERE hash = ?",
+                [merged.hash.as_str()],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(parent, ours);
+        assert_eq!(merge_parent, theirs, "the second parent must be recorded");
+
+        // And the merge is over, so the repository is usable again.
+        assert!(
+            !root.join(".velo/MERGE_HEAD").exists(),
+            "MERGE_HEAD must be cleared, or every later operation refuses"
+        );
+        assert!(
+            !with_repo(&root, commands::resolve::merge_active),
+            "no merge should still be active"
+        );
+        with_write(&root, commands::undo::run)
+            .expect("undo must work again once the merge is concluded");
+    }
+
+    /// The counterpart: with no merge pending, a clean tree still has nothing to
+    /// save. The fix above must not turn every no-op save into a snapshot.
+    #[test]
+    fn a_clean_tree_with_no_merge_still_saves_nothing() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "one\n");
+        save(&root, "first");
+
+        let outcome = with_write(&root, |vr| {
+            commands::save::run(vr, "nothing changed", false)
+        })
+        .unwrap();
+        assert_eq!(outcome, commands::save::Outcome::NothingToSave);
+    }
+
+    /// Taking theirs for everything is the same situation whenever their side
+    /// happens to equal ours, and it must conclude the merge too.
+    #[test]
+    fn a_merge_resolved_to_theirs_concludes_the_merge() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "base\n");
+        save(&root, "base");
+
+        with_write(&root, |vr| commands::switch::run(vr, "feature", false)).unwrap();
+        write(&root, "f.txt", "theirs\n");
+        save(&root, "theirs");
+
+        with_write(&root, |vr| commands::switch::run(vr, "main", false)).unwrap();
+        write(&root, "f.txt", "ours\n");
+        save(&root, "ours");
+
+        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        resolve_take(&root, None, commands::resolve::TakeOption::Theirs, true).unwrap();
+
+        let outcome =
+            with_write(&root, |vr| commands::save::run(vr, "merge feature", false)).unwrap();
+        assert!(outcome.saved(), "taking theirs must also record the merge");
+        assert!(!root.join(".velo/MERGE_HEAD").exists());
+        assert_eq!(read(&root, "f.txt"), "theirs\n");
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
     // ─── format v2 ────────────────────────────────────────────────────────────
 
     /// The break's central claim: metadata is part of a snapshot's identity.
