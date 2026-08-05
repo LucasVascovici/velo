@@ -442,20 +442,44 @@ in the implementation rather than in core. It must respect the existing rule tha
 paths get no observer, and a non-TTY stdout gets a silent one so piped output
 stays clean.
 
-### 2.1 In-memory trees 🔴
-```rust
-repo.save_tree(entries: impl IntoIterator<Item = TreeEntry>, msg: &str) -> Result<SnapshotId>
-repo.read_file_at(&SnapshotId, &Path) -> Result<Vec<u8>>
-repo.read_object(&ObjectHash)          -> Result<Vec<u8>>
-repo.tree_at(&SnapshotId)              -> Result<Tree>
-```
-Velo's model is "disk = snapshot", but an editor or registry holds content in
-memory. This turns Velo into a general-purpose versioned content store, with the
-filesystem walk as *one adapter* on top.
+### 2.1 In-memory trees ✅ **DONE**
 
-**Cheaper than it looks:** `storage::store_raw` and `storage::read_object`
-already exist and are public. Only `save_tree` is genuinely new; the three read
-functions are thin wrappers.
+```rust
+guard.save_tree(SaveTree { branch, parent, message, entries }) -> Result<String>
+repo.tree_at(&snapshot)              -> Result<Vec<TreeFile>>
+repo.read_file_at(&snapshot, path)   -> Result<Vec<u8>>
+repo.read_object(&hash)              -> Result<Vec<u8>>
+```
+
+Velo's model is "disk = snapshot", which is right for a version control tool and
+wrong for an editor or a registry. `velo_core::tree` is the second adapter onto
+the same store, with the filesystem walk as the first.
+
+**Two findings shaped the API.**
+
+*A branch tip is derived, not stored.* `branch_tip` takes the newest snapshot
+carrying that branch name, so merely inserting a row moves the branch — there is
+no ref to update or withhold. `save_tree` therefore takes the branch explicitly:
+a consumer using its own name cannot disturb a human's branches, and one passing
+`"main"` has said so. Nothing touches `.velo/PARENT` or the working tree, because
+a headless consumer has no working tree and moving the position under one that
+does would leave every file reading as modified.
+
+*Content must be CRLF-normalised.* The filesystem path normalises before hashing;
+`store_raw` does not. Storing raw `
+` would mean the same logical content
+landing in a different object depending on which adapter wrote it — and a file
+restored with its CRLFs intact would re-hash to something else and read as
+permanently modified, the same failure as the old `hash_mmap` bug.
+
+Both are load-bearing and tested: one test asserts a disk save and an in-memory
+save of identical bytes produce the *identical object*, and another builds a
+repository entirely from memory and runs `fsck`, which recomputes every
+content-addressed id — so the snapshot recipe provably matches `save`'s.
+
+`FileKind` (regular / executable / symlink) is the public vocabulary rather than
+`storage::MODE_*`, so a caller never handles a bare `i64`. Hashes stay `String`;
+wrapping them is [2.3](#23-newtypes-).
 
 ### 2.2 Extract `velo-merge` 🔴
 `diff3(base, ours, theirs) -> MergeResult` over `&[u8]`/`&str`. Already pure —
