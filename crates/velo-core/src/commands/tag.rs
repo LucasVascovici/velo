@@ -6,14 +6,13 @@
 use rusqlite::params;
 
 use crate::error::{RefKind, Result, VeloError};
-use crate::Repo;
-use crate::WriteGuard;
+use crate::{Repo, SnapshotId, TagName, WriteGuard};
 
 /// A tag and what it points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tag {
-    pub name: String,
-    pub snapshot: String,
+    pub name: TagName,
+    pub snapshot: SnapshotId,
     /// Message of the tagged snapshot. `None` when the snapshot is gone, which
     /// can happen after `undo` shelves it.
     pub message: Option<String>,
@@ -22,10 +21,10 @@ pub struct Tag {
 /// The outcome of creating a tag.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Created {
-    pub name: String,
-    pub snapshot: String,
+    pub name: TagName,
+    pub snapshot: SnapshotId,
     /// Set when `force` overwrote an existing tag, carrying what it pointed at.
-    pub replaced: Option<String>,
+    pub replaced: Option<SnapshotId>,
 }
 
 /// Every tag, ordered by name.
@@ -55,7 +54,7 @@ pub fn list(repo: &Repo) -> Result<Vec<Tag>> {
 /// Fails if the name is taken unless `force` is set.
 pub fn create(
     guard: &WriteGuard,
-    name: &str,
+    name: &TagName,
     snapshot: Option<&str>,
     force: bool,
 ) -> Result<Created> {
@@ -63,7 +62,7 @@ pub fn create(
     let conn = guard.conn();
 
     let target = match snapshot {
-        Some(id) => crate::commands::resolve_snapshot_id(guard.repo(), id)?,
+        Some(id) => crate::commands::resolve_snapshot_id(guard.repo(), id)?.into_string(),
         None => {
             let position = std::fs::read_to_string(root.join(".velo/PARENT"))
                 .unwrap_or_default()
@@ -78,7 +77,7 @@ pub fn create(
         }
     };
 
-    let existing: Option<String> = conn
+    let existing: Option<SnapshotId> = conn
         .query_row(
             "SELECT snapshot_hash FROM tags WHERE name = ?",
             [name],
@@ -100,18 +99,18 @@ pub fn create(
     )?;
 
     Ok(Created {
-        name: name.to_string(),
-        snapshot: target,
+        name: name.clone(),
+        snapshot: SnapshotId::from_stored(target),
         replaced: existing,
     })
 }
 
 /// Delete the tag called `name`.
-pub fn delete(guard: &WriteGuard, name: &str) -> Result<()> {
+pub fn delete(guard: &WriteGuard, name: &TagName) -> Result<()> {
     let conn = guard.conn();
     let rows = conn.execute("DELETE FROM tags WHERE name = ?", [name])?;
     if rows == 0 {
-        return Err(VeloError::not_found(RefKind::Tag, name));
+        return Err(VeloError::not_found(RefKind::Tag, name.as_str()));
     }
     Ok(())
 }

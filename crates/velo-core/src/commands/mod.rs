@@ -36,7 +36,7 @@ use parking_lot::Mutex;
 use rayon::prelude::*;
 
 use crate::error::{Result, VeloError};
-use crate::Repo;
+use crate::{Repo, SnapshotId};
 
 /// Number of hex characters used for snapshot hashes (64 bits of entropy).
 pub const SNAP_HASH_LEN: usize = 16;
@@ -128,9 +128,13 @@ pub fn find_repo_root(start: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Resolve a user-supplied snapshot identifier: a tag, a hash (or unique
-/// prefix), a branch name, or a remote-tracking ref like `origin/main`.
-pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<String> {
+/// Resolve a user-supplied *spec* — a tag, a hash or unique prefix, a branch
+/// name, or a remote-tracking ref like `origin/main` — into a snapshot id.
+///
+/// `input` stays `&str` because any string is a plausible attempt at a spec;
+/// the return is typed because everything downstream needs a resolved id. See
+/// [`crate::ids`].
+pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<SnapshotId> {
     let conn = repo.conn();
 
     // 1. Try as tag name
@@ -139,7 +143,7 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<String> {
         [input],
         |r| r.get::<_, String>(0),
     ) {
-        return Ok(h);
+        return Ok(SnapshotId::from_stored(h));
     }
 
     // 2. Try as exact or prefix hash
@@ -153,7 +157,7 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<String> {
     };
 
     match rows.len() {
-        1 => return Ok(rows.into_iter().next().unwrap()),
+        1 => return Ok(SnapshotId::from_stored(rows.into_iter().next().unwrap())),
         n if n > 1 => {
             return Err(VeloError::invalid(format!(
                 "Ambiguous prefix '{}' matches {} snapshots. Use more characters.",
@@ -166,7 +170,7 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<String> {
     // 3. Try as a branch name — resolve to wherever that branch points
     //    (its own latest snapshot, or the position it was created at).
     if let Some(h) = branch_tip(conn, input) {
-        return Ok(h);
+        return Ok(SnapshotId::from_stored(h));
     }
 
     // 4. Try as a remote-tracking ref "<remote>/<branch>" (e.g. origin/main).
@@ -176,7 +180,7 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<String> {
             [remote, branch],
             |r| r.get::<_, String>(0),
         ) {
-            return Ok(h);
+            return Ok(SnapshotId::from_stored(h));
         }
     }
 

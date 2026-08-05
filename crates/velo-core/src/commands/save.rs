@@ -8,11 +8,11 @@ use crate::commands::FileStatus;
 use crate::error::{Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
-use crate::WriteGuard;
+use crate::{SnapshotId, WriteGuard};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveResult {
-    pub hash: String,
+    pub hash: SnapshotId,
     pub new_count: usize,
     pub modified_count: usize,
     pub deleted_count: usize,
@@ -164,7 +164,11 @@ pub fn run_with_paths(
             // remote ref like `origin/main`, so merges of either still record
             // their second parent (and a short branch name isn't read as a hash).
             crate::commands::branch_tip(conn, source_branch)
-                .or_else(|| crate::commands::resolve_snapshot_id(guard.repo(), source_branch).ok())
+                .or_else(|| {
+                    crate::commands::resolve_snapshot_id(guard.repo(), source_branch)
+                        .ok()
+                        .map(SnapshotId::into_string)
+                })
                 .unwrap_or_default()
         } else {
             String::new()
@@ -324,7 +328,7 @@ pub fn run_with_paths(
     }
 
     Ok(Outcome::Saved(SaveResult {
-        hash: snapshot_hash.to_string(),
+        hash: SnapshotId::from_stored(snapshot_hash),
         new_count,
         modified_count,
         deleted_count,
