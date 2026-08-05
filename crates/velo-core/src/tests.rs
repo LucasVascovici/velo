@@ -7096,6 +7096,33 @@ beta
             .is_healthy());
     }
 
+    /// An unresolvable spec is `NotFound`, not `InvalidInput`.
+    ///
+    /// A consumer asking for a branch that has no snapshots yet needs to tell
+    /// "there is nothing there" from "you asked me something malformed", and
+    /// string-matching the message is what typed errors exist to avoid. Found by
+    /// writing an actual consumer (see examples/prompt-registry).
+    #[test]
+    fn an_unresolvable_spec_is_reported_as_not_found() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "x");
+        save(&root, "one");
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let err = commands::resolve_snapshot_id(&repo, "no-such-ref").unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VeloError::NotFound {
+                    kind: crate::error::RefKind::Any,
+                    ..
+                }
+            ),
+            "expected NotFound, got {:?}",
+            err
+        );
+    }
+
     // ─── format v2 ────────────────────────────────────────────────────────────
 
     /// The break's central claim: metadata is part of a snapshot's identity.

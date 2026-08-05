@@ -37,7 +37,7 @@ use rayon::prelude::*;
 
 use chrono::{DateTime, Utc};
 
-use crate::error::{Result, VeloError};
+use crate::error::{RefKind, Result, VeloError};
 use crate::{Repo, SnapshotId, SnapshotMeta};
 
 /// Hex characters of a snapshot id shown in output.
@@ -266,10 +266,12 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<SnapshotId> {
         }
     }
 
-    Err(VeloError::invalid(format!(
-        "No snapshot, tag, or branch found matching '{}'.",
-        input
-    )))
+    // `NotFound`, not `InvalidInput`: the spec was well-formed, it simply does not
+    // name anything. A consumer needs to tell "no such ref" (often expected — a
+    // branch with no snapshots yet) from "you asked me something malformed", and
+    // `RefKind::Any` exists for exactly this case: a ref that could have been a
+    // snapshot, a tag or a branch.
+    Err(VeloError::not_found(RefKind::Any, input))
 }
 
 /// How far `local` is ahead of / behind `remote`, counted in snapshots.

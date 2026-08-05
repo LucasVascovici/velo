@@ -6,6 +6,21 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## Unreleased
+
+### Fixed
+
+- `resolve_snapshot_id` reports an unresolvable spec as
+  `Error::NotFound { kind: RefKind::Any, .. }` rather than `Error::InvalidInput`.
+  A consumer asking for a branch that has no snapshots yet needs to tell "nothing
+  there" from "malformed request", and matching the message text is what typed
+  errors exist to avoid. Found by writing an actual consumer.
+
+### Added
+
+- `examples/prompt-registry` — a worked example of embedding `velo-core` with no
+  working tree, plus `FINDINGS.md` recording where the API was awkward.
+
 ## 4.0.0
 
 ### ⚠️ Repository format v2 — breaking

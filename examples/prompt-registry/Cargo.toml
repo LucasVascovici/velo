@@ -1,0 +1,14 @@
+[package]
+name = "prompt-registry"
+description = "A worked example of embedding velo-core: a versioned prompt registry with no working tree."
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+velo-core.workspace = true
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
