@@ -30,6 +30,7 @@ use std::path::Path;
 use rusqlite::params;
 
 use crate::error::{Result, VeloError};
+use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
 use crate::WriteGuard;
@@ -120,7 +121,12 @@ pub fn create(repo: &Repo, file: &str, target: Option<&str>) -> Result<Created> 
         ));
     }
 
-    let bundle = build_pack(conn, &root.join(".velo/objects"), &snap_set)?;
+    let bundle = {
+        // Reading and compressing every object is the slow part of bundling; the
+        // encode that follows is in-memory.
+        let _packing = repo.phase(Phase::Packing, Some(snap_set.len() as u64));
+        build_pack(conn, &root.join(".velo/objects"), &snap_set)?
+    };
     let encoded = encode(&bundle);
     fs::write(file, &encoded)?;
 
@@ -266,7 +272,9 @@ pub(crate) fn import_pack(
 ) -> Result<(usize, usize)> {
     // ── Write + verify objects (dedup by name) ────────────────────────────────
     let mut new_objects = 0usize;
+    let progress = guard.phase(Phase::Importing, Some(bundle.objects.len() as u64));
     for (hash, compressed) in &bundle.objects {
+        progress.tick();
         // Verify *received* data: it must decompress and re-hash to its own name.
         let decompressed = zstd::decode_all(&compressed[..]).map_err(|_| {
             VeloError::corrupt(format!("object {} could not be decompressed", hash))

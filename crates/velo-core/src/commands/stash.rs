@@ -23,6 +23,7 @@ use rusqlite::params;
 use crate::commands::{get_dirty_files, get_tracked_files, FileStatus};
 use crate::db;
 use crate::error::{RefKind, Result, VeloError};
+use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
 use crate::WriteGuard;
@@ -117,8 +118,10 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
         .filter(|(_, status)| **status != FileStatus::Deleted)
         .map(|(path, _)| path.clone())
         .collect();
+    let progress = guard.phase(Phase::Hashing, Some(to_hash.len() as u64));
     let hashed: Vec<(String, String, i64)> = to_hash
         .into_par_iter()
+        .inspect(|_| progress.tick())
         .map(|rel| {
             let full = root.join(db::db_to_path(&rel));
             let mode = storage::capture_mode(&full);
@@ -298,8 +301,10 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
         .collect();
     drop(stmt);
 
+    let progress = guard.phase(Phase::Writing, Some(files.len() as u64));
     let errors: Vec<String> = files
         .par_iter()
+        .inspect(|_| progress.tick())
         .filter_map(|(rel, hash, mode)| {
             let full = root.join(db::db_to_path(rel));
             if let Some(parent) = full.parent() {

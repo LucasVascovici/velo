@@ -72,7 +72,7 @@ pub fn run(guard: &WriteGuard, target: &str) -> Result<Outcome> {
 
     let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let applied = apply::reconcile_tree(
-        root,
+        guard,
         &apply::load_tree(conn, &parent_hash)?,
         &apply::load_tree(conn, position.trim())?,
         &apply::load_tree(conn, &snapshot)?,

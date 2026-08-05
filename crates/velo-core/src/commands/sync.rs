@@ -19,6 +19,7 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::{branch_tip, bundle, get_dirty_files, remote as remotemod};
 use crate::error::{Result, VeloError};
+use crate::progress::{Observer, Phase, PhaseGuard, Silent};
 use crate::storage;
 use crate::transport::{self, PushOutcome};
 use crate::Repo;
@@ -97,7 +98,16 @@ pub enum Pulled {
 // ─── clone ────────────────────────────────────────────────────────────────────
 
 /// Copy a repository from `url` into `dir` (or a directory named after the URL).
-pub fn clone(url: &str, dir: Option<&str>, spawn: &transport::Spawn) -> Result<Cloned> {
+///
+/// `observer` is a parameter here, unlike everywhere else: clone has no
+/// repository to configure until it has created one. It takes ownership, since
+/// the repository it configures is created and dropped inside this call.
+pub fn clone(
+    url: &str,
+    dir: Option<&str>,
+    spawn: &transport::Spawn,
+    observer: Option<Box<dyn Observer>>,
+) -> Result<Cloned> {
     let target = PathBuf::from(dir.map(String::from).unwrap_or_else(|| default_dir(url)));
     if target.join(".velo").exists() {
         return Err(VeloError::invalid(format!(
@@ -108,7 +118,17 @@ pub fn clone(url: &str, dir: Option<&str>, spawn: &transport::Spawn) -> Result<C
 
     // Pull everything from the remote (empty have-set = send it all).
     let mut remote = transport::open(url, spawn)?;
-    let (refs, pack) = remote.fetch(&HashSet::new())?;
+    let (refs, pack) = {
+        // No repository exists yet, so the phase is driven from the observer the
+        // caller handed us rather than from a `Repo`.
+        let silent = Silent;
+        let obs: &dyn Observer = match &observer {
+            Some(o) => &**o,
+            None => &silent,
+        };
+        let _transfer = PhaseGuard::new(obs, Phase::Transferring, None);
+        remote.fetch(&HashSet::new())?
+    };
     if refs.is_empty() {
         return Err(VeloError::invalid(format!(
             "'{}' has no commits yet, so there is nothing to clone.\n  \
@@ -126,6 +146,10 @@ pub fn clone(url: &str, dir: Option<&str>, spawn: &transport::Spawn) -> Result<C
     // lock for the import. Nothing else can be touching it yet, but the guard is
     // what grants write access at all.
     let repo = crate::Repo::open(&target)?;
+    let repo = match observer {
+        Some(o) => repo.observing(o),
+        None => repo,
+    };
     let guard = repo.write()?;
     let conn = guard.conn();
 
@@ -172,7 +196,10 @@ pub fn fetch(guard: &WriteGuard, remote_name: &str, spawn: &transport::Spawn) ->
     let url = remote_url(guard.repo(), remote_name)?;
     let mut remote = transport::open(&url, spawn)?;
     let have = local_snapshots(guard.repo())?;
-    let (refs, mut pack) = remote.fetch(&have)?;
+    let (refs, mut pack) = {
+        let _transfer = guard.phase(Phase::Transferring, None);
+        remote.fetch(&have)?
+    };
 
     // Namespace imported history under remotes/<remote>/<branch> so it never
     // collides with local branches. (Snapshots already present locally are
@@ -245,6 +272,7 @@ pub fn push(
         for h in &peer_has {
             snap_set.remove(h);
         }
+        let _packing = guard.phase(Phase::Packing, Some(snap_set.len() as u64));
         let mut pack = bundle::build_pack_excluding(conn, &objects_dir, &snap_set, &peer_has)?;
         // Send commits under their real branch name: a commit we obtained via
         // `fetch` carries our local `remotes/<remote>/<branch>` label, which is
@@ -259,7 +287,11 @@ pub fn push(
         Ok(pack)
     };
 
-    match remote.push(&branch, &local_tip, &mut build)? {
+    let outcome = {
+        let _transfer = guard.phase(Phase::Transferring, None);
+        remote.push(&branch, &local_tip, &mut build)?
+    };
+    match outcome {
         PushOutcome::Ok {
             new_snapshots,
             new_objects,
@@ -313,7 +345,10 @@ pub fn pull(guard: &WriteGuard, remote_name: &str, spawn: &transport::Spawn) -> 
 
     let mut remote = transport::open(&url, spawn)?;
     let have = local_snapshots(guard.repo())?;
-    let (refs, pack) = remote.fetch(&have)?;
+    let (refs, pack) = {
+        let _transfer = guard.phase(Phase::Transferring, None);
+        remote.fetch(&have)?
+    };
 
     let remote_tip = refs
         .iter()

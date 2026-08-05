@@ -17,7 +17,9 @@ use std::path::Path;
 use rusqlite::params;
 
 use crate::error::Result;
+use crate::progress::Phase;
 use crate::storage;
+use crate::WriteGuard;
 
 /// A snapshot's tree: path → (object hash, mode).
 pub type Tree = HashMap<String, (String, i64)>;
@@ -126,7 +128,13 @@ impl Applied {
 ///
 /// Paths are visited in sorted order, so the reported outcome is the same on
 /// every run — it used to come out of a `HashSet`, making the order the hasher's.
-pub fn reconcile_tree(root: &Path, ancestor: &Tree, ours: &Tree, theirs: &Tree) -> Result<Applied> {
+pub fn reconcile_tree(
+    guard: &WriteGuard,
+    ancestor: &Tree,
+    ours: &Tree,
+    theirs: &Tree,
+) -> Result<Applied> {
+    let root = guard.root();
     let objects_dir = root.join(".velo/objects");
 
     // Every path any of the three sides knows about. A path only the ancestor has
@@ -139,10 +147,12 @@ pub fn reconcile_tree(root: &Path, ancestor: &Tree, ours: &Tree, theirs: &Tree) 
         .map(String::as_str)
         .collect();
 
+    let progress = guard.phase(Phase::Reconciling, Some(all_paths.len() as u64));
     let mut files = Vec::new();
     let mut conflicts = Vec::new();
 
     for path in all_paths {
+        progress.tick();
         let side = |t: &Tree| {
             t.get(path)
                 .map(|(h, m)| (h.clone(), *m))

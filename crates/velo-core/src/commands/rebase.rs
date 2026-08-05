@@ -18,6 +18,7 @@ use std::path::Path;
 
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
+use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
 use crate::WriteGuard;
@@ -253,9 +254,11 @@ fn replay(
 ) -> Result<Outcome> {
     let root = guard.root();
     let total = commits.len();
+    let progress = guard.phase(Phase::Replaying, Some(total as u64));
     let mut replayed: Vec<Replayed> = Vec::new();
 
     for (idx, (snapshot, message)) in commits.iter().enumerate() {
+        progress.tick();
         let step = Replayed {
             snapshot: snapshot.clone(),
             message: message.clone(),
@@ -316,7 +319,7 @@ fn apply_one(guard: &WriteGuard, snapshot: &str) -> Result<Applied> {
     let position = read_trimmed(guard.root(), "PARENT");
     // "theirs" is the commit being replayed; "ours" is the tree built so far.
     let applied = apply::reconcile_tree(
-        root,
+        guard,
         &apply::load_tree(conn, &parent_hash)?,
         &apply::load_tree(conn, &position)?,
         &apply::load_tree(conn, snapshot)?,

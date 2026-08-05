@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::fs;
 
 use crate::error::Result;
+use crate::progress::Phase;
 use crate::WriteGuard;
 
 /// What a collection pass reclaimed.
@@ -94,8 +95,12 @@ pub fn run(guard: &WriteGuard, keep_days: u32) -> Result<Collected> {
         set
     };
 
+    // No total: the directory is streamed rather than counted first, so a
+    // consumer gets liveness without us walking the whole store twice.
+    let progress = guard.phase(Phase::Collecting, None);
     for entry in fs::read_dir(root.join(".velo/objects"))? {
         let entry = entry?;
+        progress.tick();
         let name = entry.file_name().to_string_lossy().to_string();
         if referenced.contains(&name) {
             continue;

@@ -1337,7 +1337,12 @@ fn run(cli: Cli) -> Result<()> {
             return Ok(());
         }
         Commands::Clone { url, dir } => {
-            let cloned = commands::sync::clone(url, dir.as_deref(), &spawn_config()?)?;
+            let cloned = commands::sync::clone(
+                url,
+                dir.as_deref(),
+                &spawn_config()?,
+                Some(Box::new(render::progress::Bar::new())),
+            )?;
             render::sync::print_cloned(&cloned);
             return Ok(());
         }
@@ -1352,7 +1357,9 @@ fn run(cli: Cli) -> Result<()> {
     // One connection for the whole command, and — because this goes through
     // `Repo` rather than opening SQLite directly — the point where a repository
     // written by a newer Velo is refused instead of half-read.
-    let repo = velo_core::Repo::open_and_migrate(&root)?;
+    // Long operations report through this. Inert on a non-TTY, so piped output
+    // stays clean.
+    let repo = velo_core::Repo::open_and_migrate(&root)?.observing(render::progress::Bar::new());
 
     // Serialise mutating commands against other velo processes. Read-only
     // commands skip the lock so they never block on a long-running mutation.

@@ -16,6 +16,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::error::Result;
+use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
 use crate::WriteGuard;
@@ -256,7 +257,9 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     let referenced = referenced_objects(conn)?;
     let mut verified = 0usize;
     let before = problems.len();
+    let progress = repo.phase(Phase::Verifying, Some(referenced.len() as u64));
     for hash in &referenced {
+        progress.tick();
         if !objects_dir.join(hash).exists() {
             problems.push(Problem::MissingObject { hash: hash.clone() });
             continue;
