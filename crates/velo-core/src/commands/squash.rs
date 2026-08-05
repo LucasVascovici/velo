@@ -8,7 +8,9 @@ use std::fs;
 
 use rusqlite::params;
 
+use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
+use crate::SnapshotMeta;
 use crate::WriteGuard;
 
 /// One of the snapshots that was collapsed.
@@ -51,14 +53,14 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
 
     // Load the last `count` snapshots on this branch (newest first)
     let mut stmt = conn.prepare(
-        "WITH RECURSIVE anc(hash, message, parent_hash, created_at, rowid, depth) AS (
-            SELECT hash, message, parent_hash, created_at, rowid, 0
+        "WITH RECURSIVE anc(hash, message, parent_hash, created_at_ms, rowid, depth) AS (
+            SELECT hash, message, parent_hash, created_at_ms, rowid, 0
             FROM snapshots
             WHERE branch = ?1
               AND hash = (SELECT hash FROM snapshots WHERE branch = ?1
-                          ORDER BY created_at DESC, rowid DESC LIMIT 1)
+                          ORDER BY created_at_ms DESC, rowid DESC LIMIT 1)
             UNION ALL
-            SELECT s.hash, s.message, s.parent_hash, s.created_at, s.rowid, a.depth + 1
+            SELECT s.hash, s.message, s.parent_hash, s.created_at_ms, s.rowid, a.depth + 1
             FROM snapshots s JOIN anc a ON s.hash = a.parent_hash
             WHERE a.depth < ?2 AND s.branch = ?1
         )
@@ -139,17 +141,24 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
             .collect();
         collected
     };
-    let timestamp = crate::commands::snapshot_timestamp();
-    let new_hash = crate::commands::snapshot_id(&tree, new_parent, "", message.trim(), &timestamp);
+    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let new_hash = crate::commands::snapshot_id(SnapshotIdentity {
+        tree: &tree,
+        parent: new_parent,
+        merge_parent: "",
+        message: message.trim(),
+        timestamp_ms,
+        meta: &SnapshotMeta::new(),
+    });
     let new_hash = new_hash.as_str();
 
     let tx = guard.transaction()?;
 
     // Insert new snapshot
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
          VALUES (?, ?, ?, ?, '', ?)",
-        params![new_hash, message.trim(), branch, new_parent, timestamp],
+        params![new_hash, message.trim(), branch, new_parent, timestamp_ms],
     )?;
 
     // Copy the captured tree into the new snapshot's file_map.

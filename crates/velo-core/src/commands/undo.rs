@@ -64,7 +64,7 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
             "SELECT hash, message, parent_hash
              FROM snapshots
              WHERE branch = ?
-             ORDER BY created_at DESC, rowid DESC LIMIT 1",
+             ORDER BY created_at_ms DESC, rowid DESC LIMIT 1",
             [branch.trim()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -77,8 +77,8 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     // deliberately left in place so redo can restore the tree.
     let tx = guard.transaction()?;
     tx.execute(
-        "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, merge_parent, created_at)
-         SELECT hash, message, branch, parent_hash, merge_parent, created_at
+        "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, merge_parent, created_at_ms)
+         SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms
          FROM snapshots WHERE hash = ?",
         [&snapshot],
     )?;

@@ -17,8 +17,10 @@ mod tests {
 
     use crate::commands::{self, FileStatus};
     use crate::db;
-    use crate::error::VeloError;
-    use crate::{BranchName, ObjectHash, Repo, SnapshotId, TagName};
+    use crate::error::{Error, VeloError};
+    use chrono::{DateTime, Utc};
+
+    use crate::{BranchName, ObjectHash, Repo, SnapshotId, SnapshotMeta, TagName};
 
     // =========================================================================
     // Helpers
@@ -105,6 +107,14 @@ mod tests {
     /// A tag name from a literal, for the same reason.
     fn tag_name(name: &str) -> TagName {
         name.parse().expect("valid tag name")
+    }
+
+    /// A fixed instant safely in the past, for asserting a timestamp is real.
+    ///
+    /// `created_at_ms` defaults to 0 in the schema, so "is it set" is the thing
+    /// worth checking, and 0 is the epoch.
+    fn year_2020() -> DateTime<Utc> {
+        DateTime::from_timestamp_millis(1_577_836_800_000).unwrap()
     }
 
     fn save(root: &Path, msg: &str) -> String {
@@ -262,8 +272,10 @@ mod tests {
         assert_eq!(r.modified_count, 0);
         assert_eq!(r.deleted_count, 0);
         assert!(!r.hash.is_empty());
-        // Hash length must be SNAP_HASH_LEN
-        assert_eq!(r.hash.len(), commands::SNAP_HASH_LEN);
+        // Ids are stored whole; SNAP_HASH_LEN is only how many characters get
+        // shown.
+        assert_eq!(r.hash.len(), commands::SNAP_ID_LEN);
+        assert_eq!(r.hash.short().len(), commands::SNAP_HASH_LEN);
     }
 
     #[test]
@@ -829,7 +841,10 @@ mod tests {
         let tip = dev.tip.as_ref().unwrap();
         assert_eq!(tip.hash, h2);
         assert_eq!(tip.message, "on dev");
-        assert!(!tip.created_at.is_empty());
+        assert!(
+            tip.created_at > year_2020(),
+            "the tip must carry a real creation time, not the column default"
+        );
 
         let main = list.iter().find(|b| b.name == "main").unwrap();
         assert!(!main.is_current);
@@ -3189,6 +3204,7 @@ mod tests {
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "publish 1.0",
@@ -3235,6 +3251,7 @@ mod tests {
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "in memory",
@@ -3297,6 +3314,7 @@ mod tests {
             let guard = repo_b.write().unwrap();
             guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "main".parse().unwrap(),
                     parent: None,
                     message: "same message",
@@ -3328,6 +3346,7 @@ mod tests {
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "imported".parse().unwrap(),
                     parent: None,
                     message: "windows line endings",
@@ -3374,6 +3393,7 @@ c
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "1.0",
@@ -3385,6 +3405,7 @@ c
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "registry".parse().unwrap(),
                     parent: Some(&first),
                     message: "1.1",
@@ -3414,6 +3435,7 @@ c
             let guard = repo.write().unwrap();
             let id = guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "registry".parse().unwrap(),
                     parent: parent_id.as_ref(),
                     message: &format!("v{}", v),
@@ -3449,6 +3471,7 @@ c
             entries: Vec<TreeEntry>,
         ) -> SaveTree<'a> {
             SaveTree {
+                meta: SnapshotMeta::new(),
                 branch,
                 parent,
                 message: "m",
@@ -3461,7 +3484,7 @@ c
         // from run time into the type.
         assert!("".parse::<BranchName>().is_err());
 
-        let unknown: SnapshotId = "deadbeefdeadbeef".parse().unwrap();
+        let unknown: SnapshotId = "dead".repeat(16).parse().unwrap();
         assert!(
             guard
                 .save_tree(spec(
@@ -3506,6 +3529,7 @@ c
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "m",
@@ -3528,6 +3552,7 @@ c
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
+                    meta: SnapshotMeta::new(),
                     branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "m",
@@ -3536,7 +3561,7 @@ c
                 .unwrap()
         };
 
-        let absent_snapshot: SnapshotId = "deadbeefdeadbeef".parse().unwrap();
+        let absent_snapshot: SnapshotId = "dead".repeat(16).parse().unwrap();
         let absent_object: ObjectHash = "de".repeat(32).parse().unwrap();
         assert!(repo.tree_at(&absent_snapshot).is_err());
         assert!(repo.read_file_at(&id, "absent.txt").is_err());
@@ -5320,7 +5345,10 @@ beta
         assert_eq!(d.hash, h1);
         assert_eq!(d.message, "s1");
         assert_eq!(d.branch, "main");
-        assert!(!d.created_at.is_empty());
+        assert!(
+            d.created_at > year_2020(),
+            "show must report a real creation time, not the column default"
+        );
     }
 
     #[test]
@@ -5490,7 +5518,7 @@ beta
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let msg: String = conn
             .query_row(
-                "SELECT message FROM snapshots WHERE branch = 'main' ORDER BY created_at DESC LIMIT 1",
+                "SELECT message FROM snapshots WHERE branch = 'main' ORDER BY created_at_ms DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )
@@ -6337,6 +6365,57 @@ beta
         assert!(with_repo(&b, commands::fsck::check).unwrap().is_healthy());
     }
 
+    /// Metadata is part of a snapshot's identity, so a bundle that dropped it
+    /// would be rejected by its own receiver — the id would not recompute. This
+    /// pins the wire format's metadata section end to end.
+    #[test]
+    fn bundle_carries_metadata_so_ids_still_verify() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_ta, a) = setup();
+        let repo_a = Repo::open_and_migrate(&a).unwrap();
+
+        let mut meta = SnapshotMeta::new();
+        meta.set("app", "eval_run", "42").unwrap();
+        meta.set("other", "k", "v").unwrap();
+        let id = {
+            let guard = repo_a.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "main".parse().unwrap(),
+                    parent: None,
+                    message: "published",
+                    entries: vec![TreeEntry::file(
+                        "a.txt",
+                        b"x
+"
+                        .to_vec(),
+                    )],
+                    meta: meta.clone(),
+                })
+                .unwrap()
+        };
+        drop(repo_a);
+
+        let bd = TempDir::new().unwrap();
+        let path = bd.path().join("out.velo");
+        let path = path.to_str().unwrap();
+        with_repo(&a, |vr| commands::bundle::create(vr, path, None)).unwrap();
+
+        let (_tb, b) = setup();
+        with_write(&b, |vr| commands::bundle::apply(vr, path)).unwrap();
+
+        let repo_b = Repo::open_and_migrate(&b).unwrap();
+        assert_eq!(
+            repo_b.snapshot_meta(&id).unwrap(),
+            meta,
+            "metadata must survive the round trip intact"
+        );
+        assert!(
+            commands::fsck::check(&repo_b).unwrap().is_healthy(),
+            "the receiver recomputes every id, so this fails if metadata was lost"
+        );
+    }
+
     #[test]
     fn bundle_create_with_ref_is_self_contained() {
         let (_ta, a) = setup();
@@ -6880,7 +6959,7 @@ beta
         let tip: String = conn
             .query_row(
                 "SELECT hash FROM snapshots WHERE branch = 'feature' \
-                 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                 ORDER BY created_at_ms DESC, rowid DESC LIMIT 1",
                 [],
                 |r| r.get(0),
             )
@@ -6910,6 +6989,258 @@ beta
         let dirty = with_repo(&root, commands::get_dirty_files);
         assert!(!dirty.contains_key("a.txt"), "a.txt should be clean");
         assert!(dirty.contains_key("b.txt"), "b.txt should still be dirty");
+    }
+
+    // ─── format v2 ────────────────────────────────────────────────────────────
+
+    /// The break's central claim: metadata is part of a snapshot's identity.
+    /// If this ever passes with equal ids, D1 has silently been undone.
+    #[test]
+    fn metadata_changes_the_snapshot_id() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let entries = || vec![TreeEntry::file("a.txt", b"same bytes\n".to_vec())];
+        let mut tagged = SnapshotMeta::new();
+        tagged.set("app", "run", "7").unwrap();
+
+        let (plain, with_meta) = {
+            let guard = repo.write().unwrap();
+            let plain = guard
+                .save_tree(SaveTree {
+                    branch: "a".parse().unwrap(),
+                    parent: None,
+                    message: "m",
+                    entries: entries(),
+                    meta: SnapshotMeta::new(),
+                })
+                .unwrap();
+            let with_meta = guard
+                .save_tree(SaveTree {
+                    branch: "b".parse().unwrap(),
+                    parent: None,
+                    message: "m",
+                    entries: entries(),
+                    meta: tagged.clone(),
+                })
+                .unwrap();
+            (plain, with_meta)
+        };
+
+        assert_ne!(
+            plain, with_meta,
+            "identical content and message but different metadata must be \
+             different snapshots"
+        );
+        assert_eq!(repo.snapshot_meta(&with_meta).unwrap(), tagged);
+        assert!(repo.snapshot_meta(&plain).unwrap().is_empty());
+    }
+
+    /// Metadata insertion order must not reach the hash — otherwise two callers
+    /// building the same set would disagree about the id.
+    ///
+    /// Tested against the recipe directly rather than through two saves: those
+    /// would be milliseconds apart, and the timestamp is part of the identity, so
+    /// the ids would differ for a reason that has nothing to do with ordering.
+    #[test]
+    fn metadata_order_does_not_affect_the_id() {
+        let mut forwards = SnapshotMeta::new();
+        forwards.set("app", "a", "1").unwrap();
+        forwards.set("app", "z", "2").unwrap();
+        let mut backwards = SnapshotMeta::new();
+        backwards.set("app", "z", "2").unwrap();
+        backwards.set("app", "a", "1").unwrap();
+
+        let tree = vec![("a.txt".to_string(), "cafe".repeat(16), 0i64)];
+        let id = |meta: &SnapshotMeta| {
+            commands::snapshot_id(commands::SnapshotIdentity {
+                tree: &tree,
+                parent: "",
+                merge_parent: "",
+                message: "m",
+                timestamp_ms: 1_785_922_872_345,
+                meta,
+            })
+        };
+        assert_eq!(id(&forwards), id(&backwards));
+
+        // And an empty set is still a distinct, well-defined input — the recipe
+        // emits the section marker either way.
+        let mut one = SnapshotMeta::new();
+        one.set("app", "a", "1").unwrap();
+        assert_ne!(id(&SnapshotMeta::new()), id(&one));
+    }
+
+    /// The tree is sorted by the recipe, so the caller's order cannot reach the
+    /// id either.
+    #[test]
+    fn tree_order_does_not_affect_the_id() {
+        let meta = SnapshotMeta::new();
+        let a = ("a.txt".to_string(), "aaaa".repeat(16), 0i64);
+        let b = ("b.txt".to_string(), "bbbb".repeat(16), 0i64);
+        let id = |tree: &[(String, String, i64)]| {
+            commands::snapshot_id(commands::SnapshotIdentity {
+                tree,
+                parent: "",
+                merge_parent: "",
+                message: "m",
+                timestamp_ms: 1_785_922_872_345,
+                meta: &meta,
+            })
+        };
+        assert_eq!(id(&[a.clone(), b.clone()]), id(&[b, a]));
+    }
+
+    /// Ids are stored whole. A truncated one would silently reintroduce the
+    /// collision risk v2 exists to remove.
+    #[test]
+    fn stored_ids_are_full_width_everywhere_they_are_referenced() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one\n");
+        let first = save(&root, "first");
+        write(&root, "a.txt", "two\n");
+        let second = save(&root, "second");
+
+        assert_eq!(first.len(), commands::SNAP_ID_LEN);
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+
+        // The parent link, the branch tip and PARENT must all carry full ids.
+        let parent: String = conn
+            .query_row(
+                "SELECT parent_hash FROM snapshots WHERE hash = ?",
+                [&second],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(parent, first);
+        assert_eq!(parent.len(), commands::SNAP_ID_LEN);
+        assert_eq!(
+            std::fs::read_to_string(root.join(".velo/PARENT"))
+                .unwrap()
+                .trim()
+                .len(),
+            commands::SNAP_ID_LEN
+        );
+    }
+
+    /// Timestamps are stored as integers, not text, so no formatting choice can
+    /// reach a snapshot id.
+    #[test]
+    fn timestamps_are_stored_as_epoch_milliseconds() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one\n");
+        let hash = save(&root, "first");
+
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let ms: i64 = conn
+            .query_row(
+                "SELECT created_at_ms FROM snapshots WHERE hash = ?",
+                [&hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // A real clock value, not the column's 0 default.
+        assert!(
+            ms > 1_577_836_800_000,
+            "expected a real timestamp, got {}",
+            ms
+        );
+
+        // And the column really is an integer, not text that happens to parse.
+        let kind: String = conn
+            .query_row(
+                "SELECT typeof(created_at_ms) FROM snapshots WHERE hash = ?",
+                [&hash],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(kind, "integer");
+    }
+
+    /// `fsck` recomputes every id, so it is the check that the whole v2 recipe —
+    /// metadata included — is applied consistently on the way in and out.
+    #[test]
+    fn fsck_verifies_ids_of_snapshots_carrying_metadata() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let mut meta = SnapshotMeta::new();
+        meta.set("app", "k", "v").unwrap();
+        {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "registry".parse().unwrap(),
+                    parent: None,
+                    message: "m",
+                    entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],
+                    meta,
+                })
+                .unwrap();
+        }
+
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(
+            report.is_healthy(),
+            "expected a clean report, got {:?}",
+            report
+        );
+
+        // Tampering with metadata must break the id it is part of — that is what
+        // makes provenance worth storing.
+        {
+            let guard = repo.write().unwrap();
+            guard
+                .conn()
+                .execute("UPDATE snapshot_meta SET value = 'tampered'", [])
+                .unwrap();
+        }
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(
+            !report.is_healthy(),
+            "rewriting metadata must show up as an id mismatch"
+        );
+    }
+
+    /// A v1 repository is refused rather than stamped, because its ids were built
+    /// by a different recipe and nothing can recompute them in place.
+    #[test]
+    fn a_pre_v2_repository_is_refused_not_silently_upgraded() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one\n");
+        save(&root, "first");
+
+        // Put the marker back to what v1 left behind: nothing.
+        {
+            let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+            conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+        }
+
+        match Repo::open_and_migrate(&root) {
+            Err(Error::FormatTooOld { found, supported }) => {
+                assert_eq!(found, 0, "an unversioned repository is v1");
+                assert_eq!(supported, crate::FORMAT_VERSION);
+            }
+            other => panic!("expected FormatTooOld, got {:?}", other.map(|_| "Ok")),
+        }
+        // `open` must refuse it too, not just the migrating path.
+        assert!(matches!(Repo::open(&root), Err(Error::FormatTooOld { .. })));
+
+        // And the marker is untouched: refusing must not be a partial upgrade.
+        let conn = db::connect(&root.join(".velo/velo.db")).unwrap();
+        assert_eq!(db::format_version(&conn).unwrap(), 0);
+    }
+
+    /// A repository this build creates is stamped, so it is never mistaken for
+    /// the unversioned v1 form.
+    #[test]
+    fn a_fresh_repository_is_stamped_with_its_format_version() {
+        let (_tmp, root) = setup();
+        let conn = db::connect(&root.join(".velo/velo.db")).unwrap();
+        assert_eq!(db::format_version(&conn).unwrap(), crate::FORMAT_VERSION);
+        assert!(!db::is_pre_v2(crate::FORMAT_VERSION));
     }
 
     // ─── pathspec on status ───────────────────────────────────────────────────

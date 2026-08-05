@@ -22,7 +22,7 @@ pub fn print(outcome: &Outcome) {
             println!(
                 "\n{} Rebase complete. HEAD is now {}.",
                 style("✔").green().bold(),
-                style(short(head)).yellow()
+                style(super::id::short(head)).yellow()
             );
         }
 
@@ -45,7 +45,7 @@ pub fn print(outcome: &Outcome) {
                 "\n{} Conflict in {} file(s) while replaying {}.",
                 style("!").red().bold(),
                 conflicts.len(),
-                style(short(&stopped_at.snapshot)).yellow()
+                style(super::id::short(&stopped_at.snapshot)).yellow()
             );
             super::apply::print_conflict_next_steps(
                 &conflicts,
@@ -65,7 +65,7 @@ pub fn print(outcome: &Outcome) {
                 println!(
                     "{} Rebase aborted — restored to {}{}.",
                     style("!").yellow().bold(),
-                    style(short(hash)).yellow(),
+                    style(super::id::short(hash)).yellow(),
                     discarded_note(*discarded)
                 );
             }
@@ -79,7 +79,7 @@ fn print_header(branch: &str, onto: &str, total: usize) {
         "\n{} Rebasing '{}' onto {}…\n  {} commits to replay",
         style("◆").cyan().bold(),
         style(branch).cyan(),
-        style(short(onto)).yellow(),
+        style(super::id::short(onto)).yellow(),
         total
     );
 }
@@ -90,7 +90,7 @@ fn print_step(step: &Replayed) {
         style("◦").dim(),
         step.index,
         step.total,
-        style(short(&step.snapshot)).yellow(),
+        style(super::id::short(&step.snapshot)).yellow(),
         style(&step.message).dim()
     );
 }
@@ -101,9 +101,4 @@ fn discarded_note(discarded: usize) -> String {
     } else {
         format!(", discarding {} replayed snapshot(s)", discarded)
     }
-}
-
-/// Snapshot hashes are shown abbreviated in rebase output.
-fn short(hash: &str) -> &str {
-    &hash[..8.min(hash.len())]
 }

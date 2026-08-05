@@ -186,7 +186,7 @@ id_newtype!(
     /// for the abbreviated form.
     SnapshotId,
     "snapshot id",
-    validate = |text| !text.is_empty() && text.len() <= 64 && is_hex(text)
+    validate = |text| text.len() == crate::commands::SNAP_ID_LEN && is_hex(text)
 );
 
 id_newtype!(
@@ -241,14 +241,19 @@ mod tests {
 
     #[test]
     fn a_snapshot_id_must_look_like_one() {
-        assert!("a1b2c3d4e5f60718".parse::<SnapshotId>().is_ok());
+        assert!("a".repeat(64).parse::<SnapshotId>().is_ok());
         // The whole point: a branch name is not an id.
         assert!("main".parse::<SnapshotId>().is_err());
         assert!("v1.0".parse::<SnapshotId>().is_err());
         assert!("origin/main".parse::<SnapshotId>().is_err());
         assert!("".parse::<SnapshotId>().is_err());
-        assert!("z".repeat(16).parse::<SnapshotId>().is_err());
+        assert!("z".repeat(64).parse::<SnapshotId>().is_err());
         assert!("a".repeat(65).parse::<SnapshotId>().is_err());
+        // A v1-width id is no longer one. Ids are stored whole since format v2,
+        // so a 16-character value is an abbreviation — and an abbreviation is
+        // not an id, however much it looks like one.
+        assert!("a1b2c3d4e5f60718".parse::<SnapshotId>().is_err());
+        assert!("a".repeat(63).parse::<SnapshotId>().is_err());
     }
 
     #[test]

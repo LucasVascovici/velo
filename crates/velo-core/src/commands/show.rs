@@ -7,6 +7,7 @@
 use crate::commands::diff::{self, Diff};
 use crate::error::{RefKind, Result, VeloError};
 use crate::{Repo, SnapshotId};
+use chrono::{DateTime, Utc};
 
 /// A snapshot's metadata plus what it changed.
 #[derive(Clone, Debug)]
@@ -19,7 +20,7 @@ pub struct SnapshotDetail {
     /// `None` for the root snapshot.
     pub parent: Option<String>,
     /// Raw stored timestamp; formatting is the consumer's choice.
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
     pub message: String,
     /// Changes relative to `parent`, or every file when there is no parent.
     pub diff: Diff,
@@ -30,9 +31,9 @@ pub fn run(repo: &Repo, target: &str, file_filter: &Option<String>) -> Result<Sn
     let conn = repo.conn();
     let hash = crate::commands::resolve_snapshot_id(repo, target)?;
 
-    let (message, branch, parent_hash, created_at): (String, String, String, String) = conn
+    let (message, branch, parent_hash, created_at_ms): (String, String, String, i64) = conn
         .query_row(
-            "SELECT message, branch, parent_hash, created_at FROM snapshots WHERE hash = ?",
+            "SELECT message, branch, parent_hash, created_at_ms FROM snapshots WHERE hash = ?",
             [&hash],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
@@ -44,7 +45,7 @@ pub fn run(repo: &Repo, target: &str, file_filter: &Option<String>) -> Result<Sn
         hash,
         branch,
         parent: (!parent_hash.is_empty()).then_some(parent_hash),
-        created_at,
+        created_at: crate::commands::timestamp_from_ms(created_at_ms),
         message,
         diff,
     })

@@ -1086,6 +1086,31 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             suggest(&mut lines, &options);
         }
+        VeloError::FormatTooOld { found, .. } => {
+            lines.push(format!(
+                "  This repository was written by Velo before format v2 (found v{}).",
+                found
+            ));
+            lines.push(
+                "  Its snapshot ids were built by a different recipe, so there is nothing".into(),
+            );
+            lines.push("  to migrate in place. Move the work across instead:".into());
+            suggest(
+                &mut lines,
+                &[
+                    (
+                        "velo init <new-dir>",
+                        "start a v2 repository elsewhere",
+                        Tone::Do,
+                    ),
+                    (
+                        "cp -r <files> <new-dir> && velo save \"<message>\"",
+                        "copy the working tree in and record it",
+                        Tone::Alt,
+                    ),
+                ],
+            );
+        }
         VeloError::OperationInProgress { what } => {
             lines.push("  Finish it or undo it:".into());
             let abort = format!("velo {} --abort", what);

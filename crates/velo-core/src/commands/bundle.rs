@@ -12,16 +12,21 @@
 //!
 //! ## File format (little-endian)
 //! ```text
-//! magic   : 8 bytes  "VELOBND1"
-//! version : u32       (= FORMAT_VERSION)
-//! snapshots: u32 count, then per row: 6 length-prefixed strings
-//!            (hash, message, branch, parent_hash, merge_parent, created_at)
+//! magic   : 8 bytes  "VELOBND2"
+//! version : u32       (= BUNDLE_VERSION)
+//! snapshots: u32 count, then per row: 5 length-prefixed strings + i64
+//!            (hash, message, branch, parent_hash, merge_parent, created_at_ms)
 //! file_map : u32 count, then per row: 3 strings + i64 mode
 //!            (snapshot_hash, path, hash, mode)
+//! meta     : u32 count, then per row: 4 strings
+//!            (snapshot_id, namespace, key, value)
 //! tags     : u32 count, then per row: 2 strings (name, snapshot_hash)
 //! objects  : u32 count, then per row: string hash, u32 len, len bytes
 //!            (the raw, already-zstd-compressed object file, verbatim)
 //! ```
+//!
+//! Metadata has to travel: it is part of a snapshot's identity, so a receiver
+//! that did not get it would recompute a different id and reject the import.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -29,14 +34,20 @@ use std::path::Path;
 
 use rusqlite::params;
 
+use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
+use crate::SnapshotMeta;
 use crate::WriteGuard;
 
-const MAGIC: &[u8; 8] = b"VELOBND1";
-const FORMAT_VERSION: u32 = 1;
+const MAGIC: &[u8; 8] = b"VELOBND2";
+
+/// Wire format version. Tracks the repository format, but is its own constant
+/// because the two are free to diverge — a repository change that does not alter
+/// what crosses the wire should not invalidate every peer.
+const BUNDLE_VERSION: u32 = 2;
 
 // ─── In-memory bundle ──────────────────────────────────────────────────────────
 
@@ -46,7 +57,15 @@ pub struct SnapshotRow {
     pub branch: String,
     pub parent_hash: String,
     pub merge_parent: String,
-    pub created_at: String,
+    pub created_at_ms: i64,
+}
+
+/// One `snapshot_meta` row in transit.
+pub struct MetaRow {
+    pub snapshot_id: String,
+    pub namespace: String,
+    pub key: String,
+    pub value: String,
 }
 
 pub struct FileMapRow {
@@ -62,6 +81,7 @@ pub struct FileMapRow {
 pub struct Bundle {
     pub snapshots: Vec<SnapshotRow>,
     pub file_map: Vec<FileMapRow>,
+    pub meta: Vec<MetaRow>,
     pub tags: Vec<(String, String)>,     // (name, snapshot_hash)
     pub objects: Vec<(String, Vec<u8>)>, // (hash, raw compressed bytes)
 }
@@ -168,7 +188,7 @@ pub(crate) fn build_pack_excluding(
     let mut snapshots = Vec::new();
     {
         let mut stmt = conn.prepare(
-            "SELECT hash, message, branch, parent_hash, merge_parent, created_at FROM snapshots",
+            "SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms FROM snapshots",
         )?;
         let rows = stmt.query_map([], |r| {
             Ok(SnapshotRow {
@@ -177,7 +197,7 @@ pub(crate) fn build_pack_excluding(
                 branch: r.get(2)?,
                 parent_hash: r.get(3)?,
                 merge_parent: r.get(4)?,
-                created_at: r.get::<_, String>(5).unwrap_or_default(),
+                created_at_ms: r.get::<_, i64>(5).unwrap_or_default(),
             })
         })?;
         for row in rows.flatten() {
@@ -215,6 +235,27 @@ pub(crate) fn build_pack_excluding(
         object_hashes.remove(h);
     }
 
+    // Metadata for the snapshots in this pack. It is part of their identity, so
+    // omitting it would make the receiver's recomputation disagree.
+    let mut meta = Vec::new();
+    {
+        let mut stmt =
+            conn.prepare("SELECT snapshot_id, namespace, key, value FROM snapshot_meta")?;
+        let rows = stmt.query_map([], |r| {
+            Ok(MetaRow {
+                snapshot_id: r.get(0)?,
+                namespace: r.get(1)?,
+                key: r.get(2)?,
+                value: r.get(3)?,
+            })
+        })?;
+        for row in rows.flatten() {
+            if snap_set.contains(&row.snapshot_id) {
+                meta.push(row);
+            }
+        }
+    }
+
     let mut tags = Vec::new();
     {
         let mut stmt = conn.prepare("SELECT name, snapshot_hash FROM tags")?;
@@ -237,6 +278,7 @@ pub(crate) fn build_pack_excluding(
     Ok(Bundle {
         snapshots,
         file_map,
+        meta,
         tags,
         objects,
     })
@@ -311,11 +353,20 @@ pub(crate) fn import_pack(
             .push(row);
     }
 
+    // Likewise for metadata, which the id check below has to include.
+    let mut meta_by_snap: HashMap<&str, SnapshotMeta> = HashMap::new();
+    for row in &bundle.meta {
+        meta_by_snap
+            .entry(row.snapshot_id.as_str())
+            .or_default()
+            .insert_stored(row.namespace.clone(), row.key.clone(), row.value.clone());
+    }
+
     let tx = guard.transaction()?;
     let mut new_snaps = 0usize;
     {
         let mut ins_snap = tx.prepare(
-            "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
+            "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
              VALUES (?, ?, ?, ?, ?, ?)",
         )?;
         let mut ins_fm = tx.prepare(
@@ -335,13 +386,15 @@ pub(crate) fn import_pack(
                         .collect()
                 })
                 .unwrap_or_default();
-            let recomputed = crate::commands::snapshot_id(
-                &tree,
-                &s.parent_hash,
-                &s.merge_parent,
-                &s.message,
-                &s.created_at,
-            );
+            let empty = SnapshotMeta::new();
+            let recomputed = crate::commands::snapshot_id(SnapshotIdentity {
+                tree: &tree,
+                parent: &s.parent_hash,
+                merge_parent: &s.merge_parent,
+                message: &s.message,
+                timestamp_ms: s.created_at_ms,
+                meta: meta_by_snap.get(s.hash.as_str()).unwrap_or(&empty),
+            });
             if recomputed != s.hash {
                 return Err(VeloError::corrupt(format!(
                     "snapshot {} does not match its content (recomputed {})",
@@ -355,7 +408,7 @@ pub(crate) fn import_pack(
                 s.branch,
                 s.parent_hash,
                 s.merge_parent,
-                s.created_at
+                s.created_at_ms
             ])?;
             if let Some(rows) = fm_by_snap.get(s.hash.as_str()) {
                 for r in rows {
@@ -363,6 +416,16 @@ pub(crate) fn import_pack(
                 }
             }
             new_snaps += 1;
+        }
+
+        // Metadata is immutable and part of the id, so a row that is already
+        // here is necessarily identical — ignoring a duplicate is correct.
+        let mut ins_meta = tx.prepare(
+            "INSERT OR IGNORE INTO snapshot_meta (snapshot_id, namespace, key, value)
+             VALUES (?, ?, ?, ?)",
+        )?;
+        for m in &bundle.meta {
+            ins_meta.execute(params![m.snapshot_id, m.namespace, m.key, m.value])?;
         }
 
         // Tags: don't clobber a local tag of the same name.
@@ -407,7 +470,7 @@ pub(crate) fn reachable_ancestry(conn: &rusqlite::Connection, tip: &str) -> Hash
 pub(crate) fn encode(b: &Bundle) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
-    put_u32(&mut out, FORMAT_VERSION);
+    put_u32(&mut out, BUNDLE_VERSION);
 
     put_u32(&mut out, b.snapshots.len() as u32);
     for s in &b.snapshots {
@@ -416,7 +479,7 @@ pub(crate) fn encode(b: &Bundle) -> Vec<u8> {
         put_str(&mut out, &s.branch);
         put_str(&mut out, &s.parent_hash);
         put_str(&mut out, &s.merge_parent);
-        put_str(&mut out, &s.created_at);
+        out.extend_from_slice(&s.created_at_ms.to_le_bytes());
     }
 
     put_u32(&mut out, b.file_map.len() as u32);
@@ -425,6 +488,14 @@ pub(crate) fn encode(b: &Bundle) -> Vec<u8> {
         put_str(&mut out, &r.path);
         put_str(&mut out, &r.hash);
         out.extend_from_slice(&r.mode.to_le_bytes());
+    }
+
+    put_u32(&mut out, b.meta.len() as u32);
+    for m in &b.meta {
+        put_str(&mut out, &m.snapshot_id);
+        put_str(&mut out, &m.namespace);
+        put_str(&mut out, &m.key);
+        put_str(&mut out, &m.value);
     }
 
     put_u32(&mut out, b.tags.len() as u32);
@@ -449,10 +520,10 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
         return Err(VeloError::invalid("Not a Velo bundle (bad magic)."));
     }
     let version = r.u32()?;
-    if version != FORMAT_VERSION {
+    if version != BUNDLE_VERSION {
         return Err(VeloError::invalid(format!(
             "Unsupported bundle format version {} (this velo understands {}).",
-            version, FORMAT_VERSION
+            version, BUNDLE_VERSION
         )));
     }
 
@@ -465,7 +536,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
             branch: r.string()?,
             parent_hash: r.string()?,
             merge_parent: r.string()?,
-            created_at: r.string()?,
+            created_at_ms: r.i64()?,
         });
     }
 
@@ -477,6 +548,17 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
             path: r.string()?,
             hash: r.string()?,
             mode: r.i64()?,
+        });
+    }
+
+    let n = r.u32()?;
+    let mut meta = Vec::with_capacity(n as usize);
+    for _ in 0..n {
+        meta.push(MetaRow {
+            snapshot_id: r.string()?,
+            namespace: r.string()?,
+            key: r.string()?,
+            value: r.string()?,
         });
     }
 
@@ -498,6 +580,7 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
     Ok(Bundle {
         snapshots,
         file_map,
+        meta,
         tags,
         objects,
     })

@@ -35,37 +35,71 @@ use ignore::{WalkBuilder, WalkState};
 use parking_lot::Mutex;
 use rayon::prelude::*;
 
-use crate::error::{Result, VeloError};
-use crate::{Repo, SnapshotId};
+use chrono::{DateTime, Utc};
 
-/// Number of hex characters used for snapshot hashes (64 bits of entropy).
+use crate::error::{Result, VeloError};
+use crate::{Repo, SnapshotId, SnapshotMeta};
+
+/// Hex characters of a snapshot id shown in output.
+///
+/// **Display only.** Ids are stored, compared, keyed and transmitted at full
+/// width — see `docs/FORMAT.md` §8. In v1 this was also the stored width, and
+/// that truncation *was* the primary key; storing 64 bits of a hash in a store
+/// several applications write to put a ~50% collision risk around 5·10⁹
+/// snapshots, which is why v2 stores the whole thing.
 pub const SNAP_HASH_LEN: usize = 16;
 
-/// Compute a **content-addressed** snapshot id.
+/// Hex characters of a stored snapshot id: a whole BLAKE3 digest.
+pub const SNAP_ID_LEN: usize = 64;
+
+/// Everything a snapshot's identity is derived from.
 ///
-/// The id is derived from the full tree (every `path → object-hash` pair,
-/// sorted), the parent(s), the message, and the timestamp. Because it commits
-/// to the tree, a snapshot's hash can be *verified* against its contents (see
-/// `velo fsck`) and identical work yields an identical id — the property
-/// collaborative sync depends on. The older scheme hashed only metadata
-/// (message/branch/parent/time) and never the tree.
+/// A struct rather than six positional arguments because `parent`,
+/// `merge_parent` and `message` are all `&str`: swapping two of them would
+/// compile, produce a plausible-looking id, and be found much later by a peer
+/// whose recomputation disagrees.
+pub struct SnapshotIdentity<'a> {
+    /// Every `(path, object-hash, mode)` in the snapshot. Sorted internally, so
+    /// the caller's order does not matter.
+    pub tree: &'a [(String, String, i64)],
+    /// The parent id, or `""` to start a history.
+    pub parent: &'a str,
+    /// The second parent of a merge, or `""` when this is not one.
+    pub merge_parent: &'a str,
+    /// The commit message.
+    pub message: &'a str,
+    /// Creation time as epoch milliseconds (UTC).
+    pub timestamp_ms: i64,
+    /// App-namespaced metadata, which is part of the identity (decision D1).
+    pub meta: &'a SnapshotMeta,
+}
+
+/// Compute a **content-addressed** snapshot id — the v2 recipe.
+///
+/// The id commits to the full tree (every `path → object-hash` pair, sorted),
+/// the parents, the message, the timestamp and the metadata. Because it commits
+/// to the tree, a snapshot can be *verified* against its own contents (see
+/// `velo fsck`), and identical work yields an identical id — the property sync
+/// depends on.
 ///
 /// Deliberately excludes the branch: a snapshot's identity must not change when
 /// a branch label is renamed or soft-deleted (which rewrites the `branch`
-/// column), and — as in Git — the same commit reachable from two branches
-/// should have the same id.
-pub fn snapshot_id(
-    tree: &[(String, String, i64)],
-    parent: &str,
-    merge_parent: &str,
-    message: &str,
-    timestamp: &str,
-) -> String {
-    let mut entries: Vec<&(String, String, i64)> = tree.iter().collect();
+/// column), and — as in Git — the same commit reachable from two branches should
+/// have one id.
+///
+/// # What changed from v1
+///
+/// The domain separator is `velo-snapshot-v2\n`, so a v1 and a v2 snapshot can
+/// never collide even given identical inputs. The timestamp is hashed as decimal
+/// epoch milliseconds rather than as formatted text, so no locale or precision
+/// change can shift an id. Metadata is hashed. And the result is returned at
+/// full width instead of truncated to 16 characters.
+pub fn snapshot_id(id: SnapshotIdentity<'_>) -> String {
+    let mut entries: Vec<&(String, String, i64)> = id.tree.iter().collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut h = blake3::Hasher::new();
-    h.update(b"velo-snapshot-v1\n");
+    h.update(b"velo-snapshot-v2\n");
     for (path, hash, mode) in entries {
         h.update(path.as_bytes());
         h.update(b"\0");
@@ -75,25 +109,73 @@ pub fn snapshot_id(
         h.update(b"\n");
     }
     h.update(b"parent\0");
-    h.update(parent.as_bytes());
+    h.update(id.parent.as_bytes());
     h.update(b"\nmerge\0");
-    h.update(merge_parent.as_bytes());
+    h.update(id.merge_parent.as_bytes());
     h.update(b"\nmessage\0");
-    h.update(message.as_bytes());
+    h.update(id.message.as_bytes());
     h.update(b"\ntime\0");
-    h.update(timestamp.as_bytes());
-    h.finalize().to_hex().to_string()[..SNAP_HASH_LEN].to_string()
+    h.update(id.timestamp_ms.to_string().as_bytes());
+    // The marker is emitted even when there is no metadata, so "none" and
+    // "absent" are the same thing rather than two different ids.
+    h.update(b"\nmeta\0");
+    for (namespace, key, value) in id.meta.iter() {
+        h.update(namespace.as_bytes());
+        h.update(b"\0");
+        h.update(key.as_bytes());
+        h.update(b"\0");
+        h.update(value.as_bytes());
+        h.update(b"\n");
+    }
+    h.finalize().to_hex().to_string()
 }
 
-/// The timestamp used both for a snapshot's `created_at` column and as an input
-/// to `snapshot_id`. UTC with millisecond precision: the fixed-width
-/// `YYYY-MM-DD HH:MM:SS.mmm` form still sorts lexicographically = chronologically
-/// (and sorts correctly against any older second-precision rows), while the
-/// sub-second component removes the same-second id-collision foot-gun.
-pub fn snapshot_timestamp() -> String {
-    chrono::Utc::now()
-        .format("%Y-%m-%d %H:%M:%S%.3f")
-        .to_string()
+/// Now, as epoch milliseconds (UTC) — a snapshot's `created_at_ms` and an input
+/// to [`snapshot_id`].
+///
+/// An integer rather than v1's formatted text, so a formatting change cannot
+/// alter a snapshot id. Millisecond resolution matches v1's `%.3f`, and every
+/// query that orders by it also tie-breaks on `rowid`, because two snapshots
+/// inside one millisecond is possible and ordering must still be total.
+pub fn snapshot_timestamp_ms() -> i64 {
+    chrono::Utc::now().timestamp_millis()
+}
+
+/// Render a stored `created_at_ms` as a UTC datetime.
+///
+/// Out-of-range values cannot come from [`snapshot_timestamp_ms`], but a corrupt
+/// or hand-edited row could carry one; those read as the epoch rather than
+/// panicking, and `fsck` is what reports them.
+pub fn timestamp_from_ms(ms: i64) -> DateTime<Utc> {
+    DateTime::from_timestamp_millis(ms).unwrap_or(DateTime::UNIX_EPOCH)
+}
+
+/// The metadata attached to `snapshot`, in canonical order.
+///
+/// Reads are unvalidated (see [`SnapshotMeta::insert_stored`]): a row is whatever
+/// it is, and a bad one shows up as an id mismatch in `fsck` rather than as an
+/// error in the middle of an unrelated read.
+pub(crate) fn load_snapshot_meta(
+    conn: &rusqlite::Connection,
+    snapshot: &str,
+) -> rusqlite::Result<SnapshotMeta> {
+    let mut stmt = conn.prepare(
+        "SELECT namespace, key, value FROM snapshot_meta WHERE snapshot_id = ?
+         ORDER BY namespace, key",
+    )?;
+    let rows = stmt.query_map([snapshot], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+        ))
+    })?;
+    let mut meta = SnapshotMeta::new();
+    for row in rows {
+        let (namespace, key, value) = row?;
+        meta.insert_stored(namespace, key, value);
+    }
+    Ok(meta)
 }
 
 // ─── File status ─────────────────────────────────────────────────────────────
@@ -229,7 +311,7 @@ pub(crate) fn tracking_ref(conn: &rusqlite::Connection, branch: &str) -> Option<
 pub(crate) fn branch_tip(conn: &rusqlite::Connection, branch: &str) -> Option<String> {
     let derived = conn
         .query_row(
-            "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at_ms DESC, rowid DESC LIMIT 1",
             [branch],
             |r| r.get::<_, String>(0),
         )

@@ -10,8 +10,8 @@ pub fn print(blame: &Blame) {
     for line in &blame.lines {
         let (hash, date, message) = match &line.origin {
             Some(o) => (
-                style(&o.hash[..8]).yellow().to_string(),
-                style(short_date(&o.created_at)).dim().to_string(),
+                style(super::id::short(&o.hash)).yellow().to_string(),
+                style(super::when::minutes(o.created_at)).dim().to_string(),
                 style(truncate(&o.message, MSG_WIDTH)).dim().to_string(),
             ),
             None => (
@@ -29,15 +29,6 @@ pub fn print(blame: &Blame) {
             line.text,
             width = MSG_WIDTH
         );
-    }
-}
-
-/// `2026-08-04T12:30:59.123Z` → `2026-08-04 12:30`.
-fn short_date(created_at: &str) -> String {
-    if created_at.len() >= 16 {
-        created_at[..16].replace('T', " ")
-    } else {
-        created_at.to_string()
     }
 }
 

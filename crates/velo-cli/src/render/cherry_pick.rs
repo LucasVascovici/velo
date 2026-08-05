@@ -6,7 +6,7 @@ use velo_core::commands::cherry_pick::Outcome;
 pub fn print(outcome: &Outcome) {
     println!(
         "Cherry-picking {} — \"{}\"",
-        style(&outcome.snapshot).yellow(),
+        style(super::id::short(&outcome.snapshot)).yellow(),
         style(&outcome.message).dim()
     );
 

@@ -80,9 +80,9 @@ pub fn print_snapshot(detail: &SnapshotDetail) {
     println!(
         "{} {}  {}  {}",
         style("snapshot").dim(),
-        style(&detail.hash).yellow().bold(),
+        style(super::id::short(&detail.hash)).yellow().bold(),
         style(&detail.branch).cyan(),
-        style(short_date(&detail.created_at)).dim()
+        style(super::when::seconds(detail.created_at)).dim()
     );
     println!("  {}", style(&detail.message).white().bold());
     if let Some(parent) = &detail.parent {
@@ -181,13 +181,4 @@ fn print_line(line: &DiffLine) {
         style(sign).fg(colour).bold(),
         style(&line.text).fg(colour)
     );
-}
-
-/// `2026-08-04T12:30:59.123Z` → `2026-08-04T12:30:59`.
-fn short_date(created_at: &str) -> &str {
-    if created_at.len() >= 19 {
-        &created_at[..19]
-    } else {
-        created_at
-    }
 }

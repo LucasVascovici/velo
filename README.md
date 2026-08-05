@@ -142,7 +142,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 **Sync that refuses to surprise you.** `velo push` is fast-forward-only: if the remote has commits you don't, the push is refused with the exact commands to fix it — there is no `--force` footgun. `velo pull` either fast-forwards or stops and tells you the branches diverged; it never silently merges or rewrites your history. Reconciliation is always an explicit `velo merge origin/<branch>` or `velo rebase origin/<branch>`.
 
-**Verifiable snapshots.** A snapshot's ID is a BLAKE3 hash of its *content* — the full file tree (paths, object hashes, and modes) plus its parents, message, and timestamp. That means a snapshot can be checked against what it claims to contain, which is exactly what `velo fsck` does, and what makes importing history from another machine safe: every object is re-hashed and every snapshot ID recomputed on arrival before anything is trusted.
+**Verifiable snapshots.** A snapshot's ID is a BLAKE3 hash of its *content* — the full file tree (paths, object hashes, and modes) plus its parents, message, timestamp, and any attached metadata. That means a snapshot can be checked against what it claims to contain, which is exactly what `velo fsck` does, and what makes importing history from another machine safe: every object is re-hashed and every snapshot ID recomputed on arrival before anything is trusted.
 
 ---
 

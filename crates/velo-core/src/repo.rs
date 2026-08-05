@@ -65,7 +65,13 @@ impl Repo {
                     supported: FORMAT_VERSION,
                 })
             }
-            v if v < FORMAT_VERSION && v != 0 => {
+            v if db::is_pre_v2(v) => {
+                return Err(Error::FormatTooOld {
+                    found: v,
+                    supported: FORMAT_VERSION,
+                })
+            }
+            v if v < FORMAT_VERSION => {
                 return Err(Error::MigrationRequired {
                     found: v,
                     supported: FORMAT_VERSION,
@@ -95,6 +101,15 @@ impl Repo {
         let found = db::format_version(&conn)?;
         if found > FORMAT_VERSION {
             return Err(Error::SchemaTooNew {
+                found,
+                supported: FORMAT_VERSION,
+            });
+        }
+        // Refused rather than migrated: stamping v2 over v1 rows would leave
+        // 16-character ids computed by the v1 recipe in a database claiming to
+        // be v2, and `fsck` could then only report the damage after the fact.
+        if db::is_pre_v2(found) {
+            return Err(Error::FormatTooOld {
                 found,
                 supported: FORMAT_VERSION,
             });

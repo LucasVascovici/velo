@@ -52,7 +52,7 @@ pub fn run(guard: &WriteGuard, keep_days: u32) -> Result<Collected> {
     };
 
     collected.expired_trash = conn.execute(
-        "DELETE FROM trash WHERE deleted_at <= datetime('now', ?)",
+        "DELETE FROM trash WHERE deleted_at_ms <= datetime('now', ?)",
         [format!("-{} days", keep_days)],
     )?;
 

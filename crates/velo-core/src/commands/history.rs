@@ -4,6 +4,7 @@
 //! full / oneline / graph presentations to use is the consumer's choice, so none
 //! of that lives here.
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::fs;
 
@@ -19,7 +20,7 @@ pub struct Entry {
     pub hash: String,
     pub message: String,
     /// Raw stored timestamp; formatting is the consumer's choice.
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
     /// Branch the snapshot was recorded on. Display context only — the branch is
     /// deliberately not part of a snapshot's identity.
     pub branch: String,
@@ -172,14 +173,14 @@ pub fn run(
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
 const COLUMNS: &str =
-    "s.hash, s.message, s.created_at, s.branch, s.parent_hash, s.merge_parent, t.name";
+    "s.hash, s.message, s.created_at_ms, s.branch, s.parent_hash, s.merge_parent, t.name";
 
 fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
     let parent: String = r.get(4)?;
     Ok(Entry {
         hash: r.get(0)?,
         message: r.get(1)?,
-        created_at: r.get(2)?,
+        created_at: crate::commands::timestamp_from_ms(r.get(2)?),
         branch: r.get(3)?,
         parent: (!parent.is_empty()).then_some(parent),
         merge_parent: r.get::<_, Option<String>>(5)?.filter(|s| !s.is_empty()),
@@ -190,14 +191,14 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
 /// Walk back from `tip` through first parents.
 fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: usize) -> Result<Vec<Entry>> {
     let mut stmt = conn.prepare(
-        "WITH RECURSIVE cte(hash, message, created_at, branch, parent_hash, merge_parent) AS (
-            SELECT hash, message, created_at, branch, parent_hash, merge_parent
+        "WITH RECURSIVE cte(hash, message, created_at_ms, branch, parent_hash, merge_parent) AS (
+            SELECT hash, message, created_at_ms, branch, parent_hash, merge_parent
             FROM snapshots WHERE hash = ?1
             UNION ALL
-            SELECT s.hash, s.message, s.created_at, s.branch, s.parent_hash, s.merge_parent
+            SELECT s.hash, s.message, s.created_at_ms, s.branch, s.parent_hash, s.merge_parent
             FROM snapshots s JOIN cte c ON s.hash = c.parent_hash
         )
-        SELECT c.hash, c.message, c.created_at, c.branch, c.parent_hash, c.merge_parent, t.name
+        SELECT c.hash, c.message, c.created_at_ms, c.branch, c.parent_hash, c.merge_parent, t.name
         FROM cte c
         LEFT JOIN tags t ON c.hash = t.snapshot_hash
         LIMIT ?2",
@@ -222,7 +223,7 @@ fn on_branch(
          WHERE {}
            AND s.branch NOT LIKE '_deleted_%'
            AND s.branch NOT LIKE '_stash%'
-         ORDER BY s.created_at DESC, s.rowid DESC LIMIT ?2",
+         ORDER BY s.created_at_ms DESC, s.rowid DESC LIMIT ?2",
         if branch.is_some() {
             "s.branch = ?1"
         } else {
