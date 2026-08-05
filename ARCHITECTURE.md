@@ -314,7 +314,7 @@ follow-up task. The existing fixture helpers *are* the first version of
 
 ---
 
-## Phase 2 — Make it useful to non-CLI consumers 🔴
+## Phase 2 — Make it useful to non-CLI consumers ✅ **DONE** (2.2 partly)
 
 The capability work. Without 2.1 every consumer marshals through temp files.
 
@@ -478,22 +478,75 @@ repository entirely from memory and runs `fsck`, which recomputes every
 content-addressed id — so the snapshot recipe provably matches `save`'s.
 
 `FileKind` (regular / executable / symlink) is the public vocabulary rather than
-`storage::MODE_*`, so a caller never handles a bare `i64`. Hashes stay `String`;
-wrapping them is [2.3](#23-newtypes-).
+`storage::MODE_*`, so a caller never handles a bare `i64`. Hashes are wrapped as
+of [2.3](#23-newtypes--done): `SaveTree.branch` is a `BranchName`, `parent` a
+`SnapshotId`, and `TreeFile.object` an `ObjectHash`.
 
-### 2.2 Extract `velo-merge` 🔴
-`diff3(base, ours, theirs) -> MergeResult` over `&[u8]`/`&str`. Already pure —
-close to a file move. Bring the existing proptest properties with it.
+### 2.2 Extract `velo-merge` 🟡 **mostly done**
+The crate exists and `diff3(ancestor, ours, theirs) -> MergeResult` lives in it,
+re-exported as `velo_core::merge` so a caller needs one dependency. That much
+happened during the Phase 1 crate split rather than here.
+
+**Still owed:** "bring the existing proptest properties with it". The merge
+properties are still in `velo-core`'s suite, exercising `velo_merge::diff3`
+indirectly through `try_auto_merge`. `velo-merge` declares a `proptest`
+dev-dependency and has no tests of its own, so the crate is not independently
+verified — extract them into `crates/velo-merge/tests/`.
 
 **Pluggable merge drivers** registered by path glob or content type (so a
 spreadsheet or document tool can supply structure-aware merging, falling back to
 the line engine) — 🟡 recommended, but design the registration point now even if
 only the default driver ships.
 
-### 2.3 Newtypes 🔴
-`SnapshotId`, `ObjectHash`, `BranchName`, `TagName` as newtypes over `String`.
-Cheap now, miserable to retrofit once consumers pattern-match on `String`.
-Implement the Phase 0 full-hash + typed-timestamp decisions here.
+### 2.3 Newtypes ✅ **DONE**
+`SnapshotId`, `ObjectHash`, `BranchName` and `TagName` are newtypes over `String`
+in `velo_core::ids`. Everything they share — `Deref<Target = str>`, `Display`,
+`FromStr`, `ToSql`/`FromSql`, comparison against text — comes from one macro; the
+per-type part is the validation.
+
+**Ids are typed; specs are not.** A *spec* is what a person types: `HEAD`, `v1.0`,
+`a1b2c3`, `main`, `origin/main`. Any string is a plausible attempt at one, so
+specs stay `&str` — wrapping them would add ceremony and catch nothing. An *id* is
+what resolving a spec produces, so `resolve_snapshot_id(&repo, "v1.0")` takes
+`&str` and returns `SnapshotId`. "Resolve before you look something up" is now a
+signature rather than a convention: `repo.tree_at("v1.0")` does not compile.
+
+Where the invariant is sharpest is `velo_core::tree`, whose two id-shaped fields
+were previously interchangeable `String`s — `save_tree` could be handed a hash
+where a branch belonged and would cheerfully create a branch named after it.
+
+The CLI parses names at the argv boundary (`let name: TagName = name.parse()?`),
+so a malformed one is a clear error before anything touches the repository:
+
+```
+$ velo tag "bad name  "
+error: 'bad name  ' is not a valid tag name.
+```
+
+**Two things learned wrapping them.**
+
+*`Display` must use `f.pad`, not `f.write_str`.* `write_str` silently ignores
+width and alignment, so `{:<20}` formats correctly for a `String` and does
+nothing for a newtype — which quietly un-aligned `velo tag`'s table. Caught by
+running the binary, not by the suite; there is now a test asserting `{:<8}`,
+`{:>8}` and `{:^8}` all match what the equivalent `&str` produces.
+
+*Comparison against text has to be implemented in both directions.* Without
+`PartialEq<str>`/`PartialEq<String>` and their mirrors, every `name == "main"` and
+every assertion against a value read from SQL needs an `.as_str()`. That gives up
+nothing: comparing to a literal is not the same as *passing* one where an id
+belongs.
+
+`from_stored` is `pub(crate)` and unvalidated, for values coming out of the
+repository — validating on the way out would turn a corrupt row into a panic
+somewhere unhelpful, which is `fsck`'s job to report. `FromStr` is the only
+public way in.
+
+**Not done here:** the Phase 0 full-hash and typed-timestamp decisions. Those
+change the on-disk format (64-hex ids, epoch-ms timestamps, a `velo-snapshot-v2`
+recipe, `VELOBND2` bundles, `FORMAT_VERSION` 2) and have to land together as one
+break. `FORMAT_VERSION` stays **1**: every existing repository keeps working and
+sync is unaffected.
 
 ---
 

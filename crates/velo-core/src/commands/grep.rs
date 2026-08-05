@@ -13,7 +13,7 @@ use rusqlite::params;
 use crate::db;
 use crate::error::{Result, VeloError};
 use crate::storage;
-use crate::Repo;
+use crate::{Repo, SnapshotId};
 
 /// One line of output: either a match or a context line around one.
 #[derive(Clone, Debug)]
@@ -41,7 +41,7 @@ pub struct FileMatches {
 /// The snapshot a search was run against.
 #[derive(Clone, Debug)]
 pub struct SearchedSnapshot {
-    pub hash: String,
+    pub hash: SnapshotId,
     pub message: String,
 }
 

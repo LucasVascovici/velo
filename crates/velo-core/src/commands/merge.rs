@@ -11,7 +11,7 @@ use rusqlite::params;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
 use crate::storage;
-use crate::WriteGuard;
+use crate::{SnapshotId, WriteGuard};
 
 /// Re-exported so `merge::FileAction` keeps working: the vocabulary is shared
 /// with cherry-pick and rebase, so it lives in [`crate::commands::apply`].
@@ -173,8 +173,11 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
     // Resolve the merge source first, so an unborn current branch can adopt it.
     // An exact local-branch tip wins over a hash prefix, so a short branch name
     // can't be mis-read as one; tags and remote refs fall out of the fallback.
-    let target_probe = crate::commands::branch_tip(conn, target_branch)
-        .or_else(|| crate::commands::resolve_snapshot_id(guard.repo(), target_branch).ok());
+    let target_probe = crate::commands::branch_tip(conn, target_branch).or_else(|| {
+        crate::commands::resolve_snapshot_id(guard.repo(), target_branch)
+            .ok()
+            .map(SnapshotId::into_string)
+    });
     let not_found = || {
         VeloError::invalid(format!(
             "'{}' not found — expected a branch, tag, snapshot, or remote ref.",

@@ -101,7 +101,7 @@ fn do_start(guard: &WriteGuard, target: &str) -> Result<Outcome> {
     let branch = read_trimmed(guard.root(), "HEAD");
     let head_hash = read_trimmed(guard.root(), "PARENT");
 
-    let onto_hash = crate::commands::resolve_snapshot_id(guard.repo(), target)?;
+    let onto_hash = crate::commands::resolve_snapshot_id(guard.repo(), target)?.into_string();
 
     // Nothing to do when the branch already sits on top of the target. Testing
     // only `onto == head` was too narrow: after a successful rebase the branch

@@ -60,6 +60,7 @@
 pub mod commands;
 pub mod db;
 pub mod error;
+pub mod ids;
 pub mod lock;
 pub mod progress;
 pub mod repo;
@@ -74,6 +75,7 @@ mod tests;
 // ─── Public surface ───────────────────────────────────────────────────────────
 
 pub use error::{Error, Result};
+pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
 pub use repo::{Repo, WriteGuard};
 
 /// Re-exported so callers can match on merge outcomes without adding a second
