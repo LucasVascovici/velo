@@ -127,33 +127,34 @@ impl Registry {
         let path = prompt_path(name)?;
 
         // Carry forward everything already published, then overwrite one entry.
-        let mut entries: BTreeMap<String, Vec<u8>> = match self.tip()? {
-            Some(tip) => {
-                let mut carried = BTreeMap::new();
-                for file in self.repo.tree_at(&tip)? {
-                    let content = self.repo.read_object(&file.object)?;
-                    carried.insert(file.path, content);
-                }
-                carried
-            }
+        // The carried entries reference objects the store already holds, so this
+        // costs no decompression, no rehashing and no memory proportional to the
+        // registry — only the one prompt being published is new content.
+        let parent = self.tip()?;
+        let mut entries: BTreeMap<String, TreeEntry> = match &parent {
+            Some(tip) => self
+                .repo
+                .tree_at(tip)?
+                .into_iter()
+                .map(|f| (f.path.clone(), TreeEntry::stored(f.path, f.object, f.kind)))
+                .collect(),
             None => BTreeMap::new(),
         };
-        entries.insert(path, body.as_bytes().to_vec());
+        entries.insert(
+            path.clone(),
+            TreeEntry::file(path, body.as_bytes().to_vec()),
+        );
 
         let mut meta = SnapshotMeta::new();
         meta.set(NAMESPACE, "prompt", name)?;
         meta.set(NAMESPACE, "model", model)?;
 
-        let parent = self.tip()?;
         let guard = self.repo.write()?;
         let id = guard.save_tree(SaveTree {
             branch: self.branch.clone(),
             parent: parent.as_ref(),
             message: &format!("publish {}", name),
-            entries: entries
-                .into_iter()
-                .map(|(path, content)| TreeEntry::file(path, content))
-                .collect(),
+            entries: entries.into_values().collect(),
             meta,
         })?;
         Ok(id)
@@ -209,19 +210,17 @@ impl Registry {
     /// Metadata is what makes this answerable: without it we would be parsing the
     /// commit message, which is exactly what metadata exists to avoid.
     pub fn versions(&self, name: &str) -> Result<Vec<Version>> {
-        // `usize::MAX` is "no limit". There is no named constant for it, and the
-        // obvious guess — 0 — silently returns nothing (see FINDINGS.md).
         let history = commands::history::run(
             &self.repo,
-            false,
-            usize::MAX,
-            Some(self.branch.as_str()),
-            None,
+            commands::history::Options {
+                branch: Some(&self.branch),
+                ..Default::default()
+            },
         )?;
 
         let mut out = Vec::new();
         for entry in history.entries {
-            let id: SnapshotId = entry.hash.parse()?;
+            let id = entry.hash;
             let meta = self.repo.snapshot_meta(&id)?;
             if meta.get(NAMESPACE, "prompt") == Some(name) {
                 out.push(Version {

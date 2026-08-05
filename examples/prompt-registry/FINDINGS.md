@@ -11,7 +11,9 @@ four primitives, snapshot metadata removed the need to encode state into commit
 messages, and the typed errors made `create`-or-`open` a clean match rather than
 a string comparison.
 
-What follows is the friction, in the order a consumer meets it.
+What follows is the friction, in the order a consumer meets it. **All four were
+fixed**; each entry keeps the original complaint, because the reason a fix exists
+is worth more than the fix.
 
 ---
 
@@ -56,8 +58,14 @@ can, so the consumer carries an error path that is dead. `Entry.branch`,
 `Entry.parent`, `Entry.merge_parent` and `Entry.tag` are likewise `String` where
 `BranchName`, `SnapshotId` and `TagName` exist.
 
-**Not fixed** — it is a breaking change to a public struct and belongs in one
-deliberate pass with the other stragglers, not smuggled in here.
+**Fixed**: `Entry.hash` is a `SnapshotId`, `Entry.branch` a `BranchName`,
+`parent` and `merge_parent` are `Option<SnapshotId>`, `tag` is `Option<TagName>`,
+`BranchRef.name` is a `BranchName`, `History.current` is `Option<SnapshotId>`, and
+`refs` is keyed by `SnapshotId`. The registry's lookup lost its reparse:
+
+```rust
+let meta = self.repo.snapshot_meta(&entry.hash)?;   // was entry.hash.parse()?
+```
 
 ## 3. `history::run` takes five positional arguments
 
@@ -76,8 +84,20 @@ Worse, the limit has a trap. It reaches SQL as `LIMIT ?`, so:
 - `limit: usize::MAX` does mean unlimited, but only because `usize::MAX as i64`
   wraps to `-1`, which is SQLite's "no limit". It is right by accident.
 
-There is no named constant for "all". A test in this crate pins the current
-behaviour so that fixing it is a visible, deliberate change.
+**Fixed**: `run(repo, Options { .. })`, with `Default`. `limit` is now
+`Option<usize>` — `None` means all of them and is the default, `Some(n)` means the
+newest n. The unlimited case reaches SQL as an explicit `-1` rather than through a
+wrapping cast. The call site says what it does:
+
+```rust
+commands::history::run(&self.repo, commands::history::Options {
+    branch: Some(&self.branch),
+    ..Default::default()
+})?
+```
+
+The test that pinned the old trap was written to fail loudly if it was ever
+fixed. It did, and now asserts the new contract instead.
 
 ## 4. A snapshot is a whole tree, so publishing one file rewrites all of them
 
@@ -112,6 +132,31 @@ TreeEntry::stored(path, object: ObjectHash)
 `TreeFile` already hands back an `ObjectHash`, so the carry-forward loop becomes a
 map with no I/O and no rehashing. This looks like the single highest-value addition
 for embedders.
+
+**Fixed**: `TreeEntry.content` is now a `Content` enum — `Bytes(Vec<u8>)` or
+`Stored(ObjectHash)` — and `TreeEntry::stored(path, object, kind)` builds the
+second. The registry's publish became:
+
+```rust
+let mut entries: BTreeMap<String, TreeEntry> = self
+    .repo
+    .tree_at(tip)?
+    .into_iter()
+    .map(|f| (f.path.clone(), TreeEntry::stored(f.path, f.object, f.kind)))
+    .collect();
+entries.insert(path.clone(), TreeEntry::file(path, body.as_bytes().to_vec()));
+```
+
+No decompression, no rehashing, and memory proportional to the one document being
+published rather than to the whole registry.
+
+Two properties are tested, because both could silently break a consumer:
+carrying a tree forward by reference produces a tree *identical* to carrying it
+forward by value (modes, executable bit and symlinks included) — otherwise a
+consumer would fork its own history the moment it took the cheap path; and a
+`Stored` entry naming an object the store does not hold is refused with
+`MissingObject`, so the API cannot manufacture corruption that only `fsck` would
+find later.
 
 ## 5. Smaller things
 

@@ -8,6 +8,35 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ## Unreleased
 
+### Changed — breaking (API only; the repository format is untouched)
+
+- **`history::run` takes an `Options` struct.** It was five positional arguments,
+  `run(&repo, false, 0, None, None)`, which said nothing at the call site — the
+  same problem `SnapshotIdentity` fixed for `snapshot_id`. `limit` is now
+  `Option<usize>`: `None` means all of them and is the default, `Some(n)` the
+  newest n. Previously the limit reached SQL as `LIMIT ?`, so `0` — the obvious
+  way to ask for everything — returned nothing, and `usize::MAX` worked only
+  because the cast to `i64` wrapped to `-1`.
+- **`history` results carry typed ids.** `Entry.hash` is a `SnapshotId`,
+  `Entry.branch` a `BranchName`, `parent`/`merge_parent` `Option<SnapshotId>`,
+  `tag` an `Option<TagName>`; `BranchRef.name` is a `BranchName`,
+  `History.current` an `Option<SnapshotId>`, and `refs` is keyed by `SnapshotId`.
+  2.3 typed every other result struct and missed this one, so walking history to
+  look something up needed a `.parse()` whose error could never fire.
+- **`TreeEntry.content` is a `Content` enum.** `Content::Bytes(Vec<u8>)` is what
+  it was; `Content::Stored(ObjectHash)` is new. The `file`/`executable`/`symlink`
+  constructors are unchanged, so only code that matched on `.content` is affected.
+
+### Added
+
+- **`TreeEntry::stored(path, object, kind)`** — a tree entry that references
+  content already in the store. A snapshot is a whole tree, so changing one file
+  meant re-supplying the bytes of every other file: each save cost the size of the
+  entire tree in decompression, hashing and recompression. Carrying a tree forward
+  is now a map with no I/O. A referenced object that the store does not hold is
+  refused with `MissingObject`, so the API cannot record a snapshot naming content
+  that is not there.
+
 ### Fixed
 
 - `resolve_snapshot_id` reports an unresolvable spec as

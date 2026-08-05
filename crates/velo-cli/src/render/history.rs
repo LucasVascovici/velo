@@ -2,6 +2,7 @@
 
 use console::style;
 use velo_core::commands::history::{BranchRef, EmptyReason, Entry, History, Scope};
+use velo_core::SnapshotId;
 
 /// Which presentation to use. `velo history` picks one from its flags.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -68,7 +69,7 @@ fn print_empty(reason: &EmptyReason) {
 // ─── Decorations ──────────────────────────────────────────────────────────────
 
 /// `(HEAD → main, init)`, or empty when no branch points here.
-fn decorate(history: &History, hash: &str) -> String {
+fn decorate(history: &History, hash: &SnapshotId) -> String {
     let refs = history.refs_at(hash);
     if refs.is_empty() {
         return String::new();
@@ -159,7 +160,7 @@ fn print_full(history: &History) {
             let keep: String = e.branch.chars().take(BRANCH_W - 2).collect();
             format!("{}..", keep)
         } else {
-            e.branch.clone()
+            e.branch.to_string()
         };
 
         let is_current = history.current.as_deref() == Some(e.hash.as_str());

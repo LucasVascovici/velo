@@ -599,7 +599,13 @@ mod tests {
             save(&root, &format!("snap {}", i));
         }
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 10, None, None)
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    limit: Some(10),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         assert!(h.empty.is_none());
@@ -624,7 +630,16 @@ mod tests {
             write(&root, "f.txt", &i.to_string());
             save(&root, &format!("snap {}", i));
         }
-        let h = with_repo(&root, |vr| commands::history::run(vr, false, 3, None, None)).unwrap();
+        let h = with_repo(&root, |vr| {
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    limit: Some(3),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert_eq!(h.entries.len(), 3, "the limit must bound the listing");
         assert_eq!(h.entries[0].message, "snap 9");
 
@@ -641,20 +656,26 @@ mod tests {
         use commands::history::{EmptyReason, Scope};
         let (_tmp, root) = setup();
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 10, None, None)
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    limit: Some(10),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         assert!(h.entries.is_empty());
         assert_eq!(
             h.scope,
             Scope::CurrentBranch {
-                name: "main".into()
+                name: branch_name("main")
             }
         );
         assert_eq!(
             h.empty,
             Some(EmptyReason::UnbornBranch {
-                branch: "main".into()
+                branch: branch_name("main")
             })
         );
     }
@@ -673,7 +694,17 @@ mod tests {
         })
         .unwrap();
 
-        let h = with_repo(&root, |vr| commands::history::run(vr, true, 20, None, None)).unwrap();
+        let h = with_repo(&root, |vr| {
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    all: true,
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert!(
             h.entries.iter().all(|e| !e.branch.starts_with("_deleted_")),
             "soft-deleted history must not surface: {:?}",
@@ -703,13 +734,20 @@ mod tests {
 
         // Asking for 'main' while standing on 'dev' must still work.
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 20, Some("main"), None)
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    branch: Some(&branch_name("main")),
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         assert_eq!(
             h.scope,
             Scope::NamedBranch {
-                name: "main".into()
+                name: branch_name("main")
             }
         );
         assert!(h.entries.iter().all(|e| e.branch == "main"));
@@ -729,7 +767,14 @@ mod tests {
         save(&root, "adds b");
 
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 20, None, Some("b.txt"))
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    file: Some("b.txt"),
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         let msgs: Vec<&str> = h.entries.iter().map(|e| e.message.as_str()).collect();
@@ -748,7 +793,14 @@ mod tests {
         save(&root, "s1");
 
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 20, None, Some("never.txt"))
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    file: Some("never.txt"),
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         assert!(h.entries.is_empty());
@@ -767,10 +819,16 @@ mod tests {
         let h1 = save(&root, "s1");
 
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 10, None, None)
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    limit: Some(10),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
-        let refs = h.refs_at(&h1);
+        let refs = h.refs_at(&SnapshotId::from_stored(h1.clone()));
         assert!(
             refs.iter().any(|r| r.name == "main" && r.is_head),
             "main points here and is checked out: {:?}",
@@ -796,7 +854,13 @@ mod tests {
         save(&root, "Merge feature");
 
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 20, None, None)
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         let merge = h
@@ -2820,7 +2884,14 @@ mod tests {
         assert_ne!(h1, h2);
 
         // Reads through the same handle see both.
-        let history = commands::history::run(&repo, false, 10, None, None).unwrap();
+        let history = commands::history::run(
+            &repo,
+            commands::history::Options {
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let messages: Vec<&str> = history.entries.iter().map(|e| e.message.as_str()).collect();
         assert_eq!(messages, vec!["second", "first"]);
         assert!(commands::fsck::check(&repo).unwrap().is_healthy());
@@ -3279,10 +3350,16 @@ mod tests {
         );
         // `main` is where it was; only the caller's own branch moved.
         assert_eq!(
-            commands::history::run(&repo, false, 10, None, None)
-                .unwrap()
-                .entries
-                .len(),
+            commands::history::run(
+                &repo,
+                commands::history::Options {
+                    limit: Some(10),
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .entries
+            .len(),
             1,
             "main's history must be unchanged"
         );
@@ -3418,7 +3495,15 @@ c
         assert_eq!(repo.read_file_at(&first, "v.txt").unwrap(), b"1\n");
         assert_eq!(repo.read_file_at(&second, "v.txt").unwrap(), b"2\n");
 
-        let history = commands::history::run(&repo, false, 10, Some("registry"), None).unwrap();
+        let history = commands::history::run(
+            &repo,
+            commands::history::Options {
+                branch: Some(&branch_name("registry")),
+                limit: Some(10),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let messages: Vec<&str> = history.entries.iter().map(|e| e.message.as_str()).collect();
         assert_eq!(messages, vec!["1.1", "1.0"]);
     }
@@ -5462,7 +5547,14 @@ beta
         // b.txt — the filter is "was this path in the snapshot", not "did this
         // snapshot modify it".
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 20, None, Some("a.txt"))
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    file: Some("a.txt"),
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         assert_eq!(h.entries.len(), 3);
@@ -5471,7 +5563,14 @@ beta
         write(&root, "c.txt", "C1");
         save(&root, "adds c");
         let h = with_repo(&root, |vr| {
-            commands::history::run(vr, false, 20, None, Some("c.txt"))
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    file: Some("c.txt"),
+                    limit: Some(20),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         let msgs: Vec<&str> = h.entries.iter().map(|e| e.message.as_str()).collect();
@@ -7119,6 +7218,136 @@ beta
                 }
             ),
             "expected NotFound, got {:?}",
+            err
+        );
+    }
+
+    /// Carrying a tree forward by reference must produce exactly the snapshot
+    /// that carrying it forward by value would.
+    ///
+    /// This is the whole point of `TreeEntry::stored`: if the two disagreed, a
+    /// consumer would silently fork its own history the moment it started using
+    /// the cheap path.
+    #[test]
+    fn a_stored_entry_is_indistinguishable_from_supplying_the_bytes() {
+        use crate::tree::{Content, SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let base = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: branch_name("a"),
+                    parent: None,
+                    message: "base",
+                    entries: vec![
+                        TreeEntry::file(
+                            "keep.txt",
+                            b"kept
+"
+                            .to_vec(),
+                        ),
+                        TreeEntry::executable(
+                            "run.sh",
+                            b"#!/bin/sh
+"
+                            .to_vec(),
+                        ),
+                        TreeEntry::symlink("link", "keep.txt"),
+                    ],
+                    meta: SnapshotMeta::new(),
+                })
+                .unwrap()
+        };
+
+        // Two branches from the same parent: one re-supplies every byte, the
+        // other references the objects already stored. Same message is not
+        // enough — the timestamp differs — so compare the trees, which is what
+        // the id commits to.
+        let by_value: Vec<TreeEntry> = repo
+            .tree_at(&base)
+            .unwrap()
+            .into_iter()
+            .map(|f| {
+                let bytes = repo.read_object(&f.object).unwrap();
+                TreeEntry {
+                    path: f.path,
+                    content: Content::Bytes(bytes),
+                    kind: f.kind,
+                }
+            })
+            .collect();
+        let by_reference: Vec<TreeEntry> = repo
+            .tree_at(&base)
+            .unwrap()
+            .into_iter()
+            .map(|f| TreeEntry::stored(f.path, f.object, f.kind))
+            .collect();
+        assert_ne!(by_value, by_reference, "the two entry forms differ");
+
+        let (left, right) = {
+            let guard = repo.write().unwrap();
+            let left = guard
+                .save_tree(SaveTree {
+                    branch: branch_name("l"),
+                    parent: Some(&base),
+                    message: "m",
+                    entries: by_value,
+                    meta: SnapshotMeta::new(),
+                })
+                .unwrap();
+            let right = guard
+                .save_tree(SaveTree {
+                    branch: branch_name("r"),
+                    parent: Some(&base),
+                    message: "m",
+                    entries: by_reference,
+                    meta: SnapshotMeta::new(),
+                })
+                .unwrap();
+            (left, right)
+        };
+
+        // Identical trees: same paths, same objects, same modes — including the
+        // executable bit and the symlink, which is where a naive implementation
+        // would drop the mode.
+        assert_eq!(repo.tree_at(&left).unwrap(), repo.tree_at(&right).unwrap());
+        assert_eq!(
+            repo.read_file_at(&right, "keep.txt").unwrap(),
+            b"kept
+"
+        );
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    /// A referenced object that is not in the store is refused.
+    ///
+    /// Otherwise the public API could record a snapshot naming content that does
+    /// not exist — corruption manufactured through a supported call, discovered
+    /// only later by `fsck`.
+    #[test]
+    fn a_stored_entry_naming_a_missing_object_is_refused() {
+        use crate::tree::{FileKind, SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let guard = repo.write().unwrap();
+
+        let absent: ObjectHash = "ab".repeat(32).parse().unwrap();
+        let err = guard
+            .save_tree(SaveTree {
+                branch: branch_name("a"),
+                parent: None,
+                message: "m",
+                entries: vec![TreeEntry::stored("f.txt", absent, FileKind::Regular)],
+                meta: SnapshotMeta::new(),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, VeloError::MissingObject { .. }),
+            "expected MissingObject, got {:?}",
             err
         );
     }

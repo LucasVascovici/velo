@@ -1450,12 +1450,17 @@ fn run(cli: Cli) -> Result<()> {
             } else {
                 render::history::View::Full
             };
+            // Parsed here, at the argv boundary, so a malformed branch name is
+            // a clear error rather than a query that quietly matches nothing.
+            let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
             let history = commands::history::run(
                 &repo,
-                all,
-                limit,
-                branch.as_deref(),
-                file_filter.as_deref(),
+                commands::history::Options {
+                    all,
+                    branch: branch.as_ref(),
+                    file: file_filter.as_deref(),
+                    limit: Some(limit),
+                },
             )?;
             render::history::print(&history, view);
         }
