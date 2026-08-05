@@ -101,23 +101,73 @@ impl FileKind {
     }
 }
 
+/// Where a tree entry's bytes come from.
+///
+/// A snapshot is a whole tree rather than a diff, which is what makes its id
+/// verifiable — but it means changing one file requires naming every other file
+/// too. Supplying the bytes for all of them would make each save cost the size of
+/// the whole tree in decompression, hashing and recompression, so an entry can
+/// instead point at content the store already holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Content {
+    /// Bytes to store. Hashed and compressed; a duplicate costs nothing extra
+    /// because the store is content-addressed.
+    Bytes(Vec<u8>),
+    /// An object already in the store, named by its hash — as handed back by
+    /// [`TreeFile::object`]. Nothing is read, hashed or written for it.
+    Stored(ObjectHash),
+}
+
 /// One file to put into a snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeEntry {
     /// Repository-relative path. Backslashes are normalised to forward slashes,
     /// so a caller on Windows needn't care which it uses.
     pub path: String,
-    pub content: Vec<u8>,
+    pub content: Content,
     pub kind: FileKind,
 }
 
 impl TreeEntry {
-    /// An ordinary file.
+    /// An ordinary file, from bytes.
     pub fn file(path: impl Into<String>, content: Vec<u8>) -> Self {
         TreeEntry {
             path: path.into(),
-            content,
+            content: Content::Bytes(content),
             kind: FileKind::Regular,
+        }
+    }
+
+    /// A file whose content is already in the store.
+    ///
+    /// This is how a tree is carried forward cheaply. Reading a tree gives you a
+    /// [`TreeFile`] per path with its `object`, so building the next snapshot is
+    /// a map with no I/O:
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// # use velo_core::tree::{SaveTree, TreeEntry};
+    /// # let repo = velo_core::Repo::discover(std::path::Path::new("."))?;
+    /// # let previous = velo_core::commands::resolve_snapshot_id(&repo, "main")?;
+    /// let mut entries: Vec<TreeEntry> = repo
+    ///     .tree_at(&previous)?
+    ///     .into_iter()
+    ///     .map(|f| TreeEntry::stored(f.path, f.object, f.kind))
+    ///     .collect();
+    ///
+    /// // …then replace or add just the ones that changed.
+    /// entries.push(TreeEntry::file("notes.txt", b"new".to_vec()));
+    /// # Ok(()) }
+    /// ```
+    ///
+    /// The object must exist: [`WriteGuard::save_tree`] rejects a hash the store
+    /// does not hold, rather than recording a snapshot that `fsck` would later
+    /// report as corrupt.
+    pub fn stored(path: impl Into<String>, object: ObjectHash, kind: FileKind) -> Self {
+        TreeEntry {
+            path: path.into(),
+            content: Content::Stored(object),
+            kind,
         }
     }
 
@@ -133,7 +183,7 @@ impl TreeEntry {
     pub fn symlink(path: impl Into<String>, target: impl Into<String>) -> Self {
         TreeEntry {
             path: path.into(),
-            content: target.into().into_bytes(),
+            content: Content::Bytes(target.into().into_bytes()),
             kind: FileKind::Symlink,
         }
     }
@@ -210,17 +260,35 @@ impl WriteGuard<'_> {
                 )));
             }
             let mode = entry.kind.mode();
-            // Line endings are normalised for text exactly as the filesystem
-            // path normalises them. Without this, content saved from memory and
-            // the same content saved from disk would land in different objects —
-            // and a file restored with its CRLFs intact would then re-hash to
-            // something else and read as permanently modified.
-            let content = if mode == storage::MODE_SYMLINK {
-                entry.content
-            } else {
-                storage::normalise_crlf(entry.content)
+            let object = match entry.content {
+                Content::Bytes(bytes) => {
+                    // Line endings are normalised for text exactly as the
+                    // filesystem path normalises them. Without this, content
+                    // saved from memory and the same content saved from disk
+                    // would land in different objects — and a file restored with
+                    // its CRLFs intact would then re-hash to something else and
+                    // read as permanently modified.
+                    let content = if mode == storage::MODE_SYMLINK {
+                        bytes
+                    } else {
+                        storage::normalise_crlf(bytes)
+                    };
+                    storage::store_raw(&objects_dir, &content)?
+                }
+                Content::Stored(object) => {
+                    // Already-stored content is already normalised, so it is
+                    // taken as-is. But it must actually be there: recording a
+                    // snapshot that names a missing object would manufacture
+                    // corruption through the public API, discoverable only later
+                    // by `fsck`.
+                    if !objects_dir.join(object.as_str()).exists() {
+                        return Err(VeloError::MissingObject {
+                            hash: object.into_string(),
+                        });
+                    }
+                    object.into_string()
+                }
             };
-            let object = storage::store_raw(&objects_dir, &content)?;
             tree.push((path, object, mode));
         }
 

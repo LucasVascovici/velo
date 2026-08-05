@@ -12,23 +12,23 @@ use rusqlite::params;
 
 use crate::db;
 use crate::error::Result;
-use crate::Repo;
+use crate::{BranchName, Repo, SnapshotId, TagName};
 
 /// One snapshot in a history listing.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
-    pub hash: String,
+    pub hash: SnapshotId,
     pub message: String,
     /// Raw stored timestamp; formatting is the consumer's choice.
     pub created_at: DateTime<Utc>,
     /// Branch the snapshot was recorded on. Display context only — the branch is
     /// deliberately not part of a snapshot's identity.
-    pub branch: String,
+    pub branch: BranchName,
     /// First parent; `None` for the root snapshot.
-    pub parent: Option<String>,
+    pub parent: Option<SnapshotId>,
     /// Second parent, set on merge commits.
-    pub merge_parent: Option<String>,
-    pub tag: Option<String>,
+    pub merge_parent: Option<SnapshotId>,
+    pub tag: Option<TagName>,
 }
 
 impl Entry {
@@ -41,7 +41,7 @@ impl Entry {
 /// A branch name pointing at a snapshot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchRef {
-    pub name: String,
+    pub name: BranchName,
     /// True when this is the checked-out branch.
     pub is_head: bool,
 }
@@ -50,9 +50,9 @@ pub struct BranchRef {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Scope {
     /// Ancestry of the current position on the checked-out branch.
-    CurrentBranch { name: String },
+    CurrentBranch { name: BranchName },
     /// Every snapshot recorded on one named branch.
-    NamedBranch { name: String },
+    NamedBranch { name: BranchName },
     /// Every branch.
     All,
 }
@@ -61,7 +61,7 @@ pub enum Scope {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EmptyReason {
     /// The checked-out branch has no snapshots yet.
-    UnbornBranch { branch: String },
+    UnbornBranch { branch: BranchName },
     /// The query matched nothing.
     NoSnapshots,
     /// A file filter excluded every snapshot.
@@ -73,51 +73,94 @@ pub enum EmptyReason {
 pub struct History {
     pub scope: Scope,
     /// The snapshot the working tree sits on, when there is one.
-    pub current: Option<String>,
+    pub current: Option<SnapshotId>,
     /// Newest first. Empty exactly when `empty` is set.
     pub entries: Vec<Entry>,
     /// Branch names pointing at each snapshot, checked-out branch first. Several
     /// branches can label one snapshot, which is why this is a list.
-    pub refs: HashMap<String, Vec<BranchRef>>,
+    pub refs: HashMap<SnapshotId, Vec<BranchRef>>,
     /// Set when there is nothing to show, explaining which case it is.
     pub empty: Option<EmptyReason>,
 }
 
 impl History {
     /// Branches pointing at `hash`, or an empty slice.
-    pub fn refs_at(&self, hash: &str) -> &[BranchRef] {
+    pub fn refs_at(&self, hash: &SnapshotId) -> &[BranchRef] {
         self.refs.get(hash).map_or(&[], |v| v.as_slice())
     }
 }
 
+/// What to list.
+///
+/// A struct rather than four positional arguments: `run(&repo, false, 0, None,
+/// None)` said nothing at the call site about what any of it meant, and the
+/// `limit` in particular was a trap — see [`Options::limit`].
+#[derive(Clone, Debug, Default)]
+pub struct Options<'a> {
+    /// List every branch instead of the ancestry of the current position.
+    /// Ignored when `branch` is set.
+    pub all: bool,
+    /// Narrow to one branch.
+    pub branch: Option<&'a BranchName>,
+    /// Keep only snapshots that tracked this path.
+    pub file: Option<&'a str>,
+    /// The newest N entries, or **all of them** when `None` — which is the
+    /// default.
+    ///
+    /// This used to be a bare `usize` that reached SQL as `LIMIT ?`, so the
+    /// obvious way to ask for everything — `0` — returned *nothing*, and
+    /// `usize::MAX` worked only because the cast to `i64` wrapped to `-1`, which
+    /// SQLite happens to read as unlimited. `None` says it outright.
+    pub limit: Option<usize>,
+}
+
 /// Collect history.
 ///
-/// `all` lists every branch; `filter_branch` narrows to one; otherwise the
-/// ancestry of the current position is walked. `file_filter` keeps only the
-/// snapshots that tracked that path.
-pub fn run(
-    repo: &Repo,
-    all: bool,
-    limit: usize,
-    filter_branch: Option<&str>,
-    file_filter: Option<&str>,
-) -> Result<History> {
+/// ```no_run
+/// # fn main() -> Result<(), velo_core::Error> {
+/// # let repo = velo_core::Repo::discover(std::path::Path::new("."))?;
+/// use velo_core::commands::history;
+///
+/// // Everything on one branch.
+/// let branch = "main".parse()?;
+/// let all = history::run(&repo, history::Options {
+///     branch: Some(&branch),
+///     ..Default::default()
+/// })?;
+///
+/// // The ten most recent, from the current position.
+/// let recent = history::run(&repo, history::Options {
+///     limit: Some(10),
+///     ..Default::default()
+/// })?;
+/// # let _ = (all, recent);
+/// # Ok(()) }
+/// ```
+pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
+    let Options {
+        all,
+        branch: filter_branch,
+        file: file_filter,
+        limit,
+    } = options;
+    // SQLite reads a negative limit as "no limit". Stating it here means the
+    // unlimited case is deliberate rather than a consequence of a wrapping cast.
+    let limit = limit.map_or(-1_i64, |n| n as i64);
     let root = repo.root();
     let conn = repo.conn();
 
     let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let position = position.trim().to_string();
-    let current = (!position.is_empty()).then(|| position.clone());
+    let current = (!position.is_empty()).then(|| SnapshotId::from_stored(position.clone()));
 
-    let branch = fs::read_to_string(root.join(".velo/HEAD"))
-        .unwrap_or_else(|_| "main".into())
-        .trim()
-        .to_string();
+    let branch = BranchName::from_stored(
+        fs::read_to_string(root.join(".velo/HEAD"))
+            .unwrap_or_else(|_| "main".into())
+            .trim(),
+    );
 
     let scope = match (all, filter_branch) {
-        (_, Some(b)) => Scope::NamedBranch {
-            name: b.to_string(),
-        },
+        (_, Some(b)) => Scope::NamedBranch { name: b.clone() },
         (true, None) => Scope::All,
         (false, None) => Scope::CurrentBranch {
             name: branch.clone(),
@@ -182,14 +225,19 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
         message: r.get(1)?,
         created_at: crate::commands::timestamp_from_ms(r.get(2)?),
         branch: r.get(3)?,
-        parent: (!parent.is_empty()).then_some(parent),
-        merge_parent: r.get::<_, Option<String>>(5)?.filter(|s| !s.is_empty()),
+        // An absent parent is stored as '', not NULL, so it has to be filtered
+        // rather than read as an Option.
+        parent: (!parent.is_empty()).then(|| SnapshotId::from_stored(parent)),
+        merge_parent: r
+            .get::<_, Option<String>>(5)?
+            .filter(|s| !s.is_empty())
+            .map(SnapshotId::from_stored),
         tag: r.get(6)?,
     })
 }
 
 /// Walk back from `tip` through first parents.
-fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: usize) -> Result<Vec<Entry>> {
+fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: i64) -> Result<Vec<Entry>> {
     let mut stmt = conn.prepare(
         "WITH RECURSIVE cte(hash, message, created_at_ms, branch, parent_hash, merge_parent) AS (
             SELECT hash, message, created_at_ms, branch, parent_hash, merge_parent
@@ -203,7 +251,7 @@ fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: usize) -> Result<V
         LEFT JOIN tags t ON c.hash = t.snapshot_hash
         LIMIT ?2",
     )?;
-    let rows = stmt.query_map(params![tip, limit as i64], row_to_entry)?;
+    let rows = stmt.query_map(params![tip, limit], row_to_entry)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -211,11 +259,7 @@ fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: usize) -> Result<V
 ///
 /// Internal branches — soft-deleted history and stash shelves — are always
 /// excluded; they aren't part of the user's history.
-fn on_branch(
-    conn: &rusqlite::Connection,
-    branch: Option<&str>,
-    limit: usize,
-) -> Result<Vec<Entry>> {
+fn on_branch(conn: &rusqlite::Connection, branch: Option<&str>, limit: i64) -> Result<Vec<Entry>> {
     let sql = format!(
         "SELECT {COLUMNS}
          FROM snapshots s
@@ -231,7 +275,7 @@ fn on_branch(
         }
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![branch.unwrap_or(""), limit as i64], row_to_entry)?;
+    let rows = stmt.query_map(params![branch.unwrap_or(""), limit], row_to_entry)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -245,12 +289,15 @@ fn touched(conn: &rusqlite::Connection, snapshot: &str, path: &str) -> bool {
 }
 
 /// Which branches point at each snapshot, checked-out branch listed first.
-fn branch_refs(conn: &rusqlite::Connection, head: &str) -> HashMap<String, Vec<BranchRef>> {
-    let mut by_commit: HashMap<String, Vec<BranchRef>> = HashMap::new();
+fn branch_refs(conn: &rusqlite::Connection, head: &str) -> HashMap<SnapshotId, Vec<BranchRef>> {
+    let mut by_commit: HashMap<SnapshotId, Vec<BranchRef>> = HashMap::new();
     for (name, tip) in crate::commands::all_branch_tips(conn) {
         let is_head = name == head;
-        let entry = by_commit.entry(tip).or_default();
-        let r = BranchRef { name, is_head };
+        let entry = by_commit.entry(SnapshotId::from_stored(tip)).or_default();
+        let r = BranchRef {
+            name: BranchName::from_stored(name),
+            is_head,
+        };
         if is_head {
             entry.insert(0, r);
         } else {

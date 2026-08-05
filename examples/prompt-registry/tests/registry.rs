@@ -140,25 +140,63 @@ fn the_repository_stays_verifiable() {
     assert!(report.is_healthy(), "registry writes must survive fsck");
 }
 
-/// The natural guess for "give me everything" silently returns nothing.
+/// `limit` says what it means: `None` is everything, `Some(n)` is the newest n.
 ///
-/// Kept as a test rather than a note, so that if `history::run` ever grows a
-/// sensible unlimited value this starts failing and gets revisited.
+/// This test used to pin the opposite — that `0` silently returned nothing while
+/// `usize::MAX` worked only because the cast to `i64` wrapped to `-1`. It was
+/// written to fail loudly if that was ever fixed, and it did.
 #[test]
-fn history_limit_zero_returns_nothing_not_everything() {
+fn history_limit_none_means_everything() {
     let tmp = TempDir::new().unwrap();
     let mut reg = Registry::create(tmp.path()).unwrap();
     reg.publish("a", "one", "claude-opus-5").unwrap();
     reg.publish("a", "two", "claude-opus-5").unwrap();
+    reg.publish("a", "three", "claude-opus-5").unwrap();
     drop(reg);
 
     let repo = velo_core::Repo::open_and_migrate(tmp.path()).unwrap();
-    let none = commands::history::run(&repo, false, 0, Some("registry"), None).unwrap();
-    assert!(
-        none.entries.is_empty(),
-        "limit 0 means LIMIT 0 in SQL, i.e. no rows — not 'unlimited'"
-    );
+    let branch: velo_core::BranchName = "registry".parse().unwrap();
+    let opts = || commands::history::Options {
+        branch: Some(&branch),
+        ..Default::default()
+    };
 
-    let all = commands::history::run(&repo, false, usize::MAX, Some("registry"), None).unwrap();
-    assert_eq!(all.entries.len(), 2, "usize::MAX is the way to say 'all'");
+    let all = commands::history::run(&repo, opts()).unwrap();
+    assert_eq!(all.entries.len(), 3, "the default, None, is unlimited");
+
+    let capped = commands::history::run(
+        &repo,
+        commands::history::Options {
+            limit: Some(2),
+            ..opts()
+        },
+    )
+    .unwrap();
+    assert_eq!(capped.entries.len(), 2, "Some(n) is the newest n");
+}
+
+/// Entries hand back typed ids, so looking something up needs no reparse.
+#[test]
+fn history_entries_carry_ids_that_can_be_used_directly() {
+    let tmp = TempDir::new().unwrap();
+    let mut reg = Registry::create(tmp.path()).unwrap();
+    reg.publish("a", "one", "claude-opus-5").unwrap();
+    drop(reg);
+
+    let repo = velo_core::Repo::open_and_migrate(tmp.path()).unwrap();
+    let branch: velo_core::BranchName = "registry".parse().unwrap();
+    let history = commands::history::run(
+        &repo,
+        commands::history::Options {
+            branch: Some(&branch),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+
+    let entry = &history.entries[0];
+    // No `.parse()` and no error path that cannot fire.
+    let tree = repo.tree_at(&entry.hash).unwrap();
+    assert_eq!(tree.len(), 1);
+    assert_eq!(entry.branch, "registry");
 }
