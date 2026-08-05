@@ -99,7 +99,18 @@ pub fn run_with_paths(
             .filter(|(p, _)| paths.iter().any(|spec| p.starts_with(spec.as_str())))
             .collect()
     };
-    if dirty.is_empty() && !amend {
+    // A pending merge is recorded even when the tree ends up unchanged.
+    //
+    // Resolving every conflict in favour of our own side is a normal outcome, and
+    // it leaves the working tree identical to what we already had — so the dirty
+    // set is empty. Returning `NothingToSave` there refused to record the merge
+    // *and* left `MERGE_HEAD` in place, wedging the repository: every later merge,
+    // rebase, undo, redo and cherry-pick then refused with "a merge is already in
+    // progress", and the only escape was `merge --abort`, which throws the merge
+    // away. The merge is real information regardless of the tree — it is the
+    // second parent — so it gets a snapshot.
+    let merge_pending = !amend && root.join(".velo/MERGE_HEAD").exists();
+    if dirty.is_empty() && !amend && !merge_pending {
         return Ok(Outcome::NothingToSave);
     }
 
@@ -156,24 +167,19 @@ pub fn run_with_paths(
     // ── Detect merge parent (second parent for merge commits) ────────────────
     // MERGE_HEAD stores "pre_merge_hash:source_branch". The source branch tip
     // at the time of the merge is the second parent of this snapshot.
-    let merge_parent: String = if !amend {
-        let merge_head_path = root.join(".velo/MERGE_HEAD");
-        if merge_head_path.exists() {
-            let info = fs::read_to_string(&merge_head_path).unwrap_or_default();
-            let source_branch = info.trim().split_once(':').map(|(_, b)| b).unwrap_or("");
-            // Resolve the source to a snapshot: exact branch tip first, then a
-            // remote ref like `origin/main`, so merges of either still record
-            // their second parent (and a short branch name isn't read as a hash).
-            crate::commands::branch_tip(conn, source_branch)
-                .or_else(|| {
-                    crate::commands::resolve_snapshot_id(guard.repo(), source_branch)
-                        .ok()
-                        .map(SnapshotId::into_string)
-                })
-                .unwrap_or_default()
-        } else {
-            String::new()
-        }
+    let merge_parent: String = if merge_pending {
+        let info = fs::read_to_string(root.join(".velo/MERGE_HEAD")).unwrap_or_default();
+        let source_branch = info.trim().split_once(':').map(|(_, b)| b).unwrap_or("");
+        // Resolve the source to a snapshot: exact branch tip first, then a
+        // remote ref like `origin/main`, so merges of either still record
+        // their second parent (and a short branch name isn't read as a hash).
+        crate::commands::branch_tip(conn, source_branch)
+            .or_else(|| {
+                crate::commands::resolve_snapshot_id(guard.repo(), source_branch)
+                    .ok()
+                    .map(SnapshotId::into_string)
+            })
+            .unwrap_or_default()
     } else {
         String::new()
     };
