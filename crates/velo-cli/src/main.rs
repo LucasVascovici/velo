@@ -4,7 +4,7 @@ use clap::{builder::styling, Parser, Subcommand};
 // layer — argument parsing, rendering, and exit codes.
 mod render;
 
-use velo_core::{commands, error, serve};
+use velo_core::{commands, error, serve, BranchName, TagName};
 
 use error::{Result, VeloError};
 use velo_core::commands::resolve::TakeOption;
@@ -1460,6 +1460,7 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::Branches { delete } => match delete {
             Some(name) => {
+                let name: BranchName = name.parse()?;
                 commands::branches::delete(write(), &name)?;
                 render::branches::print_deleted(&name);
             }
@@ -1475,9 +1476,11 @@ fn run(cli: Cli) -> Result<()> {
             // Three operations behind one subcommand: delete wins, then
             // create, then the bare listing.
             if let Some(name) = delete {
+                let name: TagName = name.parse()?;
                 commands::tag::delete(write(), &name)?;
                 render::tag::print_deleted(&name);
             } else if let Some(name) = name {
+                let name: TagName = name.parse()?;
                 let created = commands::tag::create(write(), &name, snapshot.as_deref(), force)?;
                 render::tag::print_created(&created);
             } else {

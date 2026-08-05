@@ -18,7 +18,7 @@
 use std::path::{Path, PathBuf};
 
 use tempfile::TempDir;
-use velo_core::{commands, Repo};
+use velo_core::{commands, Repo, SnapshotId};
 
 /// A throwaway repository in a temporary directory.
 #[derive(Debug)]
@@ -83,7 +83,7 @@ impl TempRepo {
     ///
     /// # Panics
     /// If there is nothing to save, or the save fails.
-    pub fn save(&self, message: &str) -> String {
+    pub fn save(&self, message: &str) -> SnapshotId {
         commands::save::run(&self.write_guard(), message, false)
             .expect("save")
             .into_result()
