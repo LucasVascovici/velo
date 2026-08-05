@@ -9,7 +9,7 @@
 //! * **Nothing on a non-TTY.** Piped output stays clean, and `serve-upload` /
 //!   `serve-receive` speak a binary protocol on stdout — a stray bar would
 //!   corrupt the wire. Those paths get no observer at all, and this type is inert
-//!   when stdout isn't a terminal as a second line of defence.
+//!   unless *stderr* is a terminal as a second line of defence.
 //! * **Redraw at most every [`REDRAW`].** Core calls `advance` once per item and
 //!   deliberately does not throttle, because how often to repaint is a
 //!   presentation decision. Hashing 20 000 files must not mean 20 000 repaints.
@@ -30,7 +30,7 @@ const REDRAW: Duration = Duration::from_millis(80);
 /// piping, and progress is not part of it.
 pub struct Bar {
     term: Term,
-    /// `None` when stdout isn't a terminal, which makes every method a no-op.
+    /// `None` unless stderr is a terminal, which makes every method a no-op.
     state: Option<Mutex<State>>,
 }
 
@@ -39,7 +39,7 @@ struct State {
     total: Option<u64>,
     done: u64,
     last_drawn: Instant,
-    /// Width of the last line written, so it can be cleared exactly.
+    /// Whether a line is currently on screen and needs clearing.
     dirty: bool,
 }
 
@@ -64,31 +64,58 @@ impl Bar {
             return;
         }
         let Some(phase) = st.phase else { return };
-        let line = match st.total {
-            Some(total) if total > 0 => {
-                let pct = (st.done.min(total) * 100) / total;
-                format!(
-                    "{} {}/{} {} ({}%)",
-                    phase,
-                    st.done,
-                    total,
-                    phase.unit(),
-                    pct
-                )
-            }
-            // Indeterminate: a count with no denominator. `Transferring` and `gc`
-            // land here.
-            _ => format!("{} {} {}…", phase, st.done, phase.unit()),
-        };
         // Truncate rather than wrap: a wrapped bar leaves debris behind.
         let width = self.term.size().1 as usize;
-        let line: String = line.chars().take(width.saturating_sub(1)).collect();
+        let line: String = line(phase, st.done, st.total)
+            .chars()
+            .take(width.saturating_sub(1))
+            .collect();
         let _ = self.term.clear_line();
         let _ = write!(&self.term, "  {}\r", line);
         let _ = std::io::stderr().flush();
         st.last_drawn = Instant::now();
         st.dirty = true;
     }
+}
+
+/// The text of the bar, as a pure function of what is known.
+///
+/// Separated from drawing so it can be tested without a terminal — which is the
+/// only part of a progress bar where a bug can hide.
+fn line(phase: Phase, done: u64, total: Option<u64>) -> String {
+    match total {
+        Some(total) if total > 0 => {
+            let pct = (done.min(total) * 100) / total;
+            if is_bytes(phase) {
+                format!(
+                    "{} {}/{} ({}%)",
+                    phase,
+                    super::gc::human_size(done),
+                    super::gc::human_size(total),
+                    pct
+                )
+            } else {
+                format!("{} {}/{} {} ({}%)", phase, done, total, phase.unit(), pct)
+            }
+        }
+        // Indeterminate: a count with no denominator. `Transferring` and `gc`
+        // land here — the pack is framed by EOF and the object store is streamed,
+        // so neither size is known in advance.
+        _ => format!("{} {}…", phase, amount(phase, done)),
+    }
+}
+
+/// A byte count reads as "4.6 MB"; anything else keeps its unit noun.
+fn amount(phase: Phase, n: u64) -> String {
+    if is_bytes(phase) {
+        super::gc::human_size(n)
+    } else {
+        format!("{} {}", n, phase.unit())
+    }
+}
+
+fn is_bytes(phase: Phase) -> bool {
+    phase.unit() == "bytes"
 }
 
 impl Default for Bar {
@@ -126,5 +153,74 @@ impl Observer for Bar {
             st.dirty = false;
         }
         st.phase = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_known_total_shows_a_percentage() {
+        assert_eq!(
+            line(Phase::Hashing, 12, Some(40)),
+            "Hashing 12/40 files (30%)"
+        );
+        assert_eq!(
+            line(Phase::Replaying, 2, Some(2)),
+            "Replaying 2/2 commits (100%)"
+        );
+    }
+
+    #[test]
+    fn an_unknown_total_shows_a_running_count() {
+        assert_eq!(
+            line(Phase::Collecting, 812, None),
+            "Collecting 812 objects…"
+        );
+    }
+
+    #[test]
+    fn byte_counts_are_human_readable() {
+        // The transfer phase counts bytes, and "Transferring 4823901 bytes…" is
+        // not something anyone can read at a glance.
+        assert_eq!(
+            line(Phase::Transferring, 4_823_901, None),
+            "Transferring 4.6 MB…"
+        );
+        assert_eq!(line(Phase::Transferring, 512, None), "Transferring 512 B…");
+        assert_eq!(
+            line(Phase::Transferring, 5_242_880, Some(10_485_760)),
+            "Transferring 5.0 MB/10.0 MB (50%)"
+        );
+    }
+
+    #[test]
+    fn a_zero_total_does_not_divide_by_zero() {
+        // An empty phase is announced with Some(0) — hashing a clean tree, say.
+        assert_eq!(line(Phase::Hashing, 0, Some(0)), "Hashing 0 files…");
+    }
+
+    #[test]
+    fn overshooting_the_total_is_clamped() {
+        // Belt and braces: a miscounted total must not print 140%.
+        assert_eq!(
+            line(Phase::Writing, 14, Some(10)),
+            "Writing 14/10 files (100%)"
+        );
+    }
+
+    #[test]
+    fn a_bar_is_inert_without_a_terminal() {
+        // The tests never run on a TTY, so this exercises the real gate.
+        let bar = Bar::new();
+        assert!(
+            bar.state.is_none(),
+            "piped output must not get a bar — serve-* speaks a protocol on stdout"
+        );
+        // Every method must be a no-op rather than panicking.
+        bar.begin(Phase::Hashing, Some(3));
+        bar.advance(Phase::Hashing, 1);
+        bar.finish(Phase::Hashing);
     }
 }
