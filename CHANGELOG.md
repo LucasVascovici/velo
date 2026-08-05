@@ -23,12 +23,20 @@ This file starts at the format v2 break. Earlier releases are in the git history
   `History.current` an `Option<SnapshotId>`, and `refs` is keyed by `SnapshotId`.
   2.3 typed every other result struct and missed this one, so walking history to
   look something up needed a `.parse()` whose error could never fire.
+- **`SaveTree.branch` is `&BranchName`**, matching `parent`, so a consumer that
+  publishes to one branch no longer clones the name on every save.
+- **`tag::create` takes `Option<&SnapshotId>`** rather than a spec. Callers with an
+  id in hand no longer hand back text to be resolved again; the CLI resolves at the
+  argv boundary.
 - **`TreeEntry.content` is a `Content` enum.** `Content::Bytes(Vec<u8>)` is what
   it was; `Content::Stored(ObjectHash)` is new. The `file`/`executable`/`symlink`
   constructors are unchanged, so only code that matched on `.content` is affected.
 
 ### Added
 
+- **`Repo::branch_tip` and `Repo::branch_exists`** — ask about a branch directly
+  instead of resolving it as a spec and interpreting `NotFound`. The two answers
+  differ: a branch created by `switch` exists with no tip.
 - **`TreeEntry::stored(path, object, kind)`** — a tree entry that references
   content already in the store. A snapshot is a whole tree, so changing one file
   meant re-supplying the bytes of every other file: each save cost the size of the
@@ -39,6 +47,12 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Fixed
 
+- **Full-width snapshot ids leaked into terminal output.** Format v2 stores ids at
+  64 characters, and eight renderers still printed them verbatim — `status`, `tag`,
+  `undo`, `redo`, `show`'s parent line, `restore`, `switch`, `merge` and
+  `history --graph`. Under v1's 16-character ids this looked right by accident;
+  `velo tag`'s table blew out to a 64-wide column. Every site now goes through one
+  abbreviation. The v4.0.0 notes claimed this was already consistent; it was not.
 - `resolve_snapshot_id` reports an unresolvable spec as
   `Error::NotFound { kind: RefKind::Any, .. }` rather than `Error::InvalidInput`.
   A consumer asking for a branch that has no snapshots yet needs to tell "nothing

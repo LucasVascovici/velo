@@ -151,7 +151,7 @@ impl Registry {
 
         let guard = self.repo.write()?;
         let id = guard.save_tree(SaveTree {
-            branch: self.branch.clone(),
+            branch: &self.branch,
             parent: parent.as_ref(),
             message: &format!("publish {}", name),
             entries: entries.into_values().collect(),
@@ -164,7 +164,7 @@ impl Registry {
     pub fn release(&mut self, tag: &str, version: &SnapshotId) -> Result<()> {
         let tag: TagName = tag.parse()?;
         let guard = self.repo.write()?;
-        commands::tag::create(&guard, &tag, Some(version.as_str()), true)?;
+        commands::tag::create(&guard, &tag, Some(version), true)?;
         Ok(())
     }
 
@@ -236,11 +236,7 @@ impl Registry {
 
     /// The newest snapshot on the registry branch, if there is one.
     fn tip(&self) -> Result<Option<SnapshotId>> {
-        match commands::resolve_snapshot_id(&self.repo, BRANCH) {
-            Ok(id) => Ok(Some(id)),
-            Err(velo_core::Error::NotFound { .. }) => Ok(None),
-            Err(e) => Err(e.into()),
-        }
+        Ok(self.repo.branch_tip(&self.branch)?)
     }
 }
 

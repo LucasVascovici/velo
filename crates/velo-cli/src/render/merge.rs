@@ -14,7 +14,7 @@ pub fn print(outcome: &Outcome) {
             "{} Fast-forwarded '{}' to {} — the branch had no commits of its own.",
             style("✔").green().bold(),
             branch,
-            style(at).yellow()
+            style(super::id::short(at)).yellow()
         ),
 
         Outcome::AlreadyUpToDate { branch, other } => println!(
@@ -44,7 +44,7 @@ fn print_aborted(source: &str, restored_to: Option<&str>) {
             "{} Aborting merge of '{}' — restoring to {}…",
             style("!").yellow().bold(),
             style(source).cyan(),
-            style(hash).yellow()
+            style(super::id::short(hash)).yellow()
         ),
         None => println!(
             "{} Merge aborted (no pre-merge snapshot recorded).",

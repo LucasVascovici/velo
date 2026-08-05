@@ -8,7 +8,7 @@ pub fn print(outcome: &Outcome) {
         Outcome::AlreadyThere { snapshot } => println!(
             "{} Already at snapshot {}. Nothing to do.",
             style("✔").green(),
-            style(snapshot).yellow()
+            style(super::id::short(snapshot)).yellow()
         ),
 
         Outcome::NoMatchingPaths { snapshot } => println!(
@@ -36,7 +36,7 @@ pub fn print(outcome: &Outcome) {
             println!(
                 "{} Restored to {} on {} — \"{}\"",
                 style("✔").green().bold(),
-                style(snapshot).yellow(),
+                style(super::id::short(snapshot)).yellow(),
                 style(branch).cyan(),
                 style(message).white()
             );
@@ -52,7 +52,7 @@ pub fn print(outcome: &Outcome) {
                 "{} Restored {} file(s) from {} to working tree.",
                 style("✔").green().bold(),
                 files,
-                style(snapshot).yellow()
+                style(super::id::short(snapshot)).yellow()
             );
         }
     }

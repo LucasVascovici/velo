@@ -25,7 +25,7 @@ pub fn print_list(tags: &[Tag]) {
         .max(NAME_MIN);
     let hash_w = tags
         .iter()
-        .map(|t| t.snapshot.chars().count())
+        .map(|t| super::id::short(&t.snapshot).chars().count())
         .max()
         .unwrap_or(0)
         .max(velo_core::commands::SNAP_HASH_LEN);
@@ -43,7 +43,7 @@ pub fn print_list(tags: &[Tag]) {
         println!(
             "{:<name_w$} | {:<hash_w$} | {}",
             style(&t.name).cyan(),
-            style(&t.snapshot).yellow(),
+            style(super::id::short(&t.snapshot)).yellow(),
             style(message).dim()
         );
     }
@@ -61,7 +61,7 @@ pub fn print_created(created: &Created) {
     println!(
         "{} Tagged {} as '{}'.",
         style("✔").green(),
-        style(&created.snapshot).yellow(),
+        style(super::id::short(&created.snapshot)).yellow(),
         style(&created.name).cyan()
     );
 }

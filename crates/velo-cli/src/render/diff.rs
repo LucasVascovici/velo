@@ -86,7 +86,10 @@ pub fn print_snapshot(detail: &SnapshotDetail) {
     );
     println!("  {}", style(&detail.message).white().bold());
     if let Some(parent) = &detail.parent {
-        println!("  parent: {}", style(parent).yellow().dim());
+        println!(
+            "  parent: {}",
+            style(super::id::short(parent)).yellow().dim()
+        );
     }
     println!();
 

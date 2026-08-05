@@ -11,11 +11,11 @@ pub fn print(outcome: &undo::Outcome) {
     println!(
         "{} Removed snapshot {} — \"{}\"",
         style("✔").green().bold(),
-        style(&outcome.snapshot).yellow(),
+        style(super::id::short(&outcome.snapshot)).yellow(),
         style(&outcome.message).dim()
     );
     match &outcome.now_at {
-        Some(now_at) => println!("  Now at {}", style(now_at).yellow()),
+        Some(now_at) => println!("  Now at {}", style(super::id::short(now_at)).yellow()),
         None => println!(
             "  {} That was the first snapshot, so the working tree is now empty.",
             style("!").yellow()
@@ -28,7 +28,7 @@ pub fn print_redo(outcome: &redo::Outcome) {
     println!(
         "{} Restored snapshot {} — \"{}\"",
         style("✔").green().bold(),
-        style(&outcome.snapshot).yellow(),
+        style(super::id::short(&outcome.snapshot)).yellow(),
         style(&outcome.message).dim()
     );
 }
