@@ -4815,63 +4815,13 @@ beta
         assert_eq!(read(&root, "f.txt"), "A\nB_OURS\nC\nD\nE_THEIRS\n");
     }
 
-    // =========================================================================
-    // 3-way merge core (diff3) — unit tests
-    // =========================================================================
-
-    #[test]
-    fn diff3_auto_merges_nonoverlapping_changes() {
-        let merged = velo_merge::try_auto_merge(
-            "A\nB\nC\nD\nE\n",
-            "A_CHANGED\nB\nC\nD\nE\n",
-            "A\nB\nC\nD\nE_CHANGED\n",
-        );
-        assert_eq!(merged.as_deref(), Some("A_CHANGED\nB\nC\nD\nE_CHANGED\n"));
-    }
-
-    #[test]
-    fn diff3_theirs_only_change_is_applied() {
-        // Ours unchanged, theirs changed → auto-merge takes theirs.
-        let merged = velo_merge::try_auto_merge("A\nB\nC\n", "A\nB\nC\n", "A\nB_NEW\nC\n");
-        assert_eq!(merged.as_deref(), Some("A\nB_NEW\nC\n"));
-    }
-
-    #[test]
-    fn diff3_overlapping_edits_do_not_auto_merge() {
-        // Both change the same line differently → not auto-mergeable.
-        let merged = velo_merge::try_auto_merge("A\nB\nC\n", "A\nX\nC\n", "A\nY\nC\n");
-        assert!(merged.is_none());
-
-        let hunks = velo_merge::compute_conflict_hunks("A\nB\nC\n", "A\nX\nC\n", "A\nY\nC\n");
-        assert_eq!(hunks.len(), 1, "one conflicting hunk expected");
-        assert_eq!(hunks[0].ours, vec!["X".to_string()]);
-        assert_eq!(hunks[0].theirs, vec!["Y".to_string()]);
-    }
-
-    #[test]
-    fn diff3_build_resolved_take_theirs_at_conflict_keeps_other_regions() {
-        // f.txt: conflict on line 2, theirs-only change on line 5.
-        let anc = "A\nB\nC\nD\nE\n";
-        let ours = "A\nB_OURS\nC\nD\nE\n";
-        let theirs = "A\nB_THEIRS\nC\nD\nE_THEIRS\n";
-
-        let mut hunks = velo_merge::compute_conflict_hunks(anc, ours, theirs);
-        assert_eq!(hunks.len(), 1);
-        hunks[0].decision = Some(velo_merge::Decision::Theirs);
-
-        let anc_l: Vec<&str> = anc.lines().collect();
-        let our_l: Vec<&str> = ours.lines().collect();
-        let thr_l: Vec<&str> = theirs.lines().collect();
-        let resolved = velo_merge::build_resolved_content(&anc_l, &our_l, &thr_l, &hunks, true);
-        assert_eq!(resolved, "A\nB_THEIRS\nC\nD\nE_THEIRS\n");
-    }
-
-    #[test]
-    fn diff3_identical_edits_on_both_sides_do_not_conflict() {
-        // Both sides made the exact same change → no conflict, change applied.
-        let merged = velo_merge::try_auto_merge("A\nB\nC\n", "A\nZ\nC\n", "A\nZ\nC\n");
-        assert_eq!(merged.as_deref(), Some("A\nZ\nC\n"));
-    }
+    // The merge engine itself is tested in its own crate — worked diff3
+    // examples in `crates/velo-merge/tests/diff3.rs`, randomised properties in
+    // `props.rs`. velo-core never wrapped it, so what belongs here is the other
+    // side of the boundary: `reconcile` deciding *when* a line merge is even
+    // attempted (binary content and symlinks can't be, a mode-only change needs
+    // no merge), and the merge/resolve commands on top. Those need a
+    // repository, which is why they live in this suite and not that one.
 
     // =========================================================================
     // resolve
@@ -6599,84 +6549,8 @@ beta
         }
     }
 
-    // =========================================================================
-    // 3-way merge engine — property tests (randomised, with shrinking)
-    // =========================================================================
-    mod merge_props {
-        use proptest::prelude::*;
-        use velo_merge::try_auto_merge;
-
-        /// Join lines into a file body (trailing newline, like a real file).
-        fn body(lines: &[String]) -> String {
-            let mut s = lines.join("\n");
-            s.push('\n');
-            s
-        }
-
-        /// A non-empty run of short lowercase lines (never collides with the
-        /// uppercase ANCHOR markers used to separate edit regions).
-        fn lines() -> impl Strategy<Value = Vec<String>> {
-            prop::collection::vec("[a-z]{1,5}", 1..6)
-        }
-
-        fn cat(a: &[String], b: &[String], c: &[String]) -> Vec<String> {
-            let mut v = Vec::with_capacity(a.len() + b.len() + c.len());
-            v.extend_from_slice(a);
-            v.extend_from_slice(b);
-            v.extend_from_slice(c);
-            v
-        }
-
-        proptest! {
-            /// If our side made no change, the merge must equal theirs exactly.
-            #[test]
-            fn ours_unchanged_yields_theirs(anc in lines(), theirs in lines()) {
-                let a = body(&anc);
-                let t = body(&theirs);
-                prop_assert_eq!(try_auto_merge(&a, &a, &t), Some(t));
-            }
-
-            /// Symmetric: if their side made no change, the merge equals ours.
-            #[test]
-            fn theirs_unchanged_yields_ours(anc in lines(), ours in lines()) {
-                let a = body(&anc);
-                let o = body(&ours);
-                prop_assert_eq!(try_auto_merge(&a, &o, &a), Some(o));
-            }
-
-            /// Both sides making the identical change is not a conflict.
-            #[test]
-            fn identical_change_on_both_sides(anc in lines(), both in lines()) {
-                let a = body(&anc);
-                let b = body(&both);
-                prop_assert_eq!(try_auto_merge(&a, &b, &b), Some(b));
-            }
-
-            /// No silent data loss: when ours edits only a prefix region and
-            /// theirs edits only a disjoint suffix region (separated by a stable
-            /// anchor block neither touches), the merge must keep BOTH edits.
-            #[test]
-            fn disjoint_edits_preserve_both_sides(
-                pre_a in lines(), suf_a in lines(),
-                pre_o in lines(), suf_t in lines(),
-            ) {
-                let anchor: Vec<String> = (0..4).map(|i| format!("ANCHOR{i}")).collect();
-                let ancestor = body(&cat(&pre_a, &anchor, &suf_a));
-                let ours     = body(&cat(&pre_o, &anchor, &suf_a)); // changed prefix only
-                let theirs   = body(&cat(&pre_a, &anchor, &suf_t)); // changed suffix only
-                let expected = body(&cat(&pre_o, &anchor, &suf_t)); // both, no loss
-
-                prop_assert_eq!(try_auto_merge(&ancestor, &ours, &theirs), Some(expected));
-            }
-
-            /// The merge is a pure function of its inputs.
-            #[test]
-            fn deterministic(anc in lines(), ours in lines(), theirs in lines()) {
-                let (a, o, t) = (body(&anc), body(&ours), body(&theirs));
-                prop_assert_eq!(try_auto_merge(&a, &o, &t), try_auto_merge(&a, &o, &t));
-            }
-        }
-    }
+    // (The merge engine's property tests live with the engine — see the note in
+    // the merge section above.)
 
     // ─── diff range ───────────────────────────────────────────────────────────
 
