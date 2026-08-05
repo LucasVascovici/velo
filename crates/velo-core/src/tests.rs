@@ -2800,6 +2800,7 @@ mod tests {
     struct Recorder {
         begun: std::sync::Mutex<Vec<(crate::progress::Phase, Option<u64>)>>,
         advanced: std::sync::Mutex<std::collections::HashMap<crate::progress::Phase, u64>>,
+        calls: std::sync::Mutex<std::collections::HashMap<crate::progress::Phase, u64>>,
         finished: std::sync::Mutex<Vec<crate::progress::Phase>>,
     }
 
@@ -2809,6 +2810,7 @@ mod tests {
         }
         fn advance(&self, phase: crate::progress::Phase, by: u64) {
             *self.advanced.lock().unwrap().entry(phase).or_insert(0) += by;
+            *self.calls.lock().unwrap().entry(phase).or_insert(0) += 1;
         }
         fn finish(&self, phase: crate::progress::Phase) {
             self.finished.lock().unwrap().push(phase);
@@ -2832,6 +2834,10 @@ mod tests {
                 .get(&phase)
                 .copied()
                 .unwrap_or(0)
+        }
+        /// How many times `advance` was called for `phase`.
+        fn calls(&self, phase: crate::progress::Phase) -> u64 {
+            self.calls.lock().unwrap().get(&phase).copied().unwrap_or(0)
         }
         fn was_finished(&self, phase: crate::progress::Phase) -> bool {
             self.finished.lock().unwrap().contains(&phase)
@@ -3030,6 +3036,83 @@ mod tests {
         assert!(total > 0);
         assert_eq!(rec.done(Phase::Reconciling), total);
         assert!(rec.was_finished(Phase::Reconciling));
+    }
+
+    #[test]
+    fn a_streaming_fetch_reports_the_bytes_it_moves() {
+        use crate::progress::Phase;
+        // `child:` spawns this test binary's sibling `velo` to serve the far end,
+        // so it exercises the real wire rather than the direct-DB local path.
+        let velo_bin = velo_binary().expect(
+            "this test spawns the velo binary to serve the far end of the wire, so it              needs one built alongside the tests — run `cargo test --workspace`, which              CI does. Skipping silently would let the transfer path rot unnoticed.",
+        );
+
+        let holder = TempDir::new().unwrap();
+        let origin = holder.path().join("origin");
+        fs::create_dir_all(&origin).unwrap();
+        commands::init::run(&origin).unwrap();
+        // The pack has to span several 64 KiB chunks for the loop to be visible,
+        // and zstd would collapse repetitive text — so generate content that does
+        // not compress.
+        let mut seed: u64 = 0x2545_F491_4F6C_DD1D;
+        for i in 0..12 {
+            let mut body = String::with_capacity(80_000);
+            while body.len() < 80_000 {
+                seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                body.push_str(&format!("{:016x}\n", seed));
+            }
+            write(&origin, &format!("f{}.txt", i), &body);
+        }
+        save(&origin, "bulk");
+
+        let local = holder.path().join("local");
+        fs::create_dir_all(&local).unwrap();
+        commands::init::run(&local).unwrap();
+        let spawn = crate::transport::Spawn::new(&velo_bin);
+        {
+            let repo = Repo::open_and_migrate(&local).unwrap();
+            let guard = repo.write().unwrap();
+            commands::remote::add(&guard, "origin", &format!("child:{}", origin.display()))
+                .unwrap();
+        }
+
+        let (repo, rec) = watched(&local);
+        let fetched = commands::sync::fetch(&repo.write().unwrap(), "origin", &spawn).unwrap();
+        assert!(
+            fetched.snapshots > 0,
+            "the fetch should have imported history"
+        );
+
+        // The pack is framed by EOF, so there is no total to announce — but the
+        // bytes must be counted as they arrive.
+        assert_eq!(
+            rec.total(Phase::Transferring),
+            Some(None),
+            "transfer is announced without a total"
+        );
+        let moved = rec.done(Phase::Transferring);
+        assert!(moved > 0, "the transfer must report the bytes it moved");
+        assert!(
+            rec.calls(Phase::Transferring) > 1,
+            "a {}-byte pack must arrive in chunks, not one lump — got {} call(s)",
+            moved,
+            rec.calls(Phase::Transferring)
+        );
+        assert!(rec.was_finished(Phase::Transferring));
+    }
+
+    /// The `velo` executable built alongside these tests, if there is one.
+    ///
+    /// `CARGO_BIN_EXE_velo` is only set for velo-cli's own integration tests, so a
+    /// library test has to look next to its own executable instead.
+    fn velo_binary() -> Option<PathBuf> {
+        let exe = std::env::current_exe().ok()?;
+        // target/debug/deps/velo_core-<hash>  ->  target/debug/velo[.exe]
+        let dir = exe.parent()?.parent()?;
+        let candidate = dir.join(if cfg!(windows) { "velo.exe" } else { "velo" });
+        candidate.exists().then_some(candidate)
     }
 
     // =========================================================================

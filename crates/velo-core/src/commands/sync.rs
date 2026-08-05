@@ -126,8 +126,8 @@ pub fn clone(
             Some(o) => &**o,
             None => &silent,
         };
-        let _transfer = PhaseGuard::new(obs, Phase::Transferring, None);
-        remote.fetch(&HashSet::new())?
+        let transfer = PhaseGuard::new(obs, Phase::Transferring, None);
+        remote.fetch(&HashSet::new(), &transfer)?
     };
     if refs.is_empty() {
         return Err(VeloError::invalid(format!(
@@ -197,8 +197,8 @@ pub fn fetch(guard: &WriteGuard, remote_name: &str, spawn: &transport::Spawn) ->
     let mut remote = transport::open(&url, spawn)?;
     let have = local_snapshots(guard.repo())?;
     let (refs, mut pack) = {
-        let _transfer = guard.phase(Phase::Transferring, None);
-        remote.fetch(&have)?
+        let transfer = guard.phase(Phase::Transferring, None);
+        remote.fetch(&have, &transfer)?
     };
 
     // Namespace imported history under remotes/<remote>/<branch> so it never
@@ -288,8 +288,8 @@ pub fn push(
     };
 
     let outcome = {
-        let _transfer = guard.phase(Phase::Transferring, None);
-        remote.push(&branch, &local_tip, &mut build)?
+        let transfer = guard.phase(Phase::Transferring, None);
+        remote.push(&branch, &local_tip, &mut build, &transfer)?
     };
     match outcome {
         PushOutcome::Ok {
@@ -346,8 +346,8 @@ pub fn pull(guard: &WriteGuard, remote_name: &str, spawn: &transport::Spawn) -> 
     let mut remote = transport::open(&url, spawn)?;
     let have = local_snapshots(guard.repo())?;
     let (refs, pack) = {
-        let _transfer = guard.phase(Phase::Transferring, None);
-        remote.fetch(&have)?
+        let transfer = guard.phase(Phase::Transferring, None);
+        remote.fetch(&have, &transfer)?
     };
 
     let remote_tip = refs
