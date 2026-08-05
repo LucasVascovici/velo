@@ -6,6 +6,7 @@ use rusqlite::params;
 
 use crate::commands::FileStatus;
 use crate::error::{Result, VeloError};
+use crate::progress::Phase;
 use crate::storage;
 use crate::WriteGuard;
 
@@ -193,8 +194,10 @@ pub fn run_with_paths(
 
     // Hash each changed file, capturing its mode. Symlinks store their target
     // string (not the pointed-at content); regular files store content.
+    let progress = guard.phase(Phase::Hashing, Some(files_to_hash.len() as u64));
     let hash_results: Result<Vec<(String, String, i64)>> = files_to_hash
         .into_par_iter()
+        .inspect(|_| progress.tick())
         .map(|rel| {
             let full = root.join(&rel);
             let mode = storage::capture_mode(&full);

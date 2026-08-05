@@ -224,7 +224,7 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
     let ancestor_hash = lowest_common_ancestor(conn, &current_hash, &target_hash);
 
     let applied = apply::reconcile_tree(
-        root,
+        guard,
         &match &ancestor_hash {
             Some(h) => apply::load_tree(conn, h)?,
             None => apply::Tree::new(),

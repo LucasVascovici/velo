@@ -13,16 +13,27 @@ use std::time::{Duration, Instant};
 
 use crate::error::{Error, Result};
 use crate::lock::RepoLock;
+use crate::progress::{Observer, Phase, PhaseGuard, Silent};
 use crate::{db, FORMAT_VERSION};
 
 /// An open Velo repository.
 ///
 /// `Send` but **not** `Sync` — `rusqlite::Connection` cannot be shared between
 /// threads. Use one `Repo` per thread, or `Arc<Mutex<Repo>>`.
-#[derive(Debug)]
 pub struct Repo {
     root: PathBuf,
     conn: rusqlite::Connection,
+    /// Where long operations report progress. `Silent` unless a caller supplies
+    /// one via [`Repo::observing`].
+    observer: Box<dyn Observer>,
+}
+
+impl std::fmt::Debug for Repo {
+    /// Hand-written because `dyn Observer` isn't `Debug` — and requiring it of
+    /// every consumer's progress bar would be a poor trade.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Repo").field("root", &self.root).finish()
+    }
 }
 
 impl Repo {
@@ -65,6 +76,7 @@ impl Repo {
         Ok(Repo {
             root: root.to_path_buf(),
             conn,
+            observer: Box::new(Silent),
         })
     }
 
@@ -91,6 +103,7 @@ impl Repo {
         Ok(Repo {
             root: root.to_path_buf(),
             conn,
+            observer: Box::new(Silent),
         })
     }
 
@@ -102,6 +115,34 @@ impl Repo {
                 searched_from: start.to_path_buf(),
             }),
         }
+    }
+
+    /// Report progress from long operations to `observer`.
+    ///
+    /// Consumes and returns the handle, so there is no mutating setter and no
+    /// interior mutability: a repository's reporting is decided once, where it is
+    /// opened.
+    ///
+    /// ```no_run
+    /// # use velo_core::{Repo, progress::{Observer, Phase}};
+    /// struct Bar;
+    /// impl Observer for Bar {
+    ///     fn advance(&self, phase: Phase, by: u64) { /* redraw */ }
+    /// }
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// let repo = Repo::discover(std::path::Path::new("."))?.observing(Bar);
+    /// # Ok(()) }
+    /// ```
+    pub fn observing(mut self, observer: impl Observer + 'static) -> Self {
+        self.observer = Box::new(observer);
+        self
+    }
+
+    /// Open a phase of work. The returned guard closes it when dropped.
+    ///
+    /// `total` is `None` when the size isn't known in advance.
+    pub(crate) fn phase(&self, phase: Phase, total: Option<u64>) -> PhaseGuard<'_> {
+        PhaseGuard::new(&*self.observer, phase, total)
     }
 
     /// The repository root (the directory *containing* `.velo`).
@@ -192,6 +233,11 @@ impl WriteGuard<'_> {
     /// The repository's connection.
     pub(crate) fn conn(&self) -> &rusqlite::Connection {
         self.repo.conn()
+    }
+
+    /// Open a phase of work — see [`Repo::phase`].
+    pub(crate) fn phase(&self, phase: Phase, total: Option<u64>) -> PhaseGuard<'_> {
+        self.repo.phase(phase, total)
     }
 
     /// Begin a transaction on the shared connection.

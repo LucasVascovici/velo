@@ -2381,6 +2381,7 @@ mod tests {
             origin.to_str().unwrap(),
             Some(copy.to_str().unwrap()),
             &spawn_cfg(),
+            None,
         )
         .unwrap();
         (holder, origin, copy)
@@ -2400,6 +2401,7 @@ mod tests {
             origin.to_str().unwrap(),
             Some(copy.to_str().unwrap()),
             &spawn_cfg(),
+            None,
         )
         .unwrap();
 
@@ -2784,6 +2786,250 @@ mod tests {
         // `discover` is the explicit opt-in to searching ancestors.
         let found = Repo::discover(&nested).unwrap();
         assert_eq!(found.root(), root.as_path());
+    }
+
+    // =========================================================================
+    // progress reporting
+    // =========================================================================
+
+    /// Records everything an operation reports, so a test can assert on it.
+    ///
+    /// `Observer` takes `&self` and may be called from rayon workers, so the
+    /// counters are atomics and the logs are behind mutexes.
+    #[derive(Default)]
+    struct Recorder {
+        begun: std::sync::Mutex<Vec<(crate::progress::Phase, Option<u64>)>>,
+        advanced: std::sync::Mutex<std::collections::HashMap<crate::progress::Phase, u64>>,
+        finished: std::sync::Mutex<Vec<crate::progress::Phase>>,
+    }
+
+    impl crate::progress::Observer for std::sync::Arc<Recorder> {
+        fn begin(&self, phase: crate::progress::Phase, total: Option<u64>) {
+            self.begun.lock().unwrap().push((phase, total));
+        }
+        fn advance(&self, phase: crate::progress::Phase, by: u64) {
+            *self.advanced.lock().unwrap().entry(phase).or_insert(0) += by;
+        }
+        fn finish(&self, phase: crate::progress::Phase) {
+            self.finished.lock().unwrap().push(phase);
+        }
+    }
+
+    impl Recorder {
+        /// The total announced for `phase`, if it was begun.
+        fn total(&self, phase: crate::progress::Phase) -> Option<Option<u64>> {
+            self.begun
+                .lock()
+                .unwrap()
+                .iter()
+                .find(|(p, _)| *p == phase)
+                .map(|(_, t)| *t)
+        }
+        fn done(&self, phase: crate::progress::Phase) -> u64 {
+            self.advanced
+                .lock()
+                .unwrap()
+                .get(&phase)
+                .copied()
+                .unwrap_or(0)
+        }
+        fn was_finished(&self, phase: crate::progress::Phase) -> bool {
+            self.finished.lock().unwrap().contains(&phase)
+        }
+    }
+
+    /// A repository that reports to a fresh recorder.
+    fn watched(root: &Path) -> (Repo, std::sync::Arc<Recorder>) {
+        let rec = std::sync::Arc::new(Recorder::default());
+        let repo = Repo::open_and_migrate(root)
+            .expect("open repository")
+            .observing(rec.clone());
+        (repo, rec)
+    }
+
+    #[test]
+    fn save_reports_hashing_of_every_dirty_file() {
+        use crate::progress::Phase;
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one\n");
+        write(&root, "b.txt", "two\n");
+        write(&root, "c.txt", "three\n");
+
+        let (repo, rec) = watched(&root);
+        commands::save::run(&repo.write().unwrap(), "s1", false).unwrap();
+
+        // .veloignore is written by init, so it counts too — assert against the
+        // announced total rather than a hard-coded number.
+        let total = rec
+            .total(Phase::Hashing)
+            .expect("save should announce a hashing phase")
+            .expect("the file count is known up front");
+        assert!(
+            total >= 3,
+            "expected at least the three files, got {}",
+            total
+        );
+        assert_eq!(
+            rec.done(Phase::Hashing),
+            total,
+            "every file must be ticked exactly once"
+        );
+        assert!(rec.was_finished(Phase::Hashing), "the phase must be closed");
+    }
+
+    #[test]
+    fn restore_reports_writing() {
+        use crate::progress::Phase;
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "v1\n");
+        let h1 = save(&root, "s1");
+        write(&root, "a.txt", "v2\n");
+        save(&root, "s2");
+
+        let (repo, rec) = watched(&root);
+        commands::restore::run(&repo.write().unwrap(), &h1, true, &[]).unwrap();
+
+        let total = rec
+            .total(Phase::Writing)
+            .expect("restore should announce a writing phase")
+            .expect("the file count is known up front");
+        assert_eq!(rec.done(Phase::Writing), total);
+        assert!(rec.was_finished(Phase::Writing));
+    }
+
+    #[test]
+    fn fsck_reports_verifying_each_object() {
+        use crate::progress::Phase;
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one\n");
+        write(&root, "b.txt", "two\n");
+        save(&root, "s1");
+
+        let (repo, rec) = watched(&root);
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(report.is_healthy());
+
+        let total = rec
+            .total(Phase::Verifying)
+            .expect("fsck should announce a verifying phase")
+            .expect("the object count is known up front");
+        assert!(total > 0);
+        assert_eq!(rec.done(Phase::Verifying), total);
+        assert!(rec.was_finished(Phase::Verifying));
+    }
+
+    #[test]
+    fn rebase_reports_one_tick_per_replayed_commit() {
+        use crate::progress::Phase;
+        let (_tmp, root) = setup();
+        write(&root, "base.txt", "base\n");
+        save(&root, "base");
+        commands::switch::run(
+            &Repo::open_and_migrate(&root).unwrap().write().unwrap(),
+            "feature",
+            false,
+        )
+        .unwrap();
+        write(&root, "a.txt", "one\n");
+        save(&root, "feat 1");
+        write(&root, "b.txt", "two\n");
+        save(&root, "feat 2");
+        commands::switch::run(
+            &Repo::open_and_migrate(&root).unwrap().write().unwrap(),
+            "main",
+            true,
+        )
+        .unwrap();
+        write(&root, "m.txt", "main\n");
+        let main_tip = save(&root, "main moved on");
+        commands::switch::run(
+            &Repo::open_and_migrate(&root).unwrap().write().unwrap(),
+            "feature",
+            true,
+        )
+        .unwrap();
+
+        let (repo, rec) = watched(&root);
+        commands::rebase::run(&repo.write().unwrap(), &main_tip, false, false).unwrap();
+
+        assert_eq!(
+            rec.total(Phase::Replaying),
+            Some(Some(2)),
+            "two commits to replay"
+        );
+        assert_eq!(rec.done(Phase::Replaying), 2);
+        assert!(rec.was_finished(Phase::Replaying));
+    }
+
+    #[test]
+    fn a_phase_is_closed_even_when_the_command_fails() {
+        use crate::progress::Phase;
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one\n");
+        save(&root, "s1");
+
+        // Corrupt an object so fsck finds a problem but still completes its scan.
+        let obj = fs::read_dir(root.join(".velo/objects"))
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .find(|p| p.is_file())
+            .unwrap();
+        fs::write(&obj, b"not valid zstd").unwrap();
+
+        let (repo, rec) = watched(&root);
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(!report.is_healthy(), "the corruption should be found");
+        assert!(
+            rec.was_finished(Phase::Verifying),
+            "the phase must close regardless of what was found"
+        );
+    }
+
+    #[test]
+    fn a_repository_without_an_observer_still_works() {
+        // The default is `Silent`; every other test in this file exercises it,
+        // but assert it explicitly so the no-observer path is deliberate.
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one\n");
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        commands::save::run(&repo.write().unwrap(), "s1", false).unwrap();
+        assert!(commands::fsck::check(&repo).unwrap().is_healthy());
+    }
+
+    #[test]
+    fn merge_reports_reconciling_files() {
+        use crate::progress::Phase;
+        let (_tmp, root) = setup();
+        write(&root, "shared.txt", "base\n");
+        save(&root, "base");
+        commands::switch::run(
+            &Repo::open_and_migrate(&root).unwrap().write().unwrap(),
+            "feature",
+            false,
+        )
+        .unwrap();
+        write(&root, "feat.txt", "feat\n");
+        save(&root, "feat work");
+        commands::switch::run(
+            &Repo::open_and_migrate(&root).unwrap().write().unwrap(),
+            "main",
+            true,
+        )
+        .unwrap();
+        write(&root, "main.txt", "main\n");
+        save(&root, "main work");
+
+        let (repo, rec) = watched(&root);
+        commands::merge::run(&repo.write().unwrap(), Some("feature"), false).unwrap();
+
+        let total = rec
+            .total(Phase::Reconciling)
+            .expect("merge should announce a reconciling phase")
+            .expect("the path count is known up front");
+        assert!(total > 0);
+        assert_eq!(rec.done(Phase::Reconciling), total);
+        assert!(rec.was_finished(Phase::Reconciling));
     }
 
     // =========================================================================

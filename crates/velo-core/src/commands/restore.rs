@@ -14,6 +14,7 @@ use rusqlite::params;
 
 use crate::commands::{get_dirty_files, get_tracked_files, remove_empty_parents};
 use crate::error::{RefKind, Result, VeloError};
+use crate::progress::{Phase, PhaseGuard};
 use crate::storage;
 use crate::WriteGuard;
 
@@ -107,7 +108,10 @@ pub fn run(
         remove_ghosts(root, conn, &snapshot_files)?
     };
 
-    write_files(root, &snapshot_files)?;
+    {
+        let progress = guard.phase(Phase::Writing, Some(snapshot_files.len() as u64));
+        write_files(root, &snapshot_files, &progress)?;
+    }
 
     let written: Vec<String> = snapshot_files.iter().map(|(p, _, _)| p.clone()).collect();
     crate::commands::invalidate_cache_entries(guard.repo(), &written);
@@ -196,10 +200,15 @@ fn remove_ghosts(
 }
 
 /// Write every file in parallel, collecting the failures rather than the first.
-fn write_files(root: &Path, files: &[(String, String, i64)]) -> Result<()> {
+fn write_files(
+    root: &Path,
+    files: &[(String, String, i64)],
+    progress: &PhaseGuard<'_>,
+) -> Result<()> {
     let objects_dir = root.join(".velo/objects");
     let errors: Vec<String> = files
         .par_iter()
+        .inspect(|_| progress.tick())
         .filter_map(|(rel_path, hash, mode)| {
             let full_path = root.join(crate::db::db_to_path(rel_path));
             if let Some(parent) = full_path.parent() {

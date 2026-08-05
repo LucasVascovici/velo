@@ -61,6 +61,7 @@ pub mod commands;
 pub mod db;
 pub mod error;
 pub mod lock;
+pub mod progress;
 pub mod repo;
 pub mod serve;
 pub mod storage;
