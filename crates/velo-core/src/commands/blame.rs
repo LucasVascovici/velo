@@ -65,7 +65,7 @@ pub fn run(repo: &Repo, file: &str, at: Option<&str>) -> Result<Blame> {
     let rel = db::normalise(file);
 
     let start_hash = match at {
-        Some(t) => crate::commands::resolve_snapshot_id(repo, t)?,
+        Some(t) => crate::commands::resolve_snapshot_id(repo, t)?.into_string(),
         None => std::fs::read_to_string(root.join(".velo/PARENT"))
             .unwrap_or_default()
             .trim()

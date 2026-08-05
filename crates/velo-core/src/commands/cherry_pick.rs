@@ -12,20 +12,20 @@ use std::fs;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, RefKind, Result, VeloError};
 use crate::storage;
-use crate::WriteGuard;
+use crate::{SnapshotId, WriteGuard};
 
 /// What a cherry-pick did.
 #[derive(Clone, Debug)]
 pub struct Outcome {
     /// The snapshot that was picked.
-    pub snapshot: String,
+    pub snapshot: SnapshotId,
     /// Its original message.
     pub message: String,
     /// What each file's reconciliation decided.
     pub applied: Applied,
     /// The snapshot the pick was recorded as. `None` when conflicts remain (the
     /// user finishes with `velo save`) or when there was nothing to apply.
-    pub saved_as: Option<String>,
+    pub saved_as: Option<SnapshotId>,
 }
 
 impl Outcome {

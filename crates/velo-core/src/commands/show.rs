@@ -6,13 +6,13 @@
 
 use crate::commands::diff::{self, Diff};
 use crate::error::{RefKind, Result, VeloError};
-use crate::Repo;
+use crate::{Repo, SnapshotId};
 
 /// A snapshot's metadata plus what it changed.
 #[derive(Clone, Debug)]
 pub struct SnapshotDetail {
     /// Full snapshot hash.
-    pub hash: String,
+    pub hash: SnapshotId,
     /// Branch the snapshot was recorded on. Display only — it is not part of the
     /// snapshot's identity.
     pub branch: String,

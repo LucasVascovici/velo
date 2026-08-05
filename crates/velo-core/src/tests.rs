@@ -18,7 +18,7 @@ mod tests {
     use crate::commands::{self, FileStatus};
     use crate::db;
     use crate::error::VeloError;
-    use crate::Repo;
+    use crate::{BranchName, ObjectHash, Repo, SnapshotId, TagName};
 
     // =========================================================================
     // Helpers
@@ -96,12 +96,24 @@ mod tests {
         root.join(rel).exists()
     }
 
+    /// A branch name from a literal. Panics on an invalid one, which in a test is
+    /// what you want: it means the test itself is wrong.
+    fn branch_name(name: &str) -> BranchName {
+        name.parse().expect("valid branch name")
+    }
+
+    /// A tag name from a literal, for the same reason.
+    fn tag_name(name: &str) -> TagName {
+        name.parse().expect("valid tag name")
+    }
+
     fn save(root: &Path, msg: &str) -> String {
         with_write(root, |g| commands::save::run(g, msg, false))
             .unwrap()
             .into_result()
             .expect("expected a snapshot to be created")
             .hash
+            .into_string()
     }
 
     fn parent(root: &Path) -> String {
@@ -644,7 +656,10 @@ mod tests {
         write(&root, "f.txt", "feat");
         save(&root, "feat save");
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
-        with_write(&root, |vr| commands::branches::delete(vr, "feature")).unwrap();
+        with_write(&root, |vr| {
+            commands::branches::delete(vr, &branch_name("feature"))
+        })
+        .unwrap();
 
         let h = with_repo(&root, |vr| commands::history::run(vr, true, 20, None, None)).unwrap();
         assert!(
@@ -831,13 +846,16 @@ mod tests {
         let h2 = save(&root, "on dev");
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
 
-        with_write(&root, |vr| commands::branches::delete(vr, "dev")).unwrap();
+        with_write(&root, |vr| {
+            commands::branches::delete(vr, &branch_name("dev"))
+        })
+        .unwrap();
 
         // Gone from the listing…
         let names: Vec<String> = with_repo(&root, commands::branches::list)
             .unwrap()
             .into_iter()
-            .map(|b| b.name)
+            .map(|b| b.name.into_string())
             .collect();
         assert!(!names.contains(&"dev".to_string()));
 
@@ -859,17 +877,29 @@ mod tests {
         save(&root, "s1");
 
         assert!(
-            with_write(&root, |vr| commands::branches::delete(vr, "main")).is_err(),
+            with_write(&root, |vr| commands::branches::delete(
+                vr,
+                &branch_name("main")
+            ))
+            .is_err(),
             "main is both current and the default branch"
         );
         assert!(
-            with_write(&root, |vr| commands::branches::delete(vr, "never_existed")).is_err(),
+            with_write(&root, |vr| commands::branches::delete(
+                vr,
+                &branch_name("never_existed")
+            ))
+            .is_err(),
             "deleting an unknown branch is an error"
         );
 
         // Current-branch protection applies to any branch, not just main.
         with_write(&root, |vr| commands::switch::run(vr, "dev", false)).unwrap();
-        assert!(with_write(&root, |vr| commands::branches::delete(vr, "dev")).is_err());
+        assert!(with_write(&root, |vr| commands::branches::delete(
+            vr,
+            &branch_name("dev")
+        ))
+        .is_err());
     }
 
     #[test]
@@ -878,7 +908,10 @@ mod tests {
         write(&root, "f.txt", "v1");
         let h1 = save(&root, "s1");
 
-        let created = with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).unwrap();
+        let created = with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        })
+        .unwrap();
         assert_eq!(created.snapshot, h1);
         assert_eq!(created.name, "v1");
         assert!(created.replaced.is_none());
@@ -893,7 +926,7 @@ mod tests {
         let h2 = save(&root, "s2");
 
         let created = with_write(&root, |vr| {
-            commands::tag::create(vr, "old", Some(&h1), false)
+            commands::tag::create(vr, &tag_name("old"), Some(&h1), false)
         })
         .unwrap();
         assert_eq!(created.snapshot, h1);
@@ -905,16 +938,28 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         let h1 = save(&root, "s1");
-        with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        })
+        .unwrap();
 
         write(&root, "f.txt", "v2");
         let h2 = save(&root, "s2");
         assert!(
-            with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).is_err(),
+            with_write(&root, |vr| commands::tag::create(
+                vr,
+                &tag_name("v1"),
+                None,
+                false
+            ))
+            .is_err(),
             "an existing tag must not be silently moved"
         );
 
-        let created = with_write(&root, |vr| commands::tag::create(vr, "v1", None, true)).unwrap();
+        let created = with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, true)
+        })
+        .unwrap();
         assert_eq!(created.snapshot, h2, "force moves the tag");
         assert_eq!(
             created.replaced.as_deref(),
@@ -926,7 +971,13 @@ mod tests {
     #[test]
     fn tag_create_on_an_unborn_branch_is_an_error() {
         let (_tmp, root) = setup();
-        assert!(with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).is_err());
+        assert!(with_write(&root, |vr| commands::tag::create(
+            vr,
+            &tag_name("v1"),
+            None,
+            false
+        ))
+        .is_err());
     }
 
     #[test]
@@ -934,8 +985,14 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        with_write(&root, |vr| commands::tag::create(vr, "zebra", None, false)).unwrap();
-        with_write(&root, |vr| commands::tag::create(vr, "alpha", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("zebra"), None, false)
+        })
+        .unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("alpha"), None, false)
+        })
+        .unwrap();
 
         let tags = with_repo(&root, commands::tag::list).unwrap();
         let names: Vec<&str> = tags.iter().map(|t| t.name.as_str()).collect();
@@ -956,12 +1013,15 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        })
+        .unwrap();
 
-        with_write(&root, |vr| commands::tag::delete(vr, "v1")).unwrap();
+        with_write(&root, |vr| commands::tag::delete(vr, &tag_name("v1"))).unwrap();
         assert!(with_repo(&root, commands::tag::list).unwrap().is_empty());
         assert!(
-            with_write(&root, |vr| commands::tag::delete(vr, "v1")).is_err(),
+            with_write(&root, |vr| commands::tag::delete(vr, &tag_name("v1"))).is_err(),
             "already gone"
         );
     }
@@ -2100,7 +2160,7 @@ mod tests {
         write(&root, "f.txt", "v2");
         save(&root, "s2");
         with_write(&root, |vr| {
-            commands::tag::create(vr, "release", None, false)
+            commands::tag::create(vr, &tag_name("release"), None, false)
         })
         .unwrap();
 
@@ -2761,7 +2821,7 @@ mod tests {
         write(&root, "a.txt", "one\n");
         let guard = repo.write().unwrap();
         commands::save::run(&guard, "first", false).unwrap();
-        commands::tag::create(&guard, "v1", None, false).unwrap();
+        commands::tag::create(&guard, &tag_name("v1"), None, false).unwrap();
         commands::switch::run(&guard, "feature", false).unwrap();
         drop(guard);
 
@@ -3129,7 +3189,7 @@ mod tests {
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "registry",
+                    branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "publish 1.0",
                     entries: vec![
@@ -3175,7 +3235,7 @@ mod tests {
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "registry",
+                    branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "in memory",
                     entries: vec![TreeEntry::file("only_in_memory.rs", b"x\n".to_vec())],
@@ -3223,7 +3283,7 @@ mod tests {
         let from_disk = save(&root_a, "same message");
         let disk_obj = {
             let repo = Repo::open_and_migrate(&root_a).unwrap();
-            repo.tree_at(&from_disk)
+            repo.tree_at(&SnapshotId::from_stored(from_disk))
                 .unwrap()
                 .into_iter()
                 .find(|f| f.path == "m.rs")
@@ -3237,7 +3297,7 @@ mod tests {
             let guard = repo_b.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "main",
+                    branch: "main".parse().unwrap(),
                     parent: None,
                     message: "same message",
                     entries: vec![TreeEntry::file("m.rs", content)],
@@ -3268,7 +3328,7 @@ mod tests {
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "imported",
+                    branch: "imported".parse().unwrap(),
                     parent: None,
                     message: "windows line endings",
                     entries: vec![TreeEntry::file("crlf.txt", b"a\r\nb\r\nc\r\n".to_vec())],
@@ -3314,7 +3374,7 @@ c
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "registry",
+                    branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "1.0",
                     entries: vec![TreeEntry::file("v.txt", b"1\n".to_vec())],
@@ -3325,7 +3385,7 @@ c
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "registry",
+                    branch: "registry".parse().unwrap(),
                     parent: Some(&first),
                     message: "1.1",
                     entries: vec![TreeEntry::file("v.txt", b"2\n".to_vec())],
@@ -3349,13 +3409,13 @@ c
         // proves save_tree builds the id by the same recipe as save.
         let (_tmp, root) = setup();
         let repo = Repo::open_and_migrate(&root).unwrap();
-        let mut parent_id: Option<String> = None;
+        let mut parent_id: Option<SnapshotId> = None;
         for v in 0..4 {
             let guard = repo.write().unwrap();
             let id = guard
                 .save_tree(SaveTree {
-                    branch: "registry",
-                    parent: parent_id.as_deref(),
+                    branch: "registry".parse().unwrap(),
+                    parent: parent_id.as_ref(),
                     message: &format!("v{}", v),
                     entries: vec![
                         TreeEntry::file("a.txt", format!("version {}\n", v).into_bytes()),
@@ -3381,28 +3441,32 @@ c
         let repo = Repo::open_and_migrate(&root).unwrap();
         let guard = repo.write().unwrap();
 
-        let spec = |branch: &'static str, parent: Option<&'static str>, entries| SaveTree {
-            branch,
-            parent,
-            message: "m",
-            entries,
-        };
+        // A fn rather than a closure: the borrow in `parent` outlives the call, and
+        // closure lifetime elision cannot express that.
+        fn spec<'a>(
+            branch: BranchName,
+            parent: Option<&'a SnapshotId>,
+            entries: Vec<TreeEntry>,
+        ) -> SaveTree<'a> {
+            SaveTree {
+                branch,
+                parent,
+                message: "m",
+                entries,
+            }
+        }
 
+        // "a branch is required, since the tip is derived from it" is no longer a
+        // `save_tree` error: `BranchName` cannot be built empty, so the check moved
+        // from run time into the type.
+        assert!("".parse::<BranchName>().is_err());
+
+        let unknown: SnapshotId = "deadbeefdeadbeef".parse().unwrap();
         assert!(
             guard
                 .save_tree(spec(
-                    "",
-                    None,
-                    vec![TreeEntry::file("a.txt", b"x".to_vec())]
-                ))
-                .is_err(),
-            "a branch is required, since the tip is derived from it"
-        );
-        assert!(
-            guard
-                .save_tree(spec(
-                    "r",
-                    Some("deadbeefdeadbeef"),
+                    "r".parse().unwrap(),
+                    Some(&unknown),
                     vec![TreeEntry::file("a.txt", b"x".to_vec())]
                 ))
                 .is_err(),
@@ -3410,14 +3474,18 @@ c
         );
         assert!(
             guard
-                .save_tree(spec("r", None, vec![TreeEntry::file("", b"x".to_vec())]))
+                .save_tree(spec(
+                    "r".parse().unwrap(),
+                    None,
+                    vec![TreeEntry::file("", b"x".to_vec())]
+                ))
                 .is_err(),
             "an entry needs a path"
         );
         assert!(
             guard
                 .save_tree(spec(
-                    "r",
+                    "r".parse().unwrap(),
                     None,
                     vec![
                         TreeEntry::file("a.txt", b"one".to_vec()),
@@ -3438,7 +3506,7 @@ c
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "registry",
+                    branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "m",
                     entries: vec![TreeEntry::file("src\\deep\\f.rs", b"x\n".to_vec())],
@@ -3460,7 +3528,7 @@ c
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "registry",
+                    branch: "registry".parse().unwrap(),
                     parent: None,
                     message: "m",
                     entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],
@@ -3468,9 +3536,14 @@ c
                 .unwrap()
         };
 
-        assert!(repo.tree_at("deadbeefdeadbeef").is_err());
+        let absent_snapshot: SnapshotId = "deadbeefdeadbeef".parse().unwrap();
+        let absent_object: ObjectHash = "de".repeat(32).parse().unwrap();
+        assert!(repo.tree_at(&absent_snapshot).is_err());
         assert!(repo.read_file_at(&id, "absent.txt").is_err());
-        assert!(repo.read_object("deadbeef").is_err());
+        assert!(repo.read_object(&absent_object).is_err());
+        // A short hash cannot even be an object hash: the store is keyed on the
+        // whole thing, so this is caught before any lookup.
+        assert!("deadbeef".parse::<ObjectHash>().is_err());
     }
 
     // =========================================================================
@@ -3668,7 +3741,7 @@ c
         write(&root, "f.txt", "v2");
         let h2 = save(&root, "s2");
         with_write(&root, |vr| {
-            commands::tag::create(vr, "release", None, false)
+            commands::tag::create(vr, &tag_name("release"), None, false)
         })
         .unwrap();
 
@@ -3996,7 +4069,10 @@ beta
         write(&root, "f.txt", "dev");
         save(&root, "s2");
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
-        with_write(&root, |vr| commands::branches::delete(vr, "dev")).unwrap();
+        with_write(&root, |vr| {
+            commands::branches::delete(vr, &branch_name("dev"))
+        })
+        .unwrap();
 
         let result = with_write(&root, |vr| commands::switch::run(vr, "_deleted_dev", false));
         assert!(result.is_err());
@@ -4039,7 +4115,10 @@ beta
         save(&root, "feat_snap");
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
 
-        with_write(&root, |vr| commands::branches::delete(vr, "feature")).unwrap();
+        with_write(&root, |vr| {
+            commands::branches::delete(vr, &branch_name("feature"))
+        })
+        .unwrap();
 
         // Soft-deleted: snapshots still exist in DB but with renamed branch
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
@@ -4058,7 +4137,9 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "m");
         save(&root, "s1");
-        let result = with_write(&root, |vr| commands::branches::delete(vr, "main"));
+        let result = with_write(&root, |vr| {
+            commands::branches::delete(vr, &branch_name("main"))
+        });
         assert!(result.is_err());
     }
 
@@ -4069,7 +4150,9 @@ beta
         save(&root, "s1");
         with_write(&root, |vr| commands::switch::run(vr, "dev", false)).unwrap();
         // Even from another branch, deleting main is forbidden
-        let result = with_write(&root, |vr| commands::branches::delete(vr, "main"));
+        let result = with_write(&root, |vr| {
+            commands::branches::delete(vr, &branch_name("main"))
+        });
         assert!(result.is_err());
     }
 
@@ -4078,7 +4161,9 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "m");
         save(&root, "s1");
-        let result = with_write(&root, |vr| commands::branches::delete(vr, "ghost_branch"));
+        let result = with_write(&root, |vr| {
+            commands::branches::delete(vr, &branch_name("ghost_branch"))
+        });
         assert!(result.is_err());
     }
 
@@ -4091,7 +4176,10 @@ beta
         write(&root, "f.txt", "f");
         save(&root, "s2");
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
-        with_write(&root, |vr| commands::branches::delete(vr, "feature")).unwrap();
+        with_write(&root, |vr| {
+            commands::branches::delete(vr, &branch_name("feature"))
+        })
+        .unwrap();
 
         // Check the DB: the renamed branch should not appear in normal listing query
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
@@ -4115,7 +4203,10 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         let h1 = save(&root, "s1");
-        with_write(&root, |vr| commands::tag::create(vr, "v1.0", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1.0"), None, false)
+        })
+        .unwrap();
 
         let resolved = with_repo(&root, |r| commands::resolve_snapshot_id(r, "v1.0")).unwrap();
         assert_eq!(resolved, h1);
@@ -4131,7 +4222,7 @@ beta
 
         // Tag the first snapshot explicitly
         with_write(&root, |vr| {
-            commands::tag::create(vr, "old", Some(&h1), false)
+            commands::tag::create(vr, &tag_name("old"), Some(&h1), false)
         })
         .unwrap();
         let resolved = with_repo(&root, |r| commands::resolve_snapshot_id(r, "old")).unwrap();
@@ -4143,11 +4234,16 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        })
+        .unwrap();
 
         write(&root, "f.txt", "v2");
         save(&root, "s2");
-        let result = with_write(&root, |vr| commands::tag::create(vr, "v1", None, false));
+        let result = with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        });
         assert!(
             result.is_err(),
             "Should not allow overwriting without --force"
@@ -4159,11 +4255,17 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        })
+        .unwrap();
 
         write(&root, "f.txt", "v2");
         let h2 = save(&root, "s2");
-        with_write(&root, |vr| commands::tag::create(vr, "v1", None, true)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, true)
+        })
+        .unwrap();
 
         let resolved = with_repo(&root, |r| commands::resolve_snapshot_id(r, "v1")).unwrap();
         assert_eq!(resolved, h2);
@@ -4174,8 +4276,11 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        with_write(&root, |vr| commands::tag::create(vr, "rel", None, false)).unwrap();
-        with_write(&root, |vr| commands::tag::delete(vr, "rel")).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("rel"), None, false)
+        })
+        .unwrap();
+        with_write(&root, |vr| commands::tag::delete(vr, &tag_name("rel"))).unwrap();
 
         let result = with_repo(&root, |r| commands::resolve_snapshot_id(r, "rel"));
         assert!(result.is_err());
@@ -4184,7 +4289,9 @@ beta
     #[test]
     fn tag_delete_nonexistent_is_error() {
         let (_tmp, root) = setup();
-        let result = with_write(&root, |vr| commands::tag::delete(vr, "ghost_tag"));
+        let result = with_write(&root, |vr| {
+            commands::tag::delete(vr, &tag_name("ghost_tag"))
+        });
         assert!(result.is_err());
     }
 
@@ -4192,7 +4299,9 @@ beta
     fn tag_empty_head_is_error() {
         let (_tmp, root) = setup();
         // No snapshots yet — can't tag HEAD
-        let result = with_write(&root, |vr| commands::tag::create(vr, "v1", None, false));
+        let result = with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        });
         assert!(result.is_err());
     }
 
@@ -4201,7 +4310,10 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        with_write(&root, |vr| commands::tag::create(vr, "alpha", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("alpha"), None, false)
+        })
+        .unwrap();
         with_repo(&root, commands::tag::list).unwrap();
     }
 
@@ -5346,7 +5458,7 @@ beta
         write(&root, "f.txt", "v1");
         let h1 = save(&root, "s1");
         with_write(&root, |vr| {
-            commands::tag::create(vr, "release", None, false)
+            commands::tag::create(vr, &tag_name("release"), None, false)
         })
         .unwrap();
         let d = with_repo(&root, |vr| commands::show::run(vr, "release", &None)).unwrap();
@@ -5908,7 +6020,10 @@ beta
         save(&root, "s3");
         with_write(&root, |vr| commands::merge::run(vr, Some("feat"), false)).unwrap();
         save(&root, "merge");
-        with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        })
+        .unwrap();
 
         assert!(
             with_repo(&root, commands::fsck::check)
@@ -6233,7 +6348,10 @@ beta
         save(&a, "s1");
         write(&a, "f.txt", "v2\n");
         let h2 = save(&a, "s2");
-        with_write(&a, |vr| commands::tag::create(vr, "rel", None, false)).unwrap();
+        with_write(&a, |vr| {
+            commands::tag::create(vr, &tag_name("rel"), None, false)
+        })
+        .unwrap();
 
         let bd = TempDir::new().unwrap();
         let bundle = bd.path().join("out.velo");
@@ -6664,7 +6782,10 @@ beta
         let h1 = save(&root, "c1");
         write(&root, "a.py", "l1\nCHANGED\n");
         let h2 = save(&root, "c2");
-        with_write(&root, |vr| commands::tag::create(vr, "v1", None, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("v1"), None, false)
+        })
+        .unwrap();
         write(&root, "a.py", "l1\nWORKING\n");
 
         let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();

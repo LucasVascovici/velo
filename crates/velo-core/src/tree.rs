@@ -13,7 +13,7 @@
 //! let guard = repo.write()?;
 //!
 //! let first = guard.save_tree(SaveTree {
-//!     branch: "registry",
+//!     branch: "registry".parse()?,
 //!     parent: None,
 //!     message: "publish 1.0",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() {}\n".to_vec())],
@@ -22,7 +22,7 @@
 //! // Chain the next one onto it. Nothing was written to disk, and the
 //! // repository's own branch and position are untouched.
 //! let _second = guard.save_tree(SaveTree {
-//!     branch: "registry",
+//!     branch: "registry".parse()?,
 //!     parent: Some(&first),
 //!     message: "publish 1.1",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() -> u8 { 1 }\n".to_vec())],
@@ -32,6 +32,13 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! # Why the ids are typed
+//!
+//! `branch` is a [`BranchName`] and `parent` a [`SnapshotId`], so the two cannot
+//! be swapped and `save_tree` cannot be handed a tag or a hash prefix where a
+//! branch belongs. Both parse from text, so the cost is a `.parse()?` — see
+//! [`crate::ids`] for why user-typed *specs* stay `&str`.
 //!
 //! # Why the branch is explicit
 //!
@@ -50,7 +57,7 @@ use std::path::Path;
 use rusqlite::params;
 
 use crate::error::{RefKind, Result, VeloError};
-use crate::{db, storage, Repo, WriteGuard};
+use crate::{db, storage, BranchName, ObjectHash, Repo, SnapshotId, WriteGuard};
 
 /// What a file is: content, plus how the filesystem should represent it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,9 +131,9 @@ impl TreeEntry {
 pub struct SaveTree<'a> {
     /// Branch to record the snapshot on. Since a tip is derived from this, using
     /// a name of your own keeps the snapshot out of the way of everything else.
-    pub branch: &'a str,
+    pub branch: BranchName,
     /// The snapshot this one follows, or `None` to start a history.
-    pub parent: Option<&'a str>,
+    pub parent: Option<&'a SnapshotId>,
     pub message: &'a str,
     /// The complete contents of the snapshot — this is a whole tree, not a diff.
     pub entries: Vec<TreeEntry>,
@@ -137,7 +144,7 @@ pub struct SaveTree<'a> {
 pub struct TreeFile {
     pub path: String,
     /// The object holding this file's content, for [`Repo::read_object`].
-    pub object: String,
+    pub object: ObjectHash,
     pub kind: FileKind,
 }
 
@@ -152,12 +159,8 @@ impl WriteGuard<'_> {
     /// snapshot built this way is indistinguishable from one built by `save`:
     /// the same bytes yield the same object, and the same tree yields the same
     /// snapshot id.
-    pub fn save_tree(&self, spec: SaveTree<'_>) -> Result<String> {
-        if spec.branch.is_empty() {
-            return Err(VeloError::invalid(
-                "save_tree needs a branch to record the snapshot on.",
-            ));
-        }
+    pub fn save_tree(&self, spec: SaveTree<'_>) -> Result<SnapshotId> {
+        // No empty-branch check: `BranchName` cannot be empty by construction.
         if let Some(parent) = spec.parent {
             let known: bool = self
                 .conn()
@@ -168,7 +171,7 @@ impl WriteGuard<'_> {
                 )
                 .unwrap_or(false);
             if !known {
-                return Err(VeloError::not_found(RefKind::Snapshot, parent));
+                return Err(VeloError::not_found(RefKind::Snapshot, parent.as_str()));
             }
         }
 
@@ -202,9 +205,15 @@ impl WriteGuard<'_> {
             tree.push((path, object, mode));
         }
 
-        let parent = spec.parent.unwrap_or("");
+        let parent = spec.parent.map_or("", |p| p.as_str());
         let timestamp = crate::commands::snapshot_timestamp();
-        let snapshot = crate::commands::snapshot_id(&tree, parent, "", spec.message, &timestamp);
+        let snapshot = SnapshotId::from_stored(crate::commands::snapshot_id(
+            &tree,
+            parent,
+            "",
+            spec.message,
+            &timestamp,
+        ));
 
         let tx = self.transaction()?;
         tx.execute(
@@ -224,7 +233,7 @@ impl WriteGuard<'_> {
         // shared connection, so writing via `self.conn()` here would land inside
         // this transaction anyway — but only by accident of how it is
         // implemented. Being explicit says the branch row commits with the rest.
-        crate::commands::register_branch(&tx, spec.branch, &snapshot)?;
+        crate::commands::register_branch(&tx, &spec.branch, &snapshot)?;
         tx.commit()?;
 
         Ok(snapshot)
@@ -236,7 +245,7 @@ impl Repo {
     ///
     /// Use [`Repo::read_object`] to fetch a file's bytes, or
     /// [`Repo::read_file_at`] to go straight from a path to its content.
-    pub fn tree_at(&self, snapshot: &str) -> Result<Vec<TreeFile>> {
+    pub fn tree_at(&self, snapshot: &SnapshotId) -> Result<Vec<TreeFile>> {
         let known: bool = self
             .conn()
             .query_row(
@@ -246,7 +255,7 @@ impl Repo {
             )
             .unwrap_or(false);
         if !known {
-            return Err(VeloError::not_found(RefKind::Snapshot, snapshot));
+            return Err(VeloError::not_found(RefKind::Snapshot, snapshot.as_str()));
         }
 
         let mut stmt = self.conn().prepare(
@@ -268,9 +277,9 @@ impl Repo {
     /// The content of `path` as it was in `snapshot`.
     ///
     /// For a symlink this is the target path, matching how it was stored.
-    pub fn read_file_at(&self, snapshot: &str, path: impl AsRef<Path>) -> Result<Vec<u8>> {
+    pub fn read_file_at(&self, snapshot: &SnapshotId, path: impl AsRef<Path>) -> Result<Vec<u8>> {
         let rel = db::normalise(&path.as_ref().to_string_lossy());
-        let object: Option<String> = self
+        let object: Option<ObjectHash> = self
             .conn()
             .query_row(
                 "SELECT hash FROM file_map WHERE snapshot_hash = ? AND path = ?",
@@ -283,7 +292,7 @@ impl Repo {
             None => Err(VeloError::invalid(format!(
                 "'{}' is not in snapshot {}.",
                 rel,
-                &snapshot[..8.min(snapshot.len())]
+                snapshot.short()
             ))),
         }
     }
@@ -292,7 +301,7 @@ impl Repo {
     ///
     /// The hash is verified on the way out, so a corrupted store is an error
     /// rather than silently wrong content.
-    pub fn read_object(&self, object: &str) -> Result<Vec<u8>> {
+    pub fn read_object(&self, object: &ObjectHash) -> Result<Vec<u8>> {
         storage::read_object(&self.root().join(".velo/objects"), object)
     }
 }

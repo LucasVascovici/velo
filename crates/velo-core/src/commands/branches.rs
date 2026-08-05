@@ -10,13 +10,12 @@ use std::path::Path;
 use rusqlite::params;
 
 use crate::error::{RefKind, Result, VeloError};
-use crate::Repo;
-use crate::WriteGuard;
+use crate::{BranchName, Repo, SnapshotId, WriteGuard};
 
 /// The snapshot a branch points at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Tip {
-    pub hash: String,
+    pub hash: SnapshotId,
     pub message: String,
     /// Raw stored timestamp; formatting is the consumer's choice.
     pub created_at: String,
@@ -25,7 +24,7 @@ pub struct Tip {
 /// One branch and where it stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Branch {
-    pub name: String,
+    pub name: BranchName,
     /// True for the checked-out branch.
     pub is_current: bool,
     /// `None` only when the tip snapshot is missing. A branch with no commits of
@@ -67,7 +66,7 @@ pub fn list(repo: &Repo) -> Result<Vec<Branch>> {
             });
             Branch {
                 is_current: name.trim() == current,
-                name,
+                name: BranchName::from_stored(name),
                 tip,
             }
         })
@@ -80,7 +79,7 @@ pub fn list(repo: &Repo) -> Result<Vec<Branch>> {
 /// than removed, which is what makes them recoverable. The ref itself is dropped
 /// so the branch stops being listed — and so a branch with no commits of its own
 /// can be deleted at all.
-pub fn delete(guard: &WriteGuard, name: &str) -> Result<()> {
+pub fn delete(guard: &WriteGuard, name: &BranchName) -> Result<()> {
     let conn = guard.conn();
     let current = current_branch(guard.root());
 
@@ -90,7 +89,7 @@ pub fn delete(guard: &WriteGuard, name: &str) -> Result<()> {
             name
         )));
     }
-    if name == "main" {
+    if name.as_str() == "main" {
         return Err(VeloError::invalid(
             "Cannot delete the default 'main' branch.",
         ));
@@ -102,7 +101,7 @@ pub fn delete(guard: &WriteGuard, name: &str) -> Result<()> {
     )?;
     let refs = conn.execute("DELETE FROM branches WHERE name = ?", [name])?;
     if moved == 0 && refs == 0 {
-        return Err(VeloError::not_found(RefKind::Branch, name));
+        return Err(VeloError::not_found(RefKind::Branch, name.as_str()));
     }
     Ok(())
 }
