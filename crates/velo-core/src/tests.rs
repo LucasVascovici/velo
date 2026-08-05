@@ -1005,7 +1005,12 @@ mod tests {
         let h2 = save(&root, "s2");
 
         let created = with_write(&root, |vr| {
-            commands::tag::create(vr, &tag_name("old"), Some(&h1), false)
+            commands::tag::create(
+                vr,
+                &tag_name("old"),
+                Some(&SnapshotId::from_stored(h1.clone())),
+                false,
+            )
         })
         .unwrap();
         assert_eq!(created.snapshot, h1);
@@ -3276,7 +3281,7 @@ mod tests {
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "registry".parse().unwrap(),
+                    branch: &branch_name("registry"),
                     parent: None,
                     message: "publish 1.0",
                     entries: vec![
@@ -3323,7 +3328,7 @@ mod tests {
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "registry".parse().unwrap(),
+                    branch: &branch_name("registry"),
                     parent: None,
                     message: "in memory",
                     entries: vec![TreeEntry::file("only_in_memory.rs", b"x\n".to_vec())],
@@ -3392,7 +3397,7 @@ mod tests {
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "main".parse().unwrap(),
+                    branch: &branch_name("main"),
                     parent: None,
                     message: "same message",
                     entries: vec![TreeEntry::file("m.rs", content)],
@@ -3424,7 +3429,7 @@ mod tests {
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "imported".parse().unwrap(),
+                    branch: &branch_name("imported"),
                     parent: None,
                     message: "windows line endings",
                     entries: vec![TreeEntry::file("crlf.txt", b"a\r\nb\r\nc\r\n".to_vec())],
@@ -3471,7 +3476,7 @@ c
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "registry".parse().unwrap(),
+                    branch: &branch_name("registry"),
                     parent: None,
                     message: "1.0",
                     entries: vec![TreeEntry::file("v.txt", b"1\n".to_vec())],
@@ -3483,7 +3488,7 @@ c
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "registry".parse().unwrap(),
+                    branch: &branch_name("registry"),
                     parent: Some(&first),
                     message: "1.1",
                     entries: vec![TreeEntry::file("v.txt", b"2\n".to_vec())],
@@ -3521,7 +3526,7 @@ c
             let id = guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "registry".parse().unwrap(),
+                    branch: &branch_name("registry"),
                     parent: parent_id.as_ref(),
                     message: &format!("v{}", v),
                     entries: vec![
@@ -3551,7 +3556,7 @@ c
         // A fn rather than a closure: the borrow in `parent` outlives the call, and
         // closure lifetime elision cannot express that.
         fn spec<'a>(
-            branch: BranchName,
+            branch: &'a BranchName,
             parent: Option<&'a SnapshotId>,
             entries: Vec<TreeEntry>,
         ) -> SaveTree<'a> {
@@ -3573,7 +3578,7 @@ c
         assert!(
             guard
                 .save_tree(spec(
-                    "r".parse().unwrap(),
+                    &branch_name("r"),
                     Some(&unknown),
                     vec![TreeEntry::file("a.txt", b"x".to_vec())]
                 ))
@@ -3583,7 +3588,7 @@ c
         assert!(
             guard
                 .save_tree(spec(
-                    "r".parse().unwrap(),
+                    &branch_name("r"),
                     None,
                     vec![TreeEntry::file("", b"x".to_vec())]
                 ))
@@ -3593,7 +3598,7 @@ c
         assert!(
             guard
                 .save_tree(spec(
-                    "r".parse().unwrap(),
+                    &branch_name("r"),
                     None,
                     vec![
                         TreeEntry::file("a.txt", b"one".to_vec()),
@@ -3615,7 +3620,7 @@ c
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "registry".parse().unwrap(),
+                    branch: &branch_name("registry"),
                     parent: None,
                     message: "m",
                     entries: vec![TreeEntry::file("src\\deep\\f.rs", b"x\n".to_vec())],
@@ -3638,7 +3643,7 @@ c
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
-                    branch: "registry".parse().unwrap(),
+                    branch: &branch_name("registry"),
                     parent: None,
                     message: "m",
                     entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],
@@ -4332,7 +4337,12 @@ beta
 
         // Tag the first snapshot explicitly
         with_write(&root, |vr| {
-            commands::tag::create(vr, &tag_name("old"), Some(&h1), false)
+            commands::tag::create(
+                vr,
+                &tag_name("old"),
+                Some(&SnapshotId::from_stored(h1.clone())),
+                false,
+            )
         })
         .unwrap();
         let resolved = with_repo(&root, |r| commands::resolve_snapshot_id(r, "old")).unwrap();
@@ -6480,7 +6490,7 @@ beta
             let guard = repo_a.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "main".parse().unwrap(),
+                    branch: &branch_name("main"),
                     parent: None,
                     message: "published",
                     entries: vec![TreeEntry::file(
@@ -7238,7 +7248,7 @@ beta
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: branch_name("a"),
+                    branch: &branch_name("a"),
                     parent: None,
                     message: "base",
                     entries: vec![
@@ -7290,7 +7300,7 @@ beta
             let guard = repo.write().unwrap();
             let left = guard
                 .save_tree(SaveTree {
-                    branch: branch_name("l"),
+                    branch: &branch_name("l"),
                     parent: Some(&base),
                     message: "m",
                     entries: by_value,
@@ -7299,7 +7309,7 @@ beta
                 .unwrap();
             let right = guard
                 .save_tree(SaveTree {
-                    branch: branch_name("r"),
+                    branch: &branch_name("r"),
                     parent: Some(&base),
                     message: "m",
                     entries: by_reference,
@@ -7338,7 +7348,7 @@ beta
         let absent: ObjectHash = "ab".repeat(32).parse().unwrap();
         let err = guard
             .save_tree(SaveTree {
-                branch: branch_name("a"),
+                branch: &branch_name("a"),
                 parent: None,
                 message: "m",
                 entries: vec![TreeEntry::stored("f.txt", absent, FileKind::Regular)],
@@ -7349,6 +7359,40 @@ beta
             matches!(err, VeloError::MissingObject { .. }),
             "expected MissingObject, got {:?}",
             err
+        );
+    }
+
+    /// Asking about a branch directly, rather than resolving it as a spec and
+    /// reading the error.
+    ///
+    /// The two questions are genuinely different: `switch` creates a branch that
+    /// exists with nothing on it, and a consumer needs to tell that from a branch
+    /// that was never created.
+    #[test]
+    fn a_branch_can_be_asked_about_without_interpreting_an_error() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "x");
+        let first = save(&root, "one");
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let main = branch_name("main");
+        assert!(repo.branch_exists(&main).unwrap());
+        assert_eq!(repo.branch_tip(&main).unwrap().unwrap(), first);
+
+        let ghost = branch_name("never_created");
+        assert!(!repo.branch_exists(&ghost).unwrap());
+        assert!(repo.branch_tip(&ghost).unwrap().is_none());
+        drop(repo);
+
+        // A branch created but not committed to exists, yet has no tip — which is
+        // exactly the case resolving-and-catching-NotFound cannot express.
+        with_write(&root, |vr| commands::switch::run(vr, "unborn", false)).unwrap();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let unborn = branch_name("unborn");
+        assert!(repo.branch_exists(&unborn).unwrap(), "switch created it");
+        assert!(
+            repo.branch_tip(&unborn).unwrap().is_none(),
+            "but nothing has been saved on it"
         );
     }
 
@@ -7370,7 +7414,7 @@ beta
             let guard = repo.write().unwrap();
             let plain = guard
                 .save_tree(SaveTree {
-                    branch: "a".parse().unwrap(),
+                    branch: &branch_name("a"),
                     parent: None,
                     message: "m",
                     entries: entries(),
@@ -7379,7 +7423,7 @@ beta
                 .unwrap();
             let with_meta = guard
                 .save_tree(SaveTree {
-                    branch: "b".parse().unwrap(),
+                    branch: &branch_name("b"),
                     parent: None,
                     message: "m",
                     entries: entries(),
@@ -7533,7 +7577,7 @@ beta
             let guard = repo.write().unwrap();
             guard
                 .save_tree(SaveTree {
-                    branch: "registry".parse().unwrap(),
+                    branch: &branch_name("registry"),
                     parent: None,
                     message: "m",
                     entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],

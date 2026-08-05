@@ -29,7 +29,7 @@ pub fn print(status: &Status) {
 
 fn print_header(status: &Status) {
     let position = match &status.position {
-        Some(hash) => style(hash).yellow().to_string(),
+        Some(hash) => style(super::id::short(hash)).yellow().to_string(),
         None => style("no snapshots yet").dim().to_string(),
     };
     print!(

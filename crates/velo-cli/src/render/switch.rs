@@ -12,7 +12,7 @@ pub fn print(outcome: &Outcome) {
         Outcome::Switched { branch, at } => println!(
             "Switched to branch '{}' at snapshot {}",
             style(branch).cyan().bold(),
-            style(at).yellow()
+            style(super::id::short(at)).yellow()
         ),
 
         Outcome::StartedUnborn {
@@ -32,7 +32,7 @@ pub fn print(outcome: &Outcome) {
                     verb,
                     style(branch).cyan().bold(),
                     style("velo save").cyan(),
-                    style(from).yellow()
+                    style(super::id::short(from)).yellow()
                 ),
                 None => println!(
                     "{} {} branch '{}' — no commits yet, so your first {} starts its history.",

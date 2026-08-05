@@ -295,10 +295,11 @@ fn print_graph(history: &History) {
             }
         }
 
+        let short = super::id::short(hash);
         let hash_s = if is_head {
-            style(hash).white().bold().to_string()
+            style(short).white().bold().to_string()
         } else {
-            style(hash).white().to_string()
+            style(short).white().to_string()
         };
         println!(
             "{}  {}  {}  {}  {}{}",

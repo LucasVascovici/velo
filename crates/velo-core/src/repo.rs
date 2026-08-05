@@ -14,7 +14,7 @@ use std::time::{Duration, Instant};
 use crate::error::{Error, Result};
 use crate::lock::RepoLock;
 use crate::progress::{Observer, Phase, PhaseGuard, Silent};
-use crate::{db, FORMAT_VERSION};
+use crate::{db, BranchName, SnapshotId, FORMAT_VERSION};
 
 /// An open Velo repository.
 ///
@@ -171,6 +171,26 @@ impl Repo {
     /// it would put `rusqlite` back in the public API.
     pub(crate) fn conn(&self) -> &rusqlite::Connection {
         &self.conn
+    }
+
+    /// The newest snapshot on `branch`, or `None` when it has none yet.
+    ///
+    /// A branch's tip is *derived* — the newest snapshot carrying that name — so
+    /// this is the direct question. Answering it by resolving the branch as a
+    /// spec and interpreting [`Error::NotFound`] works, but conflates "the branch
+    /// is unborn" with "there is no such branch"; see [`Repo::branch_exists`].
+    pub fn branch_tip(&self, branch: &BranchName) -> Result<Option<SnapshotId>> {
+        Ok(crate::commands::branch_tip(&self.conn, branch.as_str()).map(SnapshotId::from_stored))
+    }
+
+    /// Whether `branch` exists, including one created but not yet committed to.
+    ///
+    /// Distinct from [`Repo::branch_tip`] returning `Some`: `velo switch new` and
+    /// a fresh `init` both create a branch that exists with no snapshots on it.
+    pub fn branch_exists(&self, branch: &BranchName) -> Result<bool> {
+        Ok(crate::commands::all_branch_names(&self.conn)
+            .iter()
+            .any(|b| b == branch.as_str()))
     }
 
     /// Repository format version as recorded on disk.

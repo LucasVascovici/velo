@@ -52,17 +52,23 @@ pub fn list(repo: &Repo) -> Result<Vec<Tag>> {
 /// Tag `snapshot` — or the current position when `None` — as `name`.
 ///
 /// Fails if the name is taken unless `force` is set.
+/// Tag `snapshot`, or the current position when it is `None`.
+///
+/// Takes a resolved [`SnapshotId`] rather than a spec: a caller that already has
+/// an id — everyone who just saved something — would otherwise hand back text to
+/// be resolved a second time. Resolve a user's spec with
+/// [`resolve_snapshot_id`](crate::commands::resolve_snapshot_id) first.
 pub fn create(
     guard: &WriteGuard,
     name: &TagName,
-    snapshot: Option<&str>,
+    snapshot: Option<&SnapshotId>,
     force: bool,
 ) -> Result<Created> {
     let root = guard.root();
     let conn = guard.conn();
 
     let target = match snapshot {
-        Some(id) => crate::commands::resolve_snapshot_id(guard.repo(), id)?.into_string(),
+        Some(id) => id.clone().into_string(),
         None => {
             let position = std::fs::read_to_string(root.join(".velo/PARENT"))
                 .unwrap_or_default()

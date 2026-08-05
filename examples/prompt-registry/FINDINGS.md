@@ -158,18 +158,36 @@ consumer would fork its own history the moment it took the cheap path; and a
 `MissingObject`, so the API cannot manufacture corruption that only `fsck` would
 find later.
 
-## 5. Smaller things
+## 5. Smaller things — all fixed
 
-- **`SaveTree.branch` is owned but taken per call.** A consumer that publishes to
-  one branch forever clones the same `BranchName` on every save. Harmless, but
-  `save_tree` could take `&BranchName` now that the ergonomic argument for owning
-  it (inline `"x".parse()?`) is served just as well by a borrow of a stored field.
-- **No way to ask "does this branch exist?"** other than resolving its tip and
-  interpreting the error. `branches::list` returns everything, which is fine but
-  heavier than the question.
-- **`tag::create` takes `Option<&str>` for the snapshot** while everything else
-  now takes `&SnapshotId`. The registry has an id in hand and has to hand over
-  `Some(version.as_str())`, going back through resolution that already happened.
+- **`SaveTree.branch` was owned but taken per call**, so a consumer publishing to
+  one branch cloned the same `BranchName` on every save — and it sat next to
+  `parent`, which was already borrowed. It is now `&'a BranchName`. The cost is
+  that a one-off needs a binding first (`let branch = "registry".parse()?;`)
+  instead of an inline `.parse()?`, which is the right trade for the field that a
+  long-lived consumer touches on every write.
+- **Asking "does this branch exist?"** meant resolving its tip as a spec and
+  interpreting the error, which conflates two different answers. `Repo::branch_tip`
+  and `Repo::branch_exists` ask directly, and they are genuinely distinct: `velo
+  switch new` creates a branch that *exists* with *no tip*. The registry's `tip()`
+  went from a three-arm match on an error to one line.
+- **`tag::create` took `Option<&str>`** while everything around it took
+  `&SnapshotId`, so a caller holding an id handed back text to be resolved a
+  second time. It takes `Option<&SnapshotId>` now; the CLI resolves the user's
+  spec at the boundary, which is where resolution belongs anyway.
+
+## 6. Found while verifying the above: full-width ids leaked into output
+
+Not an embedding finding, but it surfaced from running the binary after these
+changes. Format v2 made stored ids 64 characters, and while most renderers had
+been converted to abbreviate, **eight had not**: `status`, `tag`, `undo`, `redo`,
+`show`'s parent line, `restore`, `switch`, `merge`, and `history --graph`. They
+printed the id verbatim, which under v1's 16-character ids had looked correct by
+accident. `velo tag`'s table blew out to a 64-wide column.
+
+The v4.0.0 release notes claimed ids were "abbreviated consistently wherever they
+are printed". That was true of the renderers that had been converted and false for
+these. Every id-printing site now goes through `render::id::short`.
 
 ## What was genuinely good
 

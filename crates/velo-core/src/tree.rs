@@ -13,13 +13,16 @@
 //! let repo = velo_core::Repo::discover(std::path::Path::new("."))?;
 //! let guard = repo.write()?;
 //!
+//! // Bound once and borrowed by each save, rather than cloned per call.
+//! let branch: velo_core::BranchName = "registry".parse()?;
+//!
 //! // Provenance travels with the snapshot instead of being smuggled into the
 //! // message. It is part of the id, so it cannot be quietly rewritten later.
 //! let mut meta = SnapshotMeta::new();
 //! meta.set("registry", "published_by", "ci")?;
 //!
 //! let first = guard.save_tree(SaveTree {
-//!     branch: "registry".parse()?,
+//!     branch: &branch,
 //!     parent: None,
 //!     message: "publish 1.0",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() {}\n".to_vec())],
@@ -29,7 +32,7 @@
 //! // Chain the next one onto it. Nothing was written to disk, and the
 //! // repository's own branch and position are untouched.
 //! let _second = guard.save_tree(SaveTree {
-//!     branch: "registry".parse()?,
+//!     branch: &branch,
 //!     parent: Some(&first),
 //!     message: "publish 1.1",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() -> u8 { 1 }\n".to_vec())],
@@ -194,7 +197,11 @@ impl TreeEntry {
 pub struct SaveTree<'a> {
     /// Branch to record the snapshot on. Since a tip is derived from this, using
     /// a name of your own keeps the snapshot out of the way of everything else.
-    pub branch: BranchName,
+    ///
+    /// Borrowed, like `parent`: a consumer that publishes to one branch holds a
+    /// `BranchName` and would otherwise clone it on every save. For a one-off,
+    /// bind it first — `let branch = "registry".parse()?;`.
+    pub branch: &'a BranchName,
     /// The snapshot this one follows, or `None` to start a history.
     pub parent: Option<&'a SnapshotId>,
     pub message: &'a str,
@@ -333,7 +340,7 @@ impl WriteGuard<'_> {
         // shared connection, so writing via `self.conn()` here would land inside
         // this transaction anyway — but only by accident of how it is
         // implemented. Being explicit says the branch row commits with the rest.
-        crate::commands::register_branch(&tx, &spec.branch, &snapshot)?;
+        crate::commands::register_branch(&tx, spec.branch, &snapshot)?;
         tx.commit()?;
 
         Ok(snapshot)

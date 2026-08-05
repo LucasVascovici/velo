@@ -1511,7 +1511,13 @@ fn run(cli: Cli) -> Result<()> {
                 render::tag::print_deleted(&name);
             } else if let Some(name) = name {
                 let name: TagName = name.parse()?;
-                let created = commands::tag::create(write(), &name, snapshot.as_deref(), force)?;
+                // The user types a spec; resolving it here means `tag::create`
+                // takes the id it actually needs.
+                let target = snapshot
+                    .as_deref()
+                    .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                    .transpose()?;
+                let created = commands::tag::create(write(), &name, target.as_ref(), force)?;
                 render::tag::print_created(&created);
             } else {
                 render::tag::print_list(&commands::tag::list(&repo)?);
