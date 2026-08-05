@@ -66,6 +66,7 @@ pub mod repo;
 pub mod serve;
 pub mod storage;
 pub mod transport;
+pub mod tree;
 
 #[cfg(test)]
 mod tests;

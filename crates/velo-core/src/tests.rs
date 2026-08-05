@@ -3116,6 +3116,364 @@ mod tests {
     }
 
     // =========================================================================
+    // in-memory trees (2.1)
+    // =========================================================================
+
+    #[test]
+    fn a_tree_saved_from_memory_reads_back() {
+        use crate::tree::{FileKind, SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let id = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "registry",
+                    parent: None,
+                    message: "publish 1.0",
+                    entries: vec![
+                        TreeEntry::file("pkg/lib.rs", b"pub fn f() {}\n".to_vec()),
+                        TreeEntry::executable("bin/run.sh", b"#!/bin/sh\n".to_vec()),
+                        TreeEntry::symlink("pkg/latest", "lib.rs"),
+                    ],
+                })
+                .unwrap()
+        };
+
+        assert_eq!(
+            repo.read_file_at(&id, "pkg/lib.rs").unwrap(),
+            b"pub fn f() {}\n"
+        );
+        // A symlink's content is its target, matching how it was stored.
+        assert_eq!(repo.read_file_at(&id, "pkg/latest").unwrap(), b"lib.rs");
+
+        let tree = repo.tree_at(&id).unwrap();
+        let paths: Vec<&str> = tree.iter().map(|f| f.path.as_str()).collect();
+        assert_eq!(paths, vec!["bin/run.sh", "pkg/latest", "pkg/lib.rs"]);
+        let kind = |p: &str| tree.iter().find(|f| f.path == p).unwrap().kind;
+        assert_eq!(kind("pkg/lib.rs"), FileKind::Regular);
+        assert_eq!(kind("bin/run.sh"), FileKind::Executable);
+        assert_eq!(kind("pkg/latest"), FileKind::Symlink);
+
+        // And the raw object is reachable by hash.
+        let obj = &tree.iter().find(|f| f.path == "pkg/lib.rs").unwrap().object;
+        assert_eq!(repo.read_object(obj).unwrap(), b"pub fn f() {}\n");
+    }
+
+    #[test]
+    fn saving_a_tree_leaves_the_working_tree_and_position_alone() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        write(&root, "on_disk.txt", "disk content\n");
+        let disk_snapshot = save(&root, "from disk");
+        let position_before = parent(&root);
+        let branch_before = head(&root);
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let id = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "registry",
+                    parent: None,
+                    message: "in memory",
+                    entries: vec![TreeEntry::file("only_in_memory.rs", b"x\n".to_vec())],
+                })
+                .unwrap()
+        };
+        assert_ne!(id, disk_snapshot);
+
+        // This is the safety property the API is built around.
+        assert_eq!(parent(&root), position_before, "PARENT must not move");
+        assert_eq!(head(&root), branch_before, "HEAD must not move");
+        assert!(
+            !root.join("only_in_memory.rs").exists(),
+            "nothing may be written to the working tree"
+        );
+        assert_eq!(
+            read(&root, "on_disk.txt"),
+            "disk content\n",
+            "existing files must be untouched"
+        );
+        assert!(
+            commands::get_dirty_files(&repo).is_empty(),
+            "the tree must still look clean"
+        );
+        // `main` is where it was; only the caller's own branch moved.
+        assert_eq!(
+            commands::history::run(&repo, false, 10, None, None)
+                .unwrap()
+                .entries
+                .len(),
+            1,
+            "main's history must be unchanged"
+        );
+    }
+
+    #[test]
+    fn an_in_memory_save_is_indistinguishable_from_a_disk_save() {
+        use crate::tree::{SaveTree, TreeEntry};
+        // The claim that makes this a second adapter onto one store rather than a
+        // parallel format: identical content must land in the identical object.
+        let content = b"fn main() { println!(\"hi\"); }\n".to_vec();
+
+        let (_tmp_a, root_a) = setup();
+        write(&root_a, "m.rs", std::str::from_utf8(&content).unwrap());
+        let from_disk = save(&root_a, "same message");
+        let disk_obj = {
+            let repo = Repo::open_and_migrate(&root_a).unwrap();
+            repo.tree_at(&from_disk)
+                .unwrap()
+                .into_iter()
+                .find(|f| f.path == "m.rs")
+                .unwrap()
+                .object
+        };
+
+        let (_tmp_b, root_b) = setup();
+        let repo_b = Repo::open_and_migrate(&root_b).unwrap();
+        let from_memory = {
+            let guard = repo_b.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "main",
+                    parent: None,
+                    message: "same message",
+                    entries: vec![TreeEntry::file("m.rs", content)],
+                })
+                .unwrap()
+        };
+        let memory_obj = repo_b
+            .tree_at(&from_memory)
+            .unwrap()
+            .into_iter()
+            .find(|f| f.path == "m.rs")
+            .unwrap()
+            .object;
+
+        assert_eq!(
+            disk_obj, memory_obj,
+            "the same bytes must produce the same object either way"
+        );
+    }
+
+    #[test]
+    fn crlf_content_survives_a_round_trip_through_the_working_tree() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let id = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "imported",
+                    parent: None,
+                    message: "windows line endings",
+                    entries: vec![TreeEntry::file("crlf.txt", b"a\r\nb\r\nc\r\n".to_vec())],
+                })
+                .unwrap()
+        };
+
+        // Stored normalised, exactly as the filesystem path would store it.
+        assert_eq!(repo.read_file_at(&id, "crlf.txt").unwrap(), b"a\nb\nc\n");
+
+        // The reason it matters: restore writes the stored bytes, and the dirty
+        // check re-hashes them. Storing raw CRLF would make this file read as
+        // modified forever.
+        {
+            let guard = repo.write().unwrap();
+            commands::restore::run(&guard, &id, true, &[]).unwrap();
+        }
+        // `.veloignore` is on disk from `init` and deliberately not in this tree,
+        // so it reads as new — that is correct. The claim under test is narrower:
+        // the restored file itself must not read as modified.
+        let dirty = commands::get_dirty_files(&repo);
+        assert!(
+            !dirty.contains_key("crlf.txt"),
+            "a restored file must not immediately look modified, got {:?}",
+            dirty
+        );
+        assert_eq!(
+            read(&root, "crlf.txt"),
+            "a
+b
+c
+"
+        );
+    }
+
+    #[test]
+    fn trees_chain_through_their_parent() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let first = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "registry",
+                    parent: None,
+                    message: "1.0",
+                    entries: vec![TreeEntry::file("v.txt", b"1\n".to_vec())],
+                })
+                .unwrap()
+        };
+        let second = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "registry",
+                    parent: Some(&first),
+                    message: "1.1",
+                    entries: vec![TreeEntry::file("v.txt", b"2\n".to_vec())],
+                })
+                .unwrap()
+        };
+
+        // Each version is still readable at its own snapshot.
+        assert_eq!(repo.read_file_at(&first, "v.txt").unwrap(), b"1\n");
+        assert_eq!(repo.read_file_at(&second, "v.txt").unwrap(), b"2\n");
+
+        let history = commands::history::run(&repo, false, 10, Some("registry"), None).unwrap();
+        let messages: Vec<&str> = history.entries.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(messages, vec!["1.1", "1.0"]);
+    }
+
+    #[test]
+    fn a_repository_built_only_from_memory_passes_fsck() {
+        use crate::tree::{SaveTree, TreeEntry};
+        // Snapshot ids are content-addressed and fsck recomputes them, so this
+        // proves save_tree builds the id by the same recipe as save.
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let mut parent_id: Option<String> = None;
+        for v in 0..4 {
+            let guard = repo.write().unwrap();
+            let id = guard
+                .save_tree(SaveTree {
+                    branch: "registry",
+                    parent: parent_id.as_deref(),
+                    message: &format!("v{}", v),
+                    entries: vec![
+                        TreeEntry::file("a.txt", format!("version {}\n", v).into_bytes()),
+                        TreeEntry::file("b.txt", b"constant\n".to_vec()),
+                    ],
+                })
+                .unwrap();
+            parent_id = Some(id);
+        }
+
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(
+            report.is_healthy(),
+            "in-memory snapshots must verify: {:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn save_tree_rejects_input_it_cannot_store_faithfully() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let guard = repo.write().unwrap();
+
+        let spec = |branch: &'static str, parent: Option<&'static str>, entries| SaveTree {
+            branch,
+            parent,
+            message: "m",
+            entries,
+        };
+
+        assert!(
+            guard
+                .save_tree(spec(
+                    "",
+                    None,
+                    vec![TreeEntry::file("a.txt", b"x".to_vec())]
+                ))
+                .is_err(),
+            "a branch is required, since the tip is derived from it"
+        );
+        assert!(
+            guard
+                .save_tree(spec(
+                    "r",
+                    Some("deadbeefdeadbeef"),
+                    vec![TreeEntry::file("a.txt", b"x".to_vec())]
+                ))
+                .is_err(),
+            "an unknown parent would create dangling history"
+        );
+        assert!(
+            guard
+                .save_tree(spec("r", None, vec![TreeEntry::file("", b"x".to_vec())]))
+                .is_err(),
+            "an entry needs a path"
+        );
+        assert!(
+            guard
+                .save_tree(spec(
+                    "r",
+                    None,
+                    vec![
+                        TreeEntry::file("a.txt", b"one".to_vec()),
+                        TreeEntry::file("a.txt", b"two".to_vec()),
+                    ]
+                ))
+                .is_err(),
+            "a duplicate path is ambiguous, not a silent last-wins"
+        );
+    }
+
+    #[test]
+    fn windows_separators_in_a_path_are_normalised() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let id = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "registry",
+                    parent: None,
+                    message: "m",
+                    entries: vec![TreeEntry::file("src\\deep\\f.rs", b"x\n".to_vec())],
+                })
+                .unwrap()
+        };
+        assert_eq!(repo.tree_at(&id).unwrap()[0].path, "src/deep/f.rs");
+        // Readable by either spelling.
+        assert_eq!(repo.read_file_at(&id, "src/deep/f.rs").unwrap(), b"x\n");
+        assert_eq!(repo.read_file_at(&id, "src\\deep\\f.rs").unwrap(), b"x\n");
+    }
+
+    #[test]
+    fn reads_of_things_that_are_not_there_are_errors() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let id = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: "registry",
+                    parent: None,
+                    message: "m",
+                    entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],
+                })
+                .unwrap()
+        };
+
+        assert!(repo.tree_at("deadbeefdeadbeef").is_err());
+        assert!(repo.read_file_at(&id, "absent.txt").is_err());
+        assert!(repo.read_object("deadbeef").is_err());
+    }
+
+    // =========================================================================
     // undo
     // =========================================================================
 
