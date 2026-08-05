@@ -318,7 +318,7 @@ follow-up task. The existing fixture helpers *are* the first version of
 
 The capability work. Without 2.1 every consumer marshals through temp files.
 
-### 2.0 Progress reporting 🟡
+### 2.0 Progress reporting ✅ **DONE**
 
 The one thing Phase 1 made worse: returning data means nothing can be rendered
 until the operation finishes. Fixing it is the last piece of "core reports,
@@ -412,13 +412,13 @@ free, but "what state is left behind when a fetch is cancelled halfway" is a
 correctness question that deserves its own design — and the answer depends on
 2.1. Adding it later is not a breaking change.
 
-*`Transferring` is indeterminate.* `transport` currently moves a pack with a
-single `read_to_end` / `write_all`, so there is no loop to report from. Byte
-counts need the transport restructured into chunked I/O, which is a self-contained
-follow-up (touching `transport.rs` and both directions of `serve.rs`) and is where
-progress would matter most, since the wire is the slowest phase over `ssh://`.
-Until then the phase is announced with `total: None` so a consumer can show a
-spinner.
+*`Transferring` reports bytes but no total.* The transport now moves a pack in
+64 KiB chunks in both directions, so a slow link shows a live byte count instead
+of a static marker. It stays **indeterminate** because the pack is framed by EOF,
+not a length prefix — the reader cannot know the size in advance. Giving it one
+means length-prefixing the pack, and since `serve-upload` / `serve-receive` run on
+the far host (possibly an older build) that is a wire-format break needing a
+negotiated protocol version. Deliberately not done.
 
 **Sites to wire.** Each already has a loop; none needs restructuring.
 

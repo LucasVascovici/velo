@@ -18,6 +18,13 @@
 //!   `S→C` refs · `C→S` client's "have" hashes then EOF · `S→C` pack then EOF.
 //! **receive** (server accepts a push):
 //!   `S→C` refs · `C→S` branch, new_tip, pack then EOF · `S→C` status string.
+//!
+//! The pack is framed by EOF rather than a length prefix, which is why transfer
+//! progress is reported as a running byte count with no total: the reader cannot
+//! know the size in advance. Giving it one means length-prefixing the pack, and
+//! that is a wire-format break — `serve-upload` / `serve-receive` run on the far
+//! host, which may be an older build — so it would need a negotiated protocol
+//! version. Deliberately not done here.
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -27,6 +34,7 @@ use std::process::{Child, Command, Stdio};
 use crate::commands::bundle::{self, Bundle};
 use crate::commands::{all_branch_tips, branch_tip};
 use crate::error::{Result, VeloError};
+use crate::progress::PhaseGuard;
 
 pub struct RemoteRef {
     pub branch: String,
@@ -45,7 +53,14 @@ pub enum PushOutcome {
 pub trait Remote {
     /// Return the remote's branch tips and a pack of everything reachable from
     /// them that isn't already in `have`.
-    fn fetch(&mut self, have: &HashSet<String>) -> Result<(Vec<RemoteRef>, Bundle)>;
+    ///
+    /// `progress` is ticked as bytes move. A transport that doesn't touch a wire
+    /// ignores it.
+    fn fetch(
+        &mut self,
+        have: &HashSet<String>,
+        progress: &PhaseGuard,
+    ) -> Result<(Vec<RemoteRef>, Bundle)>;
 
     /// Push `branch` at `new_tip`.
     ///
@@ -58,8 +73,16 @@ pub trait Remote {
         branch: &str,
         new_tip: &str,
         build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
+        progress: &PhaseGuard,
     ) -> Result<PushOutcome>;
 }
+
+/// How much of a pack to move between progress ticks.
+///
+/// 64 KiB keeps the observer to roughly sixteen calls per megabyte — frequent
+/// enough to look live, rare enough that the reporting costs nothing next to the
+/// I/O.
+const CHUNK: usize = 64 * 1024;
 
 /// How to reach a remote that needs a subprocess.
 ///
@@ -124,7 +147,13 @@ pub struct LocalRemote {
 }
 
 impl Remote for LocalRemote {
-    fn fetch(&mut self, have: &HashSet<String>) -> Result<(Vec<RemoteRef>, Bundle)> {
+    fn fetch(
+        &mut self,
+        have: &HashSet<String>,
+        _progress: &PhaseGuard,
+    ) -> Result<(Vec<RemoteRef>, Bundle)> {
+        // No wire: a local remote reads the other repository's database directly,
+        // so there is nothing to report moving.
         // Reading the far repository goes through `Repo` so its schema version is
         // checked too — a remote written by a newer Velo is refused, not misread.
         let repo = crate::Repo::open_and_migrate(&self.root)?;
@@ -153,6 +182,7 @@ impl Remote for LocalRemote {
         branch: &str,
         new_tip: &str,
         build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
+        _progress: &PhaseGuard,
     ) -> Result<PushOutcome> {
         // A local push writes into *another* repository, so it opens that one and
         // takes its lock. The guard is both the lock and the write permission.
@@ -271,7 +301,11 @@ pub struct StreamRemote {
 }
 
 impl Remote for StreamRemote {
-    fn fetch(&mut self, have: &HashSet<String>) -> Result<(Vec<RemoteRef>, Bundle)> {
+    fn fetch(
+        &mut self,
+        have: &HashSet<String>,
+        progress: &PhaseGuard,
+    ) -> Result<(Vec<RemoteRef>, Bundle)> {
         let mut child = spawn_server(&self.url, "serve-upload", &self.spawn)?;
         let mut stdin = child.stdin.take().expect("piped stdin");
         let mut stdout = child.stdout.take().expect("piped stdout");
@@ -284,9 +318,18 @@ impl Remote for StreamRemote {
         }
         stdin.flush().ok();
         drop(stdin);
-        // S→C pack
+        // S→C pack, in chunks so the caller sees it arriving. Read to EOF: the
+        // sender does not announce a length, so there is no total to report.
         let mut packbytes = Vec::new();
-        stdout.read_to_end(&mut packbytes).map_err(VeloError::Io)?;
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            let n = stdout.read(&mut buf).map_err(VeloError::Io)?;
+            if n == 0 {
+                break;
+            }
+            packbytes.extend_from_slice(&buf[..n]);
+            progress.advance(n as u64);
+        }
         finish(child)?;
         let bundle = bundle::decode(&packbytes)?;
         Ok((refs, bundle))
@@ -297,6 +340,7 @@ impl Remote for StreamRemote {
         branch: &str,
         new_tip: &str,
         build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
+        progress: &PhaseGuard,
     ) -> Result<PushOutcome> {
         let mut child = spawn_server(&self.url, "serve-receive", &self.spawn)?;
         let mut stdin = child.stdin.take().expect("piped stdin");
@@ -308,9 +352,13 @@ impl Remote for StreamRemote {
         // C→S branch, new_tip, pack, then EOF
         write_string(&mut stdin, branch)?;
         write_string(&mut stdin, new_tip)?;
-        stdin
-            .write_all(&bundle::encode(&pack))
-            .map_err(VeloError::Io)?;
+        // Written in chunks for the same reason the read is: so a slow link looks
+        // alive rather than hung.
+        let encoded = bundle::encode(&pack);
+        for chunk in encoded.chunks(CHUNK) {
+            stdin.write_all(chunk).map_err(VeloError::Io)?;
+            progress.advance(chunk.len() as u64);
+        }
         stdin.flush().ok();
         drop(stdin);
         // S→C status
