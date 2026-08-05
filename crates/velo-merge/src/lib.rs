@@ -241,20 +241,16 @@ pub fn compute_conflict_hunks(ancestor: &str, ours: &str, theirs: &str) -> Vec<C
 /// Returns `Some(merged_text)` when the two sides' changes do not overlap (so no
 /// human decision is needed), or `None` when at least one region genuinely
 /// conflicts and must be resolved interactively.
+///
+/// A convenience over [`diff3`] for callers that only act on the clean case and
+/// re-derive the hunks later (as `velo-core`'s `reconcile` does). It is a wrapper
+/// rather than a second implementation deliberately: the two spent a while as
+/// parallel copies of the same walk, which meant either could drift.
 pub fn try_auto_merge(ancestor: &str, ours: &str, theirs: &str) -> Option<String> {
-    if !compute_conflict_hunks(ancestor, ours, theirs).is_empty() {
-        return None;
+    match diff3(ancestor, ours, theirs) {
+        MergeResult::Clean(merged) => Some(merged),
+        MergeResult::Conflicted(_) => None,
     }
-    let anc: Vec<&str> = ancestor.lines().collect();
-    let our: Vec<&str> = ours.lines().collect();
-    let thr: Vec<&str> = theirs.lines().collect();
-    Some(build_resolved_content(
-        &anc,
-        &our,
-        &thr,
-        &[],
-        ours.ends_with('\n') || theirs.ends_with('\n'),
-    ))
 }
 
 /// Produce the final merged file content.

@@ -314,7 +314,10 @@ follow-up task. The existing fixture helpers *are* the first version of
 
 ---
 
-## Phase 2 — Make it useful to non-CLI consumers ✅ **DONE** (2.2 partly)
+## Phase 2 — Make it useful to non-CLI consumers ✅ **DONE**
+
+Every required item has landed. The one thing still open is a 🟡 recommended
+extra: pluggable merge drivers in [2.2](#22-extract-velo-merge--done).
 
 The capability work. Without 2.1 every consumer marshals through temp files.
 
@@ -482,16 +485,42 @@ content-addressed id — so the snapshot recipe provably matches `save`'s.
 of [2.3](#23-newtypes--done): `SaveTree.branch` is a `BranchName`, `parent` a
 `SnapshotId`, and `TreeFile.object` an `ObjectHash`.
 
-### 2.2 Extract `velo-merge` 🟡 **mostly done**
+### 2.2 Extract `velo-merge` ✅ **DONE**
 The crate exists and `diff3(ancestor, ours, theirs) -> MergeResult` lives in it,
 re-exported as `velo_core::merge` so a caller needs one dependency. That much
 happened during the Phase 1 crate split rather than here.
 
-**Still owed:** "bring the existing proptest properties with it". The merge
-properties are still in `velo-core`'s suite, exercising `velo_merge::diff3`
-indirectly through `try_auto_merge`. `velo-merge` declares a `proptest`
-dev-dependency and has no tests of its own, so the crate is not independently
-verified — extract them into `crates/velo-merge/tests/`.
+The tests came with it. `crates/velo-merge/tests/props.rs` drives `diff3` from
+outside the crate — unchanged-side symmetry, identical edits on both sides,
+disjoint edits preserving both, and determinism — and `diff3.rs` alongside it
+covers the same surface by worked example, including the `compute_conflict_hunks`
+→ `Decision` → `build_resolved_content` round trip a resolver actually walks. The
+engine is verified at its own boundary rather than through `velo-core`'s suite.
+
+**One algorithm, two shapes of answer.** `diff3` returns a `MergeResult`;
+`try_auto_merge` returns `Option<String>` for the callers that only act on the
+clean case — `reconcile` among them. These were parallel copies of the same walk
+(compute the hunks, bail if any, otherwise `build_resolved_content` with
+identical arguments), which meant either could drift silently. `try_auto_merge`
+is now a wrapper that flattens `diff3`'s outcome, so the duplication is gone and
+the equivalence is structural.
+
+Writing the tests is what surfaced it, and a property still asserts the
+agreement: across conflicting input and each clean shape (random triples nearly
+always conflict, so the clean side has to be constructed deliberately). It holds
+by construction now, but that is a fact about the implementation rather than the
+signatures — re-inlining the wrapper would reopen a blind spot nothing else
+covers, since every other property enters through `diff3` while `reconcile` calls
+only `try_auto_merge`. The gap was verified real before the wrapper landed:
+dropping `try_auto_merge`'s trailing-newline argument to `false` failed this
+property and nothing else in the workspace.
+
+`velo-core` no longer duplicates any of it. It never wrapped the engine
+(`reconcile` calls `velo_merge::try_auto_merge` directly), so what its suite
+tests is the other side of the boundary: deciding *when* a line merge is even
+attempted (binary content and symlinks can't be, a mode-only change needs no
+merge) and the merge/resolve commands on top. Those need a repository, which is
+the line between the two suites.
 
 **Pluggable merge drivers** registered by path glob or content type (so a
 spreadsheet or document tool can supply structure-aware merging, falling back to
