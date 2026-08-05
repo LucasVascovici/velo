@@ -39,8 +39,8 @@ fn line(b: &Branch, name_w: usize) -> String {
     let meta = match &b.tip {
         Some(tip) => format!(
             "  {} {} · \"{}\"",
-            style(&tip.hash[..8.min(tip.hash.len())]).yellow().dim(),
-            style(short_date(&tip.created_at)).dim(),
+            style(super::id::short(&tip.hash)).yellow().dim(),
+            style(super::when::date(tip.created_at)).dim(),
             style(&tip.message).dim()
         ),
         None => style("  (no commits yet)").dim().to_string(),
@@ -56,28 +56,25 @@ pub fn print_deleted(name: &str) {
     );
 }
 
-/// Just the calendar date — branch listings don't need the time.
-fn short_date(created_at: &str) -> &str {
-    if created_at.len() >= 10 {
-        &created_at[..10]
-    } else {
-        created_at
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use velo_core::commands::branches::Tip;
 
-    fn branch(name: &str, hash: &str, is_current: bool) -> Branch {
+    /// Build a branch whose tip id *starts* with `prefix`.
+    ///
+    /// Ids are full-width since format v2, but only the first
+    /// `SNAP_HASH_LEN` characters reach the output, so the fixtures name the
+    /// prefix the assertions below check and this pads it out to a real id.
+    fn branch(name: &str, prefix: &str, is_current: bool) -> Branch {
+        let hash = format!("{:0<64}", prefix);
         Branch {
             name: name.parse().unwrap(),
             is_current,
             tip: Some(Tip {
                 hash: hash.parse().unwrap(),
                 message: "second".into(),
-                created_at: "2026-08-05T09:41:12".into(),
+                created_at: velo_core::commands::timestamp_from_ms(1_785_922_872_345),
             }),
         }
     }
@@ -109,13 +106,13 @@ mod tests {
         assert_eq!(
             rows[0],
             format!(
-                "  * dev{}  7d202741 2026-08-05 · \"second\"",
+                "  * dev{}  7d20274100000000 2026-08-05 · \"second\"",
                 " ".repeat(16)
             )
         );
         assert_eq!(
             rows[1],
-            "    remotes/origin/main  7d202741 2026-08-05 · \"second\""
+            "    remotes/origin/main  7d20274100000000 2026-08-05 · \"second\""
         );
         assert_eq!(meta_col(&rows[0]), meta_col(&rows[1]));
     }
@@ -145,6 +142,9 @@ mod tests {
     #[test]
     fn a_lone_branch_gets_no_stray_padding() {
         let rows = rows(&[branch("main", "5949005c", true)]);
-        assert_eq!(rows[0], "  * main  5949005c 2026-08-05 · \"second\"");
+        assert_eq!(
+            rows[0],
+            "  * main  5949005c00000000 2026-08-05 · \"second\""
+        );
     }
 }

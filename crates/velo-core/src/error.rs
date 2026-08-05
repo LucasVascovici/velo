@@ -88,6 +88,16 @@ pub enum Error {
         found: u32,
         supported: u32,
     },
+    /// Written in a format too old to upgrade in place.
+    ///
+    /// Distinct from [`Error::MigrationRequired`] because there is nothing the
+    /// caller can call to fix it: format v2 changed every snapshot id, so a v1
+    /// repository is not v2 rows with a stale marker — recovering it means
+    /// re-creating the history in a fresh repository.
+    FormatTooOld {
+        found: u32,
+        supported: u32,
+    },
 
     // ── Concurrency ──────────────────────────────────────────────────────────
     /// Another process holds the repository write lock.
@@ -194,6 +204,12 @@ impl fmt::Display for Error {
             Error::MigrationRequired { found, supported } => write!(
                 f,
                 "repository format v{} must be migrated to v{} before use",
+                found, supported
+            ),
+            Error::FormatTooOld { found, supported } => write!(
+                f,
+                "repository format v{} predates v{} and cannot be upgraded in place: \
+                 v2 changed every snapshot id",
                 found, supported
             ),
             Error::Locked { held_by } => match held_by {

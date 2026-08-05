@@ -24,7 +24,7 @@ fn print_saved(result: &SaveResult, branch: &str, amended: bool) {
         "{} {} {} on {}  ({} new, {} modified, {} deleted)",
         style("✔").green().bold(),
         if amended { "Amended" } else { "Saved" },
-        style(&result.hash).yellow(),
+        style(super::id::short(&result.hash)).yellow(),
         style(branch).cyan(),
         result.new_count,
         result.modified_count,

@@ -3,9 +3,6 @@
 use console::style;
 use velo_core::commands::sync::{BranchCreated, Cloned, Fetched, Pulled, Pushed};
 
-/// Hashes are shown abbreviated in sync output.
-const SHORT: usize = 12;
-
 pub fn print_cloned(cloned: &Cloned) {
     println!(
         "{} Cloned {} snapshot(s), {} object(s), {} branch(es) into {}",
@@ -35,7 +32,7 @@ pub fn print_fetched(fetched: &Fetched) {
             "  {}/{}  →  {}",
             fetched.remote,
             style(&r.branch).cyan(),
-            style(short(&r.hash)).yellow()
+            style(super::id::short(&r.hash)).yellow()
         );
     }
     // Fetch deliberately leaves local branches and the working tree alone, which
@@ -108,7 +105,7 @@ pub fn print_pulled(pulled: &Pulled) {
             "{} Fast-forwarded '{}' to {}.",
             style("✔").green().bold(),
             branch,
-            style(short(to)).yellow()
+            style(super::id::short(to)).yellow()
         ),
         Pulled::Diverged { branch, remote } => {
             println!(
@@ -125,8 +122,4 @@ pub fn print_pulled(pulled: &Pulled) {
             );
         }
     }
-}
-
-fn short(hash: &str) -> &str {
-    &hash[..SHORT.min(hash.len())]
 }

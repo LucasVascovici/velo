@@ -8,7 +8,7 @@ pub fn print(results: &GrepResults, names_only: bool) {
         println!(
             "\n{} {}  {}",
             style("Searching snapshot").dim(),
-            style(&snap.hash[..8]).yellow(),
+            style(super::id::short(&snap.hash)).yellow(),
             style(&snap.message).dim()
         );
     }

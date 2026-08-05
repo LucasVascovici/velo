@@ -62,6 +62,7 @@ pub mod db;
 pub mod error;
 pub mod ids;
 pub mod lock;
+pub mod meta;
 pub mod progress;
 pub mod repo;
 pub mod serve;
@@ -76,6 +77,7 @@ mod tests;
 
 pub use error::{Error, Result};
 pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
+pub use meta::SnapshotMeta;
 pub use repo::{Repo, WriteGuard};
 
 /// Re-exported so callers can match on merge outcomes without adding a second
@@ -87,4 +89,4 @@ pub use velo_merge as merge;
 /// Recorded in SQLite's `PRAGMA user_version`. Opening a repository with a
 /// higher value fails with [`Error::SchemaTooNew`] rather than risking a
 /// half-migration — see `docs/FORMAT.md`.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;

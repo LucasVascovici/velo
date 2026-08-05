@@ -4,6 +4,7 @@
 //! separate entry points now, since one reads and one writes. Formatting lives
 //! in `velo-cli`.
 
+use chrono::{DateTime, Utc};
 use std::fs;
 use std::path::Path;
 
@@ -18,7 +19,7 @@ pub struct Tip {
     pub hash: SnapshotId,
     pub message: String,
     /// Raw stored timestamp; formatting is the consumer's choice.
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
 }
 
 /// One branch and where it stands.
@@ -52,13 +53,13 @@ pub fn list(repo: &Repo) -> Result<Vec<Branch>> {
         .map(|name| {
             let tip = crate::commands::branch_tip(conn, &name).and_then(|hash| {
                 conn.query_row(
-                    "SELECT hash, message, created_at FROM snapshots WHERE hash = ?",
+                    "SELECT hash, message, created_at_ms FROM snapshots WHERE hash = ?",
                     [&hash],
                     |r| {
                         Ok(Tip {
                             hash: r.get(0)?,
                             message: r.get(1)?,
-                            created_at: r.get(2)?,
+                            created_at: crate::commands::timestamp_from_ms(r.get(2)?),
                         })
                     },
                 )

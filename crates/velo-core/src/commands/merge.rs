@@ -8,10 +8,11 @@ use std::fs;
 
 use rusqlite::params;
 
+use crate::commands::SnapshotIdentity;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
 use crate::storage;
-use crate::{SnapshotId, WriteGuard};
+use crate::{SnapshotId, SnapshotMeta, WriteGuard};
 
 /// Re-exported so `merge::FileAction` keeps working: the vocabulary is shared
 /// with cherry-pick and rebase, so it lives in [`crate::commands::apply`].
@@ -268,14 +269,21 @@ fn do_fast_forward(
     let msg = format!("Fast-forward merge from '{}'", target_branch);
     // The fast-forward snapshot's tree is exactly the target's, modes included.
     let tree = load_tree(guard.conn(), target_hash)?;
-    let timestamp = crate::commands::snapshot_timestamp();
-    let new_hash = crate::commands::snapshot_id(&tree, current_hash, "", &msg, &timestamp);
+    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let new_hash = crate::commands::snapshot_id(SnapshotIdentity {
+        tree: &tree,
+        parent: current_hash,
+        merge_parent: "",
+        message: &msg,
+        timestamp_ms,
+        meta: &SnapshotMeta::new(),
+    });
 
     let tx = guard.transaction()?;
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at)
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at_ms)
          VALUES (?, ?, ?, ?, ?)",
-        params![new_hash, &msg, head_branch, current_hash, timestamp],
+        params![new_hash, &msg, head_branch, current_hash, timestamp_ms],
     )?;
     {
         let mut ins = tx.prepare(

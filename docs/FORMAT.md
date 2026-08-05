@@ -8,14 +8,16 @@ third-party tool — must conform to this document.
 
 | | |
 | :--- | :--- |
-| **Current implemented format** | **v1** (repository format version `1`) |
-| **Specified target format** | **v2** — decided, *not yet implemented* |
-| Status of v2 | Decisions locked (see [Decisions](#decisions)). Implementation lands in one atomic change; see [Migration](#migration-v1--v2). |
+| **Current implemented format** | **v2** (repository format version `2`) |
+| Status of v2 | **Implemented.** All four decisions landed in one commit, as required. |
+| Status of v1 | **Refused.** A pre-v2 repository cannot be opened; see [Migration](#migration-v1--v2). |
 
-> ⚠️ **v2 is a deliberate, one-time breaking change.** It changes every snapshot
-> ID. It is specified now, before any external consumer exists, precisely so it
-> never has to happen again. Sections below mark **v1** and **v2** explicitly
-> wherever they differ — do not read an unmarked statement as applying to both.
+> ⚠️ **v2 was a deliberate, one-time breaking change.** It changed every snapshot
+> ID. It was specified and implemented before any external consumer existed,
+> precisely so it never has to happen again. Sections below mark **v1** and **v2**
+> explicitly wherever they differ — do not read an unmarked statement as applying
+> to both. v1 is retained here as documentation of what existing data looks like,
+> not as something this implementation can read.
 
 ---
 
@@ -104,7 +106,7 @@ The **branch is deliberately excluded**: renaming or deleting a branch must not
 change the identity of its commits, and the same commit reachable from two
 branches must have one id.
 
-### 4.1 v1 recipe (current)
+### 4.1 v1 recipe (historical — no longer read or written)
 
 ```
 BLAKE3(
@@ -120,9 +122,9 @@ BLAKE3(
 
 Absent parents/merge-parents are encoded as the **empty string**, not omitted.
 
-### 4.2 v2 recipe (target)
+### 4.2 v2 recipe (current)
 
-Three changes, all decided in [Decisions](#decisions):
+Three changes from v1, all decided in [Decisions](#decisions):
 
 ```
 BLAKE3(
@@ -204,7 +206,13 @@ tie-break on a stable secondary key (`rowid`) when timestamps collide.
 | | |
 | :--- | :--- |
 | **v1** | **No version marker.** Migrations sniff `pragma_table_info(...)` and add missing columns. There is no way to detect a repository written by a *newer* implementation. |
-| **v2** | `PRAGMA user_version` holds the repository format version. |
+| **v2** | `PRAGMA user_version` holds the repository format version, stamped when the database is created. |
+
+The v1 `ALTER TABLE` sniffing migrations are gone. They existed only to bring a v1
+repository forward, and v2 refuses to open one, so keeping them would have meant
+maintaining a chain of migrations nothing could reach. The schema is now one
+idempotent definition, which is also the migration for a v2 repository written by
+an earlier build of v2.
 
 **v2 rules — normative:**
 
@@ -262,6 +270,10 @@ output.
 
 - Canonical form: full hex (v2: 64 chars for snapshots and objects).
 - Display: implementations may truncate — 12 or 16 characters is conventional.
+  This implementation uses **16** (`commands::SNAP_HASH_LEN`) everywhere an id is
+  printed, via one shared helper. Under v1, where the stored width was also 16,
+  several renderers truncated to 8 instead and the inconsistency was invisible;
+  with full-width ids it would have produced a 64-character column.
 - **Lookup by prefix is supported**, and an ambiguous prefix must be an error,
   never a silent pick.
 - Never persist a truncated id, and never use one as a key, in a bundle, or on
@@ -322,14 +334,20 @@ Snapshot ids change, so this is not an in-place row rewrite: every id, and every
 reference to an id (`parent_hash`, `merge_parent`, tags, stash, remote refs,
 branch tips, `PARENT`), must be recomputed.
 
-Two supported strategies:
+**Strategy A (re-init) is what shipped.** Opening a pre-v2 repository fails with
+`Error::FormatTooOld` from both `open()` and `open_and_migrate()`, and the
+refusal leaves `user_version` untouched, so a failed open is never a partial
+upgrade. `velo bundle create` cannot help — a v1 bundle carries v1 ids — so
+preserve work by copying the working tree into a fresh v2 repository and saving
+it there.
 
-**A. Re-init (recommended while no repository has archival value).**
-Simplest and provably correct. `velo bundle create` cannot help here — a v1
-bundle carries v1 ids — so preserve work by copying the working tree into a fresh
-v2 repository and committing it.
+A repository written before versioning existed reports `user_version = 0`, which
+is why `0` is treated as v1 rather than as "current": before v2 there was nothing
+to distinguish the two, and a fresh repository is now stamped at creation so it
+can never be mistaken for one.
 
-**B. Rewrite migration** (only if a v1 repo must be preserved):
+**B. Rewrite migration** — specified but **not implemented**. Only worth building
+if a v1 repository with real history turns up:
 
 1. Refuse if any operation is in progress (`MERGE_HEAD`, `REBASE_STATE`) or the
    working tree is dirty.

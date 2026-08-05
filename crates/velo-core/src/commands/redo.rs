@@ -44,7 +44,7 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
 
     let snap: Option<(String, String)> = conn
         .query_row(
-            "SELECT hash, message FROM trash WHERE branch = ? ORDER BY deleted_at DESC LIMIT 1",
+            "SELECT hash, message FROM trash WHERE branch = ? ORDER BY deleted_at_ms DESC LIMIT 1",
             [branch.trim()],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
@@ -55,8 +55,8 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
 
     let tx = guard.transaction()?;
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
-         SELECT hash, message, branch, parent_hash, merge_parent, created_at
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
+         SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms
          FROM trash WHERE hash = ?",
         [&snapshot],
     )?;

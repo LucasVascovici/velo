@@ -8,6 +8,7 @@
 //!
 //! Returns attributions as data; formatting lives in `velo-cli`.
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -25,7 +26,7 @@ pub struct LineOrigin {
     /// Full snapshot hash. Abbreviate at the point of display.
     pub hash: String,
     /// Raw stored timestamp, RFC-3339-like. Formatting is the consumer's choice.
-    pub created_at: String,
+    pub created_at: DateTime<Utc>,
     pub message: String,
 }
 
@@ -102,19 +103,19 @@ pub fn run(repo: &Repo, file: &str, at: Option<&str>) -> Result<Blame> {
 
     let mut walk_hash = start_hash.clone();
     while remaining > 0 {
-        let Ok((parent_hash, created_at, message)) = conn.query_row(
-            "SELECT parent_hash, created_at, message FROM snapshots WHERE hash = ?",
+        let Ok((parent_hash, created_at_ms, message)) = conn.query_row(
+            "SELECT parent_hash, created_at_ms, message FROM snapshots WHERE hash = ?",
             [&walk_hash],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         ) else {
             break; // ancestry ends here
         };
-        let (parent_hash, created_at, message): (String, String, String) =
-            (parent_hash, created_at, message);
+        let (parent_hash, created_at_ms, message): (String, i64, String) =
+            (parent_hash, created_at_ms, message);
 
         let origin = LineOrigin {
             hash: walk_hash.clone(),
-            created_at,
+            created_at: crate::commands::timestamp_from_ms(created_at_ms),
             message,
         };
 

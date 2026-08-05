@@ -15,7 +15,7 @@ pub fn print(outcome: &Outcome) {
         println!(
             "  {} {} {}",
             style(marker).dim(),
-            style(short(&item.snapshot)).yellow(),
+            style(super::id::short(&item.snapshot)).yellow(),
             style(&item.message).dim()
         );
     }
@@ -26,8 +26,4 @@ pub fn print(outcome: &Outcome) {
         style(&outcome.snapshot).yellow(),
         outcome.message
     );
-}
-
-fn short(hash: &str) -> &str {
-    &hash[..8.min(hash.len())]
 }

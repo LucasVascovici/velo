@@ -389,9 +389,9 @@ fn check_snapshots(
     problems: &mut Vec<Problem>,
 ) -> Result<(usize, usize)> {
     let mut stmt = conn.prepare(
-        "SELECT hash, message, branch, parent_hash, merge_parent, created_at FROM snapshots",
+        "SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms FROM snapshots",
     )?;
-    let snaps: Vec<(String, String, String, String, String, String)> = stmt
+    let snaps: Vec<(String, String, String, String, String, i64)> = stmt
         .query_map([], |r| {
             Ok((
                 r.get(0)?,
@@ -399,7 +399,7 @@ fn check_snapshots(
                 r.get(2)?,
                 r.get(3)?,
                 r.get(4)?,
-                r.get::<_, String>(5).unwrap_or_default(),
+                r.get::<_, i64>(5).unwrap_or_default(),
             ))
         })?
         .filter_map(|r| r.ok())
@@ -408,7 +408,7 @@ fn check_snapshots(
 
     let mut verified = 0usize;
     let mut legacy = 0usize;
-    for (hash, message, branch, parent, merge_parent, created_at) in &snaps {
+    for (hash, message, branch, parent, merge_parent, created_at_ms) in &snaps {
         if !parent.is_empty() && !all_snaps.contains(parent) {
             problems.push(Problem::MissingParent {
                 snapshot: hash.clone(),
@@ -423,10 +423,17 @@ fn check_snapshots(
         }
 
         // Only ids from the content-addressed scheme can be recomputed.
-        if hash.len() == crate::commands::SNAP_HASH_LEN {
+        if hash.len() == crate::commands::SNAP_ID_LEN {
             let tree = load_tree(conn, hash)?;
-            let recomputed =
-                crate::commands::snapshot_id(&tree, parent, merge_parent, message, created_at);
+            let meta = crate::commands::load_snapshot_meta(conn, hash)?;
+            let recomputed = crate::commands::snapshot_id(crate::commands::SnapshotIdentity {
+                tree: &tree,
+                parent,
+                merge_parent,
+                message,
+                timestamp_ms: *created_at_ms,
+                meta: &meta,
+            });
             if &recomputed == hash {
                 verified += 1;
             } else {

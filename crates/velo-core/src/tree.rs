@@ -8,15 +8,22 @@
 //! ```no_run
 //! # fn main() -> Result<(), velo_core::Error> {
 //! use velo_core::tree::{SaveTree, TreeEntry};
+//! use velo_core::SnapshotMeta;
 //!
 //! let repo = velo_core::Repo::discover(std::path::Path::new("."))?;
 //! let guard = repo.write()?;
+//!
+//! // Provenance travels with the snapshot instead of being smuggled into the
+//! // message. It is part of the id, so it cannot be quietly rewritten later.
+//! let mut meta = SnapshotMeta::new();
+//! meta.set("registry", "published_by", "ci")?;
 //!
 //! let first = guard.save_tree(SaveTree {
 //!     branch: "registry".parse()?,
 //!     parent: None,
 //!     message: "publish 1.0",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() {}\n".to_vec())],
+//!     meta,
 //! })?;
 //!
 //! // Chain the next one onto it. Nothing was written to disk, and the
@@ -26,9 +33,14 @@
 //!     parent: Some(&first),
 //!     message: "publish 1.1",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() -> u8 { 1 }\n".to_vec())],
+//!     meta: SnapshotMeta::new(),
 //! })?;
 //!
 //! assert_eq!(repo.read_file_at(&first, "pkg/lib.rs")?, b"pub fn f() {}\n");
+//! assert_eq!(
+//!     repo.snapshot_meta(&first)?.get("registry", "published_by"),
+//!     Some("ci"),
+//! );
 //! # Ok(())
 //! # }
 //! ```
@@ -56,8 +68,9 @@ use std::path::Path;
 
 use rusqlite::params;
 
+use crate::commands::SnapshotIdentity;
 use crate::error::{RefKind, Result, VeloError};
-use crate::{db, storage, BranchName, ObjectHash, Repo, SnapshotId, WriteGuard};
+use crate::{db, storage, BranchName, ObjectHash, Repo, SnapshotId, SnapshotMeta, WriteGuard};
 
 /// What a file is: content, plus how the filesystem should represent it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -137,6 +150,12 @@ pub struct SaveTree<'a> {
     pub message: &'a str,
     /// The complete contents of the snapshot — this is a whole tree, not a diff.
     pub entries: Vec<TreeEntry>,
+    /// App-namespaced metadata to attach.
+    ///
+    /// Part of the snapshot's identity, so two snapshots differing only in their
+    /// metadata are two different snapshots. `Default::default()` is an empty
+    /// set, which is what `velo save` produces.
+    pub meta: SnapshotMeta,
 }
 
 /// One file in a stored snapshot, without its content.
@@ -206,21 +225,34 @@ impl WriteGuard<'_> {
         }
 
         let parent = spec.parent.map_or("", |p| p.as_str());
-        let timestamp = crate::commands::snapshot_timestamp();
-        let snapshot = SnapshotId::from_stored(crate::commands::snapshot_id(
-            &tree,
+        let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+        let snapshot = SnapshotId::from_stored(crate::commands::snapshot_id(SnapshotIdentity {
+            tree: &tree,
             parent,
-            "",
-            spec.message,
-            &timestamp,
-        ));
+            merge_parent: "",
+            message: spec.message,
+            timestamp_ms,
+            meta: &spec.meta,
+        }));
 
         let tx = self.transaction()?;
         tx.execute(
-            "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
+            "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
              VALUES (?, ?, ?, ?, '', ?)",
-            params![snapshot, spec.message, spec.branch, parent, timestamp],
+            params![snapshot, spec.message, spec.branch, parent, timestamp_ms],
         )?;
+        {
+            // Metadata is hashed into the id above, so it has to be stored in the
+            // same transaction: an id that commits to metadata the repository
+            // does not hold would fail its own `fsck`.
+            let mut ins_meta = tx.prepare(
+                "INSERT INTO snapshot_meta (snapshot_id, namespace, key, value)
+                 VALUES (?, ?, ?, ?)",
+            )?;
+            for (namespace, key, value) in spec.meta.iter() {
+                ins_meta.execute(params![snapshot, namespace, key, value])?;
+            }
+        }
         {
             let mut ins = tx.prepare(
                 "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
@@ -303,5 +335,14 @@ impl Repo {
     /// rather than silently wrong content.
     pub fn read_object(&self, object: &ObjectHash) -> Result<Vec<u8>> {
         storage::read_object(&self.root().join(".velo/objects"), object)
+    }
+
+    /// The metadata attached to `snapshot`.
+    ///
+    /// Empty when none was attached — which is not distinguishable from "the
+    /// snapshot has no metadata", because to the id recipe those are the same
+    /// thing.
+    pub fn snapshot_meta(&self, snapshot: &SnapshotId) -> Result<SnapshotMeta> {
+        Ok(crate::commands::load_snapshot_meta(self.conn(), snapshot)?)
     }
 }

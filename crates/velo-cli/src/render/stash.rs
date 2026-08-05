@@ -49,8 +49,8 @@ pub fn print_list(shelves: &[Shelf]) {
             "  {} {} {} {}",
             style(&s.name).cyan().bold(),
             style(format!("(on {})", s.branch)).dim(),
-            style(short_date(&s.created_at)).dim(),
-            style(&s.snapshot[..8.min(s.snapshot.len())]).yellow().dim()
+            style(super::when::minutes(s.created_at)).dim(),
+            style(super::id::short(&s.snapshot)).yellow().dim()
         );
     }
 }
@@ -101,13 +101,4 @@ pub fn print_shelf(shelf: &ShelfDetail) {
         style(&shelf.parent[..8.min(shelf.parent.len())]).yellow()
     );
     super::diff::print_change_list(&shelf.diff);
-}
-
-/// `2026-08-04T12:30:59.123Z` → `2026-08-04 12:30`.
-fn short_date(created_at: &str) -> String {
-    if created_at.len() >= 16 {
-        created_at[..16].replace('T', " ")
-    } else {
-        created_at.to_string()
-    }
 }

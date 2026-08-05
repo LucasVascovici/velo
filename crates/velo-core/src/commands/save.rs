@@ -5,10 +5,11 @@ use rayon::prelude::*;
 use rusqlite::params;
 
 use crate::commands::FileStatus;
+use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
-use crate::{SnapshotId, WriteGuard};
+use crate::{SnapshotId, SnapshotMeta, WriteGuard};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveResult {
@@ -112,7 +113,7 @@ pub fn run_with_paths(
     let amend_target: Option<(String, String, String)> = if amend {
         conn.query_row(
             "SELECT hash, parent_hash, message FROM snapshots
-             WHERE branch = ? ORDER BY created_at DESC, rowid DESC LIMIT 1",
+             WHERE branch = ? ORDER BY created_at_ms DESC, rowid DESC LIMIT 1",
             [branch.trim()],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
@@ -266,14 +267,17 @@ pub fn run_with_paths(
     tree.extend(hashed_files.iter().cloned());
 
     // ── Content-addressed snapshot id ─────────────────────────────────────────
-    let timestamp = crate::commands::snapshot_timestamp();
-    let snapshot_hash = crate::commands::snapshot_id(
-        &tree,
-        effective_parent.trim(),
-        merge_parent.as_str(),
+    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let snapshot_hash = crate::commands::snapshot_id(SnapshotIdentity {
+        tree: &tree,
+        parent: effective_parent.trim(),
+        merge_parent: merge_parent.as_str(),
         message,
-        &timestamp,
-    );
+        timestamp_ms,
+        // `velo save` attaches no metadata. A consumer that wants some builds the
+        // snapshot through `WriteGuard::save_tree` instead.
+        meta: &SnapshotMeta::new(),
+    });
     let snapshot_hash = snapshot_hash.as_str();
 
     // ── DB transaction ────────────────────────────────────────────────────────
@@ -288,7 +292,7 @@ pub fn run_with_paths(
     }
 
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at)
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
          VALUES (?, ?, ?, ?, ?, ?)",
         params![
             snapshot_hash,
@@ -296,7 +300,7 @@ pub fn run_with_paths(
             branch.trim(),
             effective_parent.as_str(),
             merge_parent.as_str(),
-            timestamp
+            timestamp_ms
         ],
     )?;
 

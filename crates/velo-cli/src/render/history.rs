@@ -115,15 +115,6 @@ fn tag_suffix(entry: &Entry, bold: bool) -> String {
     }
 }
 
-/// Trim a timestamp to `YYYY-MM-DDTHH:MM:SS`.
-fn short_date(s: &str) -> &str {
-    if s.len() >= 19 {
-        &s[..19]
-    } else {
-        s
-    }
-}
-
 // ─── Full table ───────────────────────────────────────────────────────────────
 
 fn print_full(history: &History) {
@@ -133,14 +124,10 @@ fn print_full(history: &History) {
     const GAP: usize = 3;
     const BRANCH_W: usize = 18;
     const DATE_W: usize = 19;
-    let hash_w = velo_core::commands::SNAP_HASH_LEN.max(
-        history
-            .entries
-            .iter()
-            .map(|e| e.hash.len())
-            .max()
-            .unwrap_or(0),
-    );
+    // Every id is abbreviated to the same width on the way out, so the column
+    // is that width — deriving it from the stored length would give a 64-wide
+    // column of ids that are printed 16 characters long.
+    let hash_w = velo_core::commands::SNAP_HASH_LEN;
 
     // The rule spans the fixed columns plus the widest message actually shown.
     let fixed_w = PREFIX_W + hash_w + GAP + BRANCH_W + GAP + DATE_W + GAP;
@@ -179,10 +166,13 @@ fn print_full(history: &History) {
         let (arrow, hash_styled) = if is_current {
             (
                 style("→").green().bold().to_string(),
-                style(&e.hash).green().bold().to_string(),
+                style(super::id::short(&e.hash)).green().bold().to_string(),
             )
         } else {
-            (" ".to_string(), style(&e.hash).yellow().to_string())
+            (
+                " ".to_string(),
+                style(super::id::short(&e.hash)).yellow().to_string(),
+            )
         };
 
         println!(
@@ -192,7 +182,7 @@ fn print_full(history: &History) {
             "",
             style(&branch_disp).dim(),
             "",
-            style(short_date(&e.created_at)).dim(),
+            style(super::when::seconds(e.created_at)).dim(),
             "",
             style(&e.message).white(),
             decorate(history, &e.hash),
@@ -214,7 +204,7 @@ fn print_oneline(history: &History) {
         println!(
             "{}{} {}{}  {}",
             marker,
-            style(&e.hash).yellow(),
+            style(super::id::short(&e.hash)).yellow(),
             refs_or_origin(history, e),
             tag_suffix(e, false),
             e.message
@@ -314,7 +304,7 @@ fn print_graph(history: &History) {
             row,
             hash_s,
             refs_or_origin(history, entry),
-            style(short_date(&entry.created_at)).dim(),
+            style(super::when::seconds(entry.created_at)).dim(),
             entry.message,
             entry
                 .tag

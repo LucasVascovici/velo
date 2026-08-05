@@ -13,19 +13,21 @@
 //!
 //! Returns what happened as data; wording lives in `velo-cli`.
 
+use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::fs;
 
-use chrono::Utc;
 use rayon::prelude::*;
 use rusqlite::params;
 
+use crate::commands::SnapshotIdentity;
 use crate::commands::{get_dirty_files, get_tracked_files, FileStatus};
 use crate::db;
 use crate::error::{RefKind, Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
+use crate::SnapshotMeta;
 use crate::WriteGuard;
 
 /// A shelf, as listed.
@@ -34,8 +36,8 @@ pub struct Shelf {
     pub name: String,
     /// Branch the shelf was created on.
     pub branch: String,
-    /// Raw stored timestamp; formatting is the consumer's choice.
-    pub created_at: String,
+    /// Raw stored timestamp_ms; formatting is the consumer's choice.
+    pub created_at: DateTime<Utc>,
     /// The hidden snapshot holding the shelved tree.
     pub snapshot: String,
 }
@@ -153,16 +155,23 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     tree.extend(hashed.iter().cloned());
 
     let message = format!("stash: {}", shelf_name);
-    let timestamp = crate::commands::snapshot_timestamp();
-    let snapshot = crate::commands::snapshot_id(&tree, &parent_hash, "", &message, &timestamp);
+    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let snapshot = crate::commands::snapshot_id(SnapshotIdentity {
+        tree: &tree,
+        parent: &parent_hash,
+        merge_parent: "",
+        message: &message,
+        timestamp_ms,
+        meta: &SnapshotMeta::new(),
+    });
 
     let tx = guard.transaction()?;
     // The shelf's snapshot lives on a hidden '_stash' branch so it never shows
     // up in history.
     tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at)
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at_ms)
          VALUES (?, ?, '_stash', ?, ?)",
-        params![snapshot, message, parent_hash, timestamp],
+        params![snapshot, message, parent_hash, timestamp_ms],
     )?;
     {
         let mut ins = tx.prepare(
@@ -218,14 +227,14 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
 /// Every shelf, newest first.
 pub fn list(repo: &Repo) -> Result<Vec<Shelf>> {
     let conn = repo.conn();
-    let mut stmt =
-        conn.prepare("SELECT name, branch, created_at, snapshot_hash FROM stash ORDER BY id DESC")?;
+    let mut stmt = conn
+        .prepare("SELECT name, branch, created_at_ms, snapshot_hash FROM stash ORDER BY id DESC")?;
     let shelves: Vec<Shelf> = stmt
         .query_map([], |r| {
             Ok(Shelf {
                 name: r.get(0)?,
                 branch: r.get(1)?,
-                created_at: r.get(2)?,
+                created_at: crate::commands::timestamp_from_ms(r.get(2)?),
                 snapshot: r.get(3)?,
             })
         })?

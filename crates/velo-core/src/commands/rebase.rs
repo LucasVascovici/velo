@@ -207,7 +207,7 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
 /// Delete the snapshots created while replaying.
 ///
 /// Without this the replayed commits stay in the database sitting on top of
-/// `onto`, and because branch-tip resolution orders by `created_at` they would
+/// `onto`, and because branch-tip resolution orders by `created_at_ms` they would
 /// masquerade as the branch tip even though the position was restored.
 fn discard_replayed(guard: &WriteGuard, onto: &str, orig_head: &str) -> usize {
     let conn = guard.conn();

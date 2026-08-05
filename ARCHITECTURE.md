@@ -17,9 +17,13 @@ codebase. Every "current state" claim below was verified, not assumed.
 
 ---
 
-## Verified current state
+## Starting state (verified before Phase 1)
 
-| Claim | Reality |
+Kept as the baseline the plan was built against, not as a description of the code
+today — Phases 0 through 2 changed every row below. It is here because the
+estimate corrections in the next section only make sense against it.
+
+| Claim | Reality then |
 | :--- | :--- |
 | Library target | **None.** No `src/lib.rs`, no `[lib]`, no `[workspace]`, no `[features]`. Velo is binary-only and cannot be used as a library at all today. |
 | Error handling | **`anyhow` is not used anywhere.** A hand-rolled `VeloError` enum already exists — but it is stringly-typed: `InvalidInput(String)` carries divergence, conflicts, dirty tree, and non-fast-forward alike. |
@@ -65,12 +69,10 @@ v1/v2 ids can never collide), the bundle magic becomes `VELOBND2`, and a
 `snapshot_meta` table is added. Objects are **format-stable** — no object is
 rewritten by the migration.
 
-> ⚠️ All four change snapshot IDs, so they land as **one atomic change**.
-> Implementation is scheduled in Phase 1.5 (schema/versioning) and Phase 2.3
-> (IDs, timestamps, metadata) — but they must be **committed together**, not
-> shipped a phase apart. See
-> [Migration v1 → v2](docs/FORMAT.md#migration-v1--v2); strategy **A (re-init)**
-> is recommended while no repository has archival value.
+> ⚠️ All four change snapshot IDs, so they landed as **one atomic change**. D4
+> (schema versioning) arrived in 1.5; D1, D2 and D3 followed in a single commit —
+> see [Format v2](#format-v2--the-phase-0-break-). Strategy **A (re-init)** is
+> what shipped: a pre-v2 repository is refused, not migrated.
 
 ---
 
@@ -571,11 +573,90 @@ repository — validating on the way out would turn a corrupt row into a panic
 somewhere unhelpful, which is `fsck`'s job to report. `FromStr` is the only
 public way in.
 
-**Not done here:** the Phase 0 full-hash and typed-timestamp decisions. Those
-change the on-disk format (64-hex ids, epoch-ms timestamps, a `velo-snapshot-v2`
-recipe, `VELOBND2` bundles, `FORMAT_VERSION` 2) and have to land together as one
-break. `FORMAT_VERSION` stays **1**: every existing repository keeps working and
-sync is unaffected.
+**Deferred from here** and landed separately as
+[format v2](#format-v2--the-phase-0-break-): the full-hash and typed-timestamp
+decisions, which change the on-disk format and had to go in together.
+
+---
+
+## Format v2 — the Phase 0 break ✅ **DONE**
+
+The four decisions locked in Phase 0 landed as **one commit**, because each one
+changes every snapshot id and shipping them separately would mean four
+id-invalidating migrations. D4 (`PRAGMA user_version`) arrived early in 1.5; D1,
+D2 and D3 landed here. `docs/FORMAT.md` is the normative spec and now describes
+v2 as implemented, with v1 retained only as documentation of what old data looks
+like.
+
+| | v1 | v2 |
+| :--- | :--- | :--- |
+| Snapshot id | BLAKE3 truncated to 16 hex, **and that truncation was the primary key** | full 64 hex stored; 16 is display only |
+| Timestamp | text `%Y-%m-%d %H:%M:%S%.3f`, hashed as that text | `created_at_ms INTEGER`, hashed as decimal epoch ms |
+| Metadata | nowhere to put it | `snapshot_meta` table, **covered by the id** |
+| Domain separator | `velo-snapshot-v1\n` | `velo-snapshot-v2\n` |
+| Bundle magic | `VELOBND1` | `VELOBND2`, with a metadata section |
+
+### Snapshot metadata is hashed
+
+`velo_core::SnapshotMeta` holds app-namespaced `(namespace, key) → value` pairs,
+attached through `SaveTree.meta` and read back with `Repo::snapshot_meta`. Being
+part of the id makes it **immutable** — changing a value produces a different
+snapshot — which is the point: metadata is mostly provenance, and provenance that
+can be silently rewritten is worth nothing. A test asserts that rewriting a
+metadata row makes `fsck` report an id mismatch.
+
+It also means metadata *must* travel with bundles and sync, or a receiver's
+recomputation would disagree. That is exactly how the wire format is tested:
+the round-trip test asserts the receiver passes `fsck`, which recomputes every id,
+so a dropped metadata section fails loudly rather than quietly.
+
+Two things fell out of the design. Entries live in a `BTreeMap` keyed on
+`(namespace, key)`, so canonical ordering is structural rather than a rule callers
+must remember — two callers inserting the same pairs in either order get the same
+id. And NUL is rejected in all three fields, because NUL is the recipe's
+separator, so allowing it would let two distinct metadata sets hash identically.
+
+### v1 repositories are refused, not migrated
+
+Strategy A from the spec. `open()` and `open_and_migrate()` both fail with
+`Error::FormatTooOld`, distinct from `MigrationRequired` because there is nothing
+the caller can call to fix it. Stamping v2 over v1 rows would leave 16-character
+v1-recipe ids in a database claiming to be v2, and `fsck` could then only report
+the damage after the fact. The refusal leaves `user_version` untouched, so a
+failed open is never a partial upgrade.
+
+A subtlety worth recording: **`user_version = 0` means v1**, because v1 wrote no
+marker at all. But `init_db_at_path` never stamped the version either, so a
+freshly created repository also sat at 0 — harmless while `0` meant "current",
+and fatal the moment it meant "v1". Fresh repositories are now stamped at
+creation. Without that, every `velo init` would have produced a repository the
+next command refused to open.
+
+The v1 `ALTER TABLE` sniffing migrations are gone with it. They existed only to
+bring a v1 repository forward, so keeping them would have meant maintaining a
+migration chain nothing could reach. The schema is one idempotent definition that
+doubles as the migration for a v2 repository written by an earlier build.
+
+### What the break exposed in the renderers
+
+Full-width ids made two latent inconsistencies visible immediately, both of the
+same shape as the drifted hunk printers from 1.3:
+
+*Five `short_date` helpers* each sliced the stored timestamp text at a
+hand-picked width — 10, 16, 19 characters — which only worked because the stored
+form happened to be `YYYY-MM-DD HH:MM:SS.mmm`. With an integer column there is no
+text to slice. They are now three named formats in `render/when.rs`, and the
+widths that were implicit are asserted.
+
+*Three local `short` helpers and four inline `[..8]` slices* abbreviated ids
+differently in different commands. Invisible when ids were 16 characters; with
+64-character ids `velo history` printed a 64-wide column. One shared
+`render/id::short` now abbreviates everywhere, and the history column is the
+display width rather than the stored length.
+
+Neither was caught by the suite. Both were caught by running the binary — which
+is the second time in this phase that formatting bugs got through green tests
+(see the `f.pad` note in [2.3](#23-newtypes--done)).
 
 ---
 
@@ -598,7 +679,7 @@ Nothing here blocks a first consumer.
 
 | Item | Marker | Notes |
 | :--- | :--- | :--- |
-| `docs/FORMAT.md` + `CHANGELOG.md` | 🟡 **Recommended** | Format changes now break N applications. Start the changelog with the Phase 0 break. |
+| `docs/FORMAT.md` + `CHANGELOG.md` | ✅ **done** | Both exist. `CHANGELOG.md` starts at the format v2 break, as planned. |
 | Publish `velo-core` to crates.io | 🟢 Optional timing | See ⛔ below on placeholder releases. |
 
 ---
@@ -643,11 +724,12 @@ regresses within a month.
 
 | Phase | Content | Marker |
 | :--- | :--- | :--- |
-| **0** | Format decisions: metadata hashing, ID width, timestamps, schema versioning + `FORMAT.md` | 🔴 |
-| **1** | Workspace split, typed errors, data-returning commands, repo handle + write guard, schema versioning, injectable transport, test relocation | 🔴 |
-| **2** | In-memory trees, `velo-merge` extraction, newtypes | 🔴 |
-| **3** | Feature flags & scoped ignores 🟡; progress, notifications, testkit, render 🟢 | 🟡/🟢 |
-| **4** | Format spec, changelog, publishing | 🟡/🟢 |
+| **0** | Format decisions: metadata hashing, ID width, timestamps, schema versioning + `FORMAT.md` | ✅ **done** |
+| **1** | Workspace split, typed errors, data-returning commands, repo handle + write guard, schema versioning, injectable transport, test relocation | ✅ **done** |
+| **2** | Progress reporting, in-memory trees, `velo-merge` extraction, newtypes | ✅ **done** |
+| **v2** | The Phase 0 format break implemented in one commit: full-width ids, epoch-ms timestamps, hashed snapshot metadata | ✅ **done** |
+| **3** | Feature flags & scoped ignores 🟡; notifications, testkit, render 🟢 | 🟡/🟢 |
+| **4** | Changelog, publishing | 🟡/🟢 |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected
 (no `anyhow`; coupling is 3 files not pervasive; merge engine already pure;
