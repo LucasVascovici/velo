@@ -6,7 +6,7 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
-## Unreleased
+## 4.0.0
 
 ### ⚠️ Repository format v2 — breaking
 
