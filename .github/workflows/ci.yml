@@ -81,7 +81,7 @@ jobs:
           restore-keys: ${{ runner.os }}-clippy-cargo-
 
       - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
   # ── Formatting (advisory) ──────────────────────────────────────────────────
   # Style only — never blocks a legitimate fix from landing.  Fix with:

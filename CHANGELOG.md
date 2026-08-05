@@ -47,6 +47,11 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Fixed
 
+- **Saving an identical snapshot twice is idempotent.** A snapshot's identity
+  excludes the branch, so the same tree with the same message and parent recorded
+  on two branches inside one millisecond is *one* snapshot — but the second write
+  surfaced a raw `UNIQUE constraint failed: snapshots.hash`. The existing rows are
+  now left alone and the branch is still registered, so both branches see the tip.
 - **Full-width snapshot ids leaked into terminal output.** Format v2 stores ids at
   64 characters, and eight renderers still printed them verbatim — `status`, `tag`,
   `undo`, `redo`, `show`'s parent line, `restore`, `switch`, `merge` and

@@ -311,29 +311,53 @@ impl WriteGuard<'_> {
         }));
 
         let tx = self.transaction()?;
-        tx.execute(
-            "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
-             VALUES (?, ?, ?, ?, '', ?)",
-            params![snapshot, spec.message, spec.branch, parent, timestamp_ms],
-        )?;
-        {
-            // Metadata is hashed into the id above, so it has to be stored in the
-            // same transaction: an id that commits to metadata the repository
-            // does not hold would fail its own `fsck`.
-            let mut ins_meta = tx.prepare(
-                "INSERT INTO snapshot_meta (snapshot_id, namespace, key, value)
-                 VALUES (?, ?, ?, ?)",
+
+        // The id may already exist, and that is not an error.
+        //
+        // Identity covers the tree, parents, message, metadata and timestamp —
+        // but deliberately *not* the branch. So saving the same content, with the
+        // same message and parent, twice inside one millisecond produces one id,
+        // whether that is a retry or the same tree recorded on a second branch.
+        // Content addressing says those are the same snapshot; re-inserting the
+        // rows would fail on the primary key and surface a raw SQLite constraint
+        // violation for what is a legitimate call.
+        //
+        // The rows are identical by construction, so the existing ones are left
+        // alone. The branch is still registered below, which is what the caller
+        // actually asked for.
+        let already: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+                [&snapshot],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+
+        if !already {
+            tx.execute(
+                "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
+                 VALUES (?, ?, ?, ?, '', ?)",
+                params![snapshot, spec.message, spec.branch, parent, timestamp_ms],
             )?;
-            for (namespace, key, value) in spec.meta.iter() {
-                ins_meta.execute(params![snapshot, namespace, key, value])?;
+            {
+                // Metadata is hashed into the id above, so it has to be stored in
+                // the same transaction: an id that commits to metadata the
+                // repository does not hold would fail its own `fsck`.
+                let mut ins_meta = tx.prepare(
+                    "INSERT INTO snapshot_meta (snapshot_id, namespace, key, value)
+                     VALUES (?, ?, ?, ?)",
+                )?;
+                for (namespace, key, value) in spec.meta.iter() {
+                    ins_meta.execute(params![snapshot, namespace, key, value])?;
+                }
             }
-        }
-        {
-            let mut ins = tx.prepare(
-                "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-            )?;
-            for (path, object, mode) in &tree {
-                ins.execute(params![snapshot, path, object, mode])?;
+            {
+                let mut ins = tx.prepare(
+                    "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+                )?;
+                for (path, object, mode) in &tree {
+                    ins.execute(params![snapshot, path, object, mode])?;
+                }
             }
         }
         // Through `tx`, not the connection: an unchecked transaction begins on the

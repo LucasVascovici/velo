@@ -113,8 +113,13 @@ jobs:
 
       # Tests are run in debug mode (fast compile) before producing the release
       # binary.  --locked ensures exact dep versions from Cargo.lock.
+      #
+      # `--workspace` is not optional, for the same reason it is not optional in
+      # ci.yml: `default-members` is velo-cli, so a bare `cargo test` runs 19
+      # integration tests and silently skips ~390 others. Without it this job
+      # reported success on a commit whose suite was failing.
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --workspace --locked
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
