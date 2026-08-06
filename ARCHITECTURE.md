@@ -1192,15 +1192,22 @@ permanently, and it is the cheapest item in this entire plan.
 disk, which is just as surprising to an embedder that has none. Classified by
 reading what each module actually touches, not by reputation.
 
-### 8.7 Smaller items
+### 8.7 Smaller items 🟡 *(two of three done)*
 
 - **`save_tree` has no "nothing changed" guard.** `velo save` refuses an empty
   save; the primitive does not, so the same tree handed to it twice records a
   second snapshot. Defensible for a primitive — but every embedder needs the
   guard, and the failure mode is a history full of duplicates rather than an
-  error. At minimum, document it.
+  error. ✅ **Documented** on `save_tree`, with the comparison a consumer wants —
+  `repo.tree_at(&parent)? == proposed` — rather than adding a guard. Refusing
+  would make it impossible to record "checked at this moment, unchanged", which a
+  consumer may genuinely want; a policy like that belongs at the call site, not
+  baked into the primitive.
 - **`history::Options.file` is a single path.** A document plus its assets is 2+
-  paths, so a consumer runs the query twice. `paths: &[&Path]`.
+  paths, so a consumer runs the query twice. `paths: &[&Path]`. ✅ **Done** — a
+  snapshot qualifies if it changed *any* of them, the limit still counts matches
+  across the whole set (merging two capped result sets does not give the newest N
+  across both), and `velo history --file` is repeatable to match.
 - **Programmatic ignore rules + scoped roots** (already 🟡 in Phase 3). Velum
   writes `.veloignore` into the *user's* workspace to exclude its own cache
   directory — an application putting a file in someone's folder for its own

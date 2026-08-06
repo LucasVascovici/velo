@@ -12,6 +12,8 @@ use rusqlite::params;
 
 use crate::db;
 use crate::error::Result;
+use std::path::Path;
+
 use crate::{BranchName, Repo, SnapshotId, TagName};
 
 /// One snapshot in a history listing.
@@ -102,8 +104,13 @@ pub struct Options<'a> {
     pub all: bool,
     /// Narrow to one branch.
     pub branch: Option<&'a BranchName>,
-    /// Keep only snapshots that tracked this path.
-    pub file: Option<&'a str>,
+    /// Keep only snapshots that **changed** something at or under one of these
+    /// paths. A file matches exactly; a directory matches everything beneath it.
+    ///
+    /// Several paths rather than one because a document and its assets are more
+    /// than one path, and running the query per path — then merging and
+    /// re-sorting — is both slower and easy to get wrong at the limit.
+    pub paths: &'a [&'a Path],
     /// The newest N entries, or **all of them** when `None` — which is the
     /// default.
     ///
@@ -140,7 +147,7 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
     let Options {
         all,
         branch: filter_branch,
-        file: file_filter,
+        paths: file_filter,
         limit,
     } = options;
     // SQLite reads a negative limit as "no limit". Stating it here means the
@@ -182,7 +189,7 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
     // query runs unbounded and the truncation happens below. Asking for the
     // newest 20 and then filtering returns whichever of those 20 happened to
     // match — not the newest 20 matches, which is what was asked for.
-    let query_limit = if file_filter.is_some() { -1 } else { limit };
+    let query_limit = if file_filter.is_empty() { limit } else { -1 };
 
     let mut entries = match &scope {
         Scope::CurrentBranch { .. } => ancestry_of(conn, &position, query_limit)?,
@@ -191,22 +198,25 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
     };
 
     let mut empty = None;
-    if let Some(file) = file_filter {
-        let normalised = db::normalise(file);
+    if !file_filter.is_empty() {
+        let normalised: Vec<String> = file_filter
+            .iter()
+            .map(|p| db::normalise(&p.to_string_lossy()))
+            .collect();
+        // A snapshot qualifies if it changed *any* of the paths, so one pass over
+        // the entries answers for all of them.
         entries.retain(|e| {
-            changed_under(
-                conn,
-                e.hash.as_str(),
-                e.parent.as_deref().unwrap_or(""),
-                &normalised,
-            )
+            let parent = e.parent.as_deref().unwrap_or("");
+            normalised
+                .iter()
+                .any(|path| changed_under(conn, e.hash.as_str(), parent, path))
         });
         if limit >= 0 {
             entries.truncate(limit as usize);
         }
         if entries.is_empty() {
             empty = Some(EmptyReason::NoSnapshotsTouching {
-                file: file.to_string(),
+                file: normalised.join(", "),
             });
         }
     }

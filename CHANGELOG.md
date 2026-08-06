@@ -36,6 +36,9 @@ This file starts at the format v2 break. Earlier releases are in the git history
 - **`grep::run` takes an `Options` struct.** `run(repo, pat, None, false, true, 2)`
   said nothing about which flag was which.
 - **`show::run` takes `&[&Path]`** instead of a single `&Option<String>`.
+- **`history::Options.file` becomes `paths: &[&Path]`.** A document and its
+  assets are more than one path, and running the query once per path then merging
+  gets the limit wrong. `velo history --file` is repeatable to match.
 - **`diff::run_range` becomes `diff::between(repo, a, b, paths)`**, taking
   resolved ids and `&[&Path]`. `diff::dispatch` — which parsed `a..b` range
   syntax and decided whether a bare argument was a filename or a ref — moved to

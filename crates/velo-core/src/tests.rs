@@ -876,7 +876,7 @@ mod tests {
             commands::history::run(
                 vr,
                 commands::history::Options {
-                    file: Some("b.txt"),
+                    paths: &[Path::new("b.txt")],
                     limit: Some(20),
                     ..Default::default()
                 },
@@ -902,7 +902,7 @@ mod tests {
             commands::history::run(
                 vr,
                 commands::history::Options {
-                    file: Some("never.txt"),
+                    paths: &[Path::new("never.txt")],
                     limit: Some(20),
                     ..Default::default()
                 },
@@ -6003,7 +6003,7 @@ beta
                 commands::history::run(
                     vr,
                     commands::history::Options {
-                        file: Some(file),
+                        paths: &[Path::new(file)],
                         limit,
                         ..Default::default()
                     },
@@ -6051,7 +6051,7 @@ beta
             commands::history::run(
                 vr,
                 commands::history::Options {
-                    file: Some("gone.txt"),
+                    paths: &[Path::new("gone.txt")],
                     ..Default::default()
                 },
             )
@@ -6087,7 +6087,7 @@ beta
             commands::history::run(
                 vr,
                 commands::history::Options {
-                    file: Some("src"),
+                    paths: &[Path::new("src")],
                     ..Default::default()
                 },
             )
@@ -6122,7 +6122,7 @@ beta
             commands::history::run(
                 vr,
                 commands::history::Options {
-                    file: Some("watched.txt"),
+                    paths: &[Path::new("watched.txt")],
                     limit: Some(1),
                     ..Default::default()
                 },
@@ -9205,6 +9205,59 @@ line three CHANGED
         assert!(with_repo(&root, commands::fsck::check)
             .unwrap()
             .is_healthy());
+    }
+
+    /// Several paths in one query, which is what a document plus its assets is.
+    ///
+    /// A snapshot qualifies if it changed *any* of them, and the limit still
+    /// counts matches — running the query once per path and merging afterwards
+    /// gets that last part wrong.
+    #[test]
+    fn history_can_filter_on_several_paths_at_once() {
+        let (_tmp, root) = setup();
+        std::fs::create_dir_all(root.join("assets")).unwrap();
+        write(&root, "doc.md", "one");
+        save(&root, "doc created");
+        write(&root, "assets/image.png", "png");
+        save(&root, "asset added");
+        write(&root, "unrelated.txt", "x");
+        save(&root, "unrelated");
+        write(&root, "doc.md", "two");
+        save(&root, "doc edited");
+
+        let msgs = |paths: &[&Path], limit| -> Vec<String> {
+            with_repo(&root, |vr| {
+                commands::history::run(
+                    vr,
+                    commands::history::Options {
+                        paths,
+                        limit,
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.message.clone())
+            .collect()
+        };
+
+        assert_eq!(
+            msgs(&[Path::new("doc.md"), Path::new("assets")], None),
+            vec!["doc edited", "asset added", "doc created"],
+            "the union of both paths, newest first, and nothing unrelated"
+        );
+        // One path alone sees less, which is what makes the union meaningful.
+        assert_eq!(
+            msgs(&[Path::new("doc.md")], None),
+            vec!["doc edited", "doc created"]
+        );
+        // The limit counts matches across the whole set, not candidates.
+        assert_eq!(
+            msgs(&[Path::new("doc.md"), Path::new("assets")], Some(2)),
+            vec!["doc edited", "asset added"]
+        );
     }
 
     // ─── format v2 ────────────────────────────────────────────────────────────
