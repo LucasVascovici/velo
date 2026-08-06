@@ -193,6 +193,66 @@ impl Repo {
             .any(|b| b == branch.as_str()))
     }
 
+    /// Everything recorded about one snapshot, by id.
+    ///
+    /// A consumer holds ids, not specs, and previously had to format one back
+    /// into text for `show::run` to resolve again — or walk history and filter.
+    ///
+    /// Returns [`history::Entry`](crate::commands::history::Entry) rather than a
+    /// near-duplicate type: it already carries exactly this, already typed. Use
+    /// [`commands::show::run`](crate::commands::show::run) when the diff against
+    /// the parent is wanted too, since computing that is not free.
+    pub fn snapshot(&self, id: &SnapshotId) -> Result<crate::commands::history::Entry> {
+        crate::commands::history::snapshot(self, id)
+    }
+
+    /// A value that changes whenever the repository's history does.
+    ///
+    /// For an application that has to notice a second window, a `pull`, or the
+    /// user running `velo` in the same folder: poll one integer instead of every
+    /// branch tip. Equal tokens mean nothing tracked has changed; a different
+    /// token means something has, and the caller should re-read what it cares
+    /// about.
+    ///
+    /// Covers snapshots, branches and tags. It deliberately does **not** cover
+    /// the working tree — that is the filesystem's business, and a consumer with
+    /// its own storage has no working tree at all.
+    pub fn head_token(&self) -> Result<u64> {
+        let mut h = blake3::Hasher::new();
+
+        let (count, newest): (i64, i64) = self.conn.query_row(
+            "SELECT COUNT(*), COALESCE(MAX(rowid), 0) FROM snapshots",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        h.update(&count.to_le_bytes());
+        h.update(&newest.to_le_bytes());
+
+        // Branch tips and tags can move without any row being added, so counting
+        // is not enough — the values themselves have to go in.
+        for (table, columns) in [("branches", "name, tip"), ("tags", "name, snapshot_hash")] {
+            let sql = format!("SELECT {} FROM {} ORDER BY 1", columns, table);
+            let mut stmt = self.conn.prepare(&sql)?;
+            let rows =
+                stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+            for row in rows {
+                let (a, b) = row?;
+                h.update(a.as_bytes());
+                h.update(b" ");
+                h.update(b.as_bytes());
+                h.update(
+                    b"
+",
+                );
+            }
+        }
+
+        let digest = h.finalize();
+        let mut first = [0u8; 8];
+        first.copy_from_slice(&digest.as_bytes()[..8]);
+        Ok(u64::from_le_bytes(first))
+    }
+
     /// Repository format version as recorded on disk.
     pub fn format_version(&self) -> Result<u32> {
         Ok(db::format_version(&self.conn)?)

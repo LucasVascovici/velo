@@ -229,6 +229,21 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
     })
 }
 
+/// One snapshot by id, without walking history.
+pub(crate) fn snapshot(repo: &Repo, id: &SnapshotId) -> Result<Entry> {
+    let sql = format!(
+        "SELECT {COLUMNS}
+         FROM snapshots s
+         LEFT JOIN tags t ON s.hash = t.snapshot_hash
+         WHERE s.hash = ?"
+    );
+    repo.conn()
+        .query_row(&sql, [id], row_to_entry)
+        .map_err(|_| {
+            crate::error::VeloError::not_found(crate::error::RefKind::Snapshot, id.as_str())
+        })
+}
+
 // ─── Queries ──────────────────────────────────────────────────────────────────
 
 const COLUMNS: &str =

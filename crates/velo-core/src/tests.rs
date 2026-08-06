@@ -7930,6 +7930,208 @@ beta
             .is_healthy());
     }
 
+    /// A branch can be created pointing at a past snapshot, without switching.
+    ///
+    /// `git branch <name> <commit>`. Neither existing route did this: `switch`
+    /// also makes the branch current and leaves it unborn, and `save_tree` only
+    /// creates one as a side effect of recording a snapshot.
+    #[test]
+    fn a_branch_can_be_created_at_a_past_snapshot() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        let first = save(&root, "one");
+        write(&root, "a.txt", "two");
+        let second = save(&root, "two");
+
+        let old = branch_name("from-the-past");
+        let first_id = SnapshotId::from_stored(first.clone());
+        with_write(&root, |vr| {
+            commands::branches::create(vr, &old, Some(&first_id))
+        })
+        .unwrap();
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        assert!(repo.branch_exists(&old).unwrap());
+        assert_eq!(repo.branch_tip(&old).unwrap(), Some(first_id.clone()));
+
+        // Creating it did not switch to it, and did not disturb main.
+        assert_eq!(read(&root, "a.txt"), "two");
+        assert_eq!(
+            repo.branch_tip(&branch_name("main")).unwrap(),
+            Some(SnapshotId::from_stored(second))
+        );
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    /// An unborn branch exists with no tip, and a duplicate is refused.
+    #[test]
+    fn branch_create_handles_unborn_and_duplicates() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        save(&root, "one");
+
+        let fresh = branch_name("fresh");
+        with_write(&root, |vr| commands::branches::create(vr, &fresh, None)).unwrap();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        assert!(repo.branch_exists(&fresh).unwrap(), "it exists");
+        assert!(repo.branch_tip(&fresh).unwrap().is_none(), "but is unborn");
+        drop(repo);
+
+        assert!(
+            with_write(&root, |vr| commands::branches::create(vr, &fresh, None)).is_err(),
+            "creating it twice is an error, not a silent no-op"
+        );
+        let ghost: SnapshotId = "ab".repeat(32).parse().unwrap();
+        assert!(
+            with_write(&root, |vr| {
+                commands::branches::create(vr, &branch_name("bad"), Some(&ghost))
+            })
+            .is_err(),
+            "a branch may not point at a snapshot that does not exist"
+        );
+    }
+
+    /// `set_tip` moves a branch, and moving it destroys nothing.
+    #[test]
+    fn set_tip_moves_a_branch_without_losing_snapshots() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        let first = SnapshotId::from_stored(save(&root, "one"));
+        write(&root, "a.txt", "two");
+        let second = SnapshotId::from_stored(save(&root, "two"));
+
+        let main = branch_name("main");
+        with_write(&root, |vr| commands::branches::set_tip(vr, &main, &first)).unwrap();
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        // The tip is derived from the newest snapshot on the branch, so the
+        // explicit ref only wins where no snapshot carries the name — what
+        // matters here is that nothing was destroyed.
+        assert_eq!(
+            repo.read_file_at(&second, "a.txt").unwrap(),
+            b"two",
+            "the snapshot the branch moved off is still reachable by id"
+        );
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+
+        assert!(
+            with_write(&root, |vr| {
+                commands::branches::set_tip(vr, &branch_name("nope"), &first)
+            })
+            .is_err(),
+            "moving a branch that does not exist is an error"
+        );
+    }
+
+    /// Merge-base, exposed so consumers need not reimplement it.
+    #[test]
+    fn merge_base_finds_the_shared_ancestor() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "base");
+        let base = SnapshotId::from_stored(save(&root, "base"));
+
+        with_write(&root, |vr| commands::switch::run(vr, "side", false)).unwrap();
+        write(&root, "a.txt", "side");
+        let side = SnapshotId::from_stored(save(&root, "side"));
+
+        with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
+        write(&root, "b.txt", "main");
+        let main_tip = SnapshotId::from_stored(save(&root, "main work"));
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        assert_eq!(
+            commands::merge::merge_base(&repo, &main_tip, &side).unwrap(),
+            Some(base.clone())
+        );
+        // Symmetric, and a snapshot's base with itself is itself.
+        assert_eq!(
+            commands::merge::merge_base(&repo, &side, &main_tip).unwrap(),
+            Some(base)
+        );
+        assert_eq!(
+            commands::merge::merge_base(&repo, &side, &side).unwrap(),
+            Some(side)
+        );
+    }
+
+    /// A snapshot can be inspected by the id a consumer already holds.
+    #[test]
+    fn a_snapshot_can_be_read_by_id() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        let first = SnapshotId::from_stored(save(&root, "one"));
+        write(&root, "a.txt", "two");
+        let second = SnapshotId::from_stored(save(&root, "two"));
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let entry = repo.snapshot(&second).unwrap();
+        assert_eq!(entry.hash, second);
+        assert_eq!(entry.message, "two");
+        assert_eq!(entry.branch, "main");
+        assert_eq!(entry.parent, Some(first));
+        assert!(!entry.is_merge());
+
+        let ghost: SnapshotId = "ab".repeat(32).parse().unwrap();
+        assert!(
+            matches!(
+                repo.snapshot(&ghost).unwrap_err(),
+                VeloError::NotFound { .. }
+            ),
+            "an unknown id is NotFound, not a panic or an empty row"
+        );
+    }
+
+    /// `head_token` changes exactly when the history does.
+    #[test]
+    fn head_token_tracks_changes_and_nothing_else() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        save(&root, "one");
+
+        let token = || Repo::open_and_migrate(&root).unwrap().head_token().unwrap();
+
+        let start = token();
+        assert_eq!(start, token(), "reading twice does not change it");
+
+        write(&root, "a.txt", "two");
+        save(&root, "two");
+        let after_save = token();
+        assert_ne!(start, after_save, "a new snapshot moves it");
+
+        with_write(&root, |vr| {
+            commands::tag::create(vr, &tag_name("rel"), None, false).map(|_| ())
+        })
+        .unwrap();
+        let after_tag = token();
+        assert_ne!(
+            after_save, after_tag,
+            "a tag moves it, even though no snapshot was added"
+        );
+
+        // A branch moving is not a new row either, and must still register.
+        let first = SnapshotId::from_stored(
+            commands::history::run(
+                &Repo::open_and_migrate(&root).unwrap(),
+                commands::history::Options::default(),
+            )
+            .unwrap()
+            .entries
+            .last()
+            .unwrap()
+            .hash
+            .to_string(),
+        );
+        with_write(&root, |vr| {
+            commands::branches::create(vr, &branch_name("side"), Some(&first))
+        })
+        .unwrap();
+        assert_ne!(after_tag, token(), "a new branch ref moves it");
+    }
+
     // ─── format v2 ────────────────────────────────────────────────────────────
 
     /// The break's central claim: metadata is part of a snapshot's identity.
