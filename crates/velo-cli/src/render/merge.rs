@@ -29,7 +29,7 @@ pub fn print(outcome: &Outcome) {
                 "{} Fast-forwarding '{}' to {}…",
                 style(">>").green().bold(),
                 branch,
-                style(to).yellow()
+                style(super::id::short(to)).yellow()
             );
             println!("{} Fast-forward complete.", style("✔").green());
         }
@@ -59,7 +59,7 @@ fn print_three_way(result: &ThreeWay) {
         "Merging '{}' into '{}' (ancestor: {})…",
         style(&result.source).yellow().bold(),
         style(&result.into).cyan().bold(),
-        style(result.ancestor.as_deref().unwrap_or("none")).dim()
+        style(result.ancestor.as_deref().map_or("none", super::id::short)).dim()
     );
 
     super::apply::print_files(&result.applied);

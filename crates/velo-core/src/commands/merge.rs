@@ -87,13 +87,31 @@ pub enum Outcome {
 }
 
 /// Merge `target_branch` into the current branch, or unwind one with `abort`.
-pub fn run(guard: &WriteGuard, target_branch: Option<&str>, abort: bool) -> Result<Outcome> {
-    if abort {
-        return do_abort(guard);
+/// What [`run`] should do.
+///
+/// Replaces a `(Option<&str>, bool)` pair whose fourth combination — no target
+/// and no abort — was an error discovered at run time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode<'a> {
+    /// Merge `source` into the current branch.
+    ///
+    /// A **spec**, not a resolved id, and deliberately so: an exact local branch
+    /// tip wins over a hash prefix (so a short branch name is never mis-read as
+    /// one), tags and remote refs fall out of the fallback, and the *name* is
+    /// what gets written to `MERGE_HEAD` for the eventual save to resolve into a
+    /// second parent. A `SnapshotId` would throw that away. See [`crate::ids`]
+    /// for why specs stay `&str`.
+    Bring { source: &'a str },
+    /// Abandon a merge in progress and restore the pre-merge state.
+    Abort,
+}
+
+/// Merge, or abort one.
+pub fn run(guard: &WriteGuard, mode: Mode<'_>) -> Result<Outcome> {
+    match mode {
+        Mode::Abort => do_abort(guard),
+        Mode::Bring { source } => do_merge(guard, source),
     }
-    let target = target_branch
-        .ok_or_else(|| VeloError::invalid("Specify a branch to merge: velo merge <branch>"))?;
-    do_merge(guard, target)
 }
 
 // ─── Abort ───────────────────────────────────────────────────────────────────
