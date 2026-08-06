@@ -84,11 +84,15 @@ impl TempRepo {
     /// # Panics
     /// If there is nothing to save, or the save fails.
     pub fn save(&self, message: &str) -> SnapshotId {
-        commands::save::run(&self.write_guard(), message, false)
-            .expect("save")
-            .into_result()
-            .expect("something to save")
-            .hash
+        commands::save::run(
+            &self.write_guard(),
+            Some(message),
+            commands::save::Options::default(),
+        )
+        .expect("save")
+        .into_result()
+        .expect("something to save")
+        .hash
     }
 
     /// Create (or switch to) a branch.

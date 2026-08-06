@@ -1417,12 +1417,16 @@ fn run(cli: Cli) -> Result<()> {
             amend,
             paths,
         } => {
-            let outcome = commands::save::run_with_paths(
+            let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
+            let outcome = commands::save::run(
                 write(),
                 message.as_deref(),
-                amend,
-                &paths,
-                author::from_env()?.as_ref(),
+                commands::save::Options {
+                    amend,
+                    paths: &paths,
+                    author: author::from_env()?.as_ref(),
+                    ..Default::default()
+                },
             )?;
             let branch = std::fs::read_to_string(root.join(".velo/HEAD"))
                 .unwrap_or_default()
@@ -1500,7 +1504,11 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::CherryPick { target } => {
             let target = commands::resolve_snapshot_id(&repo, &target)?;
-            render::cherry_pick::print(&commands::cherry_pick::run(write(), &target)?);
+            render::cherry_pick::print(&commands::cherry_pick::run(
+                write(),
+                &target,
+                author::from_env()?.as_ref(),
+            )?);
         }
 
         Commands::Switch { name, force } => {
@@ -1633,7 +1641,11 @@ fn run(cli: Cli) -> Result<()> {
                     ))
                 }
             };
-            render::rebase::print(&commands::rebase::run(write(), mode)?);
+            render::rebase::print(&commands::rebase::run(
+                write(),
+                mode,
+                author::from_env()?.as_ref(),
+            )?);
         }
 
         Commands::Gc { keep_days } => {

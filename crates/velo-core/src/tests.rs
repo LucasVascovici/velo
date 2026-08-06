@@ -124,12 +124,14 @@ mod tests {
     }
 
     fn save(root: &Path, msg: &str) -> String {
-        with_write(root, |g| commands::save::run(g, msg, false))
-            .unwrap()
-            .into_result()
-            .expect("expected a snapshot to be created")
-            .hash
-            .into_string()
+        with_write(root, |g| {
+            commands::save::run(g, Some(msg), commands::save::Options::default())
+        })
+        .unwrap()
+        .into_result()
+        .expect("expected a snapshot to be created")
+        .hash
+        .into_string()
     }
 
     fn parent(root: &Path) -> String {
@@ -270,10 +272,12 @@ mod tests {
     fn save_basic_roundtrip() {
         let (_tmp, root) = setup();
         write(&root, "hello.txt", "hello");
-        let r = with_write(&root, |vr| commands::save::run(vr, "first", false))
-            .unwrap()
-            .into_result()
-            .unwrap();
+        let r = with_write(&root, |vr| {
+            commands::save::run(vr, Some("first"), commands::save::Options::default())
+        })
+        .unwrap()
+        .into_result()
+        .unwrap();
         assert_eq!(r.new_count, 2); // hello.txt + .veloignore
         assert_eq!(r.modified_count, 0);
         assert_eq!(r.deleted_count, 0);
@@ -288,7 +292,10 @@ mod tests {
     fn save_empty_message_is_error() {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "x");
-        let err = with_write(&root, |vr| commands::save::run(vr, "", false)).unwrap_err();
+        let err = with_write(&root, |vr| {
+            commands::save::run(vr, Some(""), commands::save::Options::default())
+        })
+        .unwrap_err();
         assert!(matches!(err, crate::error::VeloError::InvalidInput { .. }));
     }
 
@@ -296,7 +303,10 @@ mod tests {
     fn save_whitespace_only_message_is_error() {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "x");
-        let err = with_write(&root, |vr| commands::save::run(vr, "   ", false)).unwrap_err();
+        let err = with_write(&root, |vr| {
+            commands::save::run(vr, Some("   "), commands::save::Options::default())
+        })
+        .unwrap_err();
         assert!(matches!(err, crate::error::VeloError::InvalidInput { .. }));
     }
 
@@ -306,7 +316,10 @@ mod tests {
         write(&root, "f.txt", "x");
         save(&root, "s1");
         // Nothing changed — should return None
-        let result = with_write(&root, |vr| commands::save::run(vr, "s2", false)).unwrap();
+        let result = with_write(&root, |vr| {
+            commands::save::run(vr, Some("s2"), commands::save::Options::default())
+        })
+        .unwrap();
         assert!(!result.saved());
     }
 
@@ -334,10 +347,12 @@ mod tests {
         save(&root, "s1");
 
         fs::remove_file(root.join("a.txt")).unwrap();
-        let r = with_write(&root, |vr| commands::save::run(vr, "s2", false))
-            .unwrap()
-            .into_result()
-            .unwrap();
+        let r = with_write(&root, |vr| {
+            commands::save::run(vr, Some("s2"), commands::save::Options::default())
+        })
+        .unwrap()
+        .into_result()
+        .unwrap();
         assert_eq!(r.deleted_count, 1);
     }
 
@@ -380,10 +395,12 @@ mod tests {
         fs::create_dir_all(root.join("temp")).unwrap();
         write(&root, "temp/cache.tmp", "junk");
 
-        let r = with_write(&root, |vr| commands::save::run(vr, "test", false))
-            .unwrap()
-            .into_result()
-            .unwrap();
+        let r = with_write(&root, |vr| {
+            commands::save::run(vr, Some("test"), commands::save::Options::default())
+        })
+        .unwrap()
+        .into_result()
+        .unwrap();
         // Only app.rs + .veloignore should be tracked (debug.log and temp/ excluded)
         assert_eq!(r.new_count, 2);
     }
@@ -1853,7 +1870,8 @@ mod tests {
         use commands::apply::FileAction;
         let (_tmp, root, tip) = side_branch_repo();
 
-        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
+        let outcome =
+            with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip), None)).unwrap();
         assert_eq!(outcome.snapshot, tip);
         assert_eq!(outcome.message, "side work");
         assert!(!outcome.is_conflicted());
@@ -1888,9 +1906,10 @@ mod tests {
     #[test]
     fn cherry_pick_of_already_applied_work_does_nothing() {
         let (_tmp, root, tip) = side_branch_repo();
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
+        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip), None)).unwrap();
 
-        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
+        let outcome =
+            with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip), None)).unwrap();
         assert!(outcome.applied_nothing());
         assert!(
             outcome.saved_as.is_none(),
@@ -1910,7 +1929,8 @@ mod tests {
         write(&root, "c.txt", "one\nMAIN\nthree\n");
         save(&root, "main work");
 
-        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
+        let outcome =
+            with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip), None)).unwrap();
         assert!(outcome.is_conflicted());
         assert_eq!(outcome.applied.conflicts(), vec!["c.txt"]);
         assert!(
@@ -1931,9 +1951,10 @@ mod tests {
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
         write(&root, "c.txt", "one\nMAIN\nthree\n");
         save(&root, "main work");
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
+        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip), None)).unwrap();
 
-        let err = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap_err();
+        let err =
+            with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip), None)).unwrap_err();
         assert!(
             matches!(err, VeloError::OperationInProgress { .. }),
             "a paused pick leaves the tree dirty, so dirtiness is the wrong diagnosis: {:?}",
@@ -1945,7 +1966,8 @@ mod tests {
     fn cherry_pick_refuses_a_dirty_tree() {
         let (_tmp, root, tip) = side_branch_repo();
         write(&root, "unsaved.txt", "wip");
-        let err = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap_err();
+        let err =
+            with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip), None)).unwrap_err();
         assert!(matches!(err, VeloError::DirtyWorkingTree { .. }));
     }
 
@@ -1981,6 +2003,7 @@ mod tests {
                 commands::rebase::Mode::Start {
                     onto: &sid(&main_tip),
                 },
+                None,
             )
         })
         .unwrap();
@@ -2019,6 +2042,7 @@ mod tests {
                 commands::rebase::Mode::Start {
                     onto: &sid(&main_tip),
                 },
+                None,
             )
         })
         .unwrap();
@@ -2034,6 +2058,7 @@ mod tests {
                 commands::rebase::Mode::Start {
                     onto: &sid(&main_tip),
                 },
+                None,
             )
         })
         .unwrap();
@@ -2056,7 +2081,11 @@ mod tests {
 
         // `base` is already behind us.
         let outcome = with_write(&root, |vr| {
-            commands::rebase::run(vr, commands::rebase::Mode::Start { onto: &sid(&base) })
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start { onto: &sid(&base) },
+                None,
+            )
         })
         .unwrap();
         assert!(matches!(outcome, Outcome::AlreadyUpToDate));
@@ -2084,6 +2113,7 @@ mod tests {
                 commands::rebase::Mode::Start {
                     onto: &sid(&main_tip),
                 },
+                None,
             )
         })
         .unwrap();
@@ -2105,7 +2135,7 @@ mod tests {
 
         // --continue refuses while conflicts stand.
         let err = with_write(&root, |vr| {
-            commands::rebase::run(vr, commands::rebase::Mode::Continue)
+            commands::rebase::run(vr, commands::rebase::Mode::Continue, None)
         })
         .unwrap_err();
         assert!(matches!(err, VeloError::Conflicts { .. }), "got {:?}", err);
@@ -2115,7 +2145,7 @@ mod tests {
         save(&root, "resolved shared.txt");
 
         let outcome = with_write(&root, |vr| {
-            commands::rebase::run(vr, commands::rebase::Mode::Continue)
+            commands::rebase::run(vr, commands::rebase::Mode::Continue, None)
         })
         .unwrap();
         let Outcome::Completed { replayed, .. } = outcome else {
@@ -2149,11 +2179,12 @@ mod tests {
                 commands::rebase::Mode::Start {
                     onto: &sid(&main_tip),
                 },
+                None,
             )
         })
         .unwrap();
         let outcome = with_write(&root, |vr| {
-            commands::rebase::run(vr, commands::rebase::Mode::Abort)
+            commands::rebase::run(vr, commands::rebase::Mode::Abort, None)
         })
         .unwrap();
         let Outcome::Aborted { restored_to, .. } = outcome else {
@@ -2175,7 +2206,8 @@ mod tests {
         assert!(matches!(
             with_write(&root, |vr| commands::rebase::run(
                 vr,
-                commands::rebase::Mode::Continue
+                commands::rebase::Mode::Continue,
+                None
             ))
             .unwrap_err(),
             VeloError::NoOperationInProgress { .. }
@@ -2183,7 +2215,8 @@ mod tests {
         assert!(matches!(
             with_write(&root, |vr| commands::rebase::run(
                 vr,
-                commands::rebase::Mode::Abort
+                commands::rebase::Mode::Abort,
+                None
             ))
             .unwrap_err(),
             VeloError::NoOperationInProgress { .. }
@@ -2200,6 +2233,7 @@ mod tests {
                 commands::rebase::Mode::Start {
                     onto: &sid(&main_tip),
                 },
+                None,
             )
         })
         .unwrap_err();
@@ -2215,30 +2249,32 @@ mod tests {
 
         // Both used to collapse into `Ok(None)`, so a caller couldn't tell which.
         assert_eq!(
-            with_write(&root, |vr| commands::save::run_with_paths(
+            with_write(&root, |vr| commands::save::run(
                 vr,
                 Some("again"),
-                false,
-                &[],
-                None
+                commands::save::Options::default(),
             ))
             .unwrap(),
             Outcome::NothingToSave
         );
         assert_eq!(
-            with_write(&root, |vr| commands::save::run_with_paths(
+            with_write(&root, |vr| commands::save::run(
                 vr,
                 None,
-                true,
-                &[],
-                None
+                commands::save::Options {
+                    amend: true,
+                    ..Default::default()
+                },
             ))
             .unwrap(),
             Outcome::NothingToAmend
         );
 
         write(&root, "f.txt", "v2");
-        let outcome = with_write(&root, |vr| commands::save::run(vr, "s2", false)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::save::run(vr, Some("s2"), commands::save::Options::default())
+        })
+        .unwrap();
         assert!(outcome.saved());
         assert!(outcome.hash().is_some());
     }
@@ -3093,7 +3129,7 @@ mod tests {
         write(&root, "a.txt", "one\n");
         let h1 = {
             let guard = repo.write().unwrap();
-            commands::save::run(&guard, "first", false)
+            commands::save::run(&guard, Some("first"), commands::save::Options::default())
                 .unwrap()
                 .into_result()
                 .unwrap()
@@ -3103,7 +3139,7 @@ mod tests {
         write(&root, "a.txt", "two\n");
         let h2 = {
             let guard = repo.write().unwrap();
-            commands::save::run(&guard, "second", false)
+            commands::save::run(&guard, Some("second"), commands::save::Options::default())
                 .unwrap()
                 .into_result()
                 .unwrap()
@@ -3134,7 +3170,7 @@ mod tests {
 
         write(&root, "a.txt", "one\n");
         let guard = repo.write().unwrap();
-        commands::save::run(&guard, "first", false).unwrap();
+        commands::save::run(&guard, Some("first"), commands::save::Options::default()).unwrap();
         commands::tag::create(&guard, &tag_name("v1"), None, false).unwrap();
         commands::switch::run(&guard, "feature", false).unwrap();
         drop(guard);
@@ -3236,7 +3272,12 @@ mod tests {
         write(&root, "c.txt", "three\n");
 
         let (repo, rec) = watched(&root);
-        commands::save::run(&repo.write().unwrap(), "s1", false).unwrap();
+        commands::save::run(
+            &repo.write().unwrap(),
+            Some("s1"),
+            commands::save::Options::default(),
+        )
+        .unwrap();
 
         // .veloignore is written by init, so it counts too — assert against the
         // announced total rather than a hard-coded number.
@@ -3343,6 +3384,7 @@ mod tests {
             commands::rebase::Mode::Start {
                 onto: &sid(&main_tip),
             },
+            None,
         )
         .unwrap();
 
@@ -3387,7 +3429,12 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "a.txt", "one\n");
         let repo = Repo::open_and_migrate(&root).unwrap();
-        commands::save::run(&repo.write().unwrap(), "s1", false).unwrap();
+        commands::save::run(
+            &repo.write().unwrap(),
+            Some("s1"),
+            commands::save::Options::default(),
+        )
+        .unwrap();
         assert!(commands::fsck::check(&repo).unwrap().is_healthy());
     }
 
@@ -5349,7 +5396,10 @@ beta
         );
 
         // After saving, MERGE_HEAD is cleared.
-        with_write(&root, |vr| commands::save::run(vr, "Finish merge", false)).unwrap();
+        with_write(&root, |vr| {
+            commands::save::run(vr, Some("Finish merge"), commands::save::Options::default())
+        })
+        .unwrap();
         assert!(
             !exists(&root, ".velo/MERGE_HEAD"),
             "MERGE_HEAD should be gone after velo save"
@@ -5595,10 +5645,12 @@ beta
         fs::create_dir_all(root.join("temp")).unwrap();
         write(&root, "temp/cache.tmp", "junk");
 
-        let r = with_write(&root, |vr| commands::save::run(vr, "test", false))
-            .unwrap()
-            .into_result()
-            .unwrap();
+        let r = with_write(&root, |vr| {
+            commands::save::run(vr, Some("test"), commands::save::Options::default())
+        })
+        .unwrap()
+        .into_result()
+        .unwrap();
         // Only main.rs + .veloignore should be tracked
         assert_eq!(r.new_count, 2);
     }
@@ -6098,7 +6150,17 @@ beta
 
         // Amend: fix a typo in f.txt and update message
         write(&root, "f.txt", "v1 fixed");
-        let result = with_write(&root, |vr| commands::save::run(vr, "s1 amended", true)).unwrap();
+        let result = with_write(&root, |vr| {
+            commands::save::run(
+                vr,
+                Some("s1 amended"),
+                commands::save::Options {
+                    amend: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         let amended = result.into_result().unwrap();
 
         assert_ne!(amended.hash, h1, "Amended hash must differ");
@@ -6121,7 +6183,14 @@ beta
 
         write(&root, "f.txt", "v1b");
         with_write(&root, |vr| {
-            commands::save::run(vr, "corrected message", true)
+            commands::save::run(
+                vr,
+                Some("corrected message"),
+                commands::save::Options {
+                    amend: true,
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
 
@@ -6146,7 +6215,17 @@ beta
 
         // Amend s2 — the amended snapshot's parent should still be h1
         write(&root, "f.txt", "v2 amended");
-        with_write(&root, |vr| commands::save::run(vr, "s2 amended", true)).unwrap();
+        with_write(&root, |vr| {
+            commands::save::run(
+                vr,
+                Some("s2 amended"),
+                commands::save::Options {
+                    amend: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
 
         // PARENT file is the authoritative source — it's written last in save::run
         // and always points to the most recently created snapshot.
@@ -6171,8 +6250,17 @@ beta
 
         // Amend with no file changes — just fix the message
         // (dirty is empty, but amend=true forces a save)
-        let result =
-            with_write(&root, |vr| commands::save::run(vr, "fixed message", true)).unwrap();
+        let result = with_write(&root, |vr| {
+            commands::save::run(
+                vr,
+                Some("fixed message"),
+                commands::save::Options {
+                    amend: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         // Should return Some even when tree is clean (amend forces it)
         // Note: if dirty is empty AND amend, we still create a new snapshot
         assert!(result.saved());
@@ -6286,7 +6374,10 @@ beta
 
         // Back on main, apply the hotfix
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(fix_hash))).unwrap();
+        with_write(&root, |vr| {
+            commands::cherry_pick::run(vr, &sid(fix_hash), None)
+        })
+        .unwrap();
 
         // The new file from the hotfix should be on main now
         assert!(exists(&root, "fix.txt"));
@@ -6308,7 +6399,7 @@ beta
         write(&root, "f.txt", "A\nB\nC\nD\nE_CHANGED\n"); // main: edits line 5
         save(&root, "main line5");
 
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(fix))).unwrap();
+        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(fix), None)).unwrap();
 
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let n: i64 = conn
@@ -6329,7 +6420,7 @@ beta
 
         // Make the tree dirty
         write(&root, "f.txt", "dirty");
-        let result = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&h2)));
+        let result = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&h2), None));
         assert!(result.is_err());
     }
 
@@ -6352,7 +6443,7 @@ beta
 
         // Cherry-pick branch A's change — should conflict
         with_write(&root, |vr| {
-            commands::cherry_pick::run(vr, &sid(branch_a_hash))
+            commands::cherry_pick::run(vr, &sid(branch_a_hash), None)
         })
         .unwrap();
         // Conflict stored in DB, not as a .conflict file
@@ -6384,7 +6475,7 @@ beta
         let before_parent = parent(&root);
 
         with_write(&root, |vr| {
-            commands::cherry_pick::run(vr, &sid(feature_hash))
+            commands::cherry_pick::run(vr, &sid(feature_hash), None)
         })
         .unwrap();
 
@@ -6403,7 +6494,7 @@ beta
         write(&root, "f.txt", "v");
         save(&root, "s1");
         let result = with_write(&root, |vr| {
-            commands::cherry_pick::run(vr, &sid("deadbeef1234"))
+            commands::cherry_pick::run(vr, &sid("deadbeef1234"), None)
         });
         assert!(result.is_err());
     }
@@ -7361,7 +7452,14 @@ beta
 
         write(&root, "forgotten.py", "b\n");
         let r = with_write(&root, |vr| {
-            commands::save::run_with_paths(vr, None, true, &[], None)
+            commands::save::run(
+                vr,
+                None,
+                commands::save::Options {
+                    amend: true,
+                    ..Default::default()
+                },
+            )
         })
         .unwrap()
         .into_result()
@@ -7389,7 +7487,14 @@ beta
         // A message may still be supplied to reword.
         write(&root, "a.py", "a2\n");
         let r2 = with_write(&root, |vr| {
-            commands::save::run_with_paths(vr, Some("Reworded"), true, &[], None)
+            commands::save::run(
+                vr,
+                Some("Reworded"),
+                commands::save::Options {
+                    amend: true,
+                    ..Default::default()
+                },
+            )
         })
         .unwrap()
         .into_result()
@@ -7412,36 +7517,36 @@ beta
 
         // Clean tree + no new message → nothing to amend (no pointless rehash).
         assert!(
-            with_write(&root, |vr| commands::save::run_with_paths(
+            with_write(&root, |vr| commands::save::run(
                 vr,
                 None,
-                true,
-                &[],
-                None
+                commands::save::Options {
+                    amend: true,
+                    ..Default::default()
+                },
             ))
             .unwrap()
                 == commands::save::Outcome::NothingToAmend,
             "amending nothing should be a no-op, and say why"
         );
         // A plain save still requires a message.
-        assert!(with_write(&root, |vr| commands::save::run_with_paths(
+        assert!(with_write(&root, |vr| commands::save::run(
             vr,
             None,
-            false,
-            &[],
-            None
+            commands::save::Options::default(),
         ))
         .is_err());
 
         // Amending a branch with no snapshots is a clear error, not a panic.
         let (_t2, root2) = setup();
         write(&root2, "x.txt", "x\n");
-        assert!(with_write(&root2, |vr| commands::save::run_with_paths(
+        assert!(with_write(&root2, |vr| commands::save::run(
             vr,
             None,
-            true,
-            &[],
-            None
+            commands::save::Options {
+                amend: true,
+                ..Default::default()
+            },
         ))
         .is_err());
     }
@@ -7580,6 +7685,7 @@ beta
                     // is the whole point of the change.
                     onto: &commands::resolve_snapshot_id(vr.repo(), "main")?,
                 },
+                None,
             )
         })
         .unwrap();
@@ -7615,6 +7721,7 @@ beta
                     // is the whole point of the change.
                     onto: &commands::resolve_snapshot_id(vr.repo(), "main")?,
                 },
+                None,
             )
         })
         .unwrap();
@@ -7654,12 +7761,13 @@ beta
                     // is the whole point of the change.
                     onto: &commands::resolve_snapshot_id(vr.repo(), "main")?,
                 },
+                None,
             )
         });
 
         // Abort
         with_write(&root, |vr| {
-            commands::rebase::run(vr, commands::rebase::Mode::Abort)
+            commands::rebase::run(vr, commands::rebase::Mode::Abort, None)
         })
         .unwrap();
 
@@ -7673,7 +7781,7 @@ beta
         write(&root, "f.txt", "v\n");
         save(&root, "s1");
         let r = with_write(&root, |vr| {
-            commands::rebase::run(vr, commands::rebase::Mode::Continue)
+            commands::rebase::run(vr, commands::rebase::Mode::Continue, None)
         });
         assert!(r.is_err());
     }
@@ -7704,11 +7812,12 @@ beta
                     // is the whole point of the change.
                     onto: &commands::resolve_snapshot_id(vr.repo(), "main")?,
                 },
+                None,
             )
         }); // conflicts
 
         with_write(&root, |vr| {
-            commands::rebase::run(vr, commands::rebase::Mode::Abort)
+            commands::rebase::run(vr, commands::rebase::Mode::Abort, None)
         })
         .unwrap(); // abort
 
@@ -7748,7 +7857,15 @@ beta
 
         // Only save a.txt
         with_write(&root, |vr| {
-            commands::save::run_with_paths(vr, Some("only a"), false, &["a.txt".to_string()], None)
+            commands::save::run(
+                vr,
+                Some("only a"),
+                commands::save::Options {
+                    amend: false,
+                    paths: &[Path::new("a.txt")],
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
 
@@ -7791,8 +7908,14 @@ beta
              of this test"
         );
 
-        let outcome =
-            with_write(&root, |vr| commands::save::run(vr, "merge feature", false)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::save::run(
+                vr,
+                Some("merge feature"),
+                commands::save::Options::default(),
+            )
+        })
+        .unwrap();
         let merged = outcome
             .into_result()
             .expect("the merge must be recorded even though the tree is unchanged");
@@ -7831,7 +7954,11 @@ beta
         save(&root, "first");
 
         let outcome = with_write(&root, |vr| {
-            commands::save::run(vr, "nothing changed", false)
+            commands::save::run(
+                vr,
+                Some("nothing changed"),
+                commands::save::Options::default(),
+            )
         })
         .unwrap();
         assert_eq!(outcome, commands::save::Outcome::NothingToSave);
@@ -7859,8 +7986,14 @@ beta
         .unwrap();
         resolve_take(&root, None, commands::resolve::TakeOption::Theirs, true).unwrap();
 
-        let outcome =
-            with_write(&root, |vr| commands::save::run(vr, "merge feature", false)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::save::run(
+                vr,
+                Some("merge feature"),
+                commands::save::Options::default(),
+            )
+        })
+        .unwrap();
         assert!(outcome.saved(), "taking theirs must also record the merge");
         assert!(!root.join(".velo/MERGE_HEAD").exists());
         assert_eq!(read(&root, "f.txt"), "theirs\n");
@@ -9053,6 +9186,92 @@ line three CHANGED
             0,
             "and the handle's observer should not, or it is still a global"
         );
+    }
+
+    /// A cancelled save records nothing.
+    ///
+    /// Unlike restore, this one *is* clean: hashing writes objects, and an object
+    /// nothing references is exactly what `gc` collects, so abandoning partway
+    /// leaves no snapshot and no dangling reference.
+    #[test]
+    fn a_save_can_be_cancelled_and_records_nothing() {
+        use crate::progress::Cancel;
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        save(&root, "first");
+
+        let before = with_repo(&root, |vr| {
+            commands::history::run(vr, commands::history::Options::default())
+        })
+        .unwrap()
+        .entries
+        .len();
+
+        for i in 0..30 {
+            write(&root, &format!("f{}.txt", i), "content");
+        }
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let err = with_write(&root, |vr| {
+            commands::save::run(
+                vr,
+                Some("should not land"),
+                commands::save::Options {
+                    cancel: Some(&cancel),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, VeloError::Cancelled),
+            "expected Cancelled, got {:?}",
+            err
+        );
+
+        let after = with_repo(&root, |vr| {
+            commands::history::run(vr, commands::history::Options::default())
+        })
+        .unwrap()
+        .entries
+        .len();
+        assert_eq!(after, before, "no snapshot was recorded");
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+
+        // The files are still dirty, so the work is not lost — only unsaved.
+        assert!(!with_repo(&root, commands::get_dirty_files).is_empty());
+    }
+
+    /// A save records its author, and so do the commands that save on your behalf.
+    #[test]
+    fn cherry_pick_and_rebase_record_the_author() {
+        let (_tmp, root) = setup();
+        let ada = crate::Author::new("Ada Lovelace").unwrap();
+
+        write(&root, "base.txt", "base");
+        save(&root, "base");
+        with_write(&root, |vr| commands::switch::run(vr, "side", false)).unwrap();
+        write(&root, "side.txt", "side");
+        let side = save(&root, "side work");
+        with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
+
+        with_write(&root, |vr| {
+            commands::cherry_pick::run(vr, &sid(&side), Some(&ada))
+        })
+        .unwrap();
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let tip = repo.branch_tip(&branch_name("main")).unwrap().unwrap();
+        assert_eq!(
+            repo.snapshot_meta(&tip).unwrap().author(),
+            Some(ada),
+            "a cherry-pick records who performed it"
+        );
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
     }
 
     // ─── format v2 ────────────────────────────────────────────────────────────
