@@ -9260,6 +9260,98 @@ line three CHANGED
         );
     }
 
+    /// An application can exclude its own files without writing to the user's
+    /// folder, which is the whole point.
+    #[test]
+    fn a_scope_can_ignore_paths_without_a_veloignore() {
+        use crate::Scope;
+        let (_tmp, root) = setup();
+        std::fs::create_dir_all(root.join(".myapp-cache")).unwrap();
+        write(&root, "doc.md", "real work");
+        write(&root, ".myapp-cache/blob.bin", "application detritus");
+
+        // Unscoped, the cache is part of the working tree.
+        let plain = Repo::open_and_migrate(&root).unwrap();
+        let dirty = commands::get_dirty_files(&plain);
+        assert!(dirty.keys().any(|p| p.contains(".myapp-cache")));
+        drop(plain);
+
+        // Scoped, it is not — and nothing was written to say so.
+        let scoped = Repo::open_and_migrate(&root)
+            .unwrap()
+            .scoped(Scope::new().ignore(".myapp-cache/**").unwrap());
+        let dirty = commands::get_dirty_files(&scoped);
+        assert!(
+            !dirty.keys().any(|p| p.contains(".myapp-cache")),
+            "the scope should have excluded it, got {:?}",
+            dirty.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            dirty.keys().any(|p| p.contains("doc.md")),
+            "the real work stays"
+        );
+        assert!(
+            !root.join(".veloignore").exists() || {
+                // `init` writes a default one; the point is we added nothing.
+                let text = std::fs::read_to_string(root.join(".veloignore")).unwrap();
+                !text.contains("myapp")
+            },
+            "a scope must not write to the user's folder"
+        );
+    }
+
+    /// `only` restricts rather than subtracts.
+    #[test]
+    fn a_scope_can_restrict_to_one_subtree() {
+        use crate::Scope;
+        let (_tmp, root) = setup();
+        std::fs::create_dir_all(root.join("prompts")).unwrap();
+        write(&root, "prompts/a.txt", "tracked");
+        write(&root, "elsewhere.txt", "not tracked");
+
+        let repo = Repo::open_and_migrate(&root)
+            .unwrap()
+            .scoped(Scope::new().only("prompts/**").unwrap());
+        let dirty = commands::get_dirty_files(&repo);
+        let paths: Vec<&String> = dirty.keys().collect();
+        assert!(
+            paths.iter().any(|p| p.contains("prompts/a.txt")),
+            "got {:?}",
+            paths
+        );
+        assert!(
+            !paths.iter().any(|p| p.contains("elsewhere.txt")),
+            "outside the scope, got {:?}",
+            paths
+        );
+    }
+
+    /// A scope narrows; it never widens. The user's own rules still win.
+    #[test]
+    fn a_scope_cannot_re_include_what_the_user_ignored() {
+        use crate::Scope;
+        let (_tmp, root) = setup();
+        write(
+            &root,
+            ".veloignore",
+            "secret.txt
+",
+        );
+        write(&root, "secret.txt", "the user said no");
+        write(&root, "fine.txt", "ok");
+
+        let repo = Repo::open_and_migrate(&root)
+            .unwrap()
+            .scoped(Scope::new().only("**").unwrap());
+        let dirty = commands::get_dirty_files(&repo);
+        assert!(
+            !dirty.keys().any(|p| p.contains("secret.txt")),
+            "a scope must not override the user's .veloignore, got {:?}",
+            dirty.keys().collect::<Vec<_>>()
+        );
+        assert!(dirty.keys().any(|p| p.contains("fine.txt")));
+    }
+
     // ─── format v2 ────────────────────────────────────────────────────────────
 
     /// The break's central claim: metadata is part of a snapshot's identity.

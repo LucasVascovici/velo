@@ -136,7 +136,7 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
     let ghosts_removed = if partial {
         0
     } else {
-        remove_ghosts(root, conn, &snapshot_files)?
+        remove_ghosts(root, guard.repo().scope(), conn, &snapshot_files)?
     };
 
     {
@@ -189,6 +189,7 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
 /// files; Velo matches that.
 fn remove_ghosts(
     root: &Path,
+    scope: &crate::Scope,
     conn: &rusqlite::Connection,
     target: &[(String, String, i64)],
 ) -> Result<usize> {
@@ -203,7 +204,7 @@ fn remove_ghosts(
     };
     let target_set: HashSet<&str> = target.iter().map(|(p, _, _)| p.as_str()).collect();
 
-    let ghosts: Vec<PathBuf> = get_tracked_files(root)
+    let ghosts: Vec<PathBuf> = get_tracked_files(root, scope)
         .into_iter()
         .filter(|p| {
             let Some(rel) = p

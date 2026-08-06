@@ -64,6 +64,15 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Added
 
+- **`Scope`** — programmatic ignore rules and scoped roots, set with
+  `Repo::scoped`. `Scope::new().ignore(".myapp-cache/**")?` keeps an
+  application's own files out of a user's history without writing `.veloignore`
+  into their folder; `Scope::new().only("prompts/**")?` restricts to one subtree.
+  A scope **narrows and never widens**: the user's own `.veloignore` and
+  `.gitignore` still win, which is enforced rather than merely documented.
+
+### Added
+
 - **Cancellation.** `progress::Cancel` is a cheap, cloneable flag; pass it per
   call and the operation stops at its next checkpoint with `Error::Cancelled`.
   Cooperative by design — checked *between* files, so it never interrupts a write

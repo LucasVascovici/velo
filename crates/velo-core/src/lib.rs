@@ -91,6 +91,7 @@ pub mod lock;
 pub mod meta;
 pub mod progress;
 pub mod repo;
+pub mod scope;
 pub mod serve;
 pub mod storage;
 pub mod transport;
@@ -105,6 +106,7 @@ pub use error::{Error, Result};
 pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
 pub use meta::{Author, SnapshotMeta};
 pub use repo::{Repo, WriteGuard};
+pub use scope::Scope;
 
 /// Re-exported so callers can match on merge outcomes without adding a second
 /// dependency.

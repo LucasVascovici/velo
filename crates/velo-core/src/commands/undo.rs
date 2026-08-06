@@ -97,7 +97,7 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
         // The root snapshot went, so there is nothing to restore to: clear the
         // position and remove the files it tracked.
         crate::storage::write_atomic(&root.join(".velo/PARENT"), b"")?;
-        for path in crate::commands::get_tracked_files(root) {
+        for path in crate::commands::get_tracked_files(root, guard.repo().scope()) {
             let _ = fs::remove_file(&path);
         }
         return Ok(Outcome {
