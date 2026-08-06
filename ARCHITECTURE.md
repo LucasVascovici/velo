@@ -684,6 +684,392 @@ Nothing here blocks a first consumer.
 
 ---
 
+---
+
+# Consumer feedback — Phases 5 to 9
+
+Two real consumers now exist. `examples/prompt-registry` (no working tree) drove
+the fixes recorded in its `FINDINGS.md`. **Velum** — an editor using velo as its
+history backbone, with a working tree it manages itself — is the second, and its
+feedback is the source of the phases below.
+
+Every claim here was re-verified against the code before being written down; a
+plan built on unchecked assertions is worth nothing. Where a defect is asserted,
+it was reproduced.
+
+The ordering is deliberate and differs from the order the feedback arrived in:
+**wrong answers, then the irreversible decision, then missing capability, then
+consistency, then ecosystem.** That is the same order Phases 0–4 used, and for
+the same reason — the cost of doing an item later rises fastest for the ones
+nearest the top.
+
+> **Sequencing constraint that governs all of it:** `velo-core` is not on
+> crates.io. Every breaking change below is free today and a major version after
+> Phase 9. **Phase 8 must land before Phase 9**, or the consistency work becomes
+> a semver event instead of an afternoon.
+
+---
+
+## Phase 5 — Wrong answers 🔴 **Required**
+
+Not ergonomics. These produce results that are incorrect.
+
+### 5.1 `history --file` matches presence, not change
+
+`touched()` asks whether the path exists in that snapshot's tree:
+
+```sql
+SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ? AND path = ?)
+```
+
+A velo tree is the *complete* file set, so this is true for **every snapshot
+since the file was created**. Reproduced: a repository with one snapshot touching
+`README.md` and three touching other files lists all four.
+
+```
+$ velo history --file README.md
+→ bd5488bc  unrelated change 3
+  3188dfe8  unrelated change 2
+  bb5e7622  unrelated change 1
+  660dbae9  add README
+```
+
+The CLI help promises "snapshots that touched this file". This is wrong for CLI
+users, not only embedders. The fix is to compare the path's object hash against
+the same path in the parent — one extra lookup per candidate — and treat
+"absent in one, present in the other" as a change.
+
+**Second defect in the same code path:** the limit is applied *before* the
+filter. `run` fetches `limit` rows and then `entries.retain(…)`, so "the last 20
+snapshots touching this chapter" returns whatever subset of the last 20 overall
+happened to touch it. Filtering must move into the query, or the limit must be
+applied after it.
+
+### 5.2 `SaveTree` cannot record a merge parent
+
+The `snapshots` table has `merge_parent`. `SnapshotIdentity` takes a
+`merge_parent`. `history::Entry` exposes it and offers `is_merge()`. Every layer
+supports it **except the one an embedder writes through**, so a snapshot created
+via `save_tree` can never be a merge:
+
+```rust
+pub struct SaveTree<'a> {
+    pub branch: &'a BranchName,
+    pub parent: Option<&'a SnapshotId>,
+    pub message: &'a str,
+    pub entries: Vec<TreeEntry>,
+    pub meta: SnapshotMeta,
+}
+```
+
+The consequence is not cosmetic. A merge recorded as a linear commit makes
+`history --graph` draw velo's headline two-parent topology as a straight line,
+and — worse — merge-base computation returns an ancestor that is too old, so the
+*next* merge re-raises conflicts the author already resolved. "It keeps asking me
+the same question" is the classic symptom of a lost merge parent.
+
+**Not a format break:** the column, the recipe and the reader all exist. It is
+one field, `merge_parent: Option<&'a SnapshotId>`.
+
+Do 5.2 together with [7.1](#71-savetreetimestamp_ms) — both add a field to
+`SaveTree`, and one breaking change to that struct is better than two.
+
+---
+
+## Phase 6 — The last irreversible decision 🔴 **Required**
+
+### 6.1 Authorship
+
+`snapshots` is `hash, message, branch, parent_hash, merge_parent, created_at_ms`.
+Nothing records **who**. velo has `clone`, `push`, `pull` and `bundle` — it is
+built for more than one person and cannot answer the first question anyone asks
+of shared history. Every consumer will otherwise invent its own convention, and
+they will all differ.
+
+The feedback framed this as a choice between a hashed field (breaks the format),
+a plain column (rewritable, which for authorship in a synced repository is close
+to worthless), or a documented convention (not really a decision).
+
+**There is a fourth option, and it is better than all three: the reserved
+metadata namespace already built for exactly this.**
+
+- `snapshot_meta` rows are **already hashed into the snapshot id** (decision D1),
+  so an author stored there is tamper-evident — `fsck` reports a rewritten one as
+  an id mismatch. That is the entire argument the hashed-field option was making.
+- `RESERVED_NAMESPACE = "velo"` already exists and `SnapshotMeta::set` already
+  **rejects it for application callers**, so no consumer can squat the key.
+- The table already exists, already travels with bundles and sync, and is already
+  covered by `fsck`. **No format break. No `FORMAT_VERSION` bump.**
+
+What is missing is only the typed way in — and it must be typed, not a documented
+string convention, or the point is lost:
+
+```rust
+pub struct Author { pub name: String, pub email: Option<String> }
+
+pub struct SaveTree<'a> {
+    pub author: Option<&'a Author>,   // written to the reserved `velo` namespace
+}
+```
+
+Honest costs, so this is decided with eyes open:
+
+| Cost | Assessment |
+| :--- | :--- |
+| Snapshots written before it have no author | Unavoidable under every option, including a format break |
+| Authorship is per-snapshot, not per-repository identity | Correct — it is what git does |
+| `velo save` needs a source for it | The CLI reads config/env and passes it in; core still reads no environment |
+| Slightly more metadata per snapshot | Two short rows |
+
+**What makes this Phase 6 and not Phase 8:** if it is *not* done via the reserved
+namespace, the alternative is a format break, and format breaks get more
+expensive every day. Deciding is urgent; the chosen implementation is cheap.
+
+⛔ **Do not add a plain `author` column.** Rewritable provenance in a synced
+repository is worse than none, because it looks trustworthy. This is the same
+argument `meta.rs` already makes for hashing metadata.
+
+---
+
+## Phase 7 — Finish the embedder API 🔴/🟡
+
+Capability an embedder cannot supply for itself. Each of these forces a consumer
+to reimplement logic velo already has, or blocks something outright.
+
+### 7.1 `SaveTree.timestamp_ms`
+
+The clock is read *inside* `save_tree`, and the timestamp is part of identity, so
+a caller cannot control it. Two consequences, both larger than they look.
+
+**Embedders cannot write reproducible tests.** An id changes every millisecond,
+so no test can assert one against a constant. Velum's history tests compare ids
+to each other because anything else would be flaky — which rules out precisely
+the golden-file testing a storage format most wants: build this exact tree,
+assert this exact repository.
+
+**History cannot be imported.** A git→velo importer is the most obvious ecosystem
+tool velo could have, and it cannot be written: every commit would be stamped
+with the moment of the import. Same for any migration, and for restoring a backup
+with its dates intact.
+
+It also contradicts velo's own stated boundary. `lib.rs` says the crate "reads no
+process environment" and that "anything that depends on the surrounding process is
+passed in". **The wall clock is the surrounding process** — the last ambient
+dependency, and the one baked into content-addressed identity.
+
+```rust
+/// When this snapshot was made, or `None` for now.
+pub timestamp_ms: Option<i64>,
+```
+
+`None` preserves every existing caller. Not a format break.
+
+### 7.2 A branch cannot be pointed at a past snapshot 🟡
+
+`branches::list` and `branches::delete` are public; `register_branch` is
+`pub(crate)`. So a branch is created either by `switch::run` — which also makes it
+current, and leaves it unborn — or as a side effect of `save_tree` recording a
+snapshot on it. Neither offers what `git branch <name> <commit>` does.
+
+```rust
+pub fn create(guard: &WriteGuard, name: &BranchName, at: Option<&SnapshotId>) -> Result<()>;
+pub fn set_tip(guard: &WriteGuard, name: &BranchName, to: &SnapshotId) -> Result<()>;
+```
+
+Related and smaller: creating a branch and switching to it are one operation, and
+a consumer that wants the first without the second cannot ask.
+
+### 7.3 Merge-base is private 🟡
+
+`lowest_common_ancestor` is a private recursive CTE in `commands::merge` —
+indexed, fast, correct. Any consumer that merges must reimplement a subtle
+algorithm over `history::Entry` rows in memory.
+
+```rust
+pub fn merge_base(repo: &Repo, a: &SnapshotId, b: &SnapshotId) -> Result<Option<SnapshotId>>;
+```
+
+### 7.4 A snapshot cannot be inspected by id 🟡
+
+`Repo::snapshot_meta(&SnapshotId)` exists, but there is no way to get a snapshot's
+message, timestamp, parents or branch from an id. `show::run` takes a `&str` and
+resolves it again; `history::run` walks ancestry. A consumer holding an id — which
+is what every consumer holds — must format it back into text for re-resolution.
+
+```rust
+pub fn snapshot(&self, id: &SnapshotId) -> Result<SnapshotDetail>;
+```
+
+### 7.5 `merge::run` is unusable by anything with an interface 🟡
+
+It requires a clean working tree, writes files to disk, and persists conflict
+state. An editor can use none of that: buffers are dirty by definition, and
+nothing may touch disk before the author has seen the merge. The pure
+`velo_merge` functions are the right seam — but every consumer that merges will
+first write the same tree-classification pass.
+
+```rust
+/// Classify every path. No side effects.
+pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<MergePlan>;
+```
+
+`merge::run` then becomes `plan` plus the working-tree write, which is also a
+smaller thing to reason about.
+
+### 7.6 Per-call progress and cancellation 🟡
+
+This project's own anti-goals say, in bold: *"Don't use globals for progress or
+cancellation. Pass them per call."* `Repo::observing` consumes and returns `Self`,
+so the observer is set once per handle and fires for everything — a consumer
+wanting a bar for one `restore` gets callbacks from every operation, with no way
+to tell which a `Phase` belongs to. **The anti-goal was right and simply was not
+implemented.**
+
+Cancellation does not exist at all — nothing in `velo-core` matches `cancel`. For
+a GUI, "stop this" on a workspace-wide restore or a large clone is table stakes.
+
+Per-call options carrying an observer and a cancellation token on `restore`,
+`clone`, `gc` and large `save`. Keep `Repo::observing` as the convenience default.
+
+### 7.7 `Repo::head_token` 🟡
+
+A second window, a `pull`, or the user running `velo` in the same folder all
+change the repository under a running application. Listed as 🟢 optional in Phase
+3; for any GUI it is the difference between polling one integer and polling every
+branch tip.
+
+```rust
+pub fn head_token(&self) -> Result<u64>;
+```
+
+---
+
+## Phase 8 — Finish the consistency passes 🟡 **Recommended**
+
+`FINDINGS.md` made two arguments — typed ids beat strings, options structs beat
+positional arguments — and both were applied to the commands that example
+happened to use, then stopped. These are the same fixes, applied to the rest.
+
+**Do this before Phase 9.** All of it is breaking, and all of it is free until
+`velo-core` is published.
+
+### 8.1 Refs are still strings in most write commands
+
+`tag::create` was changed to take `Option<&SnapshotId>` because "a caller holding
+an id handed back text to be resolved a second time". Unchanged since:
+
+| Command | Today |
+| :--- | :--- |
+| `cherry_pick::run` | `target: &str` |
+| `rebase::run` | `target: &str` |
+| `merge::run` | `target_branch: Option<&str>` |
+| `show::run` | `target: &str` |
+| `blame::run` | `at: Option<&str>` |
+| `restore::run` | `snapshot_hash: &str` |
+| `bundle::create` | `target: Option<&str>` |
+| `grep::run` | `snapshot: Option<&str>` |
+
+The double resolution is not only inelegant: a consumer can be handed
+`AmbiguousPrefix` for an id it already holds unambiguously.
+
+### 8.2 Positional arguments, and booleans that are really enums
+
+```rust
+grep::run(repo, pattern, snapshot, case_insensitive, names_only, context)
+restore::run(guard, snapshot_hash, force, paths)
+rebase::run(guard, target, abort, cont)      // two bools, three real modes
+merge::run(guard, target_branch, abort)
+```
+
+`rebase::run` deserves singling out: `abort` and `cont` encode three states in two
+booleans and the fourth combination is meaningless. That is an enum.
+
+### 8.3 Filesystem paths are `&str`
+
+`bundle::create(repo, file: &str, …)`, `bundle::apply(guard, file: &str)` and
+`restore::run(…, paths: &[String])` take text where they mean paths, while
+`Repo::init` and `discover` already take `&Path`. On Windows especially this is a
+class of quoting and separator bugs that only appear on someone else's machine.
+
+### 8.4 The core parses argv
+
+`diff::dispatch(repo, args: &[String], paths: &[String])` interprets raw
+command-line arguments — `a..b` range syntax included — inside `velo-core`. A
+consumer holding two ids must format them into a string so velo can parse them
+back.
+
+```rust
+pub fn between(repo: &Repo, a: &SnapshotId, b: &SnapshotId, paths: &[&Path]) -> Result<Diff>;
+```
+
+…with `dispatch` moving to `velo-cli`, where argv comes from.
+
+### 8.5 Shrink the public surface — **gates Phase 9**
+
+`commands` exports `remove_empty_parents`, `decision_to_db`, `decision_from_db`,
+`read_text`, `is_binary`, `get_tracked_files`, `reconcile_file`, `find_repo_root`.
+These read as internals that became `pub` because two modules needed them.
+
+The moment velo is on crates.io, everything public is a semver commitment. One
+pass asking of each item, *"would I promise this for five years?"*
+
+### 8.6 Say which half of the API owns the working tree
+
+velo has two APIs that look like one. `save`, `status`, `restore`, `switch`,
+`merge`, `resolve` and `stash` read and write **files on disk**. `save_tree`,
+`tree_at`, `read_file_at`, `read_object` and `snapshot_meta` never touch it.
+
+Both consumers so far needed the second column, and neither could tell which was
+which without reading implementations. One table in the crate docs fixes this
+permanently, and it is the cheapest item in this entire plan.
+
+### 8.7 Smaller items
+
+- **`save_tree` has no "nothing changed" guard.** `velo save` refuses an empty
+  save; the primitive does not, so the same tree handed to it twice records a
+  second snapshot. Defensible for a primitive — but every embedder needs the
+  guard, and the failure mode is a history full of duplicates rather than an
+  error. At minimum, document it.
+- **`history::Options.file` is a single path.** A document plus its assets is 2+
+  paths, so a consumer runs the query twice. `paths: &[&Path]`.
+- **Programmatic ignore rules + scoped roots** (already 🟡 in Phase 3). Velum
+  writes `.veloignore` into the *user's* workspace to exclude its own cache
+  directory — an application putting a file in someone's folder for its own
+  benefit.
+
+---
+
+## Phase 9 — Ecosystem 🟢
+
+| Item | Gated on | Notes |
+| :--- | :--- | :--- |
+| Publish `velo-core` to crates.io | **8.5** | Consumers currently pin a git revision, which `cargo deny` needs an explicit `allow-git` for. Publishing freezes whatever the surface is on that day. |
+| **git → velo importer** | **7.1** | Impossible until a caller can supply timestamps. The most obvious ecosystem tool velo could have. |
+| Publish `velo-testkit` | — | Formalise when a third project wants it |
+
+---
+
+## What not to change
+
+The feedback was explicit that these are right, and both consumers independently
+relied on them. Recorded so a future pass does not "improve" them:
+
+- **The whole-tree snapshot model.** It is what makes an id verifiable, and
+  `TreeEntry::stored` already removes the cost. ⛔ Do not make `save_tree` take a
+  diff.
+- **The synchronous core.** Velum wraps it in one actor thread per workspace.
+  Async would have been pure cost.
+- **No `--force`, fast-forward-only push, a `pull` that stops rather than
+  guessing.** Velum adopted the same stance at the document level, directly from
+  reading velo's README.
+- **Hashed metadata.** The reason a consumer can record why a checkpoint exists
+  and trust the answer — and, per [6.1](#61-authorship), the mechanism that makes
+  authorship possible without a format break.
+- **Refusing to open a v1 repository** rather than half-migrating it.
+- **`fsck` recomputing every id.** Both consumers end their integration tests with
+  it, which is how an embedder gets an end-to-end check on its own use of the
+  format for free.
+
 ## Anti-goals
 
 ⛔ **Don't async-ify core.** SQLite is synchronous. Guarantee `Repo: Send` so
@@ -730,6 +1116,11 @@ regresses within a month.
 | **v2** | The Phase 0 format break implemented in one commit: full-width ids, epoch-ms timestamps, hashed snapshot metadata | ✅ **done** |
 | **3** | Feature flags & scoped ignores 🟡; notifications, testkit, render 🟢 | 🟡/🟢 |
 | **4** | Changelog, publishing | 🟡/🟢 |
+| **5** | Wrong answers: `history --file` filters by presence; `SaveTree` cannot record a merge parent | 🔴 |
+| **6** | Authorship — resolvable via the reserved metadata namespace, with no format break | 🔴 |
+| **7** | Embedder API: caller-supplied timestamps, branch refs, merge-base, snapshot-by-id, side-effect-free merge plan, per-call progress + cancellation, head token | 🔴/🟡 |
+| **8** | Finish the typed-ref and options-struct passes; shrink the public surface; document which half owns the working tree | 🟡 |
+| **9** | crates.io, git importer, testkit | 🟢 |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected
 (no `anyhow`; coupling is 3 files not pervasive; merge engine already pure;
