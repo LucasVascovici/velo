@@ -115,7 +115,7 @@ impl Observer for Silent {}
 
 /// An open phase, which closes itself.
 ///
-/// Obtained from [`Repo::phase`](crate::Repo::phase). Dropping it calls
+/// Obtained from `Repo::phase`, which is internal. Dropping it calls
 /// [`Observer::finish`], so a phase is closed even when the operation returns
 /// early through `?` — which is what makes `finish` reliable enough to drive a
 /// consumer's teardown.

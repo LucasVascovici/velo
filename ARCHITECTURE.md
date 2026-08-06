@@ -1109,7 +1109,7 @@ These read as internals that became `pub` because two modules needed them.
 The moment velo is on crates.io, everything public is a semver commitment. One
 pass asking of each item, *"would I promise this for five years?"*
 
-### 8.6 Say which half of the API owns the working tree
+### 8.6 Say which half of the API owns the working tree ✅ **DONE**
 
 velo has two APIs that look like one. `save`, `status`, `restore`, `switch`,
 `merge`, `resolve` and `stash` read and write **files on disk**. `save_tree`,
@@ -1118,6 +1118,12 @@ velo has two APIs that look like one. `save`, `status`, `restore`, `switch`,
 Both consumers so far needed the second column, and neither could tell which was
 which without reading implementations. One table in the crate docs fixes this
 permanently, and it is the cheapest item in this entire plan.
+
+**Done**, as three rows in the crate docs rather than two: *writes your files*,
+*reads your files*, and *store only*. The middle row matters — `save`, `status`,
+`diff`, `grep` and `squash` do not write, but their answers depend on what is on
+disk, which is just as surprising to an embedder that has none. Classified by
+reading what each module actually touches, not by reputation.
 
 ### 8.7 Smaller items
 

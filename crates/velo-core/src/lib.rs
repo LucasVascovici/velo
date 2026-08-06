@@ -19,6 +19,32 @@
 //! depends on the surrounding process is passed in — see
 //! [`transport::Spawn`] for how a subprocess remote is configured.
 //!
+//! # Which half of this API is yours
+//!
+//! There are two APIs here that look like one, and picking the wrong half is the
+//! mistake that costs an embedder an afternoon.
+//!
+//! Some commands own the **working tree** — the user's actual files on disk.
+//! Others operate only on the **store**, the content-addressed objects and the
+//! history in SQLite. An application with its own storage (an editor with
+//! buffers, a registry with no scratch directory) wants the second column, and
+//! must never call the first: those commands will write over the very files it is
+//! managing.
+//!
+//! | | Commands |
+//! | :--- | :--- |
+//! | **Writes your files** — never call these from an app with its own storage | [`commands::restore`], [`commands::switch`], [`commands::merge::run`], [`commands::rebase`], [`commands::cherry_pick`], [`commands::stash`], [`commands::undo`], [`commands::redo`], [`commands::resolve`], [`commands::apply`], [`commands::sync`] (clone/pull), [`commands::init`] |
+//! | **Reads your files** — answers depend on what is on disk right now | [`commands::save`], [`commands::status`], [`commands::diff`], [`commands::grep`], [`commands::squash`] |
+//! | **Store only** — safe with no working tree at all | [`tree`] (the whole module), [`commands::history`], [`commands::show`], [`commands::blame`], [`commands::branches`], [`commands::tag`], [`commands::fsck`], [`commands::remote`], [`commands::gc`], [`commands::merge::plan`], [`commands::merge::merge_base`], [`Repo::snapshot`], [`Repo::snapshot_meta`], [`Repo::branch_tip`], [`Repo::head_token`] |
+//!
+//! [`commands::bundle`] is its own case: it reads and writes one file at a path
+//! you name, and touches nothing else.
+//!
+//! The [`tree`] module is the entry point for the third row — [`WriteGuard::save_tree`]
+//! builds a snapshot from bytes you hold, and [`Repo::tree_at`] /
+//! [`Repo::read_file_at`] / [`Repo::read_object`] read one back, none of them
+//! going near the filesystem.
+//!
 //! # Entry point
 //!
 //! [`Repo`] is the handle: [`Repo::init`], [`Repo::open`], [`Repo::discover`].
