@@ -24,10 +24,11 @@
 //! let first = guard.save_tree(SaveTree {
 //!     branch: &branch,
 //!     parent: None,
-//! merge_parent: None,
+//!     merge_parent: None,
 //!     message: "publish 1.0",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() {}\n".to_vec())],
 //!     meta,
+//!     timestamp_ms: None,
 //! })?;
 //!
 //! // Chain the next one onto it. Nothing was written to disk, and the
@@ -35,10 +36,11 @@
 //! let _second = guard.save_tree(SaveTree {
 //!     branch: &branch,
 //!     parent: Some(&first),
-//! merge_parent: None,
+//!     merge_parent: None,
 //!     message: "publish 1.1",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() -> u8 { 1 }\n".to_vec())],
 //!     meta: SnapshotMeta::new(),
+//!     timestamp_ms: None,
 //! })?;
 //!
 //! assert_eq!(repo.read_file_at(&first, "pkg/lib.rs")?, b"pub fn f() {}\n");
@@ -222,6 +224,31 @@ pub struct SaveTree<'a> {
     /// metadata are two different snapshots. `Default::default()` is an empty
     /// set, which is what `velo save` produces.
     pub meta: SnapshotMeta,
+    /// When this snapshot was made, as epoch milliseconds, or `None` for now.
+    ///
+    /// The timestamp is part of a snapshot's identity, so a caller that cannot
+    /// supply it cannot control the id. Two things need that:
+    ///
+    /// - **Reproducible tests.** With the clock read internally, an id changes
+    ///   every millisecond, so no test can assert one against a constant — which
+    ///   rules out exactly the golden-file testing a storage format most wants.
+    /// - **Importing history.** Bringing a repository over from another system,
+    ///   or restoring a backup, has to preserve the original dates; otherwise
+    ///   every snapshot is stamped with the moment of the import.
+    ///
+    /// It is also the last ambient dependency in a crate that otherwise
+    /// [reads no process environment](crate) — and the one baked into
+    /// content-addressed identity.
+    ///
+    /// # Supplying an out-of-order timestamp
+    ///
+    /// A branch's tip is *derived*: the newest snapshot carrying that branch
+    /// name, by `created_at_ms`, breaking ties on insertion order. So a snapshot
+    /// saved with a timestamp **older than the branch's current tip does not
+    /// become the tip**. That is correct for an importer replaying history in
+    /// order, and surprising for anything else. Values are not validated —
+    /// negative ones are legitimately pre-1970, which an importer may need.
+    pub timestamp_ms: Option<i64>,
 }
 
 /// One file in a stored snapshot, without its content.
@@ -312,7 +339,11 @@ impl WriteGuard<'_> {
 
         let parent = spec.parent.map_or("", |p| p.as_str());
         let merge_parent = spec.merge_parent.map_or("", |p| p.as_str());
-        let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+        // The caller's clock when they supplied one, ours otherwise. This is the
+        // only place the wall clock is read.
+        let timestamp_ms = spec
+            .timestamp_ms
+            .unwrap_or_else(crate::commands::snapshot_timestamp_ms);
         let snapshot = SnapshotId::from_stored(crate::commands::snapshot_id(SnapshotIdentity {
             tree: &tree,
             parent,

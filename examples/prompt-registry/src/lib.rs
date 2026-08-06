@@ -157,6 +157,7 @@ impl Registry {
             message: &format!("publish {}", name),
             entries: entries.into_values().collect(),
             meta,
+            timestamp_ms: None,
         })?;
         Ok(id)
     }
