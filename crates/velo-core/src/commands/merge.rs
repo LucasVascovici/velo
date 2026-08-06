@@ -12,7 +12,7 @@ use crate::commands::SnapshotIdentity;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
 use crate::storage;
-use crate::{Repo, SnapshotId, SnapshotMeta, WriteGuard};
+use crate::{ObjectHash, Repo, SnapshotId, SnapshotMeta, WriteGuard};
 
 /// Re-exported so `merge::FileAction` keeps working: the vocabulary is shared
 /// with cherry-pick and rebase, so it lives in [`crate::commands::apply`].
@@ -324,6 +324,173 @@ fn is_ancestor(conn: &rusqlite::Connection, tip: &str, candidate: &str) -> bool 
 ///
 /// Walks both ancestries and returns the shallowest shared hash. The recursive
 /// CTE is depth-limited so a (theoretically impossible) cycle can't hang it.
+/// What one file's merge would do, without doing it.
+///
+/// Mirrors [`Reconcile`](crate::commands::Reconcile), but with typed object
+/// hashes and with a conflict carrying its three sides, so a caller can fetch and
+/// present them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PlannedChange {
+    /// Theirs deleted a file ours left alone.
+    Delete,
+    /// Take theirs verbatim. `is_new` when the file is not in the base.
+    Take {
+        object: ObjectHash,
+        mode: i64,
+        is_new: bool,
+    },
+    /// Both sides changed non-overlapping regions; this is the merged content.
+    ///
+    /// Carried because deciding "auto-merged rather than conflicted" *computes*
+    /// it — throwing it away would make every caller redo the merge.
+    AutoMerge { content: Vec<u8>, mode: i64 },
+    /// Theirs deleted a file ours modified. Ours is kept; whether that was right
+    /// is the author's call.
+    KeepOurs,
+    /// Both sides changed the same region. The three sides are given by object,
+    /// absent where that side does not have the file.
+    Conflict {
+        base: Option<ObjectHash>,
+        ours: Option<ObjectHash>,
+        theirs: Option<ObjectHash>,
+    },
+}
+
+impl PlannedChange {
+    /// The same vocabulary the working-tree merge reports in.
+    pub fn action(&self) -> apply::FileAction {
+        match self {
+            PlannedChange::Delete => apply::FileAction::Deleted,
+            PlannedChange::Take { is_new: true, .. } => apply::FileAction::Added,
+            PlannedChange::Take { .. } => apply::FileAction::Updated,
+            PlannedChange::AutoMerge { .. } => apply::FileAction::AutoMerged,
+            PlannedChange::KeepOurs => apply::FileAction::KeptOurs,
+            PlannedChange::Conflict { .. } => apply::FileAction::Conflicted,
+        }
+    }
+}
+
+/// One path the merge would touch.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlannedFile {
+    pub path: String,
+    pub change: PlannedChange,
+}
+
+/// Everything a merge would do, with nothing done.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MergePlan {
+    /// The shared ancestor the three-way merge is against. `None` when the two
+    /// snapshots have no common history, in which case every path is treated as
+    /// added or conflicting.
+    pub base: Option<SnapshotId>,
+    /// Paths that would change, in path order. Untouched files are omitted, so
+    /// an empty list means the merge is a no-op.
+    pub files: Vec<PlannedFile>,
+}
+
+impl MergePlan {
+    /// Paths that would need a human.
+    pub fn conflicts(&self) -> impl Iterator<Item = &PlannedFile> {
+        self.files
+            .iter()
+            .filter(|f| matches!(f.change, PlannedChange::Conflict { .. }))
+    }
+
+    /// Whether the merge would complete without asking anything.
+    pub fn is_clean(&self) -> bool {
+        self.conflicts().next().is_none()
+    }
+}
+
+/// Work out what merging `theirs` into `ours` would do — and do none of it.
+///
+/// [`run`] requires a clean working tree, writes files to disk and records
+/// conflict state in the database. An application with an interface can use none
+/// of that: its buffers are dirty by definition, and nothing may touch disk
+/// before the author has seen and accepted the result. This is the same
+/// classification with no side effects, so a consumer can present a merge, let
+/// the author decide, and only then apply it however its own storage works.
+///
+/// Reads objects (deciding auto-merge from conflict requires the content) but
+/// writes nothing, needs no [`WriteGuard`], and leaves the repository untouched.
+///
+/// ```no_run
+/// # fn main() -> Result<(), velo_core::Error> {
+/// # let repo = velo_core::Repo::discover(std::path::Path::new("."))?;
+/// # let ours = velo_core::commands::resolve_snapshot_id(&repo, "main")?;
+/// # let theirs = velo_core::commands::resolve_snapshot_id(&repo, "main")?;
+/// let plan = velo_core::commands::merge::plan(&repo, &ours, &theirs)?;
+/// if plan.is_clean() {
+///     for file in &plan.files {
+///         println!("{} {:?}", file.path, file.change.action());
+///     }
+/// }
+/// # Ok(()) }
+/// ```
+pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<MergePlan> {
+    let conn = repo.conn();
+    let objects_dir = repo.root().join(".velo/objects");
+
+    let base = merge_base(repo, ours, theirs)?;
+    let base_tree = apply::load_tree(conn, base.as_ref().map_or("", |b| b.as_str()))?;
+    let our_tree = apply::load_tree(conn, ours.as_str())?;
+    let their_tree = apply::load_tree(conn, theirs.as_str())?;
+
+    // Every path any side knows about, sorted, so a plan is the same on every
+    // run rather than the hasher's order.
+    let all_paths: std::collections::BTreeSet<&str> = base_tree
+        .keys()
+        .chain(our_tree.keys())
+        .chain(their_tree.keys())
+        .map(String::as_str)
+        .collect();
+
+    let mut files = Vec::new();
+    for path in all_paths {
+        let side = |t: &apply::Tree| {
+            t.get(path)
+                .map(|(h, m)| (h.clone(), *m))
+                .unwrap_or_default()
+        };
+        let (base_h, base_m) = side(&base_tree);
+        let (our_h, our_m) = side(&our_tree);
+        let (their_h, their_m) = side(&their_tree);
+
+        let object = |h: &str| (!h.is_empty()).then(|| ObjectHash::from_stored(h));
+
+        let change = match crate::commands::reconcile_file(
+            &objects_dir,
+            (base_h.as_str(), base_m),
+            (our_h.as_str(), our_m),
+            (their_h.as_str(), their_m),
+        )? {
+            crate::commands::Reconcile::Nothing => continue,
+            crate::commands::Reconcile::Delete => PlannedChange::Delete,
+            crate::commands::Reconcile::TakeTheirs { hash, mode, is_new } => PlannedChange::Take {
+                object: ObjectHash::from_stored(hash),
+                mode,
+                is_new,
+            },
+            crate::commands::Reconcile::AutoMerged { content, mode } => {
+                PlannedChange::AutoMerge { content, mode }
+            }
+            crate::commands::Reconcile::KeepOurs => PlannedChange::KeepOurs,
+            crate::commands::Reconcile::Conflict => PlannedChange::Conflict {
+                base: object(&base_h),
+                ours: object(&our_h),
+                theirs: object(&their_h),
+            },
+        };
+        files.push(PlannedFile {
+            path: path.to_string(),
+            change,
+        });
+    }
+
+    Ok(MergePlan { base, files })
+}
+
 /// The most recent snapshot reachable from both `a` and `b`.
 ///
 /// The base a three-way merge is computed against. `None` when the two share no

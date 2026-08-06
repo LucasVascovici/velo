@@ -20,6 +20,11 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Added
 
+- **`merge::plan`** — what a merge would do, with none of it done. `merge::run`
+  needs a clean working tree, writes files and records conflict state, which an
+  application with unsaved buffers can use none of. `plan` takes a `&Repo` rather
+  than a `&WriteGuard`, reports the same classification, hands back the merged
+  content for auto-merges and the three sides by object for conflicts.
 - **`branches::create` and `branches::set_tip`** — a branch can be created
   pointing at any past snapshot, without switching to it. Previously a branch came
   into existence only via `switch` (which also makes it current and leaves it
