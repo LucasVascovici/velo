@@ -23,6 +23,7 @@ use crate::progress::{Observer, Phase, PhaseGuard, Silent};
 use crate::storage;
 use crate::transport::{self, PushOutcome};
 use crate::Repo;
+use crate::SnapshotId;
 use crate::WriteGuard;
 
 /// A branch the remote advertised, and where it points.
@@ -170,7 +171,14 @@ pub fn clone(
         .or_else(|| refs.first())
         .unwrap();
     storage::write_atomic(&target.join(".velo/HEAD"), default.branch.as_bytes())?;
-    crate::commands::restore::run(&guard, &default.hash, true, &[])?;
+    crate::commands::restore::run(
+        &guard,
+        &SnapshotId::from_stored(default.hash.as_str()),
+        crate::commands::restore::Options {
+            force: true,
+            ..Default::default()
+        },
+    )?;
 
     let branch = default.branch.clone();
     // Release the repository before reporting: `target` is moved into the result,
@@ -389,7 +397,11 @@ pub fn pull(guard: &WriteGuard, remote_name: &str, spawn: &transport::Spawn) -> 
         // fast-forward wouldn't actually advance `main`.
         adopt_tracking_commits(conn, remote_name, &branch, &remote_tip)?;
         remotemod::set_remote_ref(conn, remote_name, &branch, &remote_tip)?;
-        crate::commands::restore::run(guard, &remote_tip, false, &[])?;
+        crate::commands::restore::run(
+            guard,
+            &SnapshotId::from_stored(remote_tip.as_str()),
+            crate::commands::restore::Options::default(),
+        )?;
         Ok(Pulled::FastForwarded {
             branch,
             remote: remote_name.to_string(),

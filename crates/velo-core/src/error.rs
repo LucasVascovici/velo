@@ -99,6 +99,13 @@ pub enum Error {
         supported: u32,
     },
 
+    /// The caller asked the operation to stop, via
+    /// [`Cancel`](crate::progress::Cancel).
+    ///
+    /// Database work is rolled back; anything already written to the working tree
+    /// stays written, which is the same position a killed process would leave.
+    Cancelled,
+
     // ── Concurrency ──────────────────────────────────────────────────────────
     /// Another process holds the repository write lock.
     Locked {
@@ -212,6 +219,7 @@ impl fmt::Display for Error {
                  v2 changed every snapshot id",
                 found, supported
             ),
+            Error::Cancelled => f.write_str("the operation was cancelled"),
             Error::Locked { held_by } => match held_by {
                 Some(pid) => write!(f, "repository is locked by process {}", pid),
                 None => write!(

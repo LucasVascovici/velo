@@ -997,7 +997,7 @@ Folding `merge::run` into `plan` plus a working-tree write is the obvious
 follow-on and is left for [8.2](#82-positional-arguments-and-booleans-that-are-really-enums),
 where that signature is being reshaped anyway.
 
-### 7.6 Per-call progress and cancellation 🟡
+### 7.6 Per-call progress and cancellation 🟡 *(restore done)*
 
 This project's own anti-goals say, in bold: *"Don't use globals for progress or
 cancellation. Pass them per call."* `Repo::observing` consumes and returns `Self`,
@@ -1022,6 +1022,19 @@ Per-call options carrying an observer and a cancellation token on `restore`,
 >
 > This is the one Phase 7 item that is *not* additive, which is why it is the one
 > that waits.
+
+**Done for `restore`**, alongside its options struct in 8.2 exactly as planned.
+`progress::Cancel` is a cloneable flag checked between files, so cancelling never
+interrupts a write; `Error::Cancelled` is the answer. `restore::Options.observer`
+overrides the handle's for that call, and a test asserts the handle's observer is
+**not** consulted — otherwise it is still a global with extra steps.
+
+Cancellation is deliberately not a rollback: files already written stay written,
+which is the same position a killed process leaves and which `status` describes
+accurately. Promising atomicity over a working tree would be a lie.
+
+`gc`, `clone` and large `save` still take no options; they follow the same shape
+when theirs land.
 
 ### 7.7 `Repo::head_token` ✅ **DONE**
 

@@ -27,6 +27,7 @@ use crate::error::{RefKind, Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
+use crate::SnapshotId;
 use crate::SnapshotMeta;
 use crate::WriteGuard;
 
@@ -208,7 +209,14 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
         }
         None
     } else {
-        crate::commands::restore::run(guard, &parent_hash, true, &[])?;
+        crate::commands::restore::run(
+            guard,
+            &SnapshotId::from_stored(parent_hash.as_str()),
+            crate::commands::restore::Options {
+                force: true,
+                ..Default::default()
+            },
+        )?;
         Some(parent_hash)
     };
 

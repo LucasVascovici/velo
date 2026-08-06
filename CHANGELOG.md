@@ -29,6 +29,8 @@ This file starts at the format v2 break. Earlier releases are in the git history
 - **`grep::run` takes an `Options` struct.** `run(repo, pat, None, false, true, 2)`
   said nothing about which flag was which.
 - **`show::run` takes `&[&Path]`** instead of a single `&Option<String>`.
+- **`restore::run` takes `&SnapshotId` and an `Options` struct** carrying `force`,
+  `paths: &[&Path]`, and the observer and cancellation token above.
 - **`merge::run` and `rebase::run` take a mode enum.** `rebase::run(guard,
   target, abort, cont)` encoded three states in two booleans and the fourth
   combination was meaningless; `merge::run` had a `(Option<&str>, bool)` pair
@@ -38,6 +40,21 @@ This file starts at the format v2 break. Earlier releases are in the git history
   one. `merge::Mode::Bring` deliberately keeps a `&str` spec: an exact branch tip
   must win over a hash prefix, and the branch *name* is what `MERGE_HEAD` records
   for the eventual save to resolve into a second parent.
+
+### Added
+
+- **Cancellation.** `progress::Cancel` is a cheap, cloneable flag; pass it per
+  call and the operation stops at its next checkpoint with `Error::Cancelled`.
+  Cooperative by design — checked *between* files, so it never interrupts a write
+  part-way. It is not a rollback: files already written stay written, the same
+  position a killed process would leave, which `velo status` describes
+  accurately. Wired into `restore` first, which is where a GUI most needs it.
+- **Per-call progress.** `restore::Options.observer` overrides the repository's
+  observer for that one call. `Repo::observing` remains as the convenience
+  default. This is what the project's own anti-goal asked for — *"Don't use
+  globals for progress or cancellation. Pass them per call."* — and a test
+  asserts the handle's observer is **not** consulted when a per-call one is
+  given, since otherwise it is still a global with extra steps.
 
 ### Added
 

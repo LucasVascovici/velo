@@ -148,7 +148,14 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
             restored_to: None,
         });
     }
-    crate::commands::restore::run(guard, pre_merge_hash, true, &[])?;
+    crate::commands::restore::run(
+        guard,
+        &SnapshotId::from_stored(pre_merge_hash),
+        crate::commands::restore::Options {
+            force: true,
+            ..Default::default()
+        },
+    )?;
     Ok(Outcome::Aborted {
         source,
         restored_to: Some(pre_merge_hash.to_string()),
@@ -214,7 +221,14 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
             // The tree often already matches, having just branched from it; only
             // touch it when it genuinely differs.
             if pre_merge_parent.trim() != target_hash {
-                crate::commands::restore::run(guard, &target_hash, true, &[])?;
+                crate::commands::restore::run(
+                    guard,
+                    &SnapshotId::from_stored(target_hash.as_str()),
+                    crate::commands::restore::Options {
+                        force: true,
+                        ..Default::default()
+                    },
+                )?;
             }
             return Ok(Outcome::StartedUnbornBranch {
                 branch: head_branch.to_string(),
@@ -314,7 +328,14 @@ fn do_fast_forward(
     tx.commit()?;
 
     // restore::run writes PARENT itself.
-    crate::commands::restore::run(guard, &new_hash, true, &[])?;
+    crate::commands::restore::run(
+        guard,
+        &SnapshotId::from_stored(new_hash.as_str()),
+        crate::commands::restore::Options {
+            force: true,
+            ..Default::default()
+        },
+    )?;
     Ok(Outcome::FastForwarded {
         branch: head_branch.to_string(),
         to: new_hash,

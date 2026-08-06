@@ -8,6 +8,7 @@ use std::fs;
 
 use crate::commands::{get_dirty_files, FileStatus};
 use crate::error::{Result, VeloError};
+use crate::SnapshotId;
 use crate::WriteGuard;
 
 /// What a switch did.
@@ -79,7 +80,14 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
 
     match target_tip {
         Some(at) => {
-            crate::commands::restore::run(guard, &at, true, &[])?;
+            crate::commands::restore::run(
+                guard,
+                &SnapshotId::from_stored(at.as_str()),
+                crate::commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )?;
             Ok(Outcome::Switched {
                 branch: branch_name.to_string(),
                 at,
