@@ -6,6 +6,8 @@
 
 use crate::commands::diff::{self, Diff};
 use crate::error::{RefKind, Result, VeloError};
+use std::path::Path;
+
 use crate::{Repo, SnapshotId};
 use chrono::{DateTime, Utc};
 
@@ -27,9 +29,16 @@ pub struct SnapshotDetail {
 }
 
 /// Look up `target` (hash, prefix, tag, or branch) and describe it.
-pub fn run(repo: &Repo, target: &str, file_filter: &Option<String>) -> Result<SnapshotDetail> {
+/// Everything about one snapshot, including its diff against its parent.
+///
+/// Takes a resolved id: a caller holding one should not have to format it back
+/// into text so this can resolve it again. Resolve a user's spec with
+/// [`resolve_snapshot_id`](crate::commands::resolve_snapshot_id) first.
+///
+/// `paths` narrows the diff; empty means the whole snapshot.
+pub fn run(repo: &Repo, hash: &SnapshotId, paths: &[&Path]) -> Result<SnapshotDetail> {
     let conn = repo.conn();
-    let hash = crate::commands::resolve_snapshot_id(repo, target)?;
+    let hash = hash.clone();
 
     let (message, branch, parent_hash, created_at_ms): (String, String, String, i64) = conn
         .query_row(
@@ -37,9 +46,12 @@ pub fn run(repo: &Repo, target: &str, file_filter: &Option<String>) -> Result<Sn
             [&hash],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
-        .map_err(|_| VeloError::not_found(RefKind::Snapshot, target))?;
+        .map_err(|_| VeloError::not_found(RefKind::Snapshot, hash.as_str()))?;
 
-    let diff = diff::snapshot_diff(repo, conn, &parent_hash, &hash, file_filter)?;
+    let filter = paths
+        .first()
+        .map(|p| crate::db::normalise(&p.to_string_lossy()));
+    let diff = diff::snapshot_diff(repo, conn, &parent_hash, &hash, &filter)?;
 
     Ok(SnapshotDetail {
         hash,

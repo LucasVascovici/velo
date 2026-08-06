@@ -39,6 +39,7 @@ use crate::error::{Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
+use crate::SnapshotId;
 use crate::SnapshotMeta;
 use crate::WriteGuard;
 
@@ -115,7 +116,10 @@ impl Applied {
 }
 
 /// Write a bundle containing `target`'s ancestry, or the whole repository.
-pub fn create(repo: &Repo, file: &str, target: Option<&str>) -> Result<Created> {
+/// Write a self-contained bundle of history to `file`.
+///
+/// `target` limits it to one snapshot's ancestry; `None` bundles everything.
+pub fn create(repo: &Repo, file: &Path, target: Option<&SnapshotId>) -> Result<Created> {
     let root = repo.root();
     let conn = repo.conn();
 
@@ -151,7 +155,7 @@ pub fn create(repo: &Repo, file: &str, target: Option<&str>) -> Result<Created> 
     fs::write(file, &encoded)?;
 
     Ok(Created {
-        file: file.to_string(),
+        file: file.display().to_string(),
         snapshots: bundle.snapshots.len(),
         objects: bundle.objects.len(),
         tags: bundle.tags.len(),
@@ -287,10 +291,12 @@ pub(crate) fn build_pack_excluding(
 // ─── apply ──────────────────────────────────────────────────────────────────────
 
 /// Import a bundle into this repository. Idempotent.
-pub fn apply(guard: &WriteGuard, file: &str) -> Result<Applied> {
+/// Import a bundle written by [`create`].
+pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
     let root = guard.root();
-    let raw = fs::read(file)
-        .map_err(|e| VeloError::invalid(format!("Cannot read bundle '{}': {}", file, e)))?;
+    let raw = fs::read(file).map_err(|e| {
+        VeloError::invalid(format!("Cannot read bundle '{}': {}", file.display(), e))
+    })?;
     let bundle = decode(&raw)?;
 
     let objects_dir = root.join(".velo/objects");
