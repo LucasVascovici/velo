@@ -34,6 +34,7 @@ use std::time::UNIX_EPOCH;
 use ignore::{WalkBuilder, WalkState};
 use parking_lot::Mutex;
 use rayon::prelude::*;
+use rusqlite::params;
 
 use chrono::{DateTime, Utc};
 
@@ -176,6 +177,52 @@ pub(crate) fn load_snapshot_meta(
         meta.insert_stored(namespace, key, value);
     }
     Ok(meta)
+}
+
+/// How far an ancestry walk will go before giving up.
+///
+/// A guard against a cycle, which the format makes impossible — an id commits to
+/// its parents, so a snapshot cannot be its own ancestor — but which a corrupt or
+/// hand-edited row could still produce.
+pub(crate) const MAX_ANCESTRY_DEPTH: i64 = 10_000;
+
+/// Every snapshot reachable from `start`, mapped to its shortest distance.
+///
+/// **Follows both parents.** A merge absorbs the branch it merged, so that
+/// branch's history is part of this snapshot's ancestry; walking `parent_hash`
+/// alone made the absorbed side invisible, which showed up three ways — a
+/// merge-base too old (so the next merge re-raised settled conflicts), a
+/// `velo history` missing the commits it merged in, and the same for any
+/// consumer walking ancestry.
+///
+/// `merge_parent` is `TEXT NOT NULL DEFAULT ''`, so the empty string is excluded
+/// rather than looked up as a hash.
+///
+/// `UNION` rather than `UNION ALL`: with two parents a node is reachable by
+/// several routes, and without deduplication the walk re-expands every one of
+/// them. The outer `MIN` then collapses a node reached at different depths to its
+/// shortest.
+pub(crate) fn ancestors(
+    conn: &rusqlite::Connection,
+    start: &str,
+) -> rusqlite::Result<HashMap<String, i64>> {
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE anc(hash, parent_hash, merge_parent, depth) AS (
+             SELECT hash, parent_hash, merge_parent, 0
+               FROM snapshots WHERE hash = ?1
+             UNION
+             SELECT s.hash, s.parent_hash, s.merge_parent, a.depth + 1
+               FROM snapshots s JOIN anc a
+                 ON s.hash = a.parent_hash
+                 OR (a.merge_parent <> '' AND s.hash = a.merge_parent)
+              WHERE a.depth < ?2
+         )
+         SELECT hash, MIN(depth) FROM anc GROUP BY hash",
+    )?;
+    let rows = stmt.query_map(params![start, MAX_ANCESTRY_DEPTH], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+    })?;
+    rows.collect()
 }
 
 // ─── File status ─────────────────────────────────────────────────────────────

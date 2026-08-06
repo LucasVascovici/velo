@@ -49,6 +49,10 @@ fn print_header(scope: &Scope) {
         Scope::CurrentBranch { name } => {
             println!("\nHistory for branch: {}", style(name).cyan().bold())
         }
+        Scope::Ancestry { of } => println!(
+            "\nHistory leading to {}",
+            style(super::id::short(of)).yellow().bold()
+        ),
     }
 }
 

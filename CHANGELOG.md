@@ -8,7 +8,33 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ## Unreleased
 
+### Added
+
+- **`history` can scope to a snapshot's ancestry.** `Options::from` — and
+  `velo history --from <snapshot>` — lists what led to a snapshot, across
+  branches, rather than what was recorded on one branch. A branch listing stops
+  at the fork point, because shared history carries the branch it was recorded
+  on; this one does not. It takes precedence over `--branch` and `--all`, which
+  the CLI rejects outright rather than silently ignoring. Unlike the default
+  scope it needs no `.velo/PARENT`, so it works for a consumer with no working
+  tree.
+
 ### Fixed
+
+- **Merging the same branch twice no longer re-raises settled conflicts.**
+  Ancestry was walked through `parent_hash` alone, so the tip a merge absorbed
+  was invisible to the next merge: the base fell back to the branch point, and
+  every conflict resolved the first time came back the second. `merge_base`,
+  `merge::plan` and `velo merge` all read the same walk, so all three were
+  wrong together and are right together now. The walk follows both parents,
+  bounds its depth, and states in a comment that "lowest" is minimum depth —
+  an approximation that differs from the true merge base only when histories
+  criss-cross.
+
+- **`velo history` shows the work a merge brought in.** Same cause, and it made
+  a branch that had merged another list none of the merged snapshots. Entries
+  are now ordered by time rather than by walk order, because with two parents
+  there is no single chain to follow.
 
 - **`velo history --file` now means what it says.** It matched whether a path
   *existed* in a snapshot, and a velo tree is the complete file set — so it

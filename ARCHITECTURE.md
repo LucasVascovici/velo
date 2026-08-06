@@ -1306,7 +1306,7 @@ cargo test -p velo-core --lib -- --ignored merge_base_follows
 
 ---
 
-## Phase 10 — Ancestry 🔴 **Required**
+## Phase 10 — Ancestry ✅ **Done**
 
 Items 1 and 2 of the punch list, together, because **they want the same recursive
 CTE**. A walk that follows both parents is what merge-base needs and what an
@@ -1358,6 +1358,27 @@ truncation — and it puts the limit-after-filtering problem back into applicati
 code, which is exactly what `paths` just took out of it.
 
 Do this *with* 10.1, sharing the walk.
+
+### What landed
+
+One walk, `commands::ancestors`, used by both. It follows `parent_hash` and a
+non-empty `merge_parent`, de-duplicates with `UNION` rather than `UNION ALL`,
+stops at `MAX_ANCESTRY_DEPTH`, and returns each reachable snapshot with its
+minimum depth. `lowest_common_ancestor` intersects two of these and takes the
+shallowest, breaking ties by hash so the answer does not depend on row order.
+Point 3 above was answered by documenting the approximation rather than
+implementing the full DAG merge base: the comment says where it differs from
+the true answer, so the next person to hit a criss-cross history finds the
+reason rather than a surprise.
+
+`ancestry_of` in `history` uses the same walk and sorts by time, since two
+parents leave no single chain to follow.
+
+Verified on the binary, not only in tests: the two-merge scenario from the punch
+list now reports the absorbed tip as the ancestor and merges clean, and
+`velo history` lists the snapshots the merge brought in.
+`merge_base_follows_the_second_parent` is no longer `#[ignore]`d, and the suite
+has no ignored tests left.
 
 ---
 
@@ -1491,7 +1512,7 @@ regresses within a month.
 | **7** | Embedder API: caller-supplied timestamps, branch refs, merge-base, snapshot-by-id, side-effect-free merge plan, per-call progress + cancellation, head token | 🔴/🟡 |
 | **8** | Finish the typed-ref and options-struct passes; shrink the public surface; document which half owns the working tree | 🟡 |
 | **9** | crates.io, git importer, testkit | 🟢 |
-| **10** | Ancestry: `merge_base` must follow `merge_parent` (a live `velo merge` bug), and `history` needs an ancestry scope — one walk serves both | 🔴 |
+| **10** | Ancestry: `merge_base` must follow `merge_parent` (a live `velo merge` bug), and `history` needs an ancestry scope — one walk serves both | ✅ |
 | **11** | Finish the passes that stopped early: `blame` types + author, `gc` options, sync cancellation | 🟡 |
 | **12** | crates.io, after 10 and 11 | 🟢 |
 
