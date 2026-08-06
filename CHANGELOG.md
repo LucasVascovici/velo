@@ -20,6 +20,14 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Added
 
+- **`SaveTree.timestamp_ms`** — a caller can supply the creation time, `None`
+  meaning now. The timestamp is part of a snapshot's identity, so with the clock
+  read internally an embedder could not control the id: no test could assert one
+  against a constant, and importing history from another system would stamp every
+  snapshot with the moment of the import. It was also the last ambient dependency
+  in a crate that otherwise reads no process environment. Note that a branch tip
+  is derived from the newest `created_at_ms`, so a backdated snapshot does not
+  become the tip.
 - **`SaveTree.merge_parent`** — a snapshot recorded through the embedder API can
   be a merge. The column, the id recipe and `history::Entry::is_merge` already
   supported a second parent; only the write path did not, so an embedder's merges

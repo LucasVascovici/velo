@@ -854,12 +854,12 @@ argument `meta.rs` already makes for hashing metadata.
 
 ---
 
-## Phase 7 — Finish the embedder API 🔴/🟡
+## Phase 7 — Finish the embedder API 🔴/🟡 *(7.1 done)*
 
 Capability an embedder cannot supply for itself. Each of these forces a consumer
 to reimplement logic velo already has, or blocks something outright.
 
-### 7.1 `SaveTree.timestamp_ms`
+### 7.1 `SaveTree.timestamp_ms` ✅ **DONE**
 
 The clock is read *inside* `save_tree`, and the timestamp is part of identity, so
 a caller cannot control it. Two consequences, both larger than they look.
@@ -886,6 +886,20 @@ pub timestamp_ms: Option<i64>,
 ```
 
 `None` preserves every existing caller. Not a format break.
+
+**Done.** A golden test now asserts an id against a constant — the thing that was
+impossible before — and a second replays three 2021 dates through `save_tree` and
+reads them back, which is the importer case in miniature.
+
+One consequence is pinned rather than prevented: a branch tip is *derived* as the
+newest snapshot on the branch by `created_at_ms`, so a snapshot saved with a
+timestamp **older than the current tip does not become the tip**. That follows
+from the design and an importer replaying in order never meets it, but anything
+supplying out-of-order timestamps needs to know, so it is a test rather than a
+sentence.
+
+`save_tree` is now the only place in `velo-core` that reads a clock, and it does
+so only when the caller declines to.
 
 ### 7.2 A branch cannot be pointed at a past snapshot 🟡
 

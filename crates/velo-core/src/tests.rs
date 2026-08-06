@@ -3281,6 +3281,7 @@ mod tests {
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -3329,6 +3330,7 @@ mod tests {
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -3399,6 +3401,7 @@ mod tests {
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("main"),
                     parent: None,
                     merge_parent: None,
@@ -3432,6 +3435,7 @@ mod tests {
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("imported"),
                     parent: None,
                     merge_parent: None,
@@ -3480,6 +3484,7 @@ c
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -3493,6 +3498,7 @@ c
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("registry"),
                     parent: Some(&first),
                     merge_parent: None,
@@ -3532,6 +3538,7 @@ c
             let id = guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("registry"),
                     parent: parent_id.as_ref(),
                     merge_parent: None,
@@ -3569,6 +3576,7 @@ c
         ) -> SaveTree<'a> {
             SaveTree {
                 meta: SnapshotMeta::new(),
+                timestamp_ms: None,
                 branch,
                 parent,
                 merge_parent: None,
@@ -3628,6 +3636,7 @@ c
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -3652,6 +3661,7 @@ c
             guard
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -6627,6 +6637,7 @@ beta
                         .to_vec(),
                     )],
                     meta: meta.clone(),
+                    timestamp_ms: None,
                 })
                 .unwrap()
         };
@@ -7395,6 +7406,7 @@ beta
                         TreeEntry::symlink("link", "keep.txt"),
                     ],
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                 })
                 .unwrap()
         };
@@ -7437,6 +7449,7 @@ beta
                     message: "by value",
                     entries: by_value,
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                 })
                 .unwrap();
             let right = guard
@@ -7447,6 +7460,7 @@ beta
                     message: "by reference",
                     entries: by_reference,
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                 })
                 .unwrap();
             (left, right)
@@ -7487,6 +7501,7 @@ beta
                 message: "m",
                 entries: vec![TreeEntry::stored("f.txt", absent, FileKind::Regular)],
                 meta: SnapshotMeta::new(),
+                timestamp_ms: None,
             })
             .unwrap_err();
         assert!(
@@ -7556,6 +7571,7 @@ beta
                 .to_vec(),
             )],
             meta: SnapshotMeta::new(),
+            timestamp_ms: None,
         };
 
         let (one, two) = (branch_name("one"), branch_name("two"));
@@ -7628,6 +7644,7 @@ beta
                         .to_vec(),
                     )],
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                 })
                 .unwrap();
             let side = guard
@@ -7643,6 +7660,7 @@ beta
                         .to_vec(),
                     )],
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                 })
                 .unwrap();
             let merged = guard
@@ -7658,6 +7676,7 @@ beta
                         .to_vec(),
                     )],
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                 })
                 .unwrap();
             (base, side, merged)
@@ -7705,6 +7724,7 @@ beta
                 message: "m",
                 entries: vec![TreeEntry::file("a.txt", b"x".to_vec())],
                 meta: SnapshotMeta::new(),
+                timestamp_ms: None,
             })
             .unwrap_err();
         assert!(
@@ -7712,6 +7732,202 @@ beta
             "expected NotFound, got {:?}",
             err
         );
+    }
+
+    /// The whole point of a caller-supplied timestamp: a snapshot id that can be
+    /// asserted against a constant.
+    ///
+    /// With the clock read inside `save_tree` this was impossible — an id changed
+    /// every millisecond, so an embedder could only compare ids to each other.
+    /// This is the golden-file test a storage format most wants: build this exact
+    /// tree, get this exact id.
+    #[test]
+    fn a_supplied_timestamp_makes_the_id_reproducible() {
+        use crate::tree::{SaveTree, TreeEntry};
+
+        /// 2026-08-05T09:41:12.345Z
+        const WHEN: i64 = 1_785_922_872_345;
+
+        let build = || {
+            let (tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let id = {
+                let guard = repo.write().unwrap();
+                guard
+                    .save_tree(SaveTree {
+                        branch: &branch_name("main"),
+                        parent: None,
+                        merge_parent: None,
+                        message: "reproducible",
+                        entries: vec![
+                            TreeEntry::file("a.txt", b"alpha\n".to_vec()),
+                            TreeEntry::file("b.txt", b"beta\n".to_vec()),
+                        ],
+                        meta: SnapshotMeta::new(),
+                        timestamp_ms: Some(WHEN),
+                    })
+                    .unwrap()
+            };
+            drop(tmp);
+            id
+        };
+
+        // Two independent repositories, same inputs, same id — which is what a
+        // receiver of a bundle recomputes, and what `fsck` verifies.
+        assert_eq!(build(), build());
+
+        // And it is stable across runs of the test suite, not merely within one.
+        assert_eq!(
+            build().as_str(),
+            "fa2c9835d538e6051dbbb6593b5404ede742946bc1a1347153e84e230e046f74",
+            "the v2 recipe changed, or something else feeds the id"
+        );
+    }
+
+    /// `None` still means now.
+    #[test]
+    fn an_unsupplied_timestamp_is_the_current_time() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let before = crate::commands::snapshot_timestamp_ms();
+        let id = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: &branch_name("main"),
+                    parent: None,
+                    merge_parent: None,
+                    message: "now",
+                    entries: vec![TreeEntry::file("a.txt", b"x".to_vec())],
+                    meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
+                })
+                .unwrap()
+        };
+        let after = crate::commands::snapshot_timestamp_ms();
+
+        let stored: i64 = repo
+            .conn()
+            .query_row(
+                "SELECT created_at_ms FROM snapshots WHERE hash = ?",
+                [&id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(
+            (before..=after).contains(&stored),
+            "expected {} <= {} <= {}",
+            before,
+            stored,
+            after
+        );
+    }
+
+    /// History can be imported with its original dates, which is the other thing
+    /// the supplied timestamp unlocks.
+    #[test]
+    fn history_can_be_replayed_with_its_original_dates() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        // Three "commits" from 2021, replayed oldest first as an importer would.
+        let dates = [1_609_459_200_000_i64, 1_612_137_600_000, 1_614_556_800_000];
+        let mut parent: Option<SnapshotId> = None;
+        {
+            let guard = repo.write().unwrap();
+            for (n, when) in dates.iter().enumerate() {
+                let id = guard
+                    .save_tree(SaveTree {
+                        branch: &branch_name("main"),
+                        parent: parent.as_ref(),
+                        merge_parent: None,
+                        message: &format!("imported {}", n),
+                        entries: vec![TreeEntry::file("f.txt", format!("v{}\n", n).into_bytes())],
+                        meta: SnapshotMeta::new(),
+                        timestamp_ms: Some(*when),
+                    })
+                    .unwrap();
+                parent = Some(id);
+            }
+        }
+
+        let history = commands::history::run(
+            &repo,
+            commands::history::Options {
+                branch: Some(&branch_name("main")),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let stamps: Vec<i64> = history
+            .entries
+            .iter()
+            .map(|e| e.created_at.timestamp_millis())
+            .collect();
+        assert_eq!(
+            stamps,
+            vec![dates[2], dates[1], dates[0]],
+            "the imported dates must survive, newest first"
+        );
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    /// A timestamp older than the branch's current tip does not move the tip.
+    ///
+    /// Pinned rather than prevented. A tip is *derived* — the newest snapshot on
+    /// the branch by `created_at_ms` — so this follows from the design, and an
+    /// importer replaying history in order never hits it. Anything supplying
+    /// out-of-order timestamps needs to know, which is why it is a test and not
+    /// just a doc sentence.
+    #[test]
+    fn a_backdated_snapshot_does_not_become_the_branch_tip() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let main = branch_name("main");
+
+        let (recent, backdated) = {
+            let guard = repo.write().unwrap();
+            let recent = guard
+                .save_tree(SaveTree {
+                    branch: &main,
+                    parent: None,
+                    merge_parent: None,
+                    message: "2026",
+                    entries: vec![TreeEntry::file("f.txt", b"new\n".to_vec())],
+                    meta: SnapshotMeta::new(),
+                    timestamp_ms: Some(1_785_922_872_345),
+                })
+                .unwrap();
+            let backdated = guard
+                .save_tree(SaveTree {
+                    branch: &main,
+                    parent: Some(&recent),
+                    merge_parent: None,
+                    message: "backdated to 2021",
+                    entries: vec![TreeEntry::file("f.txt", b"old\n".to_vec())],
+                    meta: SnapshotMeta::new(),
+                    timestamp_ms: Some(1_609_459_200_000),
+                })
+                .unwrap();
+            (recent, backdated)
+        };
+
+        assert_eq!(
+            repo.branch_tip(&main).unwrap(),
+            Some(recent),
+            "the tip is the newest by timestamp, not the last written"
+        );
+        // The snapshot exists and is reachable, it simply is not the tip.
+        assert_eq!(repo.tree_at(&backdated).unwrap().len(), 1);
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
     }
 
     // ─── format v2 ────────────────────────────────────────────────────────────
@@ -7738,6 +7954,7 @@ beta
                     message: "m",
                     entries: entries(),
                     meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
                 })
                 .unwrap();
             let with_meta = guard
@@ -7748,6 +7965,7 @@ beta
                     message: "m",
                     entries: entries(),
                     meta: tagged.clone(),
+                    timestamp_ms: None,
                 })
                 .unwrap();
             (plain, with_meta)
@@ -7903,6 +8121,7 @@ beta
                     message: "m",
                     entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],
                     meta,
+                    timestamp_ms: None,
                 })
                 .unwrap();
         }
