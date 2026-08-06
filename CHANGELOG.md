@@ -20,6 +20,13 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Changed — breaking (API only)
 
+- **The public surface shrank before it can be frozen.** Nine items that were
+  `pub` only because two modules inside `velo-core` needed them are `pub(crate)`:
+  `get_tracked_files`, `is_binary`, `FileRef`, `Reconcile`, `reconcile_file`,
+  `remove_empty_parents`, `decision_to_db`, `decision_from_db`, `read_text`. None
+  was used outside the crate. This is free today and a major version once
+  `velo-core` is published.
+
 - **The read commands take resolved ids and real paths.** `show::run`,
   `blame::run`, `grep::run` and `bundle::create` took a `&str` spec and resolved
   it again, so a caller holding an id had to format it back into text — and could

@@ -365,9 +365,8 @@ fn is_ancestor(conn: &rusqlite::Connection, tip: &str, candidate: &str) -> bool 
 /// CTE is depth-limited so a (theoretically impossible) cycle can't hang it.
 /// What one file's merge would do, without doing it.
 ///
-/// Mirrors [`Reconcile`](crate::commands::Reconcile), but with typed object
-/// hashes and with a conflict carrying its three sides, so a caller can fetch and
-/// present them.
+/// The public shape of what reconciliation decided: typed object hashes, and a
+/// conflict carrying its three sides so a caller can fetch and present them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlannedChange {
     /// Theirs deleted a file ours left alone.
