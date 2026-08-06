@@ -1437,7 +1437,16 @@ fn run(cli: Cli) -> Result<()> {
             paths,
         } => {
             let hash = commands::resolve_snapshot_id(&repo, &target)?;
-            render::restore::print(&commands::restore::run(write(), &hash, force, &paths)?);
+            let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
+            render::restore::print(&commands::restore::run(
+                write(),
+                &hash,
+                commands::restore::Options {
+                    force,
+                    paths: &paths,
+                    ..Default::default()
+                },
+            )?);
         }
 
         Commands::Status { paths } => render::status::print(&commands::status::run(&repo, &paths)?),

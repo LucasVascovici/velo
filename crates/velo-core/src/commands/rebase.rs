@@ -136,7 +136,14 @@ fn do_start(guard: &WriteGuard, target: &SnapshotId) -> Result<Outcome> {
 
     // Move onto the new base. `restore` sets PARENT, which is what the replay
     // builds on top of; HEAD keeps naming our branch.
-    crate::commands::restore::run(guard, &onto_hash, true, &[])?;
+    crate::commands::restore::run(
+        guard,
+        &SnapshotId::from_stored(onto_hash.as_str()),
+        crate::commands::restore::Options {
+            force: true,
+            ..Default::default()
+        },
+    )?;
 
     write_state(
         guard.root(),
@@ -208,7 +215,14 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
     let restored_to = if orig_head.is_empty() {
         None
     } else {
-        crate::commands::restore::run(guard, &orig_head, true, &[])?;
+        crate::commands::restore::run(
+            guard,
+            &SnapshotId::from_stored(orig_head.as_str()),
+            crate::commands::restore::Options {
+                force: true,
+                ..Default::default()
+            },
+        )?;
         Some(orig_head)
     };
 

@@ -9,6 +9,7 @@ use rusqlite::OptionalExtension;
 
 use crate::commands::get_dirty_files;
 use crate::error::{InProgress, Result, VeloError};
+use crate::SnapshotId;
 use crate::WriteGuard;
 
 /// What a redo did.
@@ -73,6 +74,13 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     tx.commit()?;
 
     // restore::run writes PARENT itself.
-    crate::commands::restore::run(guard, &snapshot, true, &[])?;
+    crate::commands::restore::run(
+        guard,
+        &SnapshotId::from_stored(snapshot.as_str()),
+        crate::commands::restore::Options {
+            force: true,
+            ..Default::default()
+        },
+    )?;
     Ok(Outcome { snapshot, message })
 }

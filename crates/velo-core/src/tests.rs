@@ -404,7 +404,14 @@ mod tests {
 
         fs::remove_file(root.join("small.txt")).unwrap();
         with_write(&root, |vr| {
-            commands::restore::run(vr, &parent(&root), true, &[])
+            commands::restore::run(
+                vr,
+                &sid(parent(&root)),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         assert_eq!(read(&root, "small.txt"), "alpha\nbeta\ngamma\n");
@@ -440,7 +447,14 @@ mod tests {
         // object store to observe exactly what was stored.
         fs::remove_file(root.join("big.txt")).unwrap();
         with_write(&root, |vr| {
-            commands::restore::run(vr, &parent(&root), true, &[])
+            commands::restore::run(
+                vr,
+                &sid(parent(&root)),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         let restored = read(&root, "big.txt");
@@ -463,7 +477,17 @@ mod tests {
         write(&root, "f.txt", "v2");
         save(&root, "s2");
 
-        with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert_eq!(read(&root, "f.txt"), "v1");
         assert_eq!(parent(&root), h1);
     }
@@ -474,7 +498,17 @@ mod tests {
         write(&root, "f.txt", "v1");
         let h1 = save(&root, "s1");
         // Should succeed silently without error
-        with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
     }
 
     #[test]
@@ -490,7 +524,9 @@ mod tests {
 
         let before_parent = parent(&root);
         // Should now return Err (exit 1) — not silently succeed
-        let result = with_write(&root, |vr| commands::restore::run(vr, &h1, false, &[]));
+        let result = with_write(&root, |vr| {
+            commands::restore::run(vr, &sid(&h1), commands::restore::Options::default())
+        });
         assert!(result.is_err(), "Restore with dirty tree should error");
         assert_eq!(parent(&root), before_parent, "PARENT should not change");
         assert_eq!(read(&root, "f.txt"), "dirty", "File should not be restored");
@@ -505,7 +541,17 @@ mod tests {
         write(&root, "b.txt", "B"); // ghost file (added after h1)
         save(&root, "s2");
 
-        with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert!(exists(&root, "a.txt"), "a.txt should be present");
         assert!(
             !exists(&root, "b.txt"),
@@ -522,7 +568,17 @@ mod tests {
         write(&root, "subdir/nested/file.txt", "content");
         save(&root, "s2");
 
-        with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert!(
             !exists(&root, "subdir"),
             "Empty subdir should be cleaned up"
@@ -537,7 +593,17 @@ mod tests {
         write(&root, "f.txt", "v2");
         save(&root, "s2");
 
-        with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert_eq!(parent(&root), h1);
         // Working tree should be clean after restore
         assert!(with_repo(&root, commands::get_dirty_files).is_empty());
@@ -549,7 +615,14 @@ mod tests {
         write(&root, "f.txt", "v1");
         save(&root, "s1");
         let result = with_write(&root, |vr| {
-            commands::restore::run(vr, "deadbeef9999", true, &[])
+            commands::restore::run(
+                vr,
+                &SnapshotId::from_stored("deadbeef9999"),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
         });
         assert!(result.is_err());
     }
@@ -583,7 +656,17 @@ mod tests {
         write(&root, "f.txt", "v2");
         save(&root, "s2");
 
-        with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert!(with_repo(&root, commands::get_dirty_files).is_empty());
     }
 
@@ -1592,7 +1675,17 @@ mod tests {
         write(&root, "f.txt", "v1");
         let h1 = save(&root, "s1");
 
-        let outcome = with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert_eq!(outcome, Outcome::AlreadyThere { snapshot: h1 });
     }
 
@@ -1607,7 +1700,17 @@ mod tests {
         // Unsaved work that --force will throw away.
         write(&root, "keep.txt", "edited");
 
-        let outcome = with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         let Outcome::Restored {
             snapshot,
             branch,
@@ -1641,7 +1744,15 @@ mod tests {
         let h2 = save(&root, "s2");
 
         let outcome = with_write(&root, |vr| {
-            commands::restore::run(vr, &h1, false, &["a.txt".into()])
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: false,
+                    paths: &[Path::new("a.txt")],
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         let Outcome::RestoredPaths { files, .. } = outcome else {
@@ -1661,7 +1772,15 @@ mod tests {
         let h1 = save(&root, "s1");
 
         let outcome = with_write(&root, |vr| {
-            commands::restore::run(vr, &h1, false, &["nope.txt".into()])
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: false,
+                    paths: &[Path::new("nope.txt")],
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         assert!(
@@ -1680,7 +1799,10 @@ mod tests {
         save(&root, "s2");
         write(&root, "f.txt", "unsaved");
 
-        let err = with_write(&root, |vr| commands::restore::run(vr, &h1, false, &[])).unwrap_err();
+        let err = with_write(&root, |vr| {
+            commands::restore::run(vr, &sid(&h1), commands::restore::Options::default())
+        })
+        .unwrap_err();
         let VeloError::DirtyWorkingTree { paths } = err else {
             panic!("expected a dirty-tree error, got {:?}", err);
         };
@@ -1693,7 +1815,14 @@ mod tests {
         write(&root, "f.txt", "v1");
         save(&root, "s1");
         let err = with_write(&root, |vr| {
-            commands::restore::run(vr, "deadbeefdeadbeef", true, &[])
+            commands::restore::run(
+                vr,
+                &SnapshotId::from_stored("deadbeefdeadbeef"),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
         })
         .unwrap_err();
         assert!(matches!(err, VeloError::NotFound { .. }), "got {:?}", err);
@@ -3138,7 +3267,15 @@ mod tests {
         save(&root, "s2");
 
         let (repo, rec) = watched(&root);
-        commands::restore::run(&repo.write().unwrap(), &h1, true, &[]).unwrap();
+        commands::restore::run(
+            &repo.write().unwrap(),
+            &sid(&h1),
+            commands::restore::Options {
+                force: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
         let total = rec
             .total(Phase::Writing)
@@ -3561,7 +3698,15 @@ mod tests {
         // modified forever.
         {
             let guard = repo.write().unwrap();
-            commands::restore::run(&guard, &id, true, &[]).unwrap();
+            commands::restore::run(
+                &guard,
+                &id,
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
         }
         // `.veloignore` is on disk from `init` and deliberately not in this tree,
         // so it reads as new — that is correct. The claim under test is narrower:
@@ -5328,13 +5473,43 @@ beta
         write(&root, "f.txt", "v3");
         let h3 = save(&root, "s3");
 
-        with_write(&root, |vr| commands::restore::run(vr, &h2, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h2),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert_eq!(read(&root, "f.txt"), "v2");
 
-        with_write(&root, |vr| commands::restore::run(vr, &h3, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h3),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert_eq!(read(&root, "f.txt"), "v3");
 
-        with_write(&root, |vr| commands::restore::run(vr, &h1, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         assert_eq!(read(&root, "f.txt"), "v1");
     }
 
@@ -6018,7 +6193,15 @@ beta
 
         // Restore only a.txt from s1
         with_write(&root, |vr| {
-            commands::restore::run(vr, &h1, false, &["a.txt".into()])
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: false,
+                    paths: &[Path::new("a.txt")],
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
 
@@ -6040,7 +6223,15 @@ beta
 
         // "ghost.txt" didn't exist in s1 — should be a no-op (no error)
         with_write(&root, |vr| {
-            commands::restore::run(vr, &h1, false, &["ghost.txt".into()])
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: false,
+                    paths: &[Path::new("ghost.txt")],
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         // Current file unchanged
@@ -6062,7 +6253,15 @@ beta
 
         // Restore the entire src/ directory from h1
         with_write(&root, |vr| {
-            commands::restore::run(vr, &h1, false, &["src/".into()])
+            commands::restore::run(
+                vr,
+                &sid(&h1),
+                commands::restore::Options {
+                    force: false,
+                    paths: &[Path::new("src/")],
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
         assert_eq!(read(&root, "src/a.rs"), "fn a() {}");
@@ -6636,7 +6835,17 @@ beta
 
         let h = save(&root, "add script");
         fs::remove_file(&p).unwrap();
-        with_write(&root, |vr| commands::restore::run(vr, &h, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
 
         let mode = fs::metadata(&p).unwrap().permissions().mode();
         assert!(
@@ -6654,7 +6863,17 @@ beta
 
         let h = save(&root, "add symlink");
         fs::remove_file(root.join("link.txt")).unwrap();
-        with_write(&root, |vr| commands::restore::run(vr, &h, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&h),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
 
         let meta = fs::symlink_metadata(root.join("link.txt")).unwrap();
         assert!(
@@ -7051,7 +7270,17 @@ beta
         let main_tip = save(&root, "m2");
         // One commit on a branch off base.
         with_write(&root, |vr| commands::switch::run(vr, "side", false)).unwrap();
-        with_write(&root, |vr| commands::restore::run(vr, &base, true, &[])).unwrap();
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&base),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         write(&root, "g.txt", "side\n");
         let side_tip = save(&root, "s1");
 
@@ -8704,6 +8933,126 @@ line three CHANGED
             "an app must not be able to forge an author through the metadata API"
         );
         assert!(meta.author().is_none());
+    }
+
+    /// A cancelled restore stops and says so.
+    ///
+    /// Cancellation is cooperative — checked between files — so it never
+    /// interrupts a write part-way. What it does not do is roll the working tree
+    /// back: files already written stay written, the same position a killed
+    /// process would leave, and `status` describes it accurately.
+    #[test]
+    fn a_restore_can_be_cancelled() {
+        use crate::progress::Cancel;
+        let (_tmp, root) = setup();
+        for i in 0..40 {
+            write(&root, &format!("f{}.txt", i), "one");
+        }
+        let first = SnapshotId::from_stored(save(&root, "one"));
+        for i in 0..40 {
+            write(&root, &format!("f{}.txt", i), "two");
+        }
+        save(&root, "two");
+
+        // Cancelled before the restore even begins: nothing should be written,
+        // and the answer should be Cancelled rather than success.
+        let cancel = Cancel::new();
+        cancel.cancel();
+        let err = with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &first,
+                commands::restore::Options {
+                    force: true,
+                    cancel: Some(&cancel),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, VeloError::Cancelled),
+            "expected Cancelled, got {:?}",
+            err
+        );
+
+        // Nothing was written, so the tree still holds the newer content.
+        assert_eq!(read(&root, "f0.txt"), "two");
+
+        // And the repository is untouched by the attempt.
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+
+        // The same restore without the flag succeeds, so the cancellation was
+        // the cause rather than something else being wrong.
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &first,
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+        assert_eq!(read(&root, "f0.txt"), "one");
+    }
+
+    /// A per-call observer receives that call's progress, and the repository's
+    /// own observer is not consulted for it.
+    ///
+    /// The anti-goal this satisfies is velo's own: *"Don't use globals for
+    /// progress or cancellation. Pass them per call."*
+    #[test]
+    fn a_per_call_observer_replaces_the_repositorys_own() {
+        use crate::progress::{Observer, Phase};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Count(Arc<Mutex<usize>>);
+        impl Observer for Count {
+            fn begin(&self, _: Phase, _: Option<u64>) {
+                *self.0.lock().unwrap() += 1;
+            }
+        }
+
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        let first = SnapshotId::from_stored(save(&root, "one"));
+        write(&root, "a.txt", "two");
+        save(&root, "two");
+
+        let on_handle = Count::default();
+        let per_call = Count::default();
+        let repo = Repo::open_and_migrate(&root)
+            .unwrap()
+            .observing(on_handle.clone());
+        {
+            let guard = repo.write().unwrap();
+            commands::restore::run(
+                &guard,
+                &first,
+                commands::restore::Options {
+                    force: true,
+                    observer: Some(&per_call),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            *per_call.0.lock().unwrap(),
+            1,
+            "the observer passed to this call should hear about it"
+        );
+        assert_eq!(
+            *on_handle.0.lock().unwrap(),
+            0,
+            "and the handle's observer should not, or it is still a global"
+        );
     }
 
     // ─── format v2 ────────────────────────────────────────────────────────────

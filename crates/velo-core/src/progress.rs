@@ -121,6 +121,57 @@ impl Observer for Silent {}
 /// consumer's teardown.
 ///
 /// `Sync`, so it can be shared with rayon workers inside a parallel section.
+/// A cooperative cancellation flag.
+///
+/// Clone it and hand a clone to whatever might want to stop the work — a window
+/// close, a Ctrl-C handler, a timeout. Cancellation is **cooperative**: a command
+/// checks it between units of work, so it takes effect at the next file rather
+/// than instantly, and never mid-write.
+///
+/// Cancelling is not a rollback. Everything done inside a transaction is undone
+/// when the operation returns [`Error::Cancelled`](crate::Error::Cancelled), but
+/// work already written to the working tree stays written — the same position a
+/// process killed at that moment would leave you in, and `velo status` describes
+/// it accurately.
+///
+/// ```
+/// let cancel = velo_core::progress::Cancel::new();
+/// assert!(!cancel.is_cancelled());
+///
+/// let from_another_thread = cancel.clone();
+/// from_another_thread.cancel();
+/// assert!(cancel.is_cancelled(), "clones share one flag");
+/// ```
+#[derive(Clone, Debug, Default)]
+pub struct Cancel(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Cancel {
+    /// A flag that has not been set.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Ask the operation to stop at its next checkpoint.
+    ///
+    /// Safe to call from any thread, and safe to call more than once.
+    pub fn cancel(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether [`cancel`](Cancel::cancel) has been called.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// `Err(Cancelled)` once cancelled, for use with `?` inside a loop.
+    pub(crate) fn check(this: Option<&Cancel>) -> crate::error::Result<()> {
+        match this {
+            Some(c) if c.is_cancelled() => Err(crate::error::VeloError::Cancelled),
+            _ => Ok(()),
+        }
+    }
+}
+
 pub struct PhaseGuard<'a> {
     observer: &'a dyn Observer,
     phase: Phase,

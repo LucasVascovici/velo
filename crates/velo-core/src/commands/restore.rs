@@ -14,8 +14,9 @@ use rusqlite::params;
 
 use crate::commands::{get_dirty_files, get_tracked_files, remove_empty_parents};
 use crate::error::{RefKind, Result, VeloError};
-use crate::progress::{Phase, PhaseGuard};
+use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
 use crate::storage;
+use crate::SnapshotId;
 use crate::WriteGuard;
 
 /// What a restore did.
@@ -53,12 +54,42 @@ pub enum Outcome {
 ///
 /// `force` discards unsaved changes. When `paths` is non-empty only those paths
 /// are written and the recorded position is left where it is.
-pub fn run(
-    guard: &WriteGuard,
-    snapshot_hash: &str,
-    force: bool,
-    paths: &[String],
-) -> Result<Outcome> {
+/// How to restore.
+///
+/// The observer and cancellation token live here rather than on the `Repo`
+/// because this project's own anti-goals say so: *"Don't use globals for progress
+/// or cancellation. Pass them per call."* An observer set once on the handle
+/// fires for every operation, so a caller wanting a bar for one restore gets
+/// callbacks from everything with no way to tell which is which.
+#[derive(Default)]
+pub struct Options<'a> {
+    /// Overwrite files with unsaved changes instead of refusing.
+    pub force: bool,
+    /// Restore only these paths; empty means the whole snapshot.
+    pub paths: &'a [&'a Path],
+    /// Where to report progress, overriding the repository's own observer.
+    pub observer: Option<&'a dyn Observer>,
+    /// Checked between files. Cancelling leaves already-written files in place —
+    /// the same position a killed process would.
+    pub cancel: Option<&'a Cancel>,
+}
+
+/// Put the working tree back to how it was at `snapshot`.
+pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> Result<Outcome> {
+    let Options {
+        force,
+        paths,
+        observer,
+        cancel,
+    } = options;
+    let snapshot_hash = snapshot.as_str();
+    // Retained as owned strings: the matching below and the outcome both want
+    // them, and a restore is not a hot loop.
+    let paths: Vec<String> = paths
+        .iter()
+        .map(|p| crate::db::normalise(&p.to_string_lossy()))
+        .collect();
+    let paths = paths.as_slice();
     let root = guard.root();
     let partial = !paths.is_empty();
 
@@ -109,8 +140,12 @@ pub fn run(
     };
 
     {
-        let progress = guard.phase(Phase::Writing, Some(snapshot_files.len() as u64));
-        write_files(root, &snapshot_files, &progress)?;
+        let progress = PhaseGuard::new(
+            observer.unwrap_or_else(|| guard.repo().observer()),
+            Phase::Writing,
+            Some(snapshot_files.len() as u64),
+        );
+        write_files(root, &snapshot_files, &progress, cancel)?;
     }
 
     let written: Vec<String> = snapshot_files.iter().map(|(p, _, _)| p.clone()).collect();
@@ -204,12 +239,19 @@ fn write_files(
     root: &Path,
     files: &[(String, String, i64)],
     progress: &PhaseGuard<'_>,
+    cancel: Option<&Cancel>,
 ) -> Result<()> {
     let objects_dir = root.join(".velo/objects");
     let errors: Vec<String> = files
         .par_iter()
         .inspect(|_| progress.tick())
         .filter_map(|(rel_path, hash, mode)| {
+            // Checked per file, so cancelling takes effect at the next one and
+            // never part-way through writing a file. Workers already in flight
+            // finish what they are holding.
+            if cancel.is_some_and(Cancel::is_cancelled) {
+                return None;
+            }
             let full_path = root.join(crate::db::db_to_path(rel_path));
             if let Some(parent) = full_path.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
@@ -225,6 +267,10 @@ fn write_files(
             }
         })
         .collect();
+
+    // Reported before any write error: a cancelled restore skipped files rather
+    // than failing on them, so "you asked me to stop" is the truthful answer.
+    Cancel::check(cancel)?;
 
     if errors.is_empty() {
         return Ok(());

@@ -160,6 +160,11 @@ impl Repo {
         PhaseGuard::new(&*self.observer, phase, total)
     }
 
+    /// The handle's observer, used when a per-call one is not supplied.
+    pub(crate) fn observer(&self) -> &dyn Observer {
+        &*self.observer
+    }
+
     /// The repository root (the directory *containing* `.velo`).
     pub fn root(&self) -> &Path {
         &self.root
