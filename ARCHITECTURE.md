@@ -710,11 +710,11 @@ nearest the top.
 
 ---
 
-## Phase 5 — Wrong answers 🔴 **Required**
+## Phase 5 — Wrong answers ✅ **DONE**
 
 Not ergonomics. These produce results that are incorrect.
 
-### 5.1 `history --file` matches presence, not change
+### 5.1 `history --file` matched presence, not change ✅
 
 `touched()` asks whether the path exists in that snapshot's tree:
 
@@ -739,13 +739,29 @@ users, not only embedders. The fix is to compare the path's object hash against
 the same path in the parent — one extra lookup per candidate — and treat
 "absent in one, present in the other" as a change.
 
-**Second defect in the same code path:** the limit is applied *before* the
-filter. `run` fetches `limit` rows and then `entries.retain(…)`, so "the last 20
-snapshots touching this chapter" returns whatever subset of the last 20 overall
-happened to touch it. Filtering must move into the query, or the limit must be
-applied after it.
+**Second defect in the same code path:** the limit was applied *before* the
+filter. `run` fetched `limit` rows and then `entries.retain(…)`, so "the last 20
+snapshots touching this chapter" returned whatever subset of the last 20 overall
+happened to touch it.
 
-### 5.2 `SaveTree` cannot record a merge parent
+**Third, found while fixing the first two:** a directory matched *nothing*. The
+query compared the path for equality, while the CLI has always advertised "file
+or directory".
+
+**Fixed.** The predicate compares `(path, hash, mode)` rows under the filter
+against the parent's, in both directions — so additions, deletions, edits and
+mode flips all count, and a deletion (which appears only in the parent) is not
+missed. A directory matches by prefix, with `%` and `_` escaped since both are
+legal in filenames. When a filter is set the query runs unbounded and the limit
+is applied afterwards, so it counts matches rather than candidates.
+
+The existing test asserted the buggy behaviour and its comment described it as
+the contract — "the filter is *was this path in the snapshot*, not *did this
+snapshot modify it*" — while the help text said the opposite. The help text was
+right. Four tests now cover change-not-presence, deletions and mode flips,
+directories, and limit-after-filter.
+
+### 5.2 `SaveTree` could not record a merge parent ✅
 
 The `snapshots` table has `merge_parent`. `SnapshotIdentity` takes a
 `merge_parent`. `history::Entry` exposes it and offers `is_merge()`. Every layer
@@ -771,8 +787,15 @@ the same question" is the classic symptom of a lost merge parent.
 **Not a format break:** the column, the recipe and the reader all exist. It is
 one field, `merge_parent: Option<&'a SnapshotId>`.
 
-Do 5.2 together with [7.1](#71-savetreetimestamp_ms) — both add a field to
-`SaveTree`, and one breaking change to that struct is better than two.
+**Fixed.** `merge_parent: Option<&'a SnapshotId>`, validated like the first
+parent — naming one that does not exist is refused rather than left for `fsck`.
+Two tests: a merge recorded through `save_tree` reports both parents and answers
+`is_merge()`, with `fsck` recomputing the id to prove the second parent was
+*hashed in* and not merely written to a column; and an unknown merge parent is
+`NotFound`.
+
+[7.1](#71-savetreetimestamp_ms) adds another field to `SaveTree`. Doing it next
+keeps the number of breaking changes to that struct at two rather than three.
 
 ---
 

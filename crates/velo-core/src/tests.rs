@@ -759,7 +759,7 @@ mod tests {
     }
 
     #[test]
-    fn history_file_filter_keeps_only_snapshots_tracking_that_path() {
+    fn history_file_filter_keeps_only_the_snapshot_that_added_the_path() {
         let (_tmp, root) = setup();
         write(&root, "a.txt", "a");
         save(&root, "adds a");
@@ -781,7 +781,7 @@ mod tests {
         assert_eq!(
             msgs,
             vec!["adds b"],
-            "only the snapshot tracking b.txt qualifies"
+            "only the snapshot that added b.txt changed it"
         );
     }
 
@@ -3283,6 +3283,7 @@ mod tests {
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("registry"),
                     parent: None,
+                    merge_parent: None,
                     message: "publish 1.0",
                     entries: vec![
                         TreeEntry::file("pkg/lib.rs", b"pub fn f() {}\n".to_vec()),
@@ -3330,6 +3331,7 @@ mod tests {
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("registry"),
                     parent: None,
+                    merge_parent: None,
                     message: "in memory",
                     entries: vec![TreeEntry::file("only_in_memory.rs", b"x\n".to_vec())],
                 })
@@ -3399,6 +3401,7 @@ mod tests {
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("main"),
                     parent: None,
+                    merge_parent: None,
                     message: "same message",
                     entries: vec![TreeEntry::file("m.rs", content)],
                 })
@@ -3431,6 +3434,7 @@ mod tests {
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("imported"),
                     parent: None,
+                    merge_parent: None,
                     message: "windows line endings",
                     entries: vec![TreeEntry::file("crlf.txt", b"a\r\nb\r\nc\r\n".to_vec())],
                 })
@@ -3478,6 +3482,7 @@ c
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("registry"),
                     parent: None,
+                    merge_parent: None,
                     message: "1.0",
                     entries: vec![TreeEntry::file("v.txt", b"1\n".to_vec())],
                 })
@@ -3490,6 +3495,7 @@ c
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("registry"),
                     parent: Some(&first),
+                    merge_parent: None,
                     message: "1.1",
                     entries: vec![TreeEntry::file("v.txt", b"2\n".to_vec())],
                 })
@@ -3528,6 +3534,7 @@ c
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("registry"),
                     parent: parent_id.as_ref(),
+                    merge_parent: None,
                     message: &format!("v{}", v),
                     entries: vec![
                         TreeEntry::file("a.txt", format!("version {}\n", v).into_bytes()),
@@ -3564,6 +3571,7 @@ c
                 meta: SnapshotMeta::new(),
                 branch,
                 parent,
+                merge_parent: None,
                 message: "m",
                 entries,
             }
@@ -3622,6 +3630,7 @@ c
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("registry"),
                     parent: None,
+                    merge_parent: None,
                     message: "m",
                     entries: vec![TreeEntry::file("src\\deep\\f.rs", b"x\n".to_vec())],
                 })
@@ -3645,6 +3654,7 @@ c
                     meta: SnapshotMeta::new(),
                     branch: &branch_name("registry"),
                     parent: None,
+                    merge_parent: None,
                     message: "m",
                     entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],
                 })
@@ -5540,12 +5550,20 @@ beta
 
     // ─── history file filter ──────────────────────────────────────────────────
 
+    /// The filter means "changed this path", which is what the CLI has always
+    /// advertised — not "this path existed", which is what it used to do.
+    ///
+    /// A velo tree is the complete file set, so presence is true for every
+    /// snapshot after the file is created. The previous test asserted 3 of 3
+    /// snapshots for a path that two of them touched, and its comment described
+    /// that as the contract; the help text said otherwise, and the help text was
+    /// right.
     #[test]
-    fn history_file_filter_returns_only_relevant_snapshots() {
+    fn history_file_filter_selects_snapshots_that_changed_the_path() {
         let (_tmp, root) = setup();
         write(&root, "a.txt", "A1");
         write(&root, "b.txt", "B1");
-        save(&root, "both touched");
+        save(&root, "both created");
 
         write(&root, "a.txt", "A2");
         save(&root, "only a touched");
@@ -5553,38 +5571,146 @@ beta
         write(&root, "b.txt", "B2");
         save(&root, "only b touched");
 
-        // Every snapshot still *tracks* a.txt, even the ones that only changed
-        // b.txt — the filter is "was this path in the snapshot", not "did this
-        // snapshot modify it".
-        let h = with_repo(&root, |vr| {
-            commands::history::run(
-                vr,
-                commands::history::Options {
-                    file: Some("a.txt"),
-                    limit: Some(20),
-                    ..Default::default()
-                },
-            )
-        })
-        .unwrap();
-        assert_eq!(h.entries.len(), 3);
+        let messages = |file: &str, limit: Option<usize>| -> Vec<String> {
+            with_repo(&root, |vr| {
+                commands::history::run(
+                    vr,
+                    commands::history::Options {
+                        file: Some(file),
+                        limit,
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.message.clone())
+            .collect()
+        };
 
-        // A path added later is absent from the snapshots that predate it.
+        assert_eq!(
+            messages("a.txt", None),
+            vec!["only a touched", "both created"],
+            "the snapshot that changed only b.txt must not appear"
+        );
+        assert_eq!(
+            messages("b.txt", None),
+            vec!["only b touched", "both created"]
+        );
+
+        // A path added later is absent from everything that predates it.
         write(&root, "c.txt", "C1");
         save(&root, "adds c");
-        let h = with_repo(&root, |vr| {
+        assert_eq!(messages("c.txt", None), vec!["adds c"]);
+    }
+
+    /// A deletion changes the path, and so does a mode flip.
+    ///
+    /// Deletions only appear in the *parent's* tree, so a one-directional
+    /// comparison would miss them entirely — which is why the query runs both
+    /// ways.
+    #[test]
+    fn history_file_filter_sees_deletions_and_mode_changes() {
+        let (_tmp, root) = setup();
+        write(&root, "gone.txt", "here");
+        save(&root, "create");
+        write(&root, "unrelated.txt", "x");
+        save(&root, "unrelated");
+        std::fs::remove_file(root.join("gone.txt")).unwrap();
+        save(&root, "delete it");
+
+        let msgs: Vec<String> = with_repo(&root, |vr| {
             commands::history::run(
                 vr,
                 commands::history::Options {
-                    file: Some("c.txt"),
-                    limit: Some(20),
+                    file: Some("gone.txt"),
                     ..Default::default()
                 },
             )
         })
-        .unwrap();
-        let msgs: Vec<&str> = h.entries.iter().map(|e| e.message.as_str()).collect();
-        assert_eq!(msgs, vec!["adds c"]);
+        .unwrap()
+        .entries
+        .iter()
+        .map(|e| e.message.clone())
+        .collect();
+        assert_eq!(
+            msgs,
+            vec!["delete it", "create"],
+            "the deleting snapshot changed the path as much as the creating one"
+        );
+    }
+
+    /// A directory matches everything beneath it.
+    ///
+    /// The CLI has always said "file or directory"; a directory previously
+    /// matched nothing at all, because the query compared the path for equality.
+    #[test]
+    fn history_file_filter_accepts_a_directory() {
+        let (_tmp, root) = setup();
+        std::fs::create_dir_all(root.join("src/deep")).unwrap();
+        write(&root, "src/deep/a.rs", "A");
+        save(&root, "add under src");
+        write(&root, "top.txt", "T");
+        save(&root, "outside src");
+        write(&root, "src/deep/a.rs", "A2");
+        save(&root, "edit under src");
+
+        let msgs: Vec<String> = with_repo(&root, |vr| {
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    file: Some("src"),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap()
+        .entries
+        .iter()
+        .map(|e| e.message.clone())
+        .collect();
+        assert_eq!(msgs, vec!["edit under src", "add under src"]);
+    }
+
+    /// The limit counts matches, not candidates.
+    ///
+    /// Applying it before the filter returns whichever of the newest N happened
+    /// to match — so asking for "the last checkpoint touching this file" could
+    /// return nothing at all while the file had plenty of history.
+    #[test]
+    fn history_file_filter_applies_the_limit_after_filtering() {
+        let (_tmp, root) = setup();
+        write(&root, "watched.txt", "v1");
+        save(&root, "watched v1");
+        write(&root, "watched.txt", "v2");
+        save(&root, "watched v2");
+        // Several newer snapshots that do not touch it.
+        for i in 0..5 {
+            write(&root, &format!("noise{}.txt", i), "x");
+            save(&root, &format!("noise {}", i));
+        }
+
+        let msgs: Vec<String> = with_repo(&root, |vr| {
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    file: Some("watched.txt"),
+                    limit: Some(1),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap()
+        .entries
+        .iter()
+        .map(|e| e.message.clone())
+        .collect();
+        assert_eq!(
+            msgs,
+            vec!["watched v2"],
+            "limit 1 must mean the newest matching snapshot, not zero of the newest one"
+        );
     }
 
     // ─── save --amend ─────────────────────────────────────────────────────────
@@ -6492,6 +6618,7 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("main"),
                     parent: None,
+                    merge_parent: None,
                     message: "published",
                     entries: vec![TreeEntry::file(
                         "a.txt",
@@ -7250,6 +7377,7 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("a"),
                     parent: None,
+                    merge_parent: None,
                     message: "base",
                     entries: vec![
                         TreeEntry::file(
@@ -7302,6 +7430,7 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("l"),
                     parent: Some(&base),
+                    merge_parent: None,
                     // Distinct messages: identity excludes the branch, so with
                     // one message these two would be the *same snapshot* whenever
                     // both saves land in the same millisecond.
@@ -7314,6 +7443,7 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("r"),
                     parent: Some(&base),
+                    merge_parent: None,
                     message: "by reference",
                     entries: by_reference,
                     meta: SnapshotMeta::new(),
@@ -7353,6 +7483,7 @@ beta
             .save_tree(SaveTree {
                 branch: &branch_name("a"),
                 parent: None,
+                merge_parent: None,
                 message: "m",
                 entries: vec![TreeEntry::stored("f.txt", absent, FileKind::Regular)],
                 meta: SnapshotMeta::new(),
@@ -7416,6 +7547,7 @@ beta
         let spec = |branch| SaveTree {
             branch,
             parent: None,
+            merge_parent: None,
             message: "same",
             entries: vec![TreeEntry::file(
                 "a.txt",
@@ -7468,6 +7600,120 @@ beta
             .is_healthy());
     }
 
+    /// A merge recorded through the embedder API is a real merge.
+    ///
+    /// The column, the id recipe and `history::Entry::is_merge` all supported a
+    /// second parent; only `SaveTree` had no way to set one, so every merge an
+    /// embedder recorded was stored as linear. That loses the graph, and — worse
+    /// — leaves the next merge computing its base from an ancestor that is too
+    /// old, re-raising conflicts the author already resolved.
+    #[test]
+    fn save_tree_can_record_a_merge_parent() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let (base, side, merged) = {
+            let guard = repo.write().unwrap();
+            let base = guard
+                .save_tree(SaveTree {
+                    branch: &branch_name("main"),
+                    parent: None,
+                    merge_parent: None,
+                    message: "base",
+                    entries: vec![TreeEntry::file(
+                        "a.txt",
+                        b"base
+"
+                        .to_vec(),
+                    )],
+                    meta: SnapshotMeta::new(),
+                })
+                .unwrap();
+            let side = guard
+                .save_tree(SaveTree {
+                    branch: &branch_name("side"),
+                    parent: Some(&base),
+                    merge_parent: None,
+                    message: "side work",
+                    entries: vec![TreeEntry::file(
+                        "a.txt",
+                        b"side
+"
+                        .to_vec(),
+                    )],
+                    meta: SnapshotMeta::new(),
+                })
+                .unwrap();
+            let merged = guard
+                .save_tree(SaveTree {
+                    branch: &branch_name("main"),
+                    parent: Some(&base),
+                    merge_parent: Some(&side),
+                    message: "merge side",
+                    entries: vec![TreeEntry::file(
+                        "a.txt",
+                        b"merged
+"
+                        .to_vec(),
+                    )],
+                    meta: SnapshotMeta::new(),
+                })
+                .unwrap();
+            (base, side, merged)
+        };
+
+        // Both parents are stored, and the reader reports it as a merge.
+        let history = commands::history::run(
+            &repo,
+            commands::history::Options {
+                all: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let entry = history
+            .entries
+            .iter()
+            .find(|e| e.hash == merged)
+            .expect("the merge is in history");
+        assert_eq!(entry.parent.as_ref(), Some(&base));
+        assert_eq!(entry.merge_parent.as_ref(), Some(&side));
+        assert!(entry.is_merge(), "two parents is what is_merge means");
+
+        // The second parent is part of identity, so fsck recomputing every id is
+        // the proof it was hashed in and not merely written to a column.
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    /// A merge parent that does not exist is refused, like a first parent.
+    #[test]
+    fn save_tree_refuses_an_unknown_merge_parent() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let guard = repo.write().unwrap();
+
+        let ghost: SnapshotId = "ab".repeat(32).parse().unwrap();
+        let err = guard
+            .save_tree(SaveTree {
+                branch: &branch_name("main"),
+                parent: None,
+                merge_parent: Some(&ghost),
+                message: "m",
+                entries: vec![TreeEntry::file("a.txt", b"x".to_vec())],
+                meta: SnapshotMeta::new(),
+            })
+            .unwrap_err();
+        assert!(
+            matches!(err, VeloError::NotFound { .. }),
+            "expected NotFound, got {:?}",
+            err
+        );
+    }
+
     // ─── format v2 ────────────────────────────────────────────────────────────
 
     /// The break's central claim: metadata is part of a snapshot's identity.
@@ -7488,6 +7734,7 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("a"),
                     parent: None,
+                    merge_parent: None,
                     message: "m",
                     entries: entries(),
                     meta: SnapshotMeta::new(),
@@ -7497,6 +7744,7 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("b"),
                     parent: None,
+                    merge_parent: None,
                     message: "m",
                     entries: entries(),
                     meta: tagged.clone(),
@@ -7651,6 +7899,7 @@ beta
                 .save_tree(SaveTree {
                     branch: &branch_name("registry"),
                     parent: None,
+                    merge_parent: None,
                     message: "m",
                     entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],
                     meta,
