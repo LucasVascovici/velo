@@ -107,6 +107,72 @@ pub fn delete(guard: &WriteGuard, name: &BranchName) -> Result<()> {
     Ok(())
 }
 
+/// Create `name`, optionally pointing at an existing snapshot.
+///
+/// Neither existing route did this. `switch::run` creates a branch but also makes
+/// it current and leaves it unborn, inheriting wherever the position happens to
+/// be; `save_tree` creates one only as a side effect of recording a snapshot, so
+/// a branch could not exist before its first checkpoint. This is
+/// `git branch <name> [<commit>]`: a ref, and nothing else moves.
+///
+/// `at = None` leaves the branch unborn — it exists, but has no tip until
+/// something is saved on it.
+///
+/// # Errors
+/// If the branch already exists, or `at` names a snapshot that does not.
+pub fn create(guard: &WriteGuard, name: &BranchName, at: Option<&SnapshotId>) -> Result<()> {
+    let conn = guard.conn();
+    if crate::commands::branch_exists(conn, name.as_str()) {
+        return Err(VeloError::invalid(format!(
+            "Branch '{}' already exists.",
+            name
+        )));
+    }
+    match at {
+        Some(at) => {
+            require_snapshot(conn, at)?;
+            crate::commands::set_branch_tip(conn, name.as_str(), at.as_str())?;
+        }
+        None => crate::commands::register_branch(conn, name.as_str(), "")?,
+    }
+    Ok(())
+}
+
+/// Point an existing branch at `to`.
+///
+/// Moving a branch does not rewrite or delete anything: snapshots that were only
+/// reachable from the old tip remain in the repository and are still reachable by
+/// id, which is why this is not a destructive operation.
+///
+/// # Errors
+/// If the branch does not exist, or `to` names a snapshot that does not.
+pub fn set_tip(guard: &WriteGuard, name: &BranchName, to: &SnapshotId) -> Result<()> {
+    let conn = guard.conn();
+    if !crate::commands::branch_exists(conn, name.as_str()) {
+        return Err(VeloError::not_found(RefKind::Branch, name.as_str()));
+    }
+    require_snapshot(conn, to)?;
+    crate::commands::set_branch_tip(conn, name.as_str(), to.as_str())?;
+    Ok(())
+}
+
+/// A branch may only point at a snapshot that exists — otherwise the ref is
+/// dangling and only `fsck` would find it.
+fn require_snapshot(conn: &rusqlite::Connection, id: &SnapshotId) -> Result<()> {
+    let known: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+            [id],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if known {
+        Ok(())
+    } else {
+        Err(VeloError::not_found(RefKind::Snapshot, id.as_str()))
+    }
+}
+
 fn current_branch(root: &Path) -> String {
     fs::read_to_string(root.join(".velo/HEAD"))
         .unwrap_or_else(|_| "main".into())

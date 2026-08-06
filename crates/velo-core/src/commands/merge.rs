@@ -12,7 +12,7 @@ use crate::commands::SnapshotIdentity;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
 use crate::storage;
-use crate::{SnapshotId, SnapshotMeta, WriteGuard};
+use crate::{Repo, SnapshotId, SnapshotMeta, WriteGuard};
 
 /// Re-exported so `merge::FileAction` keeps working: the vocabulary is shared
 /// with cherry-pick and rebase, so it lives in [`crate::commands::apply`].
@@ -324,6 +324,18 @@ fn is_ancestor(conn: &rusqlite::Connection, tip: &str, candidate: &str) -> bool 
 ///
 /// Walks both ancestries and returns the shallowest shared hash. The recursive
 /// CTE is depth-limited so a (theoretically impossible) cycle can't hang it.
+/// The most recent snapshot reachable from both `a` and `b`.
+///
+/// The base a three-way merge is computed against. `None` when the two share no
+/// history at all, which happens for unrelated roots.
+///
+/// Exposed because any consumer that merges needs it, and reimplementing it over
+/// history rows in memory is both slower and easy to get subtly wrong — this is
+/// an indexed recursive query.
+pub fn merge_base(repo: &Repo, a: &SnapshotId, b: &SnapshotId) -> Result<Option<SnapshotId>> {
+    Ok(lowest_common_ancestor(repo.conn(), a.as_str(), b.as_str()).map(SnapshotId::from_stored))
+}
+
 fn lowest_common_ancestor(
     conn: &rusqlite::Connection,
     current: &str,

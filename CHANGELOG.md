@@ -20,6 +20,18 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Added
 
+- **`branches::create` and `branches::set_tip`** — a branch can be created
+  pointing at any past snapshot, without switching to it. Previously a branch came
+  into existence only via `switch` (which also makes it current and leaves it
+  unborn) or as a side effect of `save_tree`.
+- **`merge::merge_base`** — the shared ancestor two snapshots merge against, so a
+  consumer that merges need not reimplement an indexed recursive query in memory.
+- **`Repo::snapshot`** — everything recorded about one snapshot, by the id a
+  consumer already holds, instead of formatting it back into text to be resolved
+  again.
+- **`Repo::head_token`** — one integer that changes whenever snapshots, branches
+  or tags change, for an application that has to notice a second window or a
+  `pull`.
 - **`SaveTree.timestamp_ms`** — a caller can supply the creation time, `None`
   meaning now. The timestamp is part of a snapshot's identity, so with the clock
   read internally an embedder could not control the id: no test could assert one

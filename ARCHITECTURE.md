@@ -854,7 +854,7 @@ argument `meta.rs` already makes for hashing metadata.
 
 ---
 
-## Phase 7 — Finish the embedder API 🔴/🟡 *(7.1 done)*
+## Phase 7 — Finish the embedder API 🔴/🟡 *(7.5 and 7.6 remain)*
 
 Capability an embedder cannot supply for itself. Each of these forces a consumer
 to reimplement logic velo already has, or blocks something outright.
@@ -901,7 +901,7 @@ sentence.
 `save_tree` is now the only place in `velo-core` that reads a clock, and it does
 so only when the caller declines to.
 
-### 7.2 A branch cannot be pointed at a past snapshot 🟡
+### 7.2 A branch cannot be pointed at a past snapshot ✅ **DONE**
 
 `branches::list` and `branches::delete` are public; `register_branch` is
 `pub(crate)`. So a branch is created either by `switch::run` — which also makes it
@@ -916,7 +916,7 @@ pub fn set_tip(guard: &WriteGuard, name: &BranchName, to: &SnapshotId) -> Result
 Related and smaller: creating a branch and switching to it are one operation, and
 a consumer that wants the first without the second cannot ask.
 
-### 7.3 Merge-base is private 🟡
+### 7.3 Merge-base is private ✅ **DONE**
 
 `lowest_common_ancestor` is a private recursive CTE in `commands::merge` —
 indexed, fast, correct. Any consumer that merges must reimplement a subtle
@@ -926,7 +926,7 @@ algorithm over `history::Entry` rows in memory.
 pub fn merge_base(repo: &Repo, a: &SnapshotId, b: &SnapshotId) -> Result<Option<SnapshotId>>;
 ```
 
-### 7.4 A snapshot cannot be inspected by id 🟡
+### 7.4 A snapshot cannot be inspected by id ✅ **DONE**
 
 `Repo::snapshot_meta(&SnapshotId)` exists, but there is no way to get a snapshot's
 message, timestamp, parents or branch from an id. `show::run` takes a `&str` and
@@ -934,8 +934,13 @@ resolves it again; `history::run` walks ancestry. A consumer holding an id — w
 is what every consumer holds — must format it back into text for re-resolution.
 
 ```rust
-pub fn snapshot(&self, id: &SnapshotId) -> Result<SnapshotDetail>;
+pub fn snapshot(&self, id: &SnapshotId) -> Result<history::Entry>;
 ```
+
+**Done**, returning `history::Entry` rather than a near-duplicate type — it
+already carries the message, timestamp, both parents, branch and tag, already
+typed. `show::run` stays the way to get the diff as well, since computing that is
+not free.
 
 ### 7.5 `merge::run` is unusable by anything with an interface 🟡
 
@@ -968,7 +973,7 @@ a GUI, "stop this" on a workspace-wide restore or a large clone is table stakes.
 Per-call options carrying an observer and a cancellation token on `restore`,
 `clone`, `gc` and large `save`. Keep `Repo::observing` as the convenience default.
 
-### 7.7 `Repo::head_token` 🟡
+### 7.7 `Repo::head_token` ✅ **DONE**
 
 A second window, a `pull`, or the user running `velo` in the same folder all
 change the repository under a running application. Listed as 🟢 optional in Phase
@@ -978,6 +983,10 @@ branch tip.
 ```rust
 pub fn head_token(&self) -> Result<u64>;
 ```
+
+**Done.** Hashed over the snapshot count and newest rowid, plus every branch and
+tag row — because a branch moving or a tag being added changes nothing a count
+would notice. Deliberately does not cover the working tree.
 
 ---
 
