@@ -246,6 +246,15 @@ NOTES
         )]
         branch: Option<String>,
 
+        /// Ancestry of one snapshot, rather than one branch's snapshots.
+        #[arg(
+            long,
+            value_name = "SNAPSHOT",
+            conflicts_with_all = ["all", "branch"],
+            help = "Show what led to a snapshot, across branches"
+        )]
+        from: Option<String>,
+
         /// Compact one-line format: hash  branch  message.
         #[arg(long, help = "One-line-per-snapshot compact format")]
         oneline: bool,
@@ -1462,6 +1471,7 @@ fn run(cli: Cli) -> Result<()> {
             all,
             limit,
             branch,
+            from,
             oneline,
             graph,
             file_filter,
@@ -1477,12 +1487,16 @@ fn run(cli: Cli) -> Result<()> {
             // Parsed here, at the argv boundary, so a malformed branch name is
             // a clear error rather than a query that quietly matches nothing.
             let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
+            let from = from
+                .map(|t| commands::resolve_snapshot_id(&repo, t.as_str()))
+                .transpose()?;
             let file_paths: Vec<&Path> = file_filter.iter().map(Path::new).collect();
             let history = commands::history::run(
                 &repo,
                 commands::history::Options {
                     all,
                     branch: branch.as_ref(),
+                    from: from.as_ref(),
                     paths: &file_paths,
                     limit: Some(limit),
                 },

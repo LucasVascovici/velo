@@ -55,6 +55,8 @@ pub enum Scope {
     CurrentBranch { name: BranchName },
     /// Every snapshot recorded on one named branch.
     NamedBranch { name: BranchName },
+    /// Ancestry of one snapshot, wherever its parts were recorded.
+    Ancestry { of: SnapshotId },
     /// Every branch.
     All,
 }
@@ -104,6 +106,17 @@ pub struct Options<'a> {
     pub all: bool,
     /// Narrow to one branch.
     pub branch: Option<&'a BranchName>,
+    /// The ancestry of this snapshot, following both parents through merges.
+    ///
+    /// The scope a timeline wants, and the one neither `branch` nor `all` gives:
+    /// `branch` lists snapshots *recorded on* a branch, so a branch's shared
+    /// history — recorded on whatever it forked from — is excluded, and the
+    /// listing stops at the fork point.
+    ///
+    /// Takes precedence over `branch` and `all`. With none of the three set, the
+    /// ancestry of the current position is used, which needs `.velo/PARENT` and
+    /// so is only meaningful for a consumer with a working tree.
+    pub from: Option<&'a SnapshotId>,
     /// Keep only snapshots that **changed** something at or under one of these
     /// paths. A file matches exactly; a directory matches everything beneath it.
     ///
@@ -147,6 +160,7 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
     let Options {
         all,
         branch: filter_branch,
+        from,
         paths: file_filter,
         limit,
     } = options;
@@ -166,10 +180,11 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
             .trim(),
     );
 
-    let scope = match (all, filter_branch) {
-        (_, Some(b)) => Scope::NamedBranch { name: b.clone() },
-        (true, None) => Scope::All,
-        (false, None) => Scope::CurrentBranch {
+    let scope = match (from, all, filter_branch) {
+        (Some(id), _, _) => Scope::Ancestry { of: id.clone() },
+        (None, _, Some(b)) => Scope::NamedBranch { name: b.clone() },
+        (None, true, None) => Scope::All,
+        (None, false, None) => Scope::CurrentBranch {
             name: branch.clone(),
         },
     };
@@ -192,6 +207,7 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
     let query_limit = if file_filter.is_empty() { limit } else { -1 };
 
     let mut entries = match &scope {
+        Scope::Ancestry { of } => ancestry_of(conn, of.as_str(), query_limit)?,
         Scope::CurrentBranch { .. } => ancestry_of(conn, &position, query_limit)?,
         Scope::NamedBranch { name } => on_branch(conn, Some(name.as_str()), query_limit)?,
         Scope::All => on_branch(conn, None, query_limit)?,
@@ -277,21 +293,35 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
     })
 }
 
-/// Walk back from `tip` through first parents.
+/// Every snapshot reachable from `tip`, newest first.
+///
+/// Follows **both** parents, so the branch a merge absorbed appears in the
+/// history of the branch that absorbed it — as it does in the graph, and as
+/// `git log` does. Walking first parents alone hid it: `velo history` on a branch
+/// that had merged another showed none of the merged work.
+///
+/// Ordered by time rather than by walk order, because with two parents there is
+/// no single chain to follow.
 fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: i64) -> Result<Vec<Entry>> {
-    let mut stmt = conn.prepare(
-        "WITH RECURSIVE cte(hash, message, created_at_ms, branch, parent_hash, merge_parent) AS (
-            SELECT hash, message, created_at_ms, branch, parent_hash, merge_parent
-            FROM snapshots WHERE hash = ?1
-            UNION ALL
-            SELECT s.hash, s.message, s.created_at_ms, s.branch, s.parent_hash, s.merge_parent
-            FROM snapshots s JOIN cte c ON s.hash = c.parent_hash
-        )
-        SELECT c.hash, c.message, c.created_at_ms, c.branch, c.parent_hash, c.merge_parent, t.name
-        FROM cte c
-        LEFT JOIN tags t ON c.hash = t.snapshot_hash
-        LIMIT ?2",
-    )?;
+    let mut stmt = conn.prepare(&format!(
+        "WITH RECURSIVE anc(hash, parent_hash, merge_parent, depth) AS (
+             SELECT hash, parent_hash, merge_parent, 0
+               FROM snapshots WHERE hash = ?1
+             UNION
+             SELECT s.hash, s.parent_hash, s.merge_parent, a.depth + 1
+               FROM snapshots s JOIN anc a
+                 ON s.hash = a.parent_hash
+                 OR (a.merge_parent <> '' AND s.hash = a.merge_parent)
+              WHERE a.depth < {}
+         )
+         SELECT {COLUMNS}
+         FROM snapshots s
+         JOIN (SELECT DISTINCT hash FROM anc) r ON r.hash = s.hash
+         LEFT JOIN tags t ON s.hash = t.snapshot_hash
+         ORDER BY s.created_at_ms DESC, s.rowid DESC
+         LIMIT ?2",
+        crate::commands::MAX_ANCESTRY_DEPTH
+    ))?;
     let rows = stmt.query_map(params![tip, limit], row_to_entry)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }

@@ -982,6 +982,110 @@ mod tests {
         assert_ne!(merge.parent, merge.merge_parent);
     }
 
+    #[test]
+    fn history_after_a_merge_lists_the_absorbed_branch() {
+        let (_tmp, root) = setup();
+        write(&root, "base.txt", "base");
+        save(&root, "base");
+        with_write(&root, |vr| commands::switch::run(vr, "side", false)).unwrap();
+        write(&root, "side.txt", "side");
+        save(&root, "side edit");
+        with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
+        write(&root, "main.txt", "main");
+        save(&root, "main edit");
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "side" })
+        })
+        .unwrap();
+        save(&root, "Merge side");
+
+        let h = with_repo(&root, |vr| {
+            commands::history::run(vr, commands::history::Options::default())
+        })
+        .unwrap();
+        let messages: Vec<&str> = h.entries.iter().map(|e| e.message.as_str()).collect();
+        // Walking first parents alone hid this: the work is in main's history
+        // now, so main's history has to say so.
+        assert!(
+            messages.contains(&"side edit"),
+            "the merged-in snapshot should be listed: {:?}",
+            messages
+        );
+        assert!(messages.contains(&"main edit"), "{:?}", messages);
+        assert!(messages.contains(&"base"), "{:?}", messages);
+    }
+
+    #[test]
+    fn history_from_spans_the_fork_point() {
+        let (_tmp, root) = setup();
+        write(&root, "base.txt", "base");
+        save(&root, "shared");
+        with_write(&root, |vr| commands::switch::run(vr, "side", false)).unwrap();
+        write(&root, "side.txt", "side");
+        save(&root, "side edit");
+        let side_tip = parent(&root);
+
+        let (from_tip, on_branch) = with_repo(&root, |vr| {
+            let id = sid(&side_tip);
+            let from = commands::history::run(
+                vr,
+                commands::history::Options {
+                    from: Some(&id),
+                    ..Default::default()
+                },
+            )?;
+            let branch = branch_name("side");
+            let on_branch = commands::history::run(
+                vr,
+                commands::history::Options {
+                    branch: Some(&branch),
+                    ..Default::default()
+                },
+            )?;
+            crate::error::Result::Ok((from, on_branch))
+        })
+        .unwrap();
+
+        let msgs = |h: &commands::history::History| -> Vec<String> {
+            h.entries.iter().map(|e| e.message.clone()).collect()
+        };
+        // The point of the scope: a branch listing stops at the fork, because
+        // the shared history was recorded on main.
+        assert_eq!(msgs(&on_branch), vec!["side edit"]);
+        assert_eq!(msgs(&from_tip), vec!["side edit", "shared"]);
+        assert_eq!(
+            from_tip.scope,
+            commands::history::Scope::Ancestry { of: sid(&side_tip) }
+        );
+    }
+
+    #[test]
+    fn history_from_ignores_where_the_working_tree_sits() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "a");
+        save(&root, "first");
+        let first = parent(&root);
+        write(&root, "b.txt", "b");
+        save(&root, "second");
+
+        let h = with_repo(&root, |vr| {
+            let id = sid(&first);
+            commands::history::run(
+                vr,
+                commands::history::Options {
+                    from: Some(&id),
+                    // Both are set, and both are outranked.
+                    all: true,
+                    branch: None,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+        let messages: Vec<&str> = h.entries.iter().map(|e| e.message.as_str()).collect();
+        assert_eq!(messages, vec!["first"], "later snapshots are not ancestors");
+    }
+
     // =========================================================================
     // branches / tag / remote listings
     // =========================================================================
@@ -9365,7 +9469,6 @@ line three CHANGED
     /// against a baseline predating work that was already merged, and re-raises
     /// every conflict the author settled the first time.
     #[test]
-    #[ignore = "known defect: lowest_common_ancestor walks parent_hash only, so a                 merge's absorbed tip is invisible to the next merge. Phase 10.1."]
     fn merge_base_follows_the_second_parent() {
         use crate::tree::{SaveTree, TreeEntry};
         let (_tmp, root) = setup();

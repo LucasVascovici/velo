@@ -541,34 +541,44 @@ pub fn merge_base(repo: &Repo, a: &SnapshotId, b: &SnapshotId) -> Result<Option<
     Ok(lowest_common_ancestor(repo.conn(), a.as_str(), b.as_str()).map(SnapshotId::from_stored))
 }
 
+/// The best common ancestor of `current` and `target`.
+///
+/// Both ancestries follow **both** parents (see
+/// [`ancestors`](crate::commands::ancestors)), so a branch a previous merge
+/// absorbed counts as reachable — which is the whole point. Without it the base
+/// is the shared root, and the next merge diffs against a baseline predating
+/// work that was already reconciled, re-raising every conflict the author
+/// settled.
+///
+/// # "Lowest" here means nearest, and that is an approximation
+///
+/// Of the common ancestors, this returns the one at the shortest distance from
+/// `current`, ties broken by id so the answer is stable.
+///
+/// In a tree that is exactly the merge base. In a DAG with criss-cross merges it
+/// need not be: the strict definition is a common ancestor with no *other*
+/// common ancestor reachable from it, and several such maxima can exist, which is
+/// why git computes a set and merges them recursively. Nearest-common-ancestor
+/// picks one common ancestor that is always *a* valid base — the merge is
+/// correct, it may just present more of the history as contested than the ideal
+/// base would.
+///
+/// Stated rather than assumed: an approximation someone knows about is fine, one
+/// they discover from a strange merge is not.
 fn lowest_common_ancestor(
     conn: &rusqlite::Connection,
     current: &str,
     target: &str,
 ) -> Option<String> {
-    conn.query_row(
-        "WITH RECURSIVE
-         anc_cur(hash, parent_hash, depth) AS (
-             SELECT hash, parent_hash, 0 FROM snapshots WHERE hash = ?1
-             UNION ALL
-             SELECT s.hash, s.parent_hash, a.depth + 1
-             FROM snapshots s JOIN anc_cur a ON s.hash = a.parent_hash
-             WHERE a.depth < 10000
-         ),
-         anc_tgt(hash, parent_hash) AS (
-             SELECT hash, parent_hash FROM snapshots WHERE hash = ?2
-             UNION ALL
-             SELECT s.hash, s.parent_hash
-             FROM snapshots s JOIN anc_tgt a ON s.hash = a.parent_hash
-         )
-         SELECT ac.hash
-         FROM anc_cur ac JOIN anc_tgt at ON ac.hash = at.hash
-         ORDER BY ac.depth ASC
-         LIMIT 1",
-        params![current, target],
-        |r| r.get::<_, String>(0),
-    )
-    .ok()
+    let ours = crate::commands::ancestors(conn, current).ok()?;
+    let theirs = crate::commands::ancestors(conn, target).ok()?;
+
+    ours.iter()
+        .filter(|(hash, _)| theirs.contains_key(*hash))
+        .min_by(|(a_hash, a_depth), (b_hash, b_depth)| {
+            a_depth.cmp(b_depth).then_with(|| a_hash.cmp(b_hash))
+        })
+        .map(|(hash, _)| hash.clone())
 }
 
 // ─── Loaders ──────────────────────────────────────────────────────────────────
