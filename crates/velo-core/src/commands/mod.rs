@@ -409,12 +409,23 @@ struct WalkEntry {
     mode: i64,
 }
 
-/// Build a `WalkBuilder` with the standard ignore rules applied.
-fn make_walker(root: &Path) -> WalkBuilder {
+/// Build a `WalkBuilder` with the standard ignore rules applied, plus whatever
+/// the handle's [`Scope`](crate::Scope) adds on top.
+///
+/// The user's `.veloignore` and `.gitignore` always apply; a scope narrows
+/// further and never widens, so an application cannot quietly start tracking
+/// something the user excluded.
+fn make_walker(root: &Path, scope: &crate::Scope) -> WalkBuilder {
     let mut b = WalkBuilder::new(root);
     b.hidden(false)
         .add_custom_ignore_filename(".veloignore")
         .add_custom_ignore_filename(".gitignore");
+    // Exclusions only. A restriction is applied to the results instead — see
+    // `Scope::restriction` for why handing it to the walker would let an
+    // application override the user's own `.veloignore`.
+    if let Ok(Some(overrides)) = scope.exclusions(root) {
+        b.overrides(overrides);
+    }
     b.filter_entry(|e| {
         let n = e.file_name().to_str().unwrap_or("");
         n != ".velo" && n != ".git" && n != "target"
@@ -423,13 +434,16 @@ fn make_walker(root: &Path) -> WalkBuilder {
 }
 
 /// Return all tracked paths (regular files and symlinks) under `root`.
-pub(crate) fn get_tracked_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn get_tracked_files(root: &Path, scope: &crate::Scope) -> Vec<PathBuf> {
+    let restriction = scope.restriction(root).ok().flatten();
     let acc: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
-    make_walker(root).build_parallel().run(|| {
+    make_walker(root, scope).build_parallel().run(|| {
         Box::new(|res| {
             if let Ok(e) = res {
                 if let Ok(meta) = fs::symlink_metadata(e.path()) {
-                    if meta.is_file() || meta.file_type().is_symlink() {
+                    if (meta.is_file() || meta.file_type().is_symlink())
+                        && crate::scope::permitted(restriction.as_ref(), e.path())
+                    {
                         acc.lock().push(e.into_path());
                     }
                 }
@@ -443,12 +457,16 @@ pub(crate) fn get_tracked_files(root: &Path) -> Vec<PathBuf> {
 /// Parallel walk collecting each entry's path, lstat metadata, and mode.
 /// Uses `symlink_metadata` so symlinks are recorded as symlinks (mode 2) rather
 /// than being followed to their target.
-fn walk_with_meta(root: &Path) -> Vec<WalkEntry> {
+fn walk_with_meta(root: &Path, scope: &crate::Scope) -> Vec<WalkEntry> {
+    let restriction = scope.restriction(root).ok().flatten();
     let acc: Mutex<Vec<WalkEntry>> = Mutex::new(Vec::new());
-    make_walker(root).build_parallel().run(|| {
+    make_walker(root, scope).build_parallel().run(|| {
         Box::new(|res| {
             if let Ok(entry) = res {
                 let path = entry.into_path();
+                if !crate::scope::permitted(restriction.as_ref(), &path) {
+                    return WalkState::Continue;
+                }
                 if let Ok(meta) = fs::symlink_metadata(&path) {
                     let is_symlink = meta.file_type().is_symlink();
                     if meta.is_file() || is_symlink {
@@ -540,7 +558,7 @@ pub fn get_dirty_files(repo: &Repo) -> HashMap<String, FileStatus> {
         .unwrap_or_default();
 
     // ── 3. Parallel walk ──────────────────────────────────────────────────────
-    let entries = walk_with_meta(root);
+    let entries = walk_with_meta(root, repo.scope());
 
     // ── 4. Parallel hash (cache-aware) ────────────────────────────────────────
     // Returns (rel_path, current_hash, mtime_ns, size, was_cache_miss)

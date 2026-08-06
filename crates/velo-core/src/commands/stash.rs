@@ -204,7 +204,7 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
 
     let restored_to = if parent_hash.is_empty() {
         // Nothing to restore to: just clear what was tracked.
-        for path in get_tracked_files(root) {
+        for path in get_tracked_files(root, guard.repo().scope()) {
             let _ = fs::remove_file(&path);
         }
         None

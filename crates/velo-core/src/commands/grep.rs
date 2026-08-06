@@ -108,7 +108,7 @@ pub fn run(repo: &Repo, pattern: &str, options: Options<'_>) -> Result<GrepResul
         }
         None => (
             None,
-            grep_working_tree(repo.root(), &re, names_only, context),
+            grep_working_tree(repo.root(), repo.scope(), &re, names_only, context),
         ),
     };
 
@@ -123,12 +123,13 @@ pub fn run(repo: &Repo, pattern: &str, options: Options<'_>) -> Result<GrepResul
 
 fn grep_working_tree(
     root: &Path,
+    scope: &crate::Scope,
     re: &regex::Regex,
     names_only: bool,
     context: usize,
 ) -> Vec<FileMatches> {
     let mut out = Vec::new();
-    for entry in crate::commands::walk_with_meta(root) {
+    for entry in crate::commands::walk_with_meta(root, scope) {
         let rel = db::normalise(entry.path.strip_prefix(root).unwrap().to_str().unwrap());
         // Unreadable as text means binary; nothing to search.
         let Ok(content) = std::fs::read_to_string(&entry.path) else {

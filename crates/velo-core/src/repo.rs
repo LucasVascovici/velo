@@ -26,6 +26,9 @@ pub struct Repo {
     /// Where long operations report progress. `Silent` unless a caller supplies
     /// one via [`Repo::observing`].
     observer: Box<dyn Observer>,
+    /// Which paths count as the working tree. Everything, unless narrowed via
+    /// [`Repo::scoped`].
+    scope: crate::Scope,
 }
 
 impl std::fmt::Debug for Repo {
@@ -83,6 +86,7 @@ impl Repo {
             root: root.to_path_buf(),
             conn,
             observer: Box::new(Silent),
+            scope: crate::Scope::new(),
         })
     }
 
@@ -119,6 +123,7 @@ impl Repo {
             root: root.to_path_buf(),
             conn,
             observer: Box::new(Silent),
+            scope: crate::Scope::new(),
         })
     }
 
@@ -163,6 +168,34 @@ impl Repo {
     /// The handle's observer, used when a per-call one is not supplied.
     pub(crate) fn observer(&self) -> &dyn Observer {
         &*self.observer
+    }
+
+    /// Narrow what this handle treats as the working tree.
+    ///
+    /// Unlike an observer — which belongs to *one operation*, and is passed per
+    /// call for that reason — a scope describes what the repository *contains* as
+    /// far as this application is concerned. That does not change between
+    /// operations, so it belongs to the handle.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// use velo_core::{Repo, Scope};
+    ///
+    /// // Keep an application's own cache out of the user's history without
+    /// // writing `.veloignore` into their folder.
+    /// let repo = Repo::discover(std::path::Path::new("."))?
+    ///     .scoped(Scope::new().ignore(".myapp-cache/**")?);
+    /// # let _ = repo;
+    /// # Ok(()) }
+    /// ```
+    pub fn scoped(mut self, scope: crate::Scope) -> Self {
+        self.scope = scope;
+        self
+    }
+
+    /// The handle's scope, for the directory walk.
+    pub(crate) fn scope(&self) -> &crate::Scope {
+        &self.scope
     }
 
     /// The repository root (the directory *containing* `.velo`).
