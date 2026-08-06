@@ -24,6 +24,7 @@
 //! let first = guard.save_tree(SaveTree {
 //!     branch: &branch,
 //!     parent: None,
+//! merge_parent: None,
 //!     message: "publish 1.0",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() {}\n".to_vec())],
 //!     meta,
@@ -34,6 +35,7 @@
 //! let _second = guard.save_tree(SaveTree {
 //!     branch: &branch,
 //!     parent: Some(&first),
+//! merge_parent: None,
 //!     message: "publish 1.1",
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() -> u8 { 1 }\n".to_vec())],
 //!     meta: SnapshotMeta::new(),
@@ -204,6 +206,13 @@ pub struct SaveTree<'a> {
     pub branch: &'a BranchName,
     /// The snapshot this one follows, or `None` to start a history.
     pub parent: Option<&'a SnapshotId>,
+    /// The second parent, when this snapshot is a merge.
+    ///
+    /// Recording it matters beyond drawing the graph: merge-base computation
+    /// walks both parents, so a merge saved as a linear snapshot hands the *next*
+    /// merge an ancestor that is too old, and conflicts the author already
+    /// resolved are presented again.
+    pub merge_parent: Option<&'a SnapshotId>,
     pub message: &'a str,
     /// The complete contents of the snapshot — this is a whole tree, not a diff.
     pub entries: Vec<TreeEntry>,
@@ -237,7 +246,9 @@ impl WriteGuard<'_> {
     /// snapshot id.
     pub fn save_tree(&self, spec: SaveTree<'_>) -> Result<SnapshotId> {
         // No empty-branch check: `BranchName` cannot be empty by construction.
-        if let Some(parent) = spec.parent {
+        // Both parents are checked: naming one that does not exist would create
+        // dangling history that only `fsck` would find later.
+        for parent in [spec.parent, spec.merge_parent].into_iter().flatten() {
             let known: bool = self
                 .conn()
                 .query_row(
@@ -300,11 +311,12 @@ impl WriteGuard<'_> {
         }
 
         let parent = spec.parent.map_or("", |p| p.as_str());
+        let merge_parent = spec.merge_parent.map_or("", |p| p.as_str());
         let timestamp_ms = crate::commands::snapshot_timestamp_ms();
         let snapshot = SnapshotId::from_stored(crate::commands::snapshot_id(SnapshotIdentity {
             tree: &tree,
             parent,
-            merge_parent: "",
+            merge_parent,
             message: spec.message,
             timestamp_ms,
             meta: &spec.meta,
@@ -336,8 +348,15 @@ impl WriteGuard<'_> {
         if !already {
             tx.execute(
                 "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
-                 VALUES (?, ?, ?, ?, '', ?)",
-                params![snapshot, spec.message, spec.branch, parent, timestamp_ms],
+                 VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    snapshot,
+                    spec.message,
+                    spec.branch,
+                    parent,
+                    merge_parent,
+                    timestamp_ms
+                ],
             )?;
             {
                 // Metadata is hashed into the id above, so it has to be stored in

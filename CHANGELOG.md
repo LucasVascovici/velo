@@ -8,6 +8,24 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ## Unreleased
 
+### Fixed
+
+- **`velo history --file` now means what it says.** It matched whether a path
+  *existed* in a snapshot, and a velo tree is the complete file set — so it
+  listed every snapshot since the file was created. It now compares the path
+  against the parent, so additions, deletions, edits and mode changes count and
+  nothing else does. A directory matches everything beneath it, which the help
+  has always advertised and which previously matched nothing at all. With a
+  filter set, `--limit` counts matches rather than candidates.
+
+### Added
+
+- **`SaveTree.merge_parent`** — a snapshot recorded through the embedder API can
+  be a merge. The column, the id recipe and `history::Entry::is_merge` already
+  supported a second parent; only the write path did not, so an embedder's merges
+  were stored as linear history. Beyond the graph, that left the next merge
+  computing its base from too old an ancestor and re-raising resolved conflicts.
+
 ### Changed — breaking (API only; the repository format is untouched)
 
 - **`history::run` takes an `Options` struct.** It was five positional arguments,

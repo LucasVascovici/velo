@@ -153,6 +153,7 @@ impl Registry {
         let id = guard.save_tree(SaveTree {
             branch: &self.branch,
             parent: parent.as_ref(),
+            merge_parent: None,
             message: &format!("publish {}", name),
             entries: entries.into_values().collect(),
             meta,

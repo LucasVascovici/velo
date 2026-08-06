@@ -178,16 +178,32 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
         });
     }
 
+    // With a path filter the limit has to be applied *after* filtering, so the
+    // query runs unbounded and the truncation happens below. Asking for the
+    // newest 20 and then filtering returns whichever of those 20 happened to
+    // match — not the newest 20 matches, which is what was asked for.
+    let query_limit = if file_filter.is_some() { -1 } else { limit };
+
     let mut entries = match &scope {
-        Scope::CurrentBranch { .. } => ancestry_of(conn, &position, limit)?,
-        Scope::NamedBranch { name } => on_branch(conn, Some(name.as_str()), limit)?,
-        Scope::All => on_branch(conn, None, limit)?,
+        Scope::CurrentBranch { .. } => ancestry_of(conn, &position, query_limit)?,
+        Scope::NamedBranch { name } => on_branch(conn, Some(name.as_str()), query_limit)?,
+        Scope::All => on_branch(conn, None, query_limit)?,
     };
 
     let mut empty = None;
     if let Some(file) = file_filter {
         let normalised = db::normalise(file);
-        entries.retain(|e| touched(conn, &e.hash, &normalised));
+        entries.retain(|e| {
+            changed_under(
+                conn,
+                e.hash.as_str(),
+                e.parent.as_deref().unwrap_or(""),
+                &normalised,
+            )
+        });
+        if limit >= 0 {
+            entries.truncate(limit as usize);
+        }
         if entries.is_empty() {
             empty = Some(EmptyReason::NoSnapshotsTouching {
                 file: file.to_string(),
@@ -279,10 +295,61 @@ fn on_branch(conn: &rusqlite::Connection, branch: Option<&str>, limit: i64) -> R
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
-fn touched(conn: &rusqlite::Connection, snapshot: &str, path: &str) -> bool {
+/// Whether `snapshot` **changed** anything at or under `path`, against `parent`.
+///
+/// The obvious query — does this snapshot's tree contain the path — is wrong. A
+/// velo tree is the *complete* file set, so presence is true for every snapshot
+/// since the file was created, and `velo history --file README.md` listed the
+/// whole history of any repository where README existed.
+///
+/// Change means the `(path, hash, mode)` rows under the filter differ from the
+/// parent's, in either direction: added, deleted, edited, or a mode flip such as
+/// gaining the executable bit. The comparison runs both ways because a deletion
+/// only appears in the parent.
+///
+/// `path` matches a file exactly, or a directory by prefix — the CLI has always
+/// advertised "file or directory", and a directory previously matched nothing at
+/// all.
+fn changed_under(conn: &rusqlite::Connection, snapshot: &str, parent: &str, path: &str) -> bool {
+    // `_` and `%` are LIKE wildcards and are legal in filenames.
+    let prefix = format!(
+        "{}/%",
+        path.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+
+    // A root snapshot has no parent to differ from, so anything present in it is
+    // newly added.
+    if parent.is_empty() {
+        return conn
+            .query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM file_map
+                      WHERE snapshot_hash = ?1
+                        AND (path = ?2 OR path LIKE ?3 ESCAPE '\\')
+                 )",
+                params![snapshot, path, prefix],
+                |r| r.get::<_, bool>(0),
+            )
+            .unwrap_or(false);
+    }
+
     conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ? AND path = ?)",
-        params![snapshot, path],
+        "SELECT EXISTS(
+             SELECT path, hash, mode FROM file_map
+              WHERE snapshot_hash = ?1 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
+             EXCEPT
+             SELECT path, hash, mode FROM file_map
+              WHERE snapshot_hash = ?2 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
+         ) OR EXISTS(
+             SELECT path, hash, mode FROM file_map
+              WHERE snapshot_hash = ?2 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
+             EXCEPT
+             SELECT path, hash, mode FROM file_map
+              WHERE snapshot_hash = ?1 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
+         )",
+        params![snapshot, parent, path, prefix],
         |r| r.get::<_, bool>(0),
     )
     .unwrap_or(false)
