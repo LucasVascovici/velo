@@ -1261,6 +1261,185 @@ relied on them. Recorded so a future pass does not "improve" them:
   it, which is how an embedder gets an end-to-end check on its own use of the
   format for free.
 
+---
+
+# Velum punch list — Phases 10 to 12
+
+Velum's second round, after `4d5871b`. Every item was re-verified against the
+source, and the one called a blocker was **reproduced** rather than inferred —
+twice, once through the API and once on the command line.
+
+**Nothing here touches the format.** Every item is an API addition or a query
+fix, so no repository needs migrating whenever any of it lands.
+
+## What the audit changed about the priority
+
+Velum's list is accurate on every point. One thing it raised as a suspicion turns
+out to be true and makes item 1 more urgent than "an embedder blocker":
+
+> *"`merge::run` and `merge::plan` both call `merge_base`, so `velo merge`
+> between the same pair of branches should have the same amnesia. Worth
+> reproducing on the command line."*
+
+Reproduced. `do_merge` calls `lowest_common_ancestor` directly
+(`merge.rs:260`), so the CLI shares the defect exactly:
+
+```
+$ velo merge side          # conflict on line 2, resolved to RESOLVED, saved
+$ velo switch side; …      # side changes only line 3
+$ velo merge side          # line 2 conflicts again
+  [Conflict] f.txt
+```
+
+The side branch changed line 3. Line 2 had been settled. It comes back, because
+the base is the shared root rather than the tip the first merge absorbed. **This
+is a correctness bug in velo's headline feature for every user who merges the
+same branch twice**, not only for embedders.
+
+`merge_base_follows_the_second_parent` in `crates/velo-core/src/tests.rs` is
+`#[ignore]`d against this and asserts the correct answer, so it flips to passing
+when 10.1 lands:
+
+```bash
+cargo test -p velo-core --lib -- --ignored merge_base_follows
+```
+
+---
+
+## Phase 10 — Ancestry 🔴 **Required**
+
+Items 1 and 2 of the punch list, together, because **they want the same recursive
+CTE**. A walk that follows both parents is what merge-base needs and what an
+ancestry-scoped history needs; writing it twice would be the mistake.
+
+### 10.1 `merge_base` must follow `merge_parent`
+
+`lowest_common_ancestor` joins `s.hash = a.parent_hash` in both branches of both
+CTEs. `merge_parent` is stored, drawn, reported and verified by `fsck` — and
+never read by the code that consumes ancestry.
+
+Three things the fix has to get right, all three correctly identified by Velum:
+
+1. **Recurse through both parents.** `merge_parent` is `TEXT NOT NULL DEFAULT ''`,
+   so the join must exclude the empty string rather than treat it as a hash.
+2. **Guard the walk.** Two parents means nodes are revisited, so `UNION ALL` can
+   blow up on a merge-heavy history. Use `UNION`, or a visited set. Note `anc_tgt`
+   has **no depth guard at all** today — safe for a single-parent chain, not once
+   it branches.
+3. **"Lowest" is not "minimum depth" in a DAG.** `ORDER BY ac.depth ASC LIMIT 1`
+   is right for a tree. With criss-cross merges the true merge base is a common
+   ancestor with no *other* common ancestor reachable from it. Either compute
+   that, or state the approximation in a comment — an approximation that is
+   documented is fine; one that is assumed exact is a bug waiting for a history
+   that criss-crosses.
+
+Both callers benefit at once: `merge::plan` (Velum's path) and `do_merge` (the
+CLI's).
+
+### 10.2 `history` needs an ancestry scope
+
+`Options` offers *recorded on a branch* or *everything*. The third scope — the
+ancestry of a given snapshot — is what a timeline needs, and the walk already
+exists as `Scope::CurrentBranch`, reachable only via `.velo/PARENT`, which
+`save_tree` deliberately never sets.
+
+```rust
+pub struct Options<'a> {
+    /// Ancestry of this snapshot, following both parents through merges.
+    /// Mutually exclusive with `branch` and `all`.
+    pub from: Option<&'a SnapshotId>,
+}
+```
+
+Velum's symptom is a draft timeline that stops dead at the branch point, because
+shared history carries `branch = "main"` and is filtered out. The workaround is
+two queries plus a hand-rolled graph walk plus an intersection plus manual
+truncation — and it puts the limit-after-filtering problem back into application
+code, which is exactly what `paths` just took out of it.
+
+Do this *with* 10.1, sharing the walk.
+
+---
+
+## Phase 11 — Finish the passes that stopped early 🟡 **Recommended**
+
+Three items, each one a place where a pass was applied to some commands and not
+others. None blocks Velum; each is a visible gap at a known Velum phase.
+
+### 11.1 `blame` was missed by the typed-ids pass, and has nowhere for an author
+
+```rust
+pub struct LineOrigin {
+    pub hash: String,          // → SnapshotId
+    pub created_at: DateTime<Utc>,
+    pub message: String,
+    pub author: Option<Author>,   // ← new
+}
+```
+
+`Blame.path: String` → `PathBuf`, `Blame.snapshot: String` → `SnapshotId`.
+
+The author matters more than the typing here: Velum stores documents one sentence
+per line *specifically* so per-line blame becomes per-sentence provenance, and the
+gutter's question is literally "who wrote this sentence". A consumer can answer it
+with a `snapshot_meta` lookup per distinct snapshot — but blame already walks that
+history, and every consumer will otherwise write the same dedup.
+
+### 11.2 `gc` needs options
+
+`run(guard, keep_days)` — no observer override, no cancel, while `restore` and
+`save` got both. `Phase::Collecting` already reports through the handle observer,
+so a GUI cannot tell one operation's progress from another's, and cannot stop the
+longest local operation velo has.
+
+Cancelling is safe to define exactly as `restore` does: objects already collected
+stay collected, which is an earlier stopping point rather than a broken state.
+
+### 11.3 Sync needs cancellation, and `clone` needs a `&Path`
+
+```rust
+pub fn clone(
+    url: &str,
+    dir: Option<&str>,                    // → Option<&Path>, per 8.3
+    spawn: &transport::Spawn,
+    observer: Option<Box<dyn Observer>>,  // per-call already
+) -> Result<Cloned>                       // and no Cancel
+```
+
+`clone` is the longest operation velo has — a whole history over a network — and
+the only one that cannot be stopped. `fetch`, `push` and `pull` report through
+`guard.phase(…)`, so they inherit the handle observer and take no `Cancel`
+either.
+
+With 11.2 and 11.3, [7.6](#76-per-call-progress-and-cancellation--restore-done) is
+finally complete for all four commands it named.
+
+---
+
+## Phase 12 — crates.io 🟢
+
+Unchanged from [Phase 9](#phase-9--ecosystem-), with the ordering now explicit:
+**after Phases 10 and 11**. Those are most of what would otherwise force a
+breaking release immediately after publishing, and 8.5 already shrank the surface
+that publishing freezes.
+
+Velum pins `rev = "4d5871b"`, which needs `cargo deny`'s `allow-git` and blocks a
+release whose dependencies all resolve from a registry.
+
+---
+
+## Deliberately not doing
+
+From Velum's own "what Velum does not need", plus the reasoning already recorded
+elsewhere in this plan:
+
+| Not doing | Why |
+| :--- | :--- |
+| Folding `merge::run` onto `merge::plan` | Good hygiene — one classification rather than two — but zero consumer impact, and 10.1 fixes the shared defect anyway |
+| A git→velo importer | `timestamp_ms` made it possible; nothing needs it |
+| Removing `Repo::observing` | Once 11.2 and 11.3 land, a handle-level default is a reasonable fallback rather than the global the anti-goal warned about |
+| Per-call progress on `status` / `history` | Both are inside a GUI's latency budget already |
+
 ## Anti-goals
 
 ⛔ **Don't async-ify core.** SQLite is synchronous. Guarantee `Repo: Send` so
@@ -1312,6 +1491,9 @@ regresses within a month.
 | **7** | Embedder API: caller-supplied timestamps, branch refs, merge-base, snapshot-by-id, side-effect-free merge plan, per-call progress + cancellation, head token | 🔴/🟡 |
 | **8** | Finish the typed-ref and options-struct passes; shrink the public surface; document which half owns the working tree | 🟡 |
 | **9** | crates.io, git importer, testkit | 🟢 |
+| **10** | Ancestry: `merge_base` must follow `merge_parent` (a live `velo merge` bug), and `history` needs an ancestry scope — one walk serves both | 🔴 |
+| **11** | Finish the passes that stopped early: `blame` types + author, `gc` options, sync cancellation | 🟡 |
+| **12** | crates.io, after 10 and 11 | 🟢 |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected
 (no `anyhow`; coupling is 3 files not pervasive; merge engine already pure;

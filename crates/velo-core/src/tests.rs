@@ -9352,6 +9352,69 @@ line three CHANGED
         assert!(dirty.keys().any(|p| p.contains("fine.txt")));
     }
 
+    /// Merge-base must follow the second parent.
+    ///
+    /// ```text
+    /// B ── ours1 ── M1 (merge_parent = theirs1)
+    ///  ╲
+    ///   ╰─ theirs1 ── theirs2
+    /// ```
+    ///
+    /// `merge_base(M1, theirs2)` is `theirs1`: M1 absorbed it, so everything up
+    /// to it is already reconciled. Answering `B` means the *next* merge diffs
+    /// against a baseline predating work that was already merged, and re-raises
+    /// every conflict the author settled the first time.
+    #[test]
+    #[ignore = "known defect: lowest_common_ancestor walks parent_hash only, so a                 merge's absorbed tip is invisible to the next merge. Phase 10.1."]
+    fn merge_base_follows_the_second_parent() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+
+        let make = |guard: &crate::WriteGuard,
+                    branch: &BranchName,
+                    parent: Option<&SnapshotId>,
+                    merge_parent: Option<&SnapshotId>,
+                    body: &str,
+                    msg: &str| {
+            guard
+                .save_tree(SaveTree {
+                    branch,
+                    parent,
+                    merge_parent,
+                    message: msg,
+                    entries: vec![TreeEntry::file("f.txt", body.as_bytes().to_vec())],
+                    meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
+                    author: None,
+                })
+                .unwrap()
+        };
+
+        let (main, side) = (branch_name("main"), branch_name("side"));
+        let guard = repo.write().unwrap();
+        let base = make(&guard, &main, None, None, "base", "B");
+        let ours1 = make(&guard, &main, Some(&base), None, "ours", "ours1");
+        let theirs1 = make(&guard, &side, Some(&base), None, "theirs", "theirs1");
+        let theirs2 = make(
+            &guard,
+            &side,
+            Some(&theirs1),
+            None,
+            "theirs more",
+            "theirs2",
+        );
+        let m1 = make(&guard, &main, Some(&ours1), Some(&theirs1), "merged", "M1");
+        drop(guard);
+
+        assert_eq!(
+            commands::merge::merge_base(&repo, &m1, &theirs2).unwrap(),
+            Some(theirs1),
+            "the base must be the tip M1 absorbed, not the shared root"
+        );
+        let _ = base;
+    }
+
     // ─── format v2 ────────────────────────────────────────────────────────────
 
     /// The break's central claim: metadata is part of a snapshot's identity.
