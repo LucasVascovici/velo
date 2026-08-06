@@ -942,7 +942,7 @@ already carries the message, timestamp, both parents, branch and tag, already
 typed. `show::run` stays the way to get the diff as well, since computing that is
 not free.
 
-### 7.5 `merge::run` is unusable by anything with an interface 🟡
+### 7.5 `merge::run` is unusable by anything with an interface ✅ **DONE**
 
 It requires a clean working tree, writes files to disk, and persists conflict
 state. An editor can use none of that: buffers are dirty by definition, and
@@ -955,8 +955,21 @@ first write the same tree-classification pass.
 pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<MergePlan>;
 ```
 
-`merge::run` then becomes `plan` plus the working-tree write, which is also a
-smaller thing to reason about.
+**Done** as `merge::plan(repo, ours, theirs) -> MergePlan`. It takes a `&Repo`,
+not a `&WriteGuard`, which is the API saying it cannot write.
+
+A conflict carries its three sides *by object*, so a caller can read and present
+them, and an auto-merge carries the merged content — deciding "auto-merged rather
+than conflicted" computes it, and throwing it away would make every caller redo
+the merge. `PlannedChange::action()` reports in the same vocabulary the
+working-tree merge uses.
+
+The test asserts the absence of side effects directly: file contents unchanged,
+the dirty set identical, no `MERGE_HEAD`, no active merge, `fsck` healthy.
+
+Folding `merge::run` into `plan` plus a working-tree write is the obvious
+follow-on and is left for [8.2](#82-positional-arguments-and-booleans-that-are-really-enums),
+where that signature is being reshaped anyway.
 
 ### 7.6 Per-call progress and cancellation 🟡
 
@@ -972,6 +985,17 @@ a GUI, "stop this" on a workspace-wide restore or a large clone is table stakes.
 
 Per-call options carrying an observer and a cancellation token on `restore`,
 `clone`, `gc` and large `save`. Keep `Repo::observing` as the convenience default.
+
+> **Deliberately sequenced with [8.2](#82-positional-arguments-and-booleans-that-are-really-enums),
+> not done here.** Both an observer and a cancellation token have to *reach* the
+> command, and there is no way to pass them per call without changing those
+> signatures — which is exactly what 8.2 does. `restore::run` has 42 call sites
+> and `save::run` 35; reshaping them twice, once to add progress and again to add
+> an options struct, is churn for no gain. When 8.2 introduces
+> `restore::Options`, `observer` and `cancel` are two more fields on it.
+>
+> This is the one Phase 7 item that is *not* additive, which is why it is the one
+> that waits.
 
 ### 7.7 `Repo::head_token` ✅ **DONE**
 

@@ -8132,6 +8132,158 @@ beta
         assert_ne!(after_tag, token(), "a new branch ref moves it");
     }
 
+    /// A merge can be planned without touching anything.
+    ///
+    /// `merge::run` needs a clean working tree, writes files and records conflict
+    /// state. An application with buffers and an undo stack can use none of that,
+    /// so the classification is available on its own.
+    #[test]
+    fn a_merge_can_be_planned_without_side_effects() {
+        use commands::merge::{self, PlannedChange};
+        let (_tmp, root) = setup();
+        write(
+            &root,
+            "shared.txt",
+            "line one
+line two
+line three
+",
+        );
+        write(&root, "ours-only.txt", "ours");
+        save(&root, "base");
+
+        with_write(&root, |vr| commands::switch::run(vr, "side", false)).unwrap();
+        // A clean auto-merge, a file only they add, and a file they delete.
+        write(
+            &root,
+            "shared.txt",
+            "line one CHANGED
+line two
+line three
+",
+        );
+        write(&root, "theirs-only.txt", "theirs");
+        std::fs::remove_file(root.join("ours-only.txt")).unwrap();
+        let theirs = SnapshotId::from_stored(save(&root, "their work"));
+
+        with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
+        write(
+            &root,
+            "shared.txt",
+            "line one
+line two
+line three CHANGED
+",
+        );
+        let ours = SnapshotId::from_stored(save(&root, "our work"));
+
+        // Snapshot the working tree so we can prove nothing moved.
+        let before: Vec<(String, String)> = ["shared.txt", "ours-only.txt"]
+            .iter()
+            .map(|p| (p.to_string(), read(&root, p)))
+            .collect();
+        let dirty_before = with_repo(&root, commands::get_dirty_files);
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let plan = merge::plan(&repo, &ours, &theirs).unwrap();
+
+        assert!(plan.base.is_some(), "the two share history");
+        assert!(plan.is_clean(), "non-overlapping edits do not conflict");
+
+        let by_path = |p: &str| {
+            plan.files
+                .iter()
+                .find(|f| f.path == p)
+                .map(|f| f.change.clone())
+        };
+        assert!(
+            matches!(by_path("shared.txt"), Some(PlannedChange::AutoMerge { .. })),
+            "got {:?}",
+            by_path("shared.txt")
+        );
+        assert!(matches!(
+            by_path("theirs-only.txt"),
+            Some(PlannedChange::Take { is_new: true, .. })
+        ));
+        assert!(matches!(
+            by_path("ours-only.txt"),
+            Some(PlannedChange::Delete)
+        ));
+
+        // The auto-merged content is handed over, not recomputed by the caller.
+        if let Some(PlannedChange::AutoMerge { content, .. }) = by_path("shared.txt") {
+            let merged = String::from_utf8(content).unwrap();
+            assert!(merged.contains("line one CHANGED"));
+            assert!(merged.contains("line three CHANGED"));
+        }
+
+        // Nothing was written, nothing was staged, no merge is in progress.
+        for (path, contents) in before {
+            assert_eq!(read(&root, &path), contents, "{} must be untouched", path);
+        }
+        assert_eq!(with_repo(&root, commands::get_dirty_files), dirty_before);
+        assert!(!root.join(".velo/MERGE_HEAD").exists());
+        assert!(!with_repo(&root, commands::resolve::merge_active));
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    /// A conflict is reported with its three sides, so a caller can show them.
+    #[test]
+    fn a_planned_conflict_carries_its_sides() {
+        use commands::merge::{self, PlannedChange};
+        let (_tmp, root) = setup();
+        write(
+            &root, "f.txt", "base
+",
+        );
+        save(&root, "base");
+
+        with_write(&root, |vr| commands::switch::run(vr, "side", false)).unwrap();
+        write(
+            &root, "f.txt", "theirs
+",
+        );
+        let theirs = SnapshotId::from_stored(save(&root, "theirs"));
+
+        with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
+        write(
+            &root, "f.txt", "ours
+",
+        );
+        let ours = SnapshotId::from_stored(save(&root, "ours"));
+
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let plan = merge::plan(&repo, &ours, &theirs).unwrap();
+        assert!(!plan.is_clean());
+        assert_eq!(plan.conflicts().count(), 1);
+
+        let conflict = plan.conflicts().next().unwrap();
+        assert_eq!(conflict.path, "f.txt");
+        match &conflict.change {
+            PlannedChange::Conflict { base, ours, theirs } => {
+                // Every side is an object the caller can read to show the user.
+                assert_eq!(
+                    repo.read_object(base.as_ref().unwrap()).unwrap(),
+                    b"base
+"
+                );
+                assert_eq!(
+                    repo.read_object(ours.as_ref().unwrap()).unwrap(),
+                    b"ours
+"
+                );
+                assert_eq!(
+                    repo.read_object(theirs.as_ref().unwrap()).unwrap(),
+                    b"theirs
+"
+                );
+            }
+            other => panic!("expected a conflict, got {:?}", other),
+        }
+    }
+
     // ─── format v2 ────────────────────────────────────────────────────────────
 
     /// The break's central claim: metadata is part of a snapshot's identity.
