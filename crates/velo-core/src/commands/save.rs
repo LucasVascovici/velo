@@ -9,7 +9,7 @@ use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
-use crate::{SnapshotId, SnapshotMeta, WriteGuard};
+use crate::{Author, SnapshotId, SnapshotMeta, WriteGuard};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SaveResult {
@@ -66,7 +66,7 @@ impl Outcome {
 /// Snapshot the working directory.
 /// When `amend = true`, the most recent snapshot on this branch is replaced.
 pub fn run(guard: &WriteGuard, message: &str, amend: bool) -> Result<Outcome> {
-    run_with_paths(guard, Some(message), amend, &[])
+    run_with_paths(guard, Some(message), amend, &[], None)
 }
 
 /// Same as `run` but only snapshots files that match at least one entry in `paths`.
@@ -80,6 +80,7 @@ pub fn run_with_paths(
     message: Option<&str>,
     amend: bool,
     paths: &[String],
+    author: Option<&Author>,
 ) -> Result<Outcome> {
     let root = guard.root();
     let provided = message.map(str::trim).filter(|m| !m.is_empty());
@@ -273,6 +274,13 @@ pub fn run_with_paths(
     tree.extend(hashed_files.iter().cloned());
 
     // ── Content-addressed snapshot id ─────────────────────────────────────────
+    // Authorship is the only metadata `velo save` records. A consumer that
+    // wants more builds the snapshot through `WriteGuard::save_tree`.
+    let mut snapshot_meta = SnapshotMeta::new();
+    if let Some(author) = author {
+        snapshot_meta.set_author(author);
+    }
+
     let timestamp_ms = crate::commands::snapshot_timestamp_ms();
     let snapshot_hash = crate::commands::snapshot_id(SnapshotIdentity {
         tree: &tree,
@@ -280,9 +288,7 @@ pub fn run_with_paths(
         merge_parent: merge_parent.as_str(),
         message,
         timestamp_ms,
-        // `velo save` attaches no metadata. A consumer that wants some builds the
-        // snapshot through `WriteGuard::save_tree` instead.
-        meta: &SnapshotMeta::new(),
+        meta: &snapshot_meta,
     });
     let snapshot_hash = snapshot_hash.as_str();
 
@@ -316,6 +322,19 @@ pub fn run_with_paths(
         )?;
         for (p, h, m) in &tree {
             ins.execute(params![snapshot_hash, p, h, m])?;
+        }
+    }
+    {
+        // The id above commits to this metadata, so it has to be stored in the
+        // same transaction — an id committing to rows the repository does not
+        // hold fails its own `fsck`. Empty until an author is supplied, which is
+        // why `save` had no reason to write here before.
+        let mut ins_meta = tx.prepare(
+            "INSERT INTO snapshot_meta (snapshot_id, namespace, key, value)
+             VALUES (?, ?, ?, ?)",
+        )?;
+        for (namespace, key, value) in snapshot_meta.iter() {
+            ins_meta.execute(params![snapshot_hash, namespace, key, value])?;
         }
     }
 

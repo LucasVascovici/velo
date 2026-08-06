@@ -77,7 +77,7 @@ mod tests;
 
 pub use error::{Error, Result};
 pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
-pub use meta::SnapshotMeta;
+pub use meta::{Author, SnapshotMeta};
 pub use repo::{Repo, WriteGuard};
 
 /// Re-exported so callers can match on merge outcomes without adding a second

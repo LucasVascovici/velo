@@ -2,6 +2,7 @@ use clap::{builder::styling, Parser, Subcommand};
 
 // All repository logic lives in `velo-core`; this crate is the presentation
 // layer — argument parsing, rendering, and exit codes.
+mod author;
 mod render;
 
 use velo_core::{commands, error, serve, BranchName, TagName};
@@ -1414,8 +1415,13 @@ fn run(cli: Cli) -> Result<()> {
             amend,
             paths,
         } => {
-            let outcome =
-                commands::save::run_with_paths(write(), message.as_deref(), amend, &paths)?;
+            let outcome = commands::save::run_with_paths(
+                write(),
+                message.as_deref(),
+                amend,
+                &paths,
+                author::from_env()?.as_ref(),
+            )?;
             let branch = std::fs::read_to_string(root.join(".velo/HEAD"))
                 .unwrap_or_default()
                 .trim()
