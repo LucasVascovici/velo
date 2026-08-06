@@ -19,6 +19,7 @@ use crate::db;
 use crate::error::{RefKind, Result, VeloError};
 use crate::storage;
 use crate::Repo;
+use crate::SnapshotId;
 
 /// The snapshot a line came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,14 +60,17 @@ impl Blame {
 }
 
 /// Blame `file` as it stands at `at` (defaulting to the current position).
-pub fn run(repo: &Repo, file: &str, at: Option<&str>) -> Result<Blame> {
+/// Attribute each line of `file` to the snapshot that last changed it.
+///
+/// `at` is where to start from, or `None` for the current position.
+pub fn run(repo: &Repo, file: &Path, at: Option<&SnapshotId>) -> Result<Blame> {
     let root = repo.root();
     let conn = repo.conn();
     let objects_dir = root.join(".velo/objects");
-    let rel = db::normalise(file);
+    let rel = db::normalise(&file.to_string_lossy());
 
     let start_hash = match at {
-        Some(t) => crate::commands::resolve_snapshot_id(repo, t)?.into_string(),
+        Some(id) => id.to_string(),
         None => std::fs::read_to_string(root.join(".velo/PARENT"))
             .unwrap_or_default()
             .trim()
@@ -89,7 +93,7 @@ pub fn run(repo: &Repo, file: &str, at: Option<&str>) -> Result<Blame> {
         .map_err(|_| {
             VeloError::invalid(format!(
                 "'{}' is not tracked in snapshot {}.",
-                file,
+                file.display(),
                 &start_hash[..8]
             ))
         })?;

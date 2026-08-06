@@ -98,6 +98,12 @@ mod tests {
         root.join(rel).exists()
     }
 
+    /// A stored hash as a typed id. Tests hold hashes as `String`, and the API
+    /// takes ids — this is the one place that bridges them.
+    fn sid(hash: impl AsRef<str>) -> SnapshotId {
+        SnapshotId::from_stored(hash.as_ref())
+    }
+
     /// A branch name from a literal. Panics on an invalid one, which in a test is
     /// what you want: it means the test itself is wrong.
     fn branch_name(name: &str) -> BranchName {
@@ -5468,7 +5474,7 @@ beta
         write(&root, "f.txt", "v2");
         save(&root, "s2");
 
-        let d = with_repo(&root, |vr| commands::show::run(vr, &h1, &None)).unwrap();
+        let d = with_repo(&root, |vr| commands::show::run(vr, &sid(&h1), &[])).unwrap();
         assert_eq!(d.hash, h1);
         assert_eq!(d.message, "s1");
         assert_eq!(d.branch, "main");
@@ -5486,7 +5492,7 @@ beta
         let h1 = save(&root, "s1");
 
         let d = with_repo(&root, |vr| {
-            commands::show::run(vr, &h1, &Some("a.txt".into()))
+            commands::show::run(vr, &sid(h1), &[Path::new("a.txt")])
         })
         .unwrap();
         let paths: Vec<&str> = d.diff.files.iter().map(|f| f.path.as_str()).collect();
@@ -5501,7 +5507,7 @@ beta
         let h1 = save(&root, "s1");
 
         let d = with_repo(&root, |vr| {
-            commands::show::run(vr, &h1, &Some("f.txt".into()))
+            commands::show::run(vr, &sid(h1), &[Path::new("f.txt")])
         })
         .unwrap();
         assert!(d.parent.is_none(), "the root snapshot has no parent");
@@ -5521,7 +5527,7 @@ beta
         let h2 = save(&root, "s2");
 
         let d = with_repo(&root, |vr| {
-            commands::show::run(vr, &h2, &Some("f.txt".into()))
+            commands::show::run(vr, &sid(h2), &[Path::new("f.txt")])
         })
         .unwrap();
         assert_eq!(d.parent.as_deref(), Some(h1.as_str()));
@@ -5542,7 +5548,7 @@ beta
         let h2 = save(&root, "s2");
 
         let d = with_repo(&root, |vr| {
-            commands::show::run(vr, &h2, &Some("gone.txt".into()))
+            commands::show::run(vr, &sid(h2), &[Path::new("gone.txt")])
         })
         .unwrap();
         assert_eq!(d.diff.files.len(), 1);
@@ -5554,7 +5560,12 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        assert!(with_repo(&root, |vr| commands::show::run(vr, "deadbeef1234", &None)).is_err());
+        assert!(with_repo(&root, |vr| commands::show::run(
+            vr,
+            &SnapshotId::from_stored("deadbeef1234"),
+            &[]
+        ))
+        .is_err());
     }
 
     #[test]
@@ -5566,7 +5577,10 @@ beta
             commands::tag::create(vr, &tag_name("release"), None, false)
         })
         .unwrap();
-        let d = with_repo(&root, |vr| commands::show::run(vr, "release", &None)).unwrap();
+        let d = with_repo(&root, |vr| {
+            commands::show::run(vr, &commands::resolve_snapshot_id(vr, "release")?, &[])
+        })
+        .unwrap();
         assert_eq!(d.hash, h1, "the tag must resolve to the snapshot it names");
     }
 
@@ -6034,7 +6048,10 @@ beta
         let h2 = save(&root, "second");
 
         // blame should not panic and should succeed
-        with_repo(&root, |vr| commands::blame::run(vr, "app.py", None)).unwrap();
+        with_repo(&root, |vr| {
+            commands::blame::run(vr, Path::new("app.py"), None)
+        })
+        .unwrap();
         // line 2 ("line two") was introduced in h2
         // line 1 ("line one") was introduced in h1
         // We verify by checking the snapshots exist
@@ -6046,7 +6063,9 @@ beta
         let (_tmp, root) = setup();
         write(&root, "app.py", "hello\n");
         save(&root, "s1");
-        let r = with_repo(&root, |vr| commands::blame::run(vr, "missing.py", None));
+        let r = with_repo(&root, |vr| {
+            commands::blame::run(vr, Path::new("missing.py"), None)
+        });
         assert!(r.is_err());
     }
 
@@ -6058,7 +6077,10 @@ beta
         write(&root, "f.txt", "v2\n");
         save(&root, "v2");
         // blame at h1 should work on the file as it was then
-        with_repo(&root, |vr| commands::blame::run(vr, "f.txt", Some(&h1))).unwrap();
+        with_repo(&root, |vr| {
+            commands::blame::run(vr, Path::new("f.txt"), Some(&sid(h1)))
+        })
+        .unwrap();
     }
 
     // ─── grep ─────────────────────────────────────────────────────────────────
@@ -6070,7 +6092,14 @@ beta
         save(&root, "init");
         // Should succeed (no panic) even with no match
         with_repo(&root, |vr| {
-            commands::grep::run(vr, "hello", None, false, false, 2)
+            commands::grep::run(
+                vr,
+                "hello",
+                commands::grep::Options {
+                    context: 2,
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
     }
@@ -6081,7 +6110,13 @@ beta
         write(&root, "main.py", "def hello():\n    pass\n");
         save(&root, "init");
         with_repo(&root, |vr| {
-            commands::grep::run(vr, "XYZNOTFOUND", None, false, false, 0)
+            commands::grep::run(
+                vr,
+                "XYZNOTFOUND",
+                commands::grep::Options {
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
     }
@@ -6095,7 +6130,14 @@ beta
         save(&root, "rotate key");
         // Search the old snapshot — should find 'secret'
         with_repo(&root, |vr| {
-            commands::grep::run(vr, "secret", Some(&h), false, false, 0)
+            commands::grep::run(
+                vr,
+                "secret",
+                commands::grep::Options {
+                    snapshot: Some(&sid(h)),
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
     }
@@ -6106,7 +6148,13 @@ beta
         write(&root, "f.txt", "hello\n");
         save(&root, "s1");
         let r = with_repo(&root, |vr| {
-            commands::grep::run(vr, "[invalid(", None, false, false, 0)
+            commands::grep::run(
+                vr,
+                "[invalid(",
+                commands::grep::Options {
+                    ..Default::default()
+                },
+            )
         });
         assert!(r.is_err());
     }
@@ -6117,7 +6165,14 @@ beta
         write(&root, "f.txt", "Hello World\n");
         save(&root, "s1");
         with_repo(&root, |vr| {
-            commands::grep::run(vr, "hello", None, true, false, 0)
+            commands::grep::run(
+                vr,
+                "hello",
+                commands::grep::Options {
+                    case_insensitive: true,
+                    ..Default::default()
+                },
+            )
         })
         .unwrap();
     }
@@ -6591,11 +6646,14 @@ beta
         let bd = TempDir::new().unwrap();
         let bundle = bd.path().join("out.velo");
         let bundle = bundle.to_str().unwrap();
-        with_repo(&a, |vr| commands::bundle::create(vr, bundle, None)).unwrap();
+        with_repo(&a, |vr| {
+            commands::bundle::create(vr, Path::new(bundle), None)
+        })
+        .unwrap();
 
         // Apply into a fresh repo.
         let (_tb, b) = setup();
-        with_write(&b, |vr| commands::bundle::apply(vr, bundle)).unwrap();
+        with_write(&b, |vr| commands::bundle::apply(vr, Path::new(bundle))).unwrap();
 
         // Content-addressed: the imported snapshot has the *same* hash as in A.
         assert!(
@@ -6618,7 +6676,7 @@ beta
             "receiver must pass fsck"
         );
         // Re-applying is a no-op (idempotent).
-        with_write(&b, |vr| commands::bundle::apply(vr, bundle)).unwrap();
+        with_write(&b, |vr| commands::bundle::apply(vr, Path::new(bundle))).unwrap();
         assert!(with_repo(&b, commands::fsck::check).unwrap().is_healthy());
     }
 
@@ -6659,10 +6717,10 @@ beta
         let bd = TempDir::new().unwrap();
         let path = bd.path().join("out.velo");
         let path = path.to_str().unwrap();
-        with_repo(&a, |vr| commands::bundle::create(vr, path, None)).unwrap();
+        with_repo(&a, |vr| commands::bundle::create(vr, Path::new(path), None)).unwrap();
 
         let (_tb, b) = setup();
-        with_write(&b, |vr| commands::bundle::apply(vr, path)).unwrap();
+        with_write(&b, |vr| commands::bundle::apply(vr, Path::new(path))).unwrap();
 
         let repo_b = Repo::open_and_migrate(&b).unwrap();
         assert_eq!(
@@ -6693,12 +6751,16 @@ beta
         let bundle = bd.path().join("f.velo");
         let bundle = bundle.to_str().unwrap();
         with_repo(&a, |vr| {
-            commands::bundle::create(vr, bundle, Some("feature"))
+            commands::bundle::create(
+                vr,
+                Path::new(bundle),
+                Some(&commands::resolve_snapshot_id(vr, "feature")?),
+            )
         })
         .unwrap();
 
         let (_tb, b) = setup();
-        with_write(&b, |vr| commands::bundle::apply(vr, bundle)).unwrap();
+        with_write(&b, |vr| commands::bundle::apply(vr, Path::new(bundle))).unwrap();
         assert!(snapshot_exists(&b, &hf), "feature tip must be present");
         // Self-contained (walked to root) → receiver is consistent.
         assert!(with_repo(&b, commands::fsck::check).unwrap().is_healthy());
@@ -6711,10 +6773,7 @@ beta
         save(&a, "s1");
         let bd = TempDir::new().unwrap();
         let bundle = bd.path().join("out.velo");
-        with_repo(&a, |vr| {
-            commands::bundle::create(vr, bundle.to_str().unwrap(), None)
-        })
-        .unwrap();
+        with_repo(&a, |vr| commands::bundle::create(vr, &bundle, None)).unwrap();
 
         // Truncated bundle → rejected.
         let mut bytes = fs::read(&bundle).unwrap();
@@ -6722,21 +6781,13 @@ beta
         fs::write(&bundle, &bytes).unwrap();
         let (_tb, b) = setup();
         assert!(
-            with_write(&b, |vr| commands::bundle::apply(
-                vr,
-                bundle.to_str().unwrap()
-            ))
-            .is_err(),
+            with_write(&b, |vr| commands::bundle::apply(vr, &bundle)).is_err(),
             "a truncated bundle must be rejected"
         );
 
         // Not a bundle at all → rejected.
         fs::write(&bundle, b"definitely not a velo bundle").unwrap();
-        assert!(with_write(&b, |vr| commands::bundle::apply(
-            vr,
-            bundle.to_str().unwrap()
-        ))
-        .is_err());
+        assert!(with_write(&b, |vr| commands::bundle::apply(vr, &bundle)).is_err());
     }
 
     // =========================================================================
@@ -6796,17 +6847,11 @@ beta
 
         let bd = TempDir::new().unwrap();
         let bundle_path = bd.path().join("out.velo");
-        with_repo(&root, |vr| {
-            commands::bundle::create(vr, bundle_path.to_str().unwrap(), None)
-        })
-        .unwrap();
+        with_repo(&root, |vr| commands::bundle::create(vr, &bundle_path, None)).unwrap();
 
         // A completely fresh repo can import it and verify.
         let (_tb, b) = setup();
-        with_write(&b, |vr| {
-            commands::bundle::apply(vr, bundle_path.to_str().unwrap())
-        })
-        .unwrap();
+        with_write(&b, |vr| commands::bundle::apply(vr, &bundle_path)).unwrap();
         assert!(with_repo(&b, commands::fsck::check).unwrap().is_healthy());
     }
 

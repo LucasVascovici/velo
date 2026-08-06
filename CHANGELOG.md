@@ -18,6 +18,18 @@ This file starts at the format v2 break. Earlier releases are in the git history
   has always advertised and which previously matched nothing at all. With a
   filter set, `--limit` counts matches rather than candidates.
 
+### Changed — breaking (API only)
+
+- **The read commands take resolved ids and real paths.** `show::run`,
+  `blame::run`, `grep::run` and `bundle::create` took a `&str` spec and resolved
+  it again, so a caller holding an id had to format it back into text — and could
+  be handed `AmbiguousPrefix` for an id it already held unambiguously. They now
+  take `&SnapshotId`. `blame::run`, `bundle::create` and `bundle::apply` take
+  `&Path` where they mean a path rather than `&str`.
+- **`grep::run` takes an `Options` struct.** `run(repo, pat, None, false, true, 2)`
+  said nothing about which flag was which.
+- **`show::run` takes `&[&Path]`** instead of a single `&Option<String>`.
+
 ### Added
 
 - **Authorship, with no format change.** `Author` (name plus optional email) is

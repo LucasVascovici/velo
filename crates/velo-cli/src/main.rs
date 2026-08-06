@@ -5,6 +5,8 @@ use clap::{builder::styling, Parser, Subcommand};
 mod author;
 mod render;
 
+use std::path::Path;
+
 use velo_core::{commands, error, serve, BranchName, TagName};
 
 use error::{Result, VeloError};
@@ -1482,8 +1484,9 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Show { target, paths } => {
-            let file = paths.into_iter().next();
-            render::diff::print_snapshot(&commands::show::run(&repo, &target, &file)?);
+            let id = commands::resolve_snapshot_id(&repo, &target)?;
+            let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
+            render::diff::print_snapshot(&commands::show::run(&repo, &id, &paths)?);
         }
 
         Commands::CherryPick { target } => {
@@ -1556,7 +1559,11 @@ fn run(cli: Cli) -> Result<()> {
         },
 
         Commands::Blame { file, at } => {
-            render::blame::print(&commands::blame::run(&repo, &file, at.as_deref())?);
+            let at = at
+                .as_deref()
+                .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                .transpose()?;
+            render::blame::print(&commands::blame::run(&repo, Path::new(&file), at.as_ref())?);
         }
 
         Commands::Grep {
@@ -1566,13 +1573,19 @@ fn run(cli: Cli) -> Result<()> {
             files_only,
             context,
         } => {
+            let snapshot = snapshot
+                .as_deref()
+                .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                .transpose()?;
             let results = commands::grep::run(
                 &repo,
                 &pattern,
-                snapshot.as_deref(),
-                ignore_case,
-                files_only,
-                context,
+                commands::grep::Options {
+                    snapshot: snapshot.as_ref(),
+                    case_insensitive: ignore_case,
+                    names_only: files_only,
+                    context,
+                },
             )?;
             render::grep::print(&results, files_only);
         }
@@ -1620,14 +1633,18 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::Bundle { cmd } => match cmd {
             BundleSub::Create { file, target } => {
+                let target = target
+                    .as_deref()
+                    .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                    .transpose()?;
                 render::bundle::print_created(&commands::bundle::create(
                     &repo,
-                    &file,
-                    target.as_deref(),
+                    Path::new(&file),
+                    target.as_ref(),
                 )?);
             }
             BundleSub::Apply { file } => {
-                render::bundle::print_applied(&commands::bundle::apply(write(), &file)?);
+                render::bundle::print_applied(&commands::bundle::apply(write(), Path::new(&file))?);
             }
         },
 

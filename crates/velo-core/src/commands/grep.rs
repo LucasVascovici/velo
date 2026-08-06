@@ -74,14 +74,31 @@ impl GrepResults {
 ///
 /// `context` is the number of lines to include either side of a match;
 /// `names_only` skips collecting them entirely.
-pub fn run(
-    repo: &Repo,
-    pattern: &str,
-    snapshot: Option<&str>,
-    case_insensitive: bool,
-    names_only: bool,
-    context: usize,
-) -> Result<GrepResults> {
+/// How to search.
+///
+/// A struct rather than three unlabelled booleans and a bare `usize`:
+/// `run(repo, pat, None, false, true, 2)` said nothing at the call site about
+/// which flag was which.
+#[derive(Clone, Debug, Default)]
+pub struct Options<'a> {
+    /// Search this snapshot instead of the working tree.
+    pub snapshot: Option<&'a SnapshotId>,
+    /// Match without regard to case.
+    pub case_insensitive: bool,
+    /// Report only the paths that matched, not the lines.
+    pub names_only: bool,
+    /// Lines of context to include either side of a match.
+    pub context: usize,
+}
+
+/// Search for `pattern`.
+pub fn run(repo: &Repo, pattern: &str, options: Options<'_>) -> Result<GrepResults> {
+    let Options {
+        snapshot,
+        case_insensitive,
+        names_only,
+        context,
+    } = options;
     let re = build_regex(pattern, case_insensitive)?;
 
     let (searched, files) = match snapshot {
