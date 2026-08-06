@@ -1490,6 +1490,7 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::CherryPick { target } => {
+            let target = commands::resolve_snapshot_id(&repo, &target)?;
             render::cherry_pick::print(&commands::cherry_pick::run(write(), &target)?);
         }
 
@@ -1534,8 +1535,16 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Merge { branch, abort } => {
-            let outcome = commands::merge::run(write(), branch.as_deref(), abort)?;
-            render::merge::print(&outcome);
+            let mode = match (abort, branch.as_deref()) {
+                (true, _) => commands::merge::Mode::Abort,
+                (false, Some(source)) => commands::merge::Mode::Bring { source },
+                (false, None) => {
+                    return Err(error::Error::invalid(
+                        "Specify a branch to merge: velo merge <branch>",
+                    ))
+                }
+            };
+            render::merge::print(&commands::merge::run(write(), mode)?);
         }
 
         Commands::Resolve { file, take, all } => {
@@ -1599,15 +1608,23 @@ fn run(cli: Cli) -> Result<()> {
             abort,
             cont,
         } => {
-            let t = target.as_deref().unwrap_or("");
-            if !abort && !cont && t.is_empty() {
-                eprintln!(
-                    "{} Specify a target branch, or use --abort / --continue.",
-                    console::style("error:").red().bold()
-                );
-                std::process::exit(1);
-            }
-            render::rebase::print(&commands::rebase::run(write(), t, abort, cont)?);
+            // The three real modes, chosen once here rather than encoded in a
+            // pair of booleans the core has to disentangle.
+            let onto;
+            let mode = match (abort, cont, target.as_deref()) {
+                (true, _, _) => commands::rebase::Mode::Abort,
+                (false, true, _) => commands::rebase::Mode::Continue,
+                (false, false, Some(spec)) => {
+                    onto = commands::resolve_snapshot_id(&repo, spec)?;
+                    commands::rebase::Mode::Start { onto: &onto }
+                }
+                (false, false, None) => {
+                    return Err(error::Error::invalid(
+                        "Specify a target branch, or use --abort / --continue.",
+                    ))
+                }
+            };
+            render::rebase::print(&commands::rebase::run(write(), mode)?);
         }
 
         Commands::Gc { keep_days } => {

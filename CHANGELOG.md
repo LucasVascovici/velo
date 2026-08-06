@@ -29,6 +29,15 @@ This file starts at the format v2 break. Earlier releases are in the git history
 - **`grep::run` takes an `Options` struct.** `run(repo, pat, None, false, true, 2)`
   said nothing about which flag was which.
 - **`show::run` takes `&[&Path]`** instead of a single `&Option<String>`.
+- **`merge::run` and `rebase::run` take a mode enum.** `rebase::run(guard,
+  target, abort, cont)` encoded three states in two booleans and the fourth
+  combination was meaningless; `merge::run` had a `(Option<&str>, bool)` pair
+  whose "no target, no abort" case was a run-time error. Both are now
+  `Mode` enums the caller picks once.
+- **`cherry_pick::run` takes `&SnapshotId`**, and `rebase::Mode::Start` carries
+  one. `merge::Mode::Bring` deliberately keeps a `&str` spec: an exact branch tip
+  must win over a hash prefix, and the branch *name* is what `MERGE_HEAD` records
+  for the eventual save to resolve into a second parent.
 
 ### Added
 

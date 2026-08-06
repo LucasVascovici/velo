@@ -21,6 +21,7 @@ use crate::error::{InProgress, Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
+use crate::SnapshotId;
 use crate::WriteGuard;
 
 /// One commit that was replayed onto the new base.
@@ -69,19 +70,32 @@ pub enum Outcome {
 }
 
 /// Start, continue, or abort a rebase.
-pub fn run(guard: &WriteGuard, target: &str, abort: bool, cont: bool) -> Result<Outcome> {
-    if abort {
-        return do_abort(guard);
+/// What [`run`] should do.
+///
+/// `(target, abort, cont)` encoded three states in two booleans, and the fourth
+/// combination — abort *and* continue — was meaningless.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode<'a> {
+    /// Replay the current branch onto `onto`.
+    Start { onto: &'a SnapshotId },
+    /// Carry on after the author resolved a conflict.
+    Continue,
+    /// Abandon the rebase and restore the original head.
+    Abort,
+}
+
+/// Rebase, continue one, or abort one.
+pub fn run(guard: &WriteGuard, mode: Mode<'_>) -> Result<Outcome> {
+    match mode {
+        Mode::Abort => do_abort(guard),
+        Mode::Continue => do_continue(guard),
+        Mode::Start { onto } => do_start(guard, onto),
     }
-    if cont {
-        return do_continue(guard);
-    }
-    do_start(guard, target)
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-fn do_start(guard: &WriteGuard, target: &str) -> Result<Outcome> {
+fn do_start(guard: &WriteGuard, target: &SnapshotId) -> Result<Outcome> {
     let root = guard.root();
     if root.join(".velo/REBASE_STATE").exists() {
         return Err(VeloError::OperationInProgress {
@@ -101,7 +115,7 @@ fn do_start(guard: &WriteGuard, target: &str) -> Result<Outcome> {
     let branch = read_trimmed(guard.root(), "HEAD");
     let head_hash = read_trimmed(guard.root(), "PARENT");
 
-    let onto_hash = crate::commands::resolve_snapshot_id(guard.repo(), target)?.into_string();
+    let onto_hash = target.to_string();
 
     // Nothing to do when the branch already sits on top of the target. Testing
     // only `onto == head` was too narrow: after a successful rebase the branch

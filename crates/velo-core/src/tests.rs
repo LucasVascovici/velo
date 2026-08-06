@@ -854,7 +854,10 @@ mod tests {
         write(&root, "main.txt", "main");
         save(&root, "main work");
         let main_tip = parent(&root);
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
         // A clean merge leaves MERGE_HEAD behind; the finalising save is what
         // stamps the second parent onto the new snapshot.
         save(&root, "Merge feature");
@@ -1279,9 +1282,10 @@ mod tests {
         use commands::merge::{FileAction, Outcome};
         let (_tmp, root) = diverged_repo();
 
-        let Outcome::Merged(result) =
-            with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap()
-        else {
+        let Outcome::Merged(result) = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap() else {
             panic!("expected a three-way merge");
         };
         assert_eq!(result.source, "feature");
@@ -1322,9 +1326,10 @@ mod tests {
         // Same merge twice, in two identical repos: the reported order must match.
         let order = |_i: usize| {
             let (_tmp, root) = diverged_repo();
-            let Outcome::Merged(r) =
-                with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap()
-            else {
+            let Outcome::Merged(r) = with_write(&root, |vr| {
+                commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+            })
+            .unwrap() else {
                 panic!("expected a three-way merge");
             };
             r.files()
@@ -1348,9 +1353,10 @@ mod tests {
         write(&root, "c.txt", "one\nMAIN\nthree\n");
         save(&root, "main work");
 
-        let Outcome::Merged(result) =
-            with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap()
-        else {
+        let Outcome::Merged(result) = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap() else {
             panic!("expected a three-way merge");
         };
         assert!(!result.is_clean());
@@ -1379,8 +1385,10 @@ mod tests {
         save(&root, "ahead");
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
 
-        let outcome =
-            with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
         let Outcome::FastForwarded { branch, to } = outcome else {
             panic!("expected a fast-forward, got {:?}", outcome);
         };
@@ -1398,8 +1406,10 @@ mod tests {
         // A brand-new branch with nothing of its own.
         with_write(&root, |vr| commands::switch::run(vr, "fresh", false)).unwrap();
 
-        let outcome =
-            with_write(&root, |vr| commands::merge::run(vr, Some("main"), false)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "main" })
+        })
+        .unwrap();
         let Outcome::StartedUnbornBranch { branch, at } = outcome else {
             panic!("expected the unborn-branch case, got {:?}", outcome);
         };
@@ -1416,7 +1426,10 @@ mod tests {
 
         // Merging the snapshot we already sit on: both sides are literally the
         // same commit, so there is nothing to compare.
-        let outcome = with_write(&root, |vr| commands::merge::run(vr, Some(&h1), false)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: &h1 })
+        })
+        .unwrap();
         assert!(
             matches!(outcome, Outcome::AlreadyUpToDate { .. }),
             "got {:?}",
@@ -1434,13 +1447,17 @@ mod tests {
         write(&root, "f.txt", "v2");
         save(&root, "feature work");
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap(); // fast-forward
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap(); // fast-forward
 
         // main's tip is now the fast-forward snapshot, so this is a real
         // three-way merge — it just finds both trees already agree.
-        let Outcome::Merged(result) =
-            with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap()
-        else {
+        let Outcome::Merged(result) = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap() else {
             panic!("expected a three-way merge once main has its own tip");
         };
         assert!(result.is_clean());
@@ -1466,12 +1483,17 @@ mod tests {
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
         write(&root, "c.txt", "one\nMAIN\nthree\n");
         save(&root, "main work");
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
 
         // A conflicted merge leaves the tree dirty by design, so checking
         // dirtiness first blamed "unsaved changes" for being mid-merge.
-        let err =
-            with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap_err();
+        let err = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap_err();
         assert!(
             matches!(err, VeloError::OperationInProgress { .. }),
             "expected the in-progress diagnosis, got {:?}",
@@ -1493,8 +1515,14 @@ mod tests {
         let before = save(&root, "main work");
         let content_before = read(&root, "c.txt");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
-        let outcome = with_write(&root, |vr| commands::merge::run(vr, None, true)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Abort)
+        })
+        .unwrap();
         let Outcome::Aborted {
             source,
             restored_to,
@@ -1519,7 +1547,10 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        let err = with_write(&root, |vr| commands::merge::run(vr, None, true)).unwrap_err();
+        let err = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Abort)
+        })
+        .unwrap_err();
         assert!(matches!(err, VeloError::NoOperationInProgress { .. }));
     }
 
@@ -1528,8 +1559,10 @@ mod tests {
         let (_tmp, root) = diverged_repo();
         write(&root, "unsaved.txt", "wip");
 
-        let err =
-            with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap_err();
+        let err = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap_err();
         let VeloError::DirtyWorkingTree { paths } = err else {
             panic!("expected a dirty-tree error, got {:?}", err);
         };
@@ -1545,7 +1578,11 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        assert!(with_write(&root, |vr| commands::merge::run(vr, Some("main"), false)).is_err());
+        assert!(with_write(&root, |vr| commands::merge::run(
+            vr,
+            commands::merge::Mode::Bring { source: "main" }
+        ))
+        .is_err());
     }
 
     #[test]
@@ -1687,7 +1724,7 @@ mod tests {
         use commands::apply::FileAction;
         let (_tmp, root, tip) = side_branch_repo();
 
-        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &tip)).unwrap();
+        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
         assert_eq!(outcome.snapshot, tip);
         assert_eq!(outcome.message, "side work");
         assert!(!outcome.is_conflicted());
@@ -1722,9 +1759,9 @@ mod tests {
     #[test]
     fn cherry_pick_of_already_applied_work_does_nothing() {
         let (_tmp, root, tip) = side_branch_repo();
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &tip)).unwrap();
+        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
 
-        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &tip)).unwrap();
+        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
         assert!(outcome.applied_nothing());
         assert!(
             outcome.saved_as.is_none(),
@@ -1744,7 +1781,7 @@ mod tests {
         write(&root, "c.txt", "one\nMAIN\nthree\n");
         save(&root, "main work");
 
-        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &tip)).unwrap();
+        let outcome = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
         assert!(outcome.is_conflicted());
         assert_eq!(outcome.applied.conflicts(), vec!["c.txt"]);
         assert!(
@@ -1765,9 +1802,9 @@ mod tests {
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
         write(&root, "c.txt", "one\nMAIN\nthree\n");
         save(&root, "main work");
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &tip)).unwrap();
+        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap();
 
-        let err = with_write(&root, |vr| commands::cherry_pick::run(vr, &tip)).unwrap_err();
+        let err = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap_err();
         assert!(
             matches!(err, VeloError::OperationInProgress { .. }),
             "a paused pick leaves the tree dirty, so dirtiness is the wrong diagnosis: {:?}",
@@ -1779,7 +1816,7 @@ mod tests {
     fn cherry_pick_refuses_a_dirty_tree() {
         let (_tmp, root, tip) = side_branch_repo();
         write(&root, "unsaved.txt", "wip");
-        let err = with_write(&root, |vr| commands::cherry_pick::run(vr, &tip)).unwrap_err();
+        let err = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&tip))).unwrap_err();
         assert!(matches!(err, VeloError::DirtyWorkingTree { .. }));
     }
 
@@ -1810,7 +1847,12 @@ mod tests {
         let (_tmp, root, main_tip) = diverged_for_rebase();
 
         let outcome = with_write(&root, |vr| {
-            commands::rebase::run(vr, &main_tip, false, false)
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    onto: &sid(&main_tip),
+                },
+            )
         })
         .unwrap();
         let Outcome::Completed {
@@ -1843,7 +1885,12 @@ mod tests {
         use commands::rebase::Outcome;
         let (_tmp, root, main_tip) = diverged_for_rebase();
         with_write(&root, |vr| {
-            commands::rebase::run(vr, &main_tip, false, false)
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    onto: &sid(&main_tip),
+                },
+            )
         })
         .unwrap();
         let after_first = parent(&root);
@@ -1853,7 +1900,12 @@ mod tests {
         // `onto == head`, but a rebased branch *contains* onto without equalling
         // it.
         let outcome = with_write(&root, |vr| {
-            commands::rebase::run(vr, &main_tip, false, false)
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    onto: &sid(&main_tip),
+                },
+            )
         })
         .unwrap();
         assert!(
@@ -1874,8 +1926,10 @@ mod tests {
         save(&root, "later");
 
         // `base` is already behind us.
-        let outcome =
-            with_write(&root, |vr| commands::rebase::run(vr, &base, false, false)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::rebase::run(vr, commands::rebase::Mode::Start { onto: &sid(&base) })
+        })
+        .unwrap();
         assert!(matches!(outcome, Outcome::AlreadyUpToDate));
     }
 
@@ -1896,7 +1950,12 @@ mod tests {
         with_write(&root, |vr| commands::switch::run(vr, "feature", true)).unwrap();
 
         let outcome = with_write(&root, |vr| {
-            commands::rebase::run(vr, &main_tip, false, false)
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    onto: &sid(&main_tip),
+                },
+            )
         })
         .unwrap();
         let Outcome::Paused {
@@ -1916,14 +1975,20 @@ mod tests {
         assert!(root.join(".velo/MERGE_HEAD").exists());
 
         // --continue refuses while conflicts stand.
-        let err = with_write(&root, |vr| commands::rebase::run(vr, "", false, true)).unwrap_err();
+        let err = with_write(&root, |vr| {
+            commands::rebase::run(vr, commands::rebase::Mode::Continue)
+        })
+        .unwrap_err();
         assert!(matches!(err, VeloError::Conflicts { .. }), "got {:?}", err);
 
         // Resolve as the user would, then carry on.
         resolve_take(&root, None, commands::resolve::TakeOption::Theirs, true).unwrap();
         save(&root, "resolved shared.txt");
 
-        let outcome = with_write(&root, |vr| commands::rebase::run(vr, "", false, true)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::rebase::run(vr, commands::rebase::Mode::Continue)
+        })
+        .unwrap();
         let Outcome::Completed { replayed, .. } = outcome else {
             panic!("expected completion, got {:?}", outcome);
         };
@@ -1950,10 +2015,18 @@ mod tests {
         with_write(&root, |vr| commands::switch::run(vr, "feature", true)).unwrap();
 
         with_write(&root, |vr| {
-            commands::rebase::run(vr, &main_tip, false, false)
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    onto: &sid(&main_tip),
+                },
+            )
         })
         .unwrap();
-        let outcome = with_write(&root, |vr| commands::rebase::run(vr, "", true, false)).unwrap();
+        let outcome = with_write(&root, |vr| {
+            commands::rebase::run(vr, commands::rebase::Mode::Abort)
+        })
+        .unwrap();
         let Outcome::Aborted { restored_to, .. } = outcome else {
             panic!("expected an abort, got {:?}", outcome);
         };
@@ -1971,11 +2044,19 @@ mod tests {
         write(&root, "f.txt", "v1");
         save(&root, "s1");
         assert!(matches!(
-            with_write(&root, |vr| commands::rebase::run(vr, "", false, true)).unwrap_err(),
+            with_write(&root, |vr| commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Continue
+            ))
+            .unwrap_err(),
             VeloError::NoOperationInProgress { .. }
         ));
         assert!(matches!(
-            with_write(&root, |vr| commands::rebase::run(vr, "", true, false)).unwrap_err(),
+            with_write(&root, |vr| commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Abort
+            ))
+            .unwrap_err(),
             VeloError::NoOperationInProgress { .. }
         ));
     }
@@ -1985,7 +2066,12 @@ mod tests {
         let (_tmp, root, main_tip) = diverged_for_rebase();
         write(&root, "unsaved.txt", "wip");
         let err = with_write(&root, |vr| {
-            commands::rebase::run(vr, &main_tip, false, false)
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    onto: &sid(&main_tip),
+                },
+            )
         })
         .unwrap_err();
         assert!(matches!(err, VeloError::DirtyWorkingTree { .. }));
@@ -3115,7 +3201,13 @@ mod tests {
         .unwrap();
 
         let (repo, rec) = watched(&root);
-        commands::rebase::run(&repo.write().unwrap(), &main_tip, false, false).unwrap();
+        commands::rebase::run(
+            &repo.write().unwrap(),
+            commands::rebase::Mode::Start {
+                onto: &sid(&main_tip),
+            },
+        )
+        .unwrap();
 
         assert_eq!(
             rec.total(Phase::Replaying),
@@ -3186,7 +3278,11 @@ mod tests {
         save(&root, "main work");
 
         let (repo, rec) = watched(&root);
-        commands::merge::run(&repo.write().unwrap(), Some("feature"), false).unwrap();
+        commands::merge::run(
+            &repo.write().unwrap(),
+            commands::merge::Mode::Bring { source: "feature" },
+        )
+        .unwrap();
 
         let total = rec
             .total(Phase::Reconciling)
@@ -3845,7 +3941,10 @@ c
         with_write(root, |vr| commands::switch::run(vr, "main", true)).unwrap();
         write(root, "f.txt", "ours\n");
         save(root, "main");
-        with_write(root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
         resolve_take(root, None, commands::resolve::TakeOption::Theirs, true).unwrap();
         save(root, "Merge feature")
     }
@@ -3934,7 +4033,10 @@ c
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
         write(&root, "f.txt", "ours\n");
         save(&root, "main");
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
         assert!(exists(&root, ".velo/MERGE_HEAD"));
 
         let r = with_write(&root, commands::undo::run);
@@ -4489,7 +4591,10 @@ beta
         save(&root, "dev work");
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("dev"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "dev" })
+        })
+        .unwrap();
         assert_eq!(read(&root, "a.txt"), "updated");
     }
 
@@ -4508,7 +4613,10 @@ beta
         write(&root, "app.py", "content B");
         save(&root, "save B");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("A"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "A" })
+        })
+        .unwrap();
         // Conflict stored in DB
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let count: i64 = conn
@@ -4531,7 +4639,10 @@ beta
         write(&root, "app.py", "content B\n");
         save(&root, "save B");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("A"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "A" })
+        })
+        .unwrap();
         resolve_take(
             &root,
             Some("app.py"),
@@ -4565,7 +4676,10 @@ beta
         write(&root, "f.txt", "ours\n");
         save(&root, "main snap");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("feat"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feat" })
+        })
+        .unwrap();
         resolve_take(
             &root,
             Some("f.txt"),
@@ -4604,7 +4718,10 @@ beta
         assert!(exists(&root, "kept.txt"));
 
         // Merge dev into main — dev deleted removed.txt, so it should disappear
-        with_write(&root, |vr| commands::merge::run(vr, Some("dev"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "dev" })
+        })
+        .unwrap();
         assert!(
             !exists(&root, "removed.txt"),
             "File deleted on target branch must be absent after merge"
@@ -4628,7 +4745,10 @@ beta
         write(&root, "base.txt", "main updated");
         save(&root, "main snap");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("feat"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feat" })
+        })
+        .unwrap();
         // newfile.txt should appear in working tree
         assert!(exists(&root, "newfile.txt"));
         assert_eq!(read(&root, "newfile.txt"), "brand new");
@@ -4645,7 +4765,9 @@ beta
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
 
         write(&root, "f.txt", "dirty");
-        let result = with_write(&root, |vr| commands::merge::run(vr, Some("feat"), false));
+        let result = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feat" })
+        });
         assert!(result.is_err());
     }
 
@@ -4662,7 +4784,10 @@ beta
         write(&root, "app.py", "content B\n");
         save(&root, "save B");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("A"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "A" })
+        })
+        .unwrap();
         // Conflict stored in DB
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let count: i64 = conn
@@ -4672,7 +4797,10 @@ beta
         // app.py is still "content B\n" on disk (our version untouched during merge)
         assert_eq!(read(&root, "app.py"), "content B\n");
 
-        with_write(&root, |vr| commands::merge::run(vr, None, true)).unwrap(); // --abort
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Abort)
+        })
+        .unwrap(); // --abort
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let count: i64 = conn
             .query_row(
@@ -4713,7 +4841,10 @@ beta
 
         let pre_merge_parent = parent(&root);
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("feat"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feat" })
+        })
+        .unwrap();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let n: i64 = conn
             .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
@@ -4740,7 +4871,10 @@ beta
         );
 
         // Abort even though all conflicts were resolved
-        with_write(&root, |vr| commands::merge::run(vr, None, true)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Abort)
+        })
+        .unwrap();
 
         assert!(
             !exists(&root, ".velo/MERGE_HEAD"),
@@ -4793,7 +4927,10 @@ beta
         save(&root, "theirs");
 
         // Merge A into B → conflict
-        with_write(&root, |vr| commands::merge::run(vr, Some("A"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "A" })
+        })
+        .unwrap();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let n: i64 = conn
             .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
@@ -4827,9 +4964,15 @@ beta
 
         // And taking ours (branch B = print("theirs")) must also be correct
         // Re-do the merge to test the ours path
-        with_write(&root, |vr| commands::merge::run(vr, None, true)).unwrap(); // abort
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Abort)
+        })
+        .unwrap(); // abort
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("A"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "A" })
+        })
+        .unwrap();
         resolve_take(
             &root,
             Some("app.py"),
@@ -4865,9 +5008,14 @@ beta
         write(&root, "app.py", "content B");
         save(&root, "B snap");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("A"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "A" })
+        })
+        .unwrap();
         // Try to merge again while conflicts outstanding
-        let result = with_write(&root, |vr| commands::merge::run(vr, Some("A"), false));
+        let result = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "A" })
+        });
         assert!(result.is_err());
     }
 
@@ -4876,7 +5024,9 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v");
         save(&root, "snap");
-        let result = with_write(&root, |vr| commands::merge::run(vr, Some("main"), false));
+        let result = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "main" })
+        });
         assert!(result.is_err());
     }
 
@@ -4885,7 +5035,9 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v");
         save(&root, "snap");
-        let result = with_write(&root, |vr| commands::merge::run(vr, Some("ghost"), false));
+        let result = with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "ghost" })
+        });
         assert!(result.is_err());
     }
 
@@ -4906,7 +5058,10 @@ beta
         write(&root, "f.txt", "A\nB\nC\nD\nE_CHANGED\n"); // edits line 5
         save(&root, "main line5");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
 
         // No conflict should have been recorded.
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
@@ -4961,7 +5116,10 @@ beta
         write(&root, "f.txt", "A\nB_OURS\nC\nD\nE\n"); // changes only B (conflict on B)
         save(&root, "main");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let n: i64 = conn
             .query_row("SELECT count(*) FROM conflict_files", [], |r| r.get(0))
@@ -5017,7 +5175,10 @@ beta
         write(&root, "b.py", "Y-b");
         save(&root, "Y snap");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("X"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "X" })
+        })
+        .unwrap();
         // Conflicts are stored in DB, not .conflict files
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let n: i64 = conn
@@ -5207,7 +5368,10 @@ beta
         );
 
         // Fast-forward merge: feature.txt should appear
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
         assert!(exists(&root, "feature.txt"));
         assert_eq!(read(&root, "feature.txt"), "feature work");
     }
@@ -5492,7 +5656,7 @@ beta
         let h1 = save(&root, "s1");
 
         let d = with_repo(&root, |vr| {
-            commands::show::run(vr, &sid(h1), &[Path::new("a.txt")])
+            commands::show::run(vr, &sid(&h1), &[Path::new("a.txt")])
         })
         .unwrap();
         let paths: Vec<&str> = d.diff.files.iter().map(|f| f.path.as_str()).collect();
@@ -5507,7 +5671,7 @@ beta
         let h1 = save(&root, "s1");
 
         let d = with_repo(&root, |vr| {
-            commands::show::run(vr, &sid(h1), &[Path::new("f.txt")])
+            commands::show::run(vr, &sid(&h1), &[Path::new("f.txt")])
         })
         .unwrap();
         assert!(d.parent.is_none(), "the root snapshot has no parent");
@@ -5527,7 +5691,7 @@ beta
         let h2 = save(&root, "s2");
 
         let d = with_repo(&root, |vr| {
-            commands::show::run(vr, &sid(h2), &[Path::new("f.txt")])
+            commands::show::run(vr, &sid(&h2), &[Path::new("f.txt")])
         })
         .unwrap();
         assert_eq!(d.parent.as_deref(), Some(h1.as_str()));
@@ -5548,7 +5712,7 @@ beta
         let h2 = save(&root, "s2");
 
         let d = with_repo(&root, |vr| {
-            commands::show::run(vr, &sid(h2), &[Path::new("gone.txt")])
+            commands::show::run(vr, &sid(&h2), &[Path::new("gone.txt")])
         })
         .unwrap();
         assert_eq!(d.diff.files.len(), 1);
@@ -5923,7 +6087,7 @@ beta
 
         // Back on main, apply the hotfix
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &fix_hash)).unwrap();
+        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(fix_hash))).unwrap();
 
         // The new file from the hotfix should be on main now
         assert!(exists(&root, "fix.txt"));
@@ -5945,7 +6109,7 @@ beta
         write(&root, "f.txt", "A\nB\nC\nD\nE_CHANGED\n"); // main: edits line 5
         save(&root, "main line5");
 
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &fix)).unwrap();
+        with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(fix))).unwrap();
 
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let n: i64 = conn
@@ -5966,7 +6130,7 @@ beta
 
         // Make the tree dirty
         write(&root, "f.txt", "dirty");
-        let result = with_write(&root, |vr| commands::cherry_pick::run(vr, &h2));
+        let result = with_write(&root, |vr| commands::cherry_pick::run(vr, &sid(&h2)));
         assert!(result.is_err());
     }
 
@@ -5988,7 +6152,10 @@ beta
         save(&root, "main snap");
 
         // Cherry-pick branch A's change — should conflict
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &branch_a_hash)).unwrap();
+        with_write(&root, |vr| {
+            commands::cherry_pick::run(vr, &sid(branch_a_hash))
+        })
+        .unwrap();
         // Conflict stored in DB, not as a .conflict file
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let n: i64 = conn
@@ -6017,7 +6184,10 @@ beta
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
         let before_parent = parent(&root);
 
-        with_write(&root, |vr| commands::cherry_pick::run(vr, &feature_hash)).unwrap();
+        with_write(&root, |vr| {
+            commands::cherry_pick::run(vr, &sid(feature_hash))
+        })
+        .unwrap();
 
         // Should auto-save — parent should have advanced
         let after_parent = parent(&root);
@@ -6033,7 +6203,9 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v");
         save(&root, "s1");
-        let result = with_write(&root, |vr| commands::cherry_pick::run(vr, "deadbeef1234"));
+        let result = with_write(&root, |vr| {
+            commands::cherry_pick::run(vr, &sid("deadbeef1234"))
+        });
         assert!(result.is_err());
     }
 
@@ -6078,7 +6250,7 @@ beta
         save(&root, "v2");
         // blame at h1 should work on the file as it was then
         with_repo(&root, |vr| {
-            commands::blame::run(vr, Path::new("f.txt"), Some(&sid(h1)))
+            commands::blame::run(vr, Path::new("f.txt"), Some(&sid(&h1)))
         })
         .unwrap();
     }
@@ -6308,7 +6480,10 @@ beta
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
         write(&root, "f.txt", "A\nB\nC2\n");
         save(&root, "s3");
-        with_write(&root, |vr| commands::merge::run(vr, Some("feat"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feat" })
+        })
+        .unwrap();
         save(&root, "merge");
         with_write(&root, |vr| {
             commands::tag::create(vr, &tag_name("v1"), None, false)
@@ -6510,7 +6685,10 @@ beta
         save(&root, "add exec on feat");
 
         with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
-        with_write(&root, |vr| commands::merge::run(vr, Some("feat"), false)).unwrap(); // fast-forward
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feat" })
+        })
+        .unwrap(); // fast-forward
 
         let mode = fs::metadata(root.join("run.sh"))
             .unwrap()
@@ -6547,7 +6725,10 @@ beta
         );
         // Merging into an unborn branch starts it at the target (not an error,
         // which is what used to happen).
-        with_write(&root, |vr| commands::merge::run(vr, Some("init"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "init" })
+        })
+        .unwrap();
         assert_eq!(
             commands::branch_tip(&conn, "main").as_deref(),
             Some(first.as_str()),
@@ -6559,7 +6740,10 @@ beta
         write(&root, "feature.py", "feature\n");
         save(&root, "add feature");
         with_write(&root, |vr| commands::switch::run(vr, "main", false)).unwrap();
-        with_write(&root, |vr| commands::merge::run(vr, Some("init"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "init" })
+        })
+        .unwrap();
         assert!(
             exists(&root, "feature.py"),
             "merge brought the work into main"
@@ -7159,7 +7343,17 @@ beta
 
         // Rebase feature onto main
         with_write(&root, |vr| commands::switch::run(vr, "feature", false)).unwrap();
-        with_write(&root, |vr| commands::rebase::run(vr, "main", false, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    // A branch name is a spec; `Start` takes a resolved id, which
+                    // is the whole point of the change.
+                    onto: &commands::resolve_snapshot_id(vr.repo(), "main")?,
+                },
+            )
+        })
+        .unwrap();
 
         // After rebase: feature.txt present, rebased on top of main update
         assert!(exists(&root, "feature.txt"));
@@ -7184,7 +7378,17 @@ beta
         save(&root, "main line5");
         with_write(&root, |vr| commands::switch::run(vr, "feature", false)).unwrap();
 
-        with_write(&root, |vr| commands::rebase::run(vr, "main", false, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    // A branch name is a spec; `Start` takes a resolved id, which
+                    // is the whole point of the change.
+                    onto: &commands::resolve_snapshot_id(vr.repo(), "main")?,
+                },
+            )
+        })
+        .unwrap();
 
         assert!(
             !exists(&root, ".velo/REBASE_STATE"),
@@ -7213,10 +7417,22 @@ beta
         let feature_head = parent(&root);
 
         // Start rebase (will have conflict)
-        let _ = with_write(&root, |vr| commands::rebase::run(vr, "main", false, false));
+        let _ = with_write(&root, |vr| {
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    // A branch name is a spec; `Start` takes a resolved id, which
+                    // is the whole point of the change.
+                    onto: &commands::resolve_snapshot_id(vr.repo(), "main")?,
+                },
+            )
+        });
 
         // Abort
-        with_write(&root, |vr| commands::rebase::run(vr, "", true, false)).unwrap();
+        with_write(&root, |vr| {
+            commands::rebase::run(vr, commands::rebase::Mode::Abort)
+        })
+        .unwrap();
 
         assert!(!exists(&root, ".velo/REBASE_STATE"));
         assert_eq!(parent(&root), feature_head);
@@ -7227,7 +7443,9 @@ beta
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v\n");
         save(&root, "s1");
-        let r = with_write(&root, |vr| commands::rebase::run(vr, "", false, true));
+        let r = with_write(&root, |vr| {
+            commands::rebase::run(vr, commands::rebase::Mode::Continue)
+        });
         assert!(r.is_err());
     }
 
@@ -7249,9 +7467,21 @@ beta
         save(&root, "main conflict");
 
         with_write(&root, |vr| commands::switch::run(vr, "feature", false)).unwrap();
-        let _ = with_write(&root, |vr| commands::rebase::run(vr, "main", false, false)); // conflicts
+        let _ = with_write(&root, |vr| {
+            commands::rebase::run(
+                vr,
+                commands::rebase::Mode::Start {
+                    // A branch name is a spec; `Start` takes a resolved id, which
+                    // is the whole point of the change.
+                    onto: &commands::resolve_snapshot_id(vr.repo(), "main")?,
+                },
+            )
+        }); // conflicts
 
-        with_write(&root, |vr| commands::rebase::run(vr, "", true, false)).unwrap(); // abort
+        with_write(&root, |vr| {
+            commands::rebase::run(vr, commands::rebase::Mode::Abort)
+        })
+        .unwrap(); // abort
 
         assert!(!exists(&root, ".velo/REBASE_STATE"));
         assert!(!exists(&root, ".velo/MERGE_HEAD"));
@@ -7319,7 +7549,10 @@ beta
         write(&root, "f.txt", "ours\n");
         let ours = save(&root, "ours");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
         resolve_take(&root, None, commands::resolve::TakeOption::Ours, true).unwrap();
 
         // The tree now matches `ours` exactly, so nothing is dirty.
@@ -7391,7 +7624,10 @@ beta
         write(&root, "f.txt", "ours\n");
         save(&root, "ours");
 
-        with_write(&root, |vr| commands::merge::run(vr, Some("feature"), false)).unwrap();
+        with_write(&root, |vr| {
+            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+        })
+        .unwrap();
         resolve_take(&root, None, commands::resolve::TakeOption::Theirs, true).unwrap();
 
         let outcome =

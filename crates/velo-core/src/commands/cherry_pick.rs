@@ -41,7 +41,8 @@ impl Outcome {
 }
 
 /// Apply `target`'s changes to the working tree, committing when clean.
-pub fn run(guard: &WriteGuard, target: &str) -> Result<Outcome> {
+/// Apply the changes one snapshot introduced, on top of the current position.
+pub fn run(guard: &WriteGuard, target: &SnapshotId) -> Result<Outcome> {
     let root = guard.root();
     // Checked before the dirty-tree test: a paused merge or cherry-pick leaves
     // the tree dirty by design, so testing dirtiness first blames the wrong thing.
@@ -68,7 +69,7 @@ pub fn run(guard: &WriteGuard, target: &str) -> Result<Outcome> {
             [&snapshot],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )
-        .map_err(|_| VeloError::not_found(RefKind::Snapshot, target))?;
+        .map_err(|_| VeloError::not_found(RefKind::Snapshot, target.as_str()))?;
 
     let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let applied = apply::reconcile_tree(

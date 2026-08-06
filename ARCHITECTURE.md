@@ -1049,7 +1049,7 @@ happened to use, then stopped. These are the same fixes, applied to the rest.
 **Do this before Phase 9.** All of it is breaking, and all of it is free until
 `velo-core` is published.
 
-### 8.1 Refs are still strings in most write commands
+### 8.1 Refs are still strings in most write commands ✅ **DONE**
 
 `tag::create` was changed to take `Option<&SnapshotId>` because "a caller holding
 an id handed back text to be resolved a second time". Unchanged since:
@@ -1068,7 +1068,16 @@ an id handed back text to be resolved a second time". Unchanged since:
 The double resolution is not only inelegant: a consumer can be handed
 `AmbiguousPrefix` for an id it already holds unambiguously.
 
-### 8.2 Positional arguments, and booleans that are really enums
+**Done — with one correction to the table.** `merge::run`'s target is
+*legitimately a spec* and stays `&str`. An exact local-branch tip must win over a
+hash prefix so a short branch name is never mis-read as one, tags and remote refs
+fall out of the fallback, and the branch **name** is what `MERGE_HEAD` records for
+the eventual save to resolve into a second parent. A `SnapshotId` would discard
+that — the same reasoning `resolve_snapshot_id` applies to its own input.
+Everything else in the table takes an id, and the CLI resolves at the argv
+boundary.
+
+### 8.2 Positional arguments, and booleans that are really enums 🟡 *(mode enums done)*
 
 ```rust
 grep::run(repo, pattern, snapshot, case_insensitive, names_only, context)
@@ -1079,6 +1088,16 @@ merge::run(guard, target_branch, abort)
 
 `rebase::run` deserves singling out: `abort` and `cont` encode three states in two
 booleans and the fourth combination is meaningless. That is an enum.
+
+**Mode enums done** for `rebase` and `merge`, which also let the CLI's hand-rolled
+"specify a target" check and its `process::exit` go away — the enum makes the
+missing case something the caller has to handle when constructing it.
+`grep::Options` landed with [8.1](#81-refs-are-still-strings-in-most-write-commands--done).
+
+**Still positional:** `restore::run(guard, snapshot, force, paths)` and
+`save::run_with_paths`. Those are where [7.6](#76-per-call-progress-and-cancellation-)
+lands — an observer and a cancellation token are two more fields on the options
+struct they are owed, and doing both at once is why 7.6 waited.
 
 ### 8.3 Filesystem paths are `&str`
 
