@@ -227,7 +227,7 @@ pub fn clear_conflict(guard: &WriteGuard, path: &str) -> Result<()> {
 // `Decision` lives in velo-merge, which knows nothing about SQLite, so mapping it
 // to and from storage belongs here.
 
-pub fn decision_to_db(d: &Decision) -> (&'static str, Option<String>) {
+pub(crate) fn decision_to_db(d: &Decision) -> (&'static str, Option<String>) {
     match d {
         Decision::Ours => ("ours", None),
         Decision::Theirs => ("theirs", None),
@@ -237,7 +237,7 @@ pub fn decision_to_db(d: &Decision) -> (&'static str, Option<String>) {
     }
 }
 
-pub fn decision_from_db(kind: &str, content: Option<&str>) -> Option<Decision> {
+pub(crate) fn decision_from_db(kind: &str, content: Option<&str>) -> Option<Decision> {
     match kind {
         "ours" => Some(Decision::Ours),
         "theirs" => Some(Decision::Theirs),
@@ -254,7 +254,7 @@ pub fn decision_from_db(kind: &str, content: Option<&str>) -> Option<Decision> {
 
 /// Decompress an object as text. An empty hash means "absent", which is a valid
 /// side of a conflict (a file added or deleted on one side).
-pub fn read_text(objects_dir: &Path, hash: &str) -> Result<String> {
+pub(crate) fn read_text(objects_dir: &Path, hash: &str) -> Result<String> {
     if hash.is_empty() {
         return Ok(String::new());
     }

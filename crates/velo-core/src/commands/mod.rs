@@ -423,7 +423,7 @@ fn make_walker(root: &Path) -> WalkBuilder {
 }
 
 /// Return all tracked paths (regular files and symlinks) under `root`.
-pub fn get_tracked_files(root: &Path) -> Vec<PathBuf> {
+pub(crate) fn get_tracked_files(root: &Path) -> Vec<PathBuf> {
     let acc: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
     make_walker(root).build_parallel().run(|| {
         Box::new(|res| {
@@ -630,7 +630,7 @@ pub(crate) fn get_conflict_files(repo: &Repo) -> Vec<String> {
 }
 
 /// Return `true` if the file likely contains binary data.
-pub fn is_binary(path: &Path) -> bool {
+pub(crate) fn is_binary(path: &Path) -> bool {
     if let Ok(mut file) = fs::File::open(path) {
         let mut buf = [0u8; 1024];
         if let Ok(n) = file.read(&mut buf) {
@@ -643,12 +643,12 @@ pub fn is_binary(path: &Path) -> bool {
 // ─── Three-way file reconciliation (shared by merge / cherry-pick / rebase) ───
 
 /// A file's identity within a tree: its object hash ("" = absent) and mode.
-pub type FileRef<'a> = (&'a str, i64);
+pub(crate) type FileRef<'a> = (&'a str, i64);
 
 /// What to do with a single file when applying "theirs" on top of "ours",
 /// relative to a common ancestor.
 #[derive(Debug)]
-pub enum Reconcile {
+pub(crate) enum Reconcile {
     /// Nothing to do — theirs made no change, or both sides already agree.
     Nothing,
     /// Take theirs verbatim: write object `hash` with `mode` to the working
@@ -677,7 +677,7 @@ pub enum Reconcile {
 /// via a real 3-way merge; overlapping edits, binary files, and symlinks (which
 /// can't be line-merged) become conflicts. A file's mode is part of its
 /// identity, so an executable-bit or file↔symlink change counts as a change.
-pub fn reconcile_file(
+pub(crate) fn reconcile_file(
     objects_dir: &Path,
     anc: FileRef,
     our: FileRef,
@@ -759,7 +759,7 @@ pub fn reconcile_file(
 // ─── Filesystem helpers ───────────────────────────────────────────────────────
 
 /// Remove `dir` and all empty ancestors up to (but not including) `root`.
-pub fn remove_empty_parents(dir: &Path, root: &Path) {
+pub(crate) fn remove_empty_parents(dir: &Path, root: &Path) {
     let mut current = dir.to_path_buf();
     loop {
         if current == root {

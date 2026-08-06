@@ -1149,7 +1149,7 @@ spec — the rule 1.3 established, applied to the last place still breaking it.
 The two tests asserting argv interpretation moved with the code, and gained a
 case: more than two refs is refused rather than silently ignoring the extras.
 
-### 8.5 Shrink the public surface — **gates Phase 9**
+### 8.5 Shrink the public surface — **gates Phase 9** ✅ **DONE**
 
 `commands` exports `remove_empty_parents`, `decision_to_db`, `decision_from_db`,
 `read_text`, `is_binary`, `get_tracked_files`, `reconcile_file`, `find_repo_root`.
@@ -1157,6 +1157,24 @@ These read as internals that became `pub` because two modules needed them.
 
 The moment velo is on crates.io, everything public is a semver commitment. One
 pass asking of each item, *"would I promise this for five years?"*
+
+**Done.** Nine items are `pub(crate)` now — `get_tracked_files`, `is_binary`,
+`FileRef`, `Reconcile`, `reconcile_file`, `remove_empty_parents`,
+`decision_to_db`, `decision_from_db` and `read_text`. Checked before demoting:
+none was used outside `velo-core`. `commands`' own surface went from 16 items to
+10.
+
+Four were kept public against the feedback's list, each for a reason:
+
+| Kept | Why |
+| :--- | :--- |
+| `find_repo_root` | The CLI needs the root *before* deciding whether to open, to phrase "not a repository" usefully |
+| `snapshot_id` / `SnapshotIdentity` | The id recipe is the format's contract; a consumer verifying ids needs it |
+| `SNAP_HASH_LEN` / `SNAP_ID_LEN` | Display width and stored width; renderers use the first |
+| `get_dirty_files` / `FileStatus` | "What is unsaved" is a real consumer question |
+
+`snapshot_timestamp_ms` and `timestamp_from_ms` stay too — the second is used by
+every renderer that prints a date.
 
 ### 8.6 Say which half of the API owns the working tree ✅ **DONE**
 
