@@ -29,6 +29,11 @@ This file starts at the format v2 break. Earlier releases are in the git history
 - **`grep::run` takes an `Options` struct.** `run(repo, pat, None, false, true, 2)`
   said nothing about which flag was which.
 - **`show::run` takes `&[&Path]`** instead of a single `&Option<String>`.
+- **`diff::run_range` becomes `diff::between(repo, a, b, paths)`**, taking
+  resolved ids and `&[&Path]`. `diff::dispatch` — which parsed `a..b` range
+  syntax and decided whether a bare argument was a filename or a ref — moved to
+  `velo-cli`, where argv comes from. Core gained `diff::tracks_path`, the one
+  query that decision needed.
 - **`save::run` takes an `Options` struct** — `amend`, `paths: &[&Path]`,
   `author`, `observer` and `cancel` — and `run_with_paths` is gone. A cancelled
   save records nothing, which is clean rather than partial: hashing writes

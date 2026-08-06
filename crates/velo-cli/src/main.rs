@@ -3,6 +3,7 @@ use clap::{builder::styling, Parser, Subcommand};
 // All repository logic lives in `velo-core`; this crate is the presentation
 // layer — argument parsing, rendering, and exit codes.
 mod author;
+mod diffargs;
 mod render;
 
 use std::path::Path;
@@ -1493,7 +1494,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Redo => render::undo::print_redo(&commands::redo::run(write())?),
 
         Commands::Diff { args, paths } => {
-            render::diff::print_comparison(&commands::diff::dispatch(&repo, &args, &paths)?);
+            render::diff::print_comparison(&diffargs::dispatch(&repo, &args, &paths)?);
         }
 
         Commands::Show { target, paths } => {

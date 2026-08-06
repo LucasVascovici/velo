@@ -4397,7 +4397,7 @@ beta
         let h2 = save(&root, "s2");
 
         let d = with_repo(&root, |vr| {
-            commands::diff::run_range(vr, &h1, Some(&h2), &[])
+            commands::diff::between(vr, &sid(&h1), Some(&sid(&h2)), &[])
         })
         .unwrap();
         assert!(
@@ -4425,7 +4425,7 @@ beta
         let h2 = save(&root, "s2");
 
         let d = with_repo(&root, |vr| {
-            commands::diff::run_range(vr, &h1, Some(&h2), &["keep.txt".into()])
+            commands::diff::between(vr, &sid(&h1), Some(&sid(&h2)), &[Path::new("keep.txt")])
         })
         .unwrap();
         let paths: Vec<&str> = d.files.iter().map(|f| f.path.as_str()).collect();
@@ -4442,7 +4442,7 @@ beta
         let h2 = save(&root, "s2");
 
         let d = with_repo(&root, |vr| {
-            commands::diff::run_range(vr, &h1, Some(&h2), &[])
+            commands::diff::between(vr, &sid(&h1), Some(&sid(&h2)), &[])
         })
         .unwrap();
         let paths: Vec<&str> = d.files.iter().map(|f| f.path.as_str()).collect();
@@ -7552,73 +7552,6 @@ beta
     }
 
     #[test]
-    fn diff_dispatch_covers_every_form() {
-        // `velo diff` is one command for every comparison; these are the shapes
-        // the CLI hands to the dispatcher.
-        let (_tmp, root) = setup();
-        write(&root, "a.py", "l1\nl2\n");
-        write(&root, "b.txt", "x\n");
-        let h1 = save(&root, "c1");
-        write(&root, "a.py", "l1\nCHANGED\n");
-        let h2 = save(&root, "c2");
-        with_write(&root, |vr| {
-            commands::tag::create(vr, &tag_name("v1"), None, false)
-        })
-        .unwrap();
-        write(&root, "a.py", "l1\nWORKING\n");
-
-        let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
-
-        // No args: working tree vs last snapshot.
-        with_repo(&root, |vr| commands::diff::dispatch(vr, &[], &[])).unwrap();
-        // Pathspec only.
-        with_repo(&root, |vr| commands::diff::dispatch(vr, &[], &s(&["a.py"]))).unwrap();
-        // A lone existing filename is a file, not a ref.
-        with_repo(&root, |vr| commands::diff::dispatch(vr, &s(&["a.py"]), &[])).unwrap();
-        // A lone ref: snapshot vs working tree (hash, and by tag).
-        with_repo(&root, |vr| commands::diff::dispatch(vr, &s(&[&h1]), &[])).unwrap();
-        with_repo(&root, |vr| commands::diff::dispatch(vr, &s(&["v1"]), &[])).unwrap();
-        // Two refs, and the equivalent range syntax.
-        with_repo(&root, |vr| {
-            commands::diff::dispatch(vr, &s(&[&h1, &h2]), &[])
-        })
-        .unwrap();
-        with_repo(&root, |vr| {
-            commands::diff::dispatch(vr, &s(&[&format!("{}..{}", h1, h2)]), &[])
-        })
-        .unwrap();
-        // Two refs restricted to a path.
-        with_repo(&root, |vr| {
-            commands::diff::dispatch(vr, &s(&[&h1, &h2]), &s(&["a.py"]))
-        })
-        .unwrap();
-
-        // Something that is neither a file nor a ref is a clear error.
-        assert!(with_repo(&root, |vr| commands::diff::dispatch(
-            vr,
-            &s(&["no_such_thing"]),
-            &[]
-        ))
-        .is_err());
-    }
-
-    #[test]
-    fn diff_prefers_file_over_ref_for_ambiguous_name() {
-        // A short filename must not be swallowed by a hash-prefix match: files
-        // are checked before refs precisely so `velo diff a` means the file.
-        let (_tmp, root) = setup();
-        write(&root, "a", "one\n");
-        save(&root, "c1");
-        write(&root, "a", "two\n");
-        // Resolves as the file (and therefore succeeds even though a hash may
-        // well begin with 'a').
-        with_repo(&root, |vr| {
-            commands::diff::dispatch(vr, &["a".to_string()], &[])
-        })
-        .unwrap();
-    }
-
-    #[test]
     fn diff_range_two_snapshots() {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "version 1\n");
@@ -7627,7 +7560,7 @@ beta
         let h2 = save(&root, "s2");
         // Should not panic
         with_repo(&root, |vr| {
-            commands::diff::run_range(vr, &h1, Some(&h2), &[])
+            commands::diff::between(vr, &sid(&h1), Some(&sid(&h2)), &[])
         })
         .unwrap();
     }
@@ -7638,7 +7571,7 @@ beta
         write(&root, "f.txt", "saved\n");
         let h = save(&root, "s1");
         write(&root, "f.txt", "working\n");
-        with_repo(&root, |vr| commands::diff::run_range(vr, &h, None, &[])).unwrap();
+        with_repo(&root, |vr| commands::diff::between(vr, &sid(&h), None, &[])).unwrap();
     }
 
     #[test]
@@ -7652,7 +7585,7 @@ beta
         let h2 = save(&root, "s2");
         // Only diff b.txt — should succeed
         with_repo(&root, |vr| {
-            commands::diff::run_range(vr, &h1, Some(&h2), &["b.txt".to_string()])
+            commands::diff::between(vr, &sid(&h1), Some(&sid(&h2)), &[Path::new("b.txt")])
         })
         .unwrap();
     }

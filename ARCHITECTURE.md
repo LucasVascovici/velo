@@ -1123,7 +1123,7 @@ snapshots they create on a user's behalf are attributed like any other.
 `Repo::init` and `discover` already take `&Path`. On Windows especially this is a
 class of quoting and separator bugs that only appear on someone else's machine.
 
-### 8.4 The core parses argv
+### 8.4 The core parses argv ✅ **DONE**
 
 `diff::dispatch(repo, args: &[String], paths: &[String])` interprets raw
 command-line arguments — `a..b` range syntax included — inside `velo-core`. A
@@ -1135,6 +1135,19 @@ pub fn between(repo: &Repo, a: &SnapshotId, b: &SnapshotId, paths: &[&Path]) -> 
 ```
 
 …with `dispatch` moving to `velo-cli`, where argv comes from.
+
+**Done.** `between` takes ids and `&[&Path]`; `dispatch`, `split_range` and
+`is_path_like` now live in `velo-cli/src/diffargs.rs`. Core kept one piece —
+`diff::tracks_path` — because "did this snapshot track this path" is a repository
+question, and it is what stops a since-deleted file being mistaken for a ref.
+
+Labels moved too, and that is the more interesting half. `run_range` built
+`main (a1b2c3d4)` from the spec it was handed, so core knew what the user typed.
+It no longer does: it labels with the abbreviated id and the CLI prepends the
+spec — the rule 1.3 established, applied to the last place still breaking it.
+
+The two tests asserting argv interpretation moved with the code, and gained a
+case: more than two refs is refused rather than silently ignoring the extras.
 
 ### 8.5 Shrink the public surface — **gates Phase 9**
 
