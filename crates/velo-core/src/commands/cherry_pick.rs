@@ -12,7 +12,7 @@ use std::fs;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, RefKind, Result, VeloError};
 use crate::storage;
-use crate::{SnapshotId, WriteGuard};
+use crate::{Author, SnapshotId, WriteGuard};
 
 /// What a cherry-pick did.
 #[derive(Clone, Debug)]
@@ -42,7 +42,7 @@ impl Outcome {
 
 /// Apply `target`'s changes to the working tree, committing when clean.
 /// Apply the changes one snapshot introduced, on top of the current position.
-pub fn run(guard: &WriteGuard, target: &SnapshotId) -> Result<Outcome> {
+pub fn run(guard: &WriteGuard, target: &SnapshotId, author: Option<&Author>) -> Result<Outcome> {
     let root = guard.root();
     // Checked before the dirty-tree test: a paused merge or cherry-pick leaves
     // the tree dirty by design, so testing dirtiness first blames the wrong thing.
@@ -98,9 +98,16 @@ pub fn run(guard: &WriteGuard, target: &SnapshotId) -> Result<Outcome> {
     // A clean pick is committed straight away. Delegating to `save` means
     // auto-merged content gets hashed correctly and there is one snapshot path.
     let commit_message = format!("Cherry-pick {}: {}", &snapshot[..8], message);
-    let saved_as = crate::commands::save::run(guard, &commit_message, false)?
-        .into_result()
-        .map(|r| r.hash);
+    let saved_as = crate::commands::save::run(
+        guard,
+        Some(&commit_message),
+        crate::commands::save::Options {
+            author,
+            ..Default::default()
+        },
+    )?
+    .into_result()
+    .map(|r| r.hash);
 
     Ok(Outcome {
         snapshot,

@@ -29,6 +29,12 @@ This file starts at the format v2 break. Earlier releases are in the git history
 - **`grep::run` takes an `Options` struct.** `run(repo, pat, None, false, true, 2)`
   said nothing about which flag was which.
 - **`show::run` takes `&[&Path]`** instead of a single `&Option<String>`.
+- **`save::run` takes an `Options` struct** — `amend`, `paths: &[&Path]`,
+  `author`, `observer` and `cancel` — and `run_with_paths` is gone. A cancelled
+  save records nothing, which is clean rather than partial: hashing writes
+  objects, and an object nothing references is exactly what `gc` collects.
+- **`cherry_pick::run` and `rebase::run` take an author**, so the snapshots they
+  create on your behalf are attributed like any other.
 - **`restore::run` takes `&SnapshotId` and an `Options` struct** carrying `force`,
   `paths: &[&Path]`, and the observer and cancellation token above.
 - **`merge::run` and `rebase::run` take a mode enum.** `rebase::run(guard,

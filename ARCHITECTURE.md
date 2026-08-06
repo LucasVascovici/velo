@@ -1090,7 +1090,7 @@ that — the same reasoning `resolve_snapshot_id` applies to its own input.
 Everything else in the table takes an id, and the CLI resolves at the argv
 boundary.
 
-### 8.2 Positional arguments, and booleans that are really enums 🟡 *(mode enums done)*
+### 8.2 Positional arguments, and booleans that are really enums ✅ **DONE**
 
 ```rust
 grep::run(repo, pattern, snapshot, case_insensitive, names_only, context)
@@ -1107,10 +1107,14 @@ booleans and the fourth combination is meaningless. That is an enum.
 missing case something the caller has to handle when constructing it.
 `grep::Options` landed with [8.1](#81-refs-are-still-strings-in-most-write-commands--done).
 
-**Still positional:** `restore::run(guard, snapshot, force, paths)` and
-`save::run_with_paths`. Those are where [7.6](#76-per-call-progress-and-cancellation-)
-lands — an observer and a cancellation token are two more fields on the options
-struct they are owed, and doing both at once is why 7.6 waited.
+`restore::Options` and `save::Options` followed, each carrying the observer and
+cancellation token [7.6](#76-per-call-progress-and-cancellation--restore-done)
+owed them — doing both at once is why 7.6 waited. `save::run_with_paths` is gone;
+there is one entry point.
+
+`cherry_pick::run` and `rebase::run` gained the author that
+[6.1](#61-authorship-) could not thread until their signatures moved, so the
+snapshots they create on a user's behalf are attributed like any other.
 
 ### 8.3 Filesystem paths are `&str`
 

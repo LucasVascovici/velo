@@ -9,6 +9,9 @@ use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
+use std::path::Path;
+
+use crate::progress::{Cancel, Observer};
 use crate::{Author, SnapshotId, SnapshotMeta, WriteGuard};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -63,25 +66,41 @@ impl Outcome {
     }
 }
 
-/// Snapshot the working directory.
-/// When `amend = true`, the most recent snapshot on this branch is replaced.
-pub fn run(guard: &WriteGuard, message: &str, amend: bool) -> Result<Outcome> {
-    run_with_paths(guard, Some(message), amend, &[], None)
+/// How to save.
+#[derive(Default)]
+pub struct Options<'a> {
+    /// Replace the most recent snapshot on this branch instead of adding one.
+    pub amend: bool,
+    /// Snapshot only files under these paths; empty means everything dirty.
+    /// Files outside the pathspec stay unsaved.
+    pub paths: &'a [&'a Path],
+    /// Who is saving. Recorded in the reserved metadata namespace, so it is part
+    /// of the snapshot's identity — see [`Author`].
+    pub author: Option<&'a Author>,
+    /// Where to report hashing progress, overriding the repository's observer.
+    pub observer: Option<&'a dyn Observer>,
+    /// Checked while hashing. A cancelled save records nothing.
+    pub cancel: Option<&'a Cancel>,
 }
 
-/// Same as `run` but only snapshots files that match at least one entry in `paths`.
-/// Files outside the pathspec remain dirty (unsaved).
+/// Snapshot the working directory.
 ///
 /// `message` may be `None` only when amending, in which case the amended
 /// snapshot keeps its existing message — so fixing a forgotten file doesn't
 /// force you to retype it.
-pub fn run_with_paths(
-    guard: &WriteGuard,
-    message: Option<&str>,
-    amend: bool,
-    paths: &[String],
-    author: Option<&Author>,
-) -> Result<Outcome> {
+pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> Result<Outcome> {
+    let Options {
+        amend,
+        paths,
+        author,
+        observer,
+        cancel,
+    } = options;
+    let paths: Vec<String> = paths
+        .iter()
+        .map(|p| crate::db::normalise(&p.to_string_lossy()))
+        .collect();
+    let paths = paths.as_slice();
     let root = guard.root();
     let provided = message.map(str::trim).filter(|m| !m.is_empty());
     if provided.is_none() && !amend {
@@ -206,11 +225,19 @@ pub fn run_with_paths(
 
     // Hash each changed file, capturing its mode. Symlinks store their target
     // string (not the pointed-at content); regular files store content.
-    let progress = guard.phase(Phase::Hashing, Some(files_to_hash.len() as u64));
+    let progress = crate::progress::PhaseGuard::new(
+        observer.unwrap_or_else(|| guard.repo().observer()),
+        Phase::Hashing,
+        Some(files_to_hash.len() as u64),
+    );
     let hash_results: Result<Vec<(String, String, i64)>> = files_to_hash
         .into_par_iter()
         .inspect(|_| progress.tick())
         .map(|rel| {
+            // Checked per file. Hashing writes objects, which is harmless to
+            // abandon — an object nothing references is what `gc` collects — so
+            // stopping here leaves no snapshot and no dangling reference.
+            crate::progress::Cancel::check(cancel)?;
             let full = root.join(&rel);
             let mode = storage::capture_mode(&full);
             let hash = if mode == storage::MODE_SYMLINK {
@@ -226,6 +253,9 @@ pub fn run_with_paths(
     // two platforms' code paths.
     #[cfg_attr(unix, allow(unused_mut))]
     let mut hashed_files = hash_results?;
+    // Belt and braces: an empty dirty set means the loop above never ran, so a
+    // cancellation set before the save started would otherwise slip through.
+    crate::progress::Cancel::check(cancel)?;
 
     // ── Assemble the complete tree for this snapshot ──────────────────────────
     // Carry forward every unchanged file from the *dirty base* (the snapshot the

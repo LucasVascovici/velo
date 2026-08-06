@@ -21,8 +21,8 @@ use crate::error::{InProgress, Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
 use crate::Repo;
-use crate::SnapshotId;
 use crate::WriteGuard;
+use crate::{Author, SnapshotId};
 
 /// One commit that was replayed onto the new base.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -85,17 +85,17 @@ pub enum Mode<'a> {
 }
 
 /// Rebase, continue one, or abort one.
-pub fn run(guard: &WriteGuard, mode: Mode<'_>) -> Result<Outcome> {
+pub fn run(guard: &WriteGuard, mode: Mode<'_>, author: Option<&Author>) -> Result<Outcome> {
     match mode {
         Mode::Abort => do_abort(guard),
-        Mode::Continue => do_continue(guard),
-        Mode::Start { onto } => do_start(guard, onto),
+        Mode::Continue => do_continue(guard, author),
+        Mode::Start { onto } => do_start(guard, onto, author),
     }
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
 
-fn do_start(guard: &WriteGuard, target: &SnapshotId) -> Result<Outcome> {
+fn do_start(guard: &WriteGuard, target: &SnapshotId, author: Option<&Author>) -> Result<Outcome> {
     let root = guard.root();
     if root.join(".velo/REBASE_STATE").exists() {
         return Err(VeloError::OperationInProgress {
@@ -149,12 +149,12 @@ fn do_start(guard: &WriteGuard, target: &SnapshotId) -> Result<Outcome> {
         guard.root(),
         &commits.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(),
     )?;
-    replay(guard, &branch, &onto_hash, &commits)
+    replay(guard, &branch, &onto_hash, &commits, author)
 }
 
 // ── Continue after resolving a conflict ───────────────────────────────────────
 
-fn do_continue(guard: &WriteGuard) -> Result<Outcome> {
+fn do_continue(guard: &WriteGuard, author: Option<&Author>) -> Result<Outcome> {
     let root = guard.root();
     if !root.join(".velo/REBASE_STATE").exists() {
         return Err(VeloError::NoOperationInProgress {
@@ -192,7 +192,7 @@ fn do_continue(guard: &WriteGuard) -> Result<Outcome> {
         })
         .collect();
 
-    replay(guard, &branch, &onto, &commits)
+    replay(guard, &branch, &onto, &commits, author)
 }
 
 // ── Abort ─────────────────────────────────────────────────────────────────────
@@ -279,6 +279,7 @@ fn replay(
     branch: &str,
     onto: &str,
     commits: &[(String, String)],
+    author: Option<&Author>,
 ) -> Result<Outcome> {
     let root = guard.root();
     let total = commits.len();
@@ -310,7 +311,14 @@ fn replay(
             });
         }
 
-        crate::commands::save::run(guard, message, false)?;
+        crate::commands::save::run(
+            guard,
+            Some(message),
+            crate::commands::save::Options {
+                author,
+                ..Default::default()
+            },
+        )?;
         replayed.push(step);
     }
 
