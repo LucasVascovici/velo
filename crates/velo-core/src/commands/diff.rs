@@ -12,9 +12,10 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::commands::{get_dirty_files, is_binary, FileStatus};
 use crate::db;
-use crate::error::{Result, VeloError};
+use crate::error::Result;
 use crate::storage;
 use crate::Repo;
+use crate::SnapshotId;
 
 // ─── Data model ───────────────────────────────────────────────────────────────
 
@@ -97,95 +98,18 @@ impl Diff {
     }
 }
 
-// ─── Dispatch ─────────────────────────────────────────────────────────────────
-
-/// Resolve the argument forms of `velo diff` and produce the comparison:
+/// Whether `snapshot` tracked `path`, or anything beneath it.
 ///
-/// ```text
-/// velo diff                  working tree vs the last snapshot
-/// velo diff <file>           just that file, working tree vs last snapshot
-/// velo diff <a>              snapshot <a> vs the working tree
-/// velo diff <a> <b>          snapshot <a> vs snapshot <b>
-/// velo diff <a>..<b>         same as `velo diff <a> <b>`
-/// velo diff -- <paths>       restrict any of the above to paths
-/// ```
-///
-/// A single argument is a *file* when one exists by that name, otherwise it is
-/// resolved as a snapshot / tag / branch / remote ref. Checking the filesystem
-/// first matters: a short filename like `a` could otherwise be swallowed by a
-/// hash prefix. Use `--` to force path interpretation.
-pub fn dispatch(repo: &Repo, args: &[String], paths: &[String]) -> Result<Diff> {
-    let root = repo.root();
-    let parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let parent = parent.trim().to_string();
-
-    match args {
-        [] => {
-            if paths.is_empty() {
-                run(repo, &None)
-            } else {
-                run_range(repo, &parent, None, paths)
-            }
-        }
-
-        [one] => {
-            if let Some((a, b)) = split_range(one) {
-                return run_range(repo, a, Some(b), paths);
-            }
-            if is_path_like(repo, one) {
-                // A file: fold it in with any explicit pathspec.
-                if paths.is_empty() {
-                    run(repo, &Some(one.clone()))
-                } else {
-                    let mut all = vec![one.clone()];
-                    all.extend_from_slice(paths);
-                    run_range(repo, &parent, None, &all)
-                }
-            } else {
-                // A snapshot/tag/branch: compare it against the working tree.
-                crate::commands::resolve_snapshot_id(repo, one).map_err(|_| {
-                    VeloError::invalid(format!(
-                        "'{}' is neither a file nor a snapshot, tag, or branch.\n  \
-                         To diff a path that doesn't exist any more, use: velo diff -- {}",
-                        one, one
-                    ))
-                })?;
-                run_range(repo, one, None, paths)
-            }
-        }
-
-        [a, b] => run_range(repo, a, Some(b), paths),
-
-        _ => Err(VeloError::invalid(
-            "velo diff takes at most two snapshots. Put file paths after '--'.",
-        )),
-    }
-}
-
-/// Split `a..b` into its ends. Returns `None` when there's no range separator.
-fn split_range(spec: &str) -> Option<(&str, &str)> {
-    let (a, b) = spec.split_once("..")?;
-    if a.is_empty() || b.is_empty() {
-        None
-    } else {
-        Some((a, b))
-    }
-}
-
-/// Does `arg` name something on disk, or a path tracked by the current snapshot?
-fn is_path_like(repo: &Repo, arg: &str) -> bool {
-    let root = repo.root();
-    if root.join(arg).exists() {
-        return true;
-    }
-    // Also treat a path that was tracked but has since been deleted as a path.
-    let parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let normalised = db::normalise(arg);
+/// Exposed for a caller deciding whether a bare command-line argument names a
+/// file or a ref: a path that was tracked but has since been deleted is still a
+/// path, and the filesystem alone cannot say so.
+pub fn tracks_path(repo: &Repo, snapshot: &SnapshotId, path: &Path) -> bool {
+    let normalised = db::normalise(&path.to_string_lossy());
     repo.conn()
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM file_map
               WHERE snapshot_hash = ? AND (path = ? OR path LIKE ? || '/%'))",
-            rusqlite::params![parent.trim(), normalised, normalised],
+            rusqlite::params![snapshot, normalised, normalised],
             |r| r.get::<_, bool>(0),
         )
         .unwrap_or(false)
@@ -265,25 +189,44 @@ fn working_tree_change(
 
 // ─── Snapshot ranges ──────────────────────────────────────────────────────────
 
-/// Compare snapshot `a_raw` against snapshot `b_raw`, or against the working tree
-/// when `b_raw` is `None`. `paths`, when non-empty, restricts the comparison.
-pub fn run_range(repo: &Repo, a_raw: &str, b_raw: Option<&str>, paths: &[String]) -> Result<Diff> {
+/// Compare snapshot `a` against snapshot `b`, or against the working tree when
+/// `b` is `None`. `paths`, when non-empty, restricts the comparison.
+///
+/// Takes resolved ids. Parsing `a..b` range syntax, deciding whether a bare
+/// argument names a file or a ref, and reading `.velo/PARENT` for an implicit
+/// left-hand side are argv concerns and live in the CLI — a consumer holding two
+/// ids should not have to format them into a string for velo to parse back.
+///
+/// Labels are the abbreviated ids. A caller that knows what the user typed —
+/// `main`, `v1.0` — should overwrite [`Diff::old_label`] and [`Diff::new_label`]
+/// before rendering, because choosing the words is presentation.
+pub fn between(
+    repo: &Repo,
+    a: &SnapshotId,
+    b: Option<&SnapshotId>,
+    paths: &[&Path],
+) -> Result<Diff> {
     let root = repo.root();
     let conn = repo.conn();
     let objects_dir = root.join(".velo/objects");
+    let paths: Vec<String> = paths
+        .iter()
+        .map(|p| db::normalise(&p.to_string_lossy()))
+        .collect();
+    let paths = paths.as_slice();
 
-    let a_hash = crate::commands::resolve_snapshot_id(repo, a_raw)?;
+    let a_hash = a.clone();
     let a_files = load_file_map(conn, &a_hash)?;
-    let old_label = format!("{} ({})", a_raw, &a_hash[..8]);
+    let old_label = a_hash.short().to_string();
 
     let matches_filter =
         |p: &str| paths.is_empty() || paths.iter().any(|f| p.starts_with(f.as_str()));
 
-    let (new_label, files) = match b_raw {
+    let (new_label, files) = match b {
         Some(b) => {
-            let b_hash = crate::commands::resolve_snapshot_id(repo, b)?;
+            let b_hash = b.clone();
             let b_files = load_file_map(conn, &b_hash)?;
-            let label = format!("{} ({})", b, &b_hash[..8]);
+            let label = b_hash.short().to_string();
 
             let mut out = Vec::new();
             for path in union_paths(&a_files, &b_files) {
