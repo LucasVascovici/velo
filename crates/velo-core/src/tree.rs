@@ -281,6 +281,28 @@ impl WriteGuard<'_> {
     /// snapshot built this way is indistinguishable from one built by `save`:
     /// the same bytes yield the same object, and the same tree yields the same
     /// snapshot id.
+    ///
+    /// # There is no "nothing changed" guard
+    ///
+    /// `velo save` refuses an empty save. This does not: hand it the same tree
+    /// twice and you get two snapshots, differing only in parent and timestamp.
+    /// That is right for a primitive — a caller may well want to record that
+    /// something was checked at a particular moment — but it means the failure
+    /// mode is a history full of duplicates rather than an error, and it is on
+    /// the caller to notice.
+    ///
+    /// Comparing against the parent's tree is the check most consumers want:
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// # use velo_core::tree::TreeFile;
+    /// # let repo = velo_core::Repo::discover(std::path::Path::new("."))?;
+    /// # let parent = velo_core::commands::resolve_snapshot_id(&repo, "main")?;
+    /// # let proposed: Vec<TreeFile> = Vec::new();
+    /// let unchanged = repo.tree_at(&parent)? == proposed;
+    /// # let _ = unchanged;
+    /// # Ok(()) }
+    /// ```
     pub fn save_tree(&self, spec: SaveTree<'_>) -> Result<SnapshotId> {
         // No empty-branch check: `BranchName` cannot be empty by construction.
         // Both parents are checked: naming one that does not exist would create

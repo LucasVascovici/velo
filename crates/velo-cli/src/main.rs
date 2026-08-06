@@ -254,13 +254,15 @@ NOTES
         #[arg(long, help = "Show ASCII graph of branch topology")]
         graph: bool,
 
-        /// Show only snapshots that touched the given file or directory.
+        /// Show only snapshots that changed the given files or directories.
+        ///
+        /// Repeatable: a document and its assets are more than one path.
         #[arg(
             long = "file",
             value_name = "PATH",
-            help = "Filter to snapshots that modified PATH"
+            help = "Filter to snapshots that modified PATH (repeatable)"
         )]
-        file_filter: Option<String>,
+        file_filter: Vec<String>,
     },
 
     /// Remove the most recent snapshot on the current branch.
@@ -1475,12 +1477,13 @@ fn run(cli: Cli) -> Result<()> {
             // Parsed here, at the argv boundary, so a malformed branch name is
             // a clear error rather than a query that quietly matches nothing.
             let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
+            let file_paths: Vec<&Path> = file_filter.iter().map(Path::new).collect();
             let history = commands::history::run(
                 &repo,
                 commands::history::Options {
                     all,
                     branch: branch.as_ref(),
-                    file: file_filter.as_deref(),
+                    paths: &file_paths,
                     limit: Some(limit),
                 },
             )?;
