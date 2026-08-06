@@ -20,6 +20,16 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Added
 
+- **Authorship, with no format change.** `Author` (name plus optional email) is
+  recorded through `SaveTree.author` and read back with `SnapshotMeta::author()`.
+  It lives in the reserved `velo` metadata namespace, which means it is **hashed
+  into the snapshot id** — so a rewritten author is reported by `fsck` rather than
+  believed. That is the whole argument: rewritable provenance in a repository that
+  syncs is worse than none, because it still looks trustworthy. No schema change
+  was needed, because `snapshot_meta` already existed, was already hashed, already
+  travelled with bundles and sync, and already refused the `velo` namespace to
+  application callers. `velo save` reads `VELO_AUTHOR_NAME` and
+  `VELO_AUTHOR_EMAIL`; an absent author is not an error, a malformed one is.
 - **`merge::plan`** — what a merge would do, with none of it done. `merge::run`
   needs a clean working tree, writes files and records conflict state, which an
   application with unsaved buffers can use none of. `plan` takes a `&Repo` rather

@@ -1998,7 +1998,8 @@ mod tests {
                 vr,
                 Some("again"),
                 false,
-                &[]
+                &[],
+                None
             ))
             .unwrap(),
             Outcome::NothingToSave
@@ -2008,7 +2009,8 @@ mod tests {
                 vr,
                 None,
                 true,
-                &[]
+                &[],
+                None
             ))
             .unwrap(),
             Outcome::NothingToAmend
@@ -3282,6 +3284,7 @@ mod tests {
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -3331,6 +3334,7 @@ mod tests {
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -3402,6 +3406,7 @@ mod tests {
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("main"),
                     parent: None,
                     merge_parent: None,
@@ -3436,6 +3441,7 @@ mod tests {
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("imported"),
                     parent: None,
                     merge_parent: None,
@@ -3485,6 +3491,7 @@ c
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -3499,6 +3506,7 @@ c
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("registry"),
                     parent: Some(&first),
                     merge_parent: None,
@@ -3539,6 +3547,7 @@ c
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("registry"),
                     parent: parent_id.as_ref(),
                     merge_parent: None,
@@ -3577,6 +3586,7 @@ c
             SaveTree {
                 meta: SnapshotMeta::new(),
                 timestamp_ms: None,
+                author: None,
                 branch,
                 parent,
                 merge_parent: None,
@@ -3637,6 +3647,7 @@ c
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -3662,6 +3673,7 @@ c
                 .save_tree(SaveTree {
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                     branch: &branch_name("registry"),
                     parent: None,
                     merge_parent: None,
@@ -6638,6 +6650,7 @@ beta
                     )],
                     meta: meta.clone(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap()
         };
@@ -6890,7 +6903,7 @@ beta
 
         write(&root, "forgotten.py", "b\n");
         let r = with_write(&root, |vr| {
-            commands::save::run_with_paths(vr, None, true, &[])
+            commands::save::run_with_paths(vr, None, true, &[], None)
         })
         .unwrap()
         .into_result()
@@ -6918,7 +6931,7 @@ beta
         // A message may still be supplied to reword.
         write(&root, "a.py", "a2\n");
         let r2 = with_write(&root, |vr| {
-            commands::save::run_with_paths(vr, Some("Reworded"), true, &[])
+            commands::save::run_with_paths(vr, Some("Reworded"), true, &[], None)
         })
         .unwrap()
         .into_result()
@@ -6945,7 +6958,8 @@ beta
                 vr,
                 None,
                 true,
-                &[]
+                &[],
+                None
             ))
             .unwrap()
                 == commands::save::Outcome::NothingToAmend,
@@ -6956,7 +6970,8 @@ beta
             vr,
             None,
             false,
-            &[]
+            &[],
+            None
         ))
         .is_err());
 
@@ -6967,7 +6982,8 @@ beta
             vr,
             None,
             true,
-            &[]
+            &[],
+            None
         ))
         .is_err());
     }
@@ -7228,7 +7244,7 @@ beta
 
         // Only save a.txt
         with_write(&root, |vr| {
-            commands::save::run_with_paths(vr, Some("only a"), false, &["a.txt".to_string()])
+            commands::save::run_with_paths(vr, Some("only a"), false, &["a.txt".to_string()], None)
         })
         .unwrap();
 
@@ -7407,6 +7423,7 @@ beta
                     ],
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap()
         };
@@ -7450,6 +7467,7 @@ beta
                     entries: by_value,
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap();
             let right = guard
@@ -7461,6 +7479,7 @@ beta
                     entries: by_reference,
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap();
             (left, right)
@@ -7502,6 +7521,7 @@ beta
                 entries: vec![TreeEntry::stored("f.txt", absent, FileKind::Regular)],
                 meta: SnapshotMeta::new(),
                 timestamp_ms: None,
+                author: None,
             })
             .unwrap_err();
         assert!(
@@ -7572,6 +7592,7 @@ beta
             )],
             meta: SnapshotMeta::new(),
             timestamp_ms: None,
+            author: None,
         };
 
         let (one, two) = (branch_name("one"), branch_name("two"));
@@ -7645,6 +7666,7 @@ beta
                     )],
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap();
             let side = guard
@@ -7661,6 +7683,7 @@ beta
                     )],
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap();
             let merged = guard
@@ -7677,6 +7700,7 @@ beta
                     )],
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap();
             (base, side, merged)
@@ -7725,6 +7749,7 @@ beta
                 entries: vec![TreeEntry::file("a.txt", b"x".to_vec())],
                 meta: SnapshotMeta::new(),
                 timestamp_ms: None,
+                author: None,
             })
             .unwrap_err();
         assert!(
@@ -7765,6 +7790,7 @@ beta
                         ],
                         meta: SnapshotMeta::new(),
                         timestamp_ms: Some(WHEN),
+                        author: None,
                     })
                     .unwrap()
             };
@@ -7803,6 +7829,7 @@ beta
                     entries: vec![TreeEntry::file("a.txt", b"x".to_vec())],
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap()
         };
@@ -7848,6 +7875,7 @@ beta
                         entries: vec![TreeEntry::file("f.txt", format!("v{}\n", n).into_bytes())],
                         meta: SnapshotMeta::new(),
                         timestamp_ms: Some(*when),
+                        author: None,
                     })
                     .unwrap();
                 parent = Some(id);
@@ -7902,6 +7930,7 @@ beta
                     entries: vec![TreeEntry::file("f.txt", b"new\n".to_vec())],
                     meta: SnapshotMeta::new(),
                     timestamp_ms: Some(1_785_922_872_345),
+                    author: None,
                 })
                 .unwrap();
             let backdated = guard
@@ -7913,6 +7942,7 @@ beta
                     entries: vec![TreeEntry::file("f.txt", b"old\n".to_vec())],
                     meta: SnapshotMeta::new(),
                     timestamp_ms: Some(1_609_459_200_000),
+                    author: None,
                 })
                 .unwrap();
             (recent, backdated)
@@ -8284,6 +8314,117 @@ line three CHANGED
         }
     }
 
+    /// An author is recorded, read back, and part of the snapshot's identity.
+    #[test]
+    fn an_author_is_recorded_and_hashed_into_the_id() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let ada = crate::Author::with_email("Ada Lovelace", "ada@example.com").unwrap();
+
+        let entries = || {
+            vec![TreeEntry::file(
+                "a.txt",
+                b"x
+"
+                .to_vec(),
+            )]
+        };
+        let spec = |author, branch| SaveTree {
+            branch,
+            parent: None,
+            merge_parent: None,
+            message: "m",
+            entries: entries(),
+            meta: SnapshotMeta::new(),
+            timestamp_ms: Some(1_785_922_872_345),
+            author,
+        };
+
+        let (a, b) = (branch_name("a"), branch_name("b"));
+        let (with, without) = {
+            let guard = repo.write().unwrap();
+            let with = guard.save_tree(spec(Some(&ada), &a)).unwrap();
+            let without = guard.save_tree(spec(None, &b)).unwrap();
+            (with, without)
+        };
+
+        // Same tree, message and timestamp — only the author differs, and the ids
+        // differ, which is what "part of identity" means.
+        assert_ne!(with, without);
+
+        let meta = repo.snapshot_meta(&with).unwrap();
+        let read_back = meta.author().expect("an author was recorded");
+        assert_eq!(read_back, ada);
+        assert_eq!(read_back.to_string(), "Ada Lovelace <ada@example.com>");
+        assert!(repo.snapshot_meta(&without).unwrap().author().is_none());
+
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    /// Rewriting a recorded author is caught, which is the entire reason it is
+    /// stored as hashed metadata rather than as a column beside the snapshot.
+    #[test]
+    fn a_rewritten_author_is_reported_by_fsck() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup();
+        let ada = crate::Author::new("Ada Lovelace").unwrap();
+        let id = {
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: &branch_name("main"),
+                    parent: None,
+                    merge_parent: None,
+                    message: "m",
+                    entries: vec![TreeEntry::file(
+                        "a.txt",
+                        b"x
+"
+                        .to_vec(),
+                    )],
+                    meta: SnapshotMeta::new(),
+                    timestamp_ms: None,
+                    author: Some(&ada),
+                })
+                .unwrap()
+        };
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+
+        // Forge the attribution directly in the database, as a tamperer would.
+        {
+            let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+            conn.execute(
+                "UPDATE snapshot_meta SET value = 'Somebody Else'
+                 WHERE snapshot_id = ? AND namespace = 'velo' AND key = 'author.name'",
+                [&id],
+            )
+            .unwrap();
+        }
+
+        let report = with_repo(&root, commands::fsck::check).unwrap();
+        assert!(
+            !report.is_healthy(),
+            "a rewritten author must not pass verification"
+        );
+    }
+
+    /// The reserved namespace is not writable by an application.
+    #[test]
+    fn the_velo_namespace_stays_reserved_for_authorship() {
+        let mut meta = SnapshotMeta::new();
+        assert!(
+            meta.set("velo", "author.name", "Impostor").is_err(),
+            "an app must not be able to forge an author through the metadata API"
+        );
+        assert!(meta.author().is_none());
+    }
+
     // ─── format v2 ────────────────────────────────────────────────────────────
 
     /// The break's central claim: metadata is part of a snapshot's identity.
@@ -8309,6 +8450,7 @@ line three CHANGED
                     entries: entries(),
                     meta: SnapshotMeta::new(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap();
             let with_meta = guard
@@ -8320,6 +8462,7 @@ line three CHANGED
                     entries: entries(),
                     meta: tagged.clone(),
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap();
             (plain, with_meta)
@@ -8476,6 +8619,7 @@ line three CHANGED
                     entries: vec![TreeEntry::file("a.txt", b"x\n".to_vec())],
                     meta,
                     timestamp_ms: None,
+                    author: None,
                 })
                 .unwrap();
         }

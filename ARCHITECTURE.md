@@ -799,9 +799,9 @@ keeps the number of breaking changes to that struct at two rather than three.
 
 ---
 
-## Phase 6 — The last irreversible decision 🔴 **Required**
+## Phase 6 — The last irreversible decision ✅ **DONE**
 
-### 6.1 Authorship
+### 6.1 Authorship ✅
 
 `snapshots` is `hash, message, branch, parent_hash, merge_parent, created_at_ms`.
 Nothing records **who**. velo has `clone`, `push`, `pull` and `bundle` — it is
@@ -844,9 +844,35 @@ Honest costs, so this is decided with eyes open:
 | `velo save` needs a source for it | The CLI reads config/env and passes it in; core still reads no environment |
 | Slightly more metadata per snapshot | Two short rows |
 
-**What makes this Phase 6 and not Phase 8:** if it is *not* done via the reserved
-namespace, the alternative is a format break, and format breaks get more
-expensive every day. Deciding is urgent; the chosen implementation is cheap.
+**Done, and it cost no format change.** `Author` carries a name and an optional
+email, `SaveTree.author` records it, `SnapshotMeta::author()` reads it back, and
+`SnapshotMeta::set_author` is `pub(crate)` so the reserved namespace stays the one
+sanctioned route — an application still cannot forge an author through
+`SnapshotMeta::set`, which a test asserts.
+
+The proof that hashing was the right call is also a test: forging
+`snapshot_meta.value` directly in the database makes `fsck` report the snapshot,
+because the id commits to it. A plain column would have accepted the forgery
+silently.
+
+`velo save` reads `VELO_AUTHOR_NAME` and `VELO_AUTHOR_EMAIL` in `velo-cli`, since
+core reads no environment. An absent author is not an error — velo has always
+recorded snapshots without one, and refusing to save until a variable is set
+would be a poor trade for a tool that is useful single-player. A *malformed* one
+is an error rather than being dropped, because whoever set it meant it.
+
+One thing this exposed: `save` had never written to `snapshot_meta` at all, since
+it always passed an empty set. It does now — an id that commits to metadata the
+repository does not hold fails its own `fsck`, so the rows and the id have to land
+in the same transaction.
+
+**Still to wire:** `cherry_pick` and `rebase` create snapshots through
+`save::run`, which takes no author, so those record none. Both signatures are
+being reshaped in [8.1](#81-refs-are-still-strings-in-most-write-commands)
+anyway, and threading it there is one change rather than two. This costs nothing
+irreversible — authorship is metadata, so adding it later needs no migration,
+which is precisely the property that made the reserved namespace the right
+choice.
 
 ⛔ **Do not add a plain `author` column.** Rewritable provenance in a synced
 repository is worse than none, because it looks trustworthy. This is the same

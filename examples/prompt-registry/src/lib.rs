@@ -158,6 +158,7 @@ impl Registry {
             entries: entries.into_values().collect(),
             meta,
             timestamp_ms: None,
+            author: None,
         })?;
         Ok(id)
     }

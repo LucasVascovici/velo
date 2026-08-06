@@ -29,6 +29,7 @@
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() {}\n".to_vec())],
 //!     meta,
 //!     timestamp_ms: None,
+//!     author: None,
 //! })?;
 //!
 //! // Chain the next one onto it. Nothing was written to disk, and the
@@ -41,6 +42,7 @@
 //!     entries: vec![TreeEntry::file("pkg/lib.rs", b"pub fn f() -> u8 { 1 }\n".to_vec())],
 //!     meta: SnapshotMeta::new(),
 //!     timestamp_ms: None,
+//!     author: None,
 //! })?;
 //!
 //! assert_eq!(repo.read_file_at(&first, "pkg/lib.rs")?, b"pub fn f() {}\n");
@@ -77,7 +79,9 @@ use rusqlite::params;
 
 use crate::commands::SnapshotIdentity;
 use crate::error::{RefKind, Result, VeloError};
-use crate::{db, storage, BranchName, ObjectHash, Repo, SnapshotId, SnapshotMeta, WriteGuard};
+use crate::{
+    db, storage, Author, BranchName, ObjectHash, Repo, SnapshotId, SnapshotMeta, WriteGuard,
+};
 
 /// What a file is: content, plus how the filesystem should represent it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -224,6 +228,12 @@ pub struct SaveTree<'a> {
     /// metadata are two different snapshots. `Default::default()` is an empty
     /// set, which is what `velo save` produces.
     pub meta: SnapshotMeta,
+    /// Who made this snapshot.
+    ///
+    /// Recorded in the reserved `velo` metadata namespace, so it is hashed into
+    /// the id and cannot be quietly rewritten — see [`Author`]. `None` records no
+    /// author, which is what every snapshot written before this existed has.
+    pub author: Option<&'a Author>,
     /// When this snapshot was made, as epoch milliseconds, or `None` for now.
     ///
     /// The timestamp is part of a snapshot's identity, so a caller that cannot
@@ -337,6 +347,13 @@ impl WriteGuard<'_> {
             tree.push((path, object, mode));
         }
 
+        // The author joins the metadata *before* the id is computed, because
+        // that is the point: it is part of identity, not a column beside it.
+        let mut meta = spec.meta;
+        if let Some(author) = spec.author {
+            meta.set_author(author);
+        }
+
         let parent = spec.parent.map_or("", |p| p.as_str());
         let merge_parent = spec.merge_parent.map_or("", |p| p.as_str());
         // The caller's clock when they supplied one, ours otherwise. This is the
@@ -350,7 +367,7 @@ impl WriteGuard<'_> {
             merge_parent,
             message: spec.message,
             timestamp_ms,
-            meta: &spec.meta,
+            meta: &meta,
         }));
 
         let tx = self.transaction()?;
@@ -397,7 +414,7 @@ impl WriteGuard<'_> {
                     "INSERT INTO snapshot_meta (snapshot_id, namespace, key, value)
                      VALUES (?, ?, ?, ?)",
                 )?;
-                for (namespace, key, value) in spec.meta.iter() {
+                for (namespace, key, value) in meta.iter() {
                     ins_meta.execute(params![snapshot, namespace, key, value])?;
                 }
             }

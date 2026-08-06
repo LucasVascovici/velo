@@ -24,6 +24,7 @@
 //! two callers inserting the same pairs in different orders get the same id.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use crate::error::{Result, VeloError};
 
@@ -140,6 +141,128 @@ impl SnapshotMeta {
     /// job to report instead.
     pub(crate) fn insert_stored(&mut self, namespace: String, key: String, value: String) {
         self.entries.insert((namespace, key), value);
+    }
+}
+
+/// Who made a snapshot.
+///
+/// Stored in the reserved [`RESERVED_NAMESPACE`], which means it is **hashed into
+/// the snapshot id** like any other metadata — so authorship is tamper-evident,
+/// and `fsck` reports a rewritten one as an id mismatch. That is the whole
+/// argument for putting it here rather than in a plain column: rewritable
+/// provenance in a repository that syncs is worse than none, because it still
+/// looks trustworthy.
+///
+/// It also means adding authorship needed **no format change**. `snapshot_meta`
+/// already existed, was already hashed, already travelled with bundles and sync,
+/// and the `velo` namespace was already refused to application callers so nothing
+/// could squat it.
+///
+/// Snapshots written before an author was supplied simply have none, which is
+/// true under every option including a format break.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Author {
+    name: String,
+    email: Option<String>,
+}
+
+/// Metadata key holding an author's name.
+const AUTHOR_NAME: &str = "author.name";
+/// Metadata key holding an author's email.
+const AUTHOR_EMAIL: &str = "author.email";
+
+impl Author {
+    /// An author with a name and no email.
+    ///
+    /// # Errors
+    /// If `name` is empty, has surrounding whitespace, or contains a control
+    /// character — NUL in particular is the id recipe's field separator.
+    pub fn new(name: impl Into<String>) -> Result<Self> {
+        let name = name.into();
+        check("name", &name)?;
+        Ok(Author { name, email: None })
+    }
+
+    /// An author with an email as well.
+    pub fn with_email(name: impl Into<String>, email: impl Into<String>) -> Result<Self> {
+        let mut author = Author::new(name)?;
+        let email = email.into();
+        check("email", &email)?;
+        author.email = Some(email);
+        Ok(author)
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn email(&self) -> Option<&str> {
+        self.email.as_deref()
+    }
+}
+
+impl fmt::Display for Author {
+    /// `Name <email>`, or just the name.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.email {
+            Some(email) => write!(f, "{} <{}>", self.name, email),
+            None => f.write_str(&self.name),
+        }
+    }
+}
+
+fn check(what: &str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(VeloError::invalid(format!(
+            "An author {} cannot be empty.",
+            what
+        )));
+    }
+    if value.trim() != value {
+        return Err(VeloError::invalid(format!(
+            "An author {} cannot have surrounding whitespace.",
+            what
+        )));
+    }
+    if value.chars().any(char::is_control) {
+        return Err(VeloError::invalid(format!(
+            "An author {} cannot contain control characters.",
+            what
+        )));
+    }
+    Ok(())
+}
+
+impl SnapshotMeta {
+    /// The author recorded on this snapshot, if there is one.
+    pub fn author(&self) -> Option<Author> {
+        let name = self.get(RESERVED_NAMESPACE, AUTHOR_NAME)?;
+        Some(Author {
+            name: name.to_string(),
+            email: self
+                .get(RESERVED_NAMESPACE, AUTHOR_EMAIL)
+                .map(str::to_string),
+        })
+    }
+
+    /// Record `author` in the reserved namespace.
+    ///
+    /// Not public: [`SnapshotMeta::set`] refuses the reserved namespace, and this
+    /// is the one sanctioned way in — so every consumer records an author under
+    /// the same key instead of each inventing its own.
+    pub(crate) fn set_author(&mut self, author: &Author) {
+        self.insert_stored(
+            RESERVED_NAMESPACE.to_string(),
+            AUTHOR_NAME.to_string(),
+            author.name.clone(),
+        );
+        if let Some(email) = &author.email {
+            self.insert_stored(
+                RESERVED_NAMESPACE.to_string(),
+                AUTHOR_EMAIL.to_string(),
+                email.clone(),
+            );
+        }
     }
 }
 
