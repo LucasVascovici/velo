@@ -1086,6 +1086,153 @@ mod tests {
         assert_eq!(messages, vec!["first"], "later snapshots are not ancestors");
     }
 
+    #[test]
+    fn gc_reports_to_the_observer_it_was_given() {
+        use crate::progress::{Observer, Phase};
+        use std::sync::{Arc, Mutex};
+
+        #[derive(Clone, Default)]
+        struct Seen(Arc<Mutex<Vec<Phase>>>);
+        impl Observer for Seen {
+            fn begin(&self, p: Phase, _: Option<u64>) {
+                self.0.lock().unwrap().push(p);
+            }
+        }
+
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        save(&root, "one");
+
+        let on_handle = Seen::default();
+        let per_call = Seen::default();
+        let repo = Repo::open_and_migrate(&root)
+            .unwrap()
+            .observing(on_handle.clone());
+        {
+            let guard = repo.write().unwrap();
+            commands::gc::run(
+                &guard,
+                commands::gc::Options {
+                    keep_days: 30,
+                    observer: Some(&per_call),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        }
+
+        assert_eq!(*per_call.0.lock().unwrap(), vec![Phase::Collecting]);
+        assert!(
+            on_handle.0.lock().unwrap().is_empty(),
+            "the handle's observer should not hear a per-call phase"
+        );
+    }
+
+    #[test]
+    fn gc_stops_when_cancelled() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "one");
+        save(&root, "one");
+
+        let cancel = crate::progress::Cancel::new();
+        cancel.cancel();
+        let err = with_write(&root, |vr| {
+            commands::gc::run(
+                vr,
+                commands::gc::Options {
+                    keep_days: 30,
+                    cancel: Some(&cancel),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap_err();
+        assert!(
+            matches!(err, VeloError::Cancelled),
+            "expected Cancelled, got {:?}",
+            err
+        );
+        // Stopping a collection is an earlier stopping point, not damage.
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .problems
+            .is_empty());
+    }
+
+    #[test]
+    fn blame_reports_who_wrote_each_line() {
+        let (_tmp, root) = setup();
+        let ada = crate::Author::with_email("Ada", "ada@example.com").unwrap();
+        write(&root, "doc.txt", "first line\n");
+        with_write(&root, |vr| {
+            commands::save::run(
+                vr,
+                Some("one"),
+                commands::save::Options {
+                    author: Some(&ada),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+
+        let grace = crate::Author::new("Grace").unwrap();
+        write(&root, "doc.txt", "first line\nsecond line\n");
+        with_write(&root, |vr| {
+            commands::save::run(
+                vr,
+                Some("two"),
+                commands::save::Options {
+                    author: Some(&grace),
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+
+        let blame = with_repo(&root, |vr| {
+            commands::blame::run(vr, Path::new("doc.txt"), None)
+        })
+        .unwrap();
+        let who: Vec<Option<String>> = blame
+            .lines
+            .iter()
+            .map(|l| {
+                l.origin
+                    .as_ref()
+                    .and_then(|o| o.author.as_ref())
+                    .map(|a| a.name().to_string())
+            })
+            .collect();
+        assert_eq!(
+            who,
+            vec![Some("Ada".to_string()), Some("Grace".to_string())],
+            "each line should carry the author of the snapshot that wrote it"
+        );
+        // Resolved here so no consumer has to repeat the lookup, including the
+        // email, which is the half a name alone cannot disambiguate.
+        let first = blame.lines[0].origin.as_ref().unwrap();
+        assert_eq!(
+            first.author.as_ref().unwrap().email(),
+            Some("ada@example.com")
+        );
+        assert_eq!(blame.path, Path::new("doc.txt"));
+    }
+
+    #[test]
+    fn blame_without_authors_says_nothing_about_them() {
+        let (_tmp, root) = setup();
+        write(&root, "doc.txt", "only line\n");
+        save(&root, "one");
+
+        let blame = with_repo(&root, |vr| {
+            commands::blame::run(vr, Path::new("doc.txt"), None)
+        })
+        .unwrap();
+        // Absence, not failure: authorship is optional and always has been.
+        assert!(blame.lines[0].origin.as_ref().unwrap().author.is_none());
+    }
+
     // =========================================================================
     // branches / tag / remote listings
     // =========================================================================
@@ -2886,9 +3033,12 @@ mod tests {
         let copy = holder.path().join("copy");
         commands::sync::clone(
             origin.to_str().unwrap(),
-            Some(copy.to_str().unwrap()),
             &spawn_cfg(),
-            None,
+            commands::sync::CloneOptions {
+                dir: Some(std::path::Path::new(copy.to_str().unwrap())),
+                observer: None,
+                ..Default::default()
+            },
         )
         .unwrap();
         (holder, origin, copy)
@@ -2906,9 +3056,12 @@ mod tests {
         let copy = holder.path().join("copy");
         let cloned = commands::sync::clone(
             origin.to_str().unwrap(),
-            Some(copy.to_str().unwrap()),
             &spawn_cfg(),
-            None,
+            commands::sync::CloneOptions {
+                dir: Some(std::path::Path::new(copy.to_str().unwrap())),
+                observer: None,
+                ..Default::default()
+            },
         )
         .unwrap();
 
@@ -2926,7 +3079,7 @@ mod tests {
         use commands::sync::Pushed;
         let (_holder, _origin, copy) = origin_and_clone();
         let pushed = with_write(&copy, |vr| {
-            commands::sync::push(vr, "origin", None, &spawn_cfg())
+            commands::sync::push(vr, "origin", None, &spawn_cfg(), Default::default())
         })
         .unwrap();
         assert_eq!(
@@ -2946,7 +3099,7 @@ mod tests {
         save(&copy, "clone work");
 
         let pushed = with_write(&copy, |vr| {
-            commands::sync::push(vr, "origin", None, &spawn_cfg())
+            commands::sync::push(vr, "origin", None, &spawn_cfg(), Default::default())
         })
         .unwrap();
         let Pushed::Sent {
@@ -2996,7 +3149,7 @@ mod tests {
         .unwrap();
 
         let pushed = with_write(&local, |vr| {
-            commands::sync::push(vr, "origin", None, &spawn_cfg())
+            commands::sync::push(vr, "origin", None, &spawn_cfg(), Default::default())
         })
         .unwrap();
         let Pushed::Sent { created, .. } = pushed else {
@@ -3016,7 +3169,7 @@ mod tests {
         save(&copy, "clone work");
 
         let err = with_write(&copy, |vr| {
-            commands::sync::push(vr, "origin", None, &spawn_cfg())
+            commands::sync::push(vr, "origin", None, &spawn_cfg(), Default::default())
         })
         .unwrap_err();
         let VeloError::NotFastForward { branch, remote } = err else {
@@ -3034,7 +3187,7 @@ mod tests {
         save(&origin, "origin moves");
 
         let fetched = with_write(&copy, |vr| {
-            commands::sync::fetch(vr, "origin", &spawn_cfg())
+            commands::sync::fetch(vr, "origin", &spawn_cfg(), Default::default())
         })
         .unwrap();
         assert_eq!(fetched.remote, "origin");
@@ -3056,8 +3209,10 @@ mod tests {
         write(&origin, "b.txt", "later\n");
         let tip = save(&origin, "origin moves");
 
-        let pulled =
-            with_write(&copy, |vr| commands::sync::pull(vr, "origin", &spawn_cfg())).unwrap();
+        let pulled = with_write(&copy, |vr| {
+            commands::sync::pull(vr, "origin", &spawn_cfg(), Default::default())
+        })
+        .unwrap();
         let Pulled::FastForwarded { branch, to, .. } = pulled else {
             panic!("expected a fast-forward, got {:?}", pulled);
         };
@@ -3077,11 +3232,13 @@ mod tests {
         // Fetching first imports the commits under a tracking branch, leaving the
         // second pack empty — the fast-forward test has to span (pack ∪ local).
         with_write(&copy, |vr| {
-            commands::sync::fetch(vr, "origin", &spawn_cfg())
+            commands::sync::fetch(vr, "origin", &spawn_cfg(), Default::default())
         })
         .unwrap();
-        let pulled =
-            with_write(&copy, |vr| commands::sync::pull(vr, "origin", &spawn_cfg())).unwrap();
+        let pulled = with_write(&copy, |vr| {
+            commands::sync::pull(vr, "origin", &spawn_cfg(), Default::default())
+        })
+        .unwrap();
         assert!(
             matches!(pulled, Pulled::FastForwarded { .. }),
             "fetch-then-pull must still fast-forward, got {:?}",
@@ -3094,8 +3251,10 @@ mod tests {
     fn pull_with_nothing_new_is_up_to_date() {
         use commands::sync::Pulled;
         let (_holder, _origin, copy) = origin_and_clone();
-        let pulled =
-            with_write(&copy, |vr| commands::sync::pull(vr, "origin", &spawn_cfg())).unwrap();
+        let pulled = with_write(&copy, |vr| {
+            commands::sync::pull(vr, "origin", &spawn_cfg(), Default::default())
+        })
+        .unwrap();
         assert_eq!(
             pulled,
             Pulled::AlreadyUpToDate {
@@ -3114,8 +3273,10 @@ mod tests {
         write(&copy, "ours.txt", "clone work\n");
         let ours = save(&copy, "clone work");
 
-        let pulled =
-            with_write(&copy, |vr| commands::sync::pull(vr, "origin", &spawn_cfg())).unwrap();
+        let pulled = with_write(&copy, |vr| {
+            commands::sync::pull(vr, "origin", &spawn_cfg(), Default::default())
+        })
+        .unwrap();
         assert_eq!(
             pulled,
             Pulled::Diverged {
@@ -3142,7 +3303,13 @@ mod tests {
         let (_holder, _origin, copy) = origin_and_clone();
         write(&copy, "a.txt", "local edit\n");
         assert!(matches!(
-            with_write(&copy, |vr| commands::sync::pull(vr, "origin", &spawn_cfg())).unwrap_err(),
+            with_write(&copy, |vr| commands::sync::pull(
+                vr,
+                "origin",
+                &spawn_cfg(),
+                Default::default()
+            ))
+            .unwrap_err(),
             VeloError::DirtyWorkingTree { .. }
         ));
     }
@@ -3622,7 +3789,9 @@ mod tests {
         }
 
         let (repo, rec) = watched(&local);
-        let fetched = commands::sync::fetch(&repo.write().unwrap(), "origin", &spawn).unwrap();
+        let fetched =
+            commands::sync::fetch(&repo.write().unwrap(), "origin", &spawn, Default::default())
+                .unwrap();
         assert!(
             fetched.snapshots > 0,
             "the fetch should have imported history"
@@ -5543,7 +5712,16 @@ beta
 
         let before = object_count(&root);
         // Run GC with 0 day keep to also purge trash immediately
-        with_write(&root, |vr| commands::gc::run(vr, 0)).unwrap();
+        with_write(&root, |vr| {
+            commands::gc::run(
+                vr,
+                commands::gc::Options {
+                    keep_days: 0,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         let after = object_count(&root);
 
         assert!(after < before, "GC should have removed orphaned object(s)");
@@ -5556,7 +5734,16 @@ beta
         write(&root, "f.txt", "v1");
         save(&root, "s1");
         let before = object_count(&root);
-        with_write(&root, |vr| commands::gc::run(vr, 30)).unwrap();
+        with_write(&root, |vr| {
+            commands::gc::run(
+                vr,
+                commands::gc::Options {
+                    keep_days: 30,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
         let after = object_count(&root);
         assert_eq!(
             before, after,

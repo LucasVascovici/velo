@@ -7,6 +7,13 @@
 //! touch a line wins.
 //!
 //! Returns attributions as data; formatting lives in `velo-cli`.
+//!
+//! The walk follows first parents. After a merge, lines the absorbed branch
+//! introduced are attributed to the merge snapshot rather than to the snapshot
+//! that wrote them, because the merge's diff against its first parent contains
+//! them all. Fixing that needs a walk that asks which parent explains each line,
+//! rather than one that assumes there is only one — a bigger change than the
+//! ancestry fixes in Phase 10, and tracked separately.
 
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -17,18 +24,27 @@ use similar::{ChangeTag, TextDiff};
 
 use crate::db;
 use crate::error::{RefKind, Result, VeloError};
+use crate::meta::Author;
 use crate::storage;
 use crate::Repo;
 use crate::SnapshotId;
+use std::path::PathBuf;
 
 /// The snapshot a line came from.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LineOrigin {
-    /// Full snapshot hash. Abbreviate at the point of display.
-    pub hash: String,
+    /// Full snapshot id. Abbreviate at the point of display.
+    pub hash: SnapshotId,
     /// Raw stored timestamp, RFC-3339-like. Formatting is the consumer's choice.
     pub created_at: DateTime<Utc>,
     pub message: String,
+    /// Who recorded it, when the snapshot carries an author.
+    ///
+    /// Resolved here rather than left to the caller: blame already walks this
+    /// history, and every consumer that wants "who wrote this line" would
+    /// otherwise write the same per-snapshot lookup and the same deduplication.
+    /// Read once per snapshot visited, not once per line.
+    pub author: Option<Author>,
 }
 
 /// One line of the file with its attribution.
@@ -46,9 +62,9 @@ pub struct BlameLine {
 #[derive(Clone, Debug)]
 pub struct Blame {
     /// Normalised path that was blamed.
-    pub path: String,
+    pub path: PathBuf,
     /// The snapshot the file was read at.
-    pub snapshot: String,
+    pub snapshot: SnapshotId,
     pub lines: Vec<BlameLine>,
 }
 
@@ -118,9 +134,16 @@ pub fn run(repo: &Repo, file: &Path, at: Option<&SnapshotId>) -> Result<Blame> {
             (parent_hash, created_at_ms, message);
 
         let origin = LineOrigin {
-            hash: walk_hash.clone(),
+            hash: SnapshotId::from_stored(walk_hash.clone()),
             created_at: crate::commands::timestamp_from_ms(created_at_ms),
             message,
+            // A missing or unreadable author is absence, not failure: authorship
+            // is optional, and a blame that refused to render because one old
+            // snapshot had no metadata would be worse than one that says nothing
+            // about that snapshot.
+            author: crate::commands::load_snapshot_meta(conn, &walk_hash)
+                .ok()
+                .and_then(|m| m.author()),
         };
 
         let our_text = read_tracked(conn, &objects_dir, &walk_hash, &rel)?;
@@ -163,8 +186,8 @@ pub fn run(repo: &Repo, file: &Path, at: Option<&SnapshotId>) -> Result<Blame> {
         .collect();
 
     Ok(Blame {
-        path: rel,
-        snapshot: start_hash,
+        path: PathBuf::from(rel),
+        snapshot: SnapshotId::from_stored(start_hash),
         lines,
     })
 }

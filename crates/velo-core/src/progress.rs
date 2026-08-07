@@ -175,12 +175,33 @@ impl Cancel {
 pub struct PhaseGuard<'a> {
     observer: &'a dyn Observer,
     phase: Phase,
+    cancel: Option<&'a Cancel>,
 }
 
 impl<'a> PhaseGuard<'a> {
     pub(crate) fn new(observer: &'a dyn Observer, phase: Phase, total: Option<u64>) -> Self {
+        Self::cancellable(observer, phase, total, None)
+    }
+
+    /// A phase that can also be stopped.
+    ///
+    /// The flag rides along with the progress handle because the two are checked
+    /// in the same place: a loop that is slow enough to be worth reporting is
+    /// exactly the loop worth interrupting. It also means a `Remote`
+    /// implementation gets cancellation without the trait growing a parameter
+    /// that every implementor would have to thread through by hand.
+    pub(crate) fn cancellable(
+        observer: &'a dyn Observer,
+        phase: Phase,
+        total: Option<u64>,
+        cancel: Option<&'a Cancel>,
+    ) -> Self {
         observer.begin(phase, total);
-        PhaseGuard { observer, phase }
+        PhaseGuard {
+            observer,
+            phase,
+            cancel,
+        }
     }
 
     /// Report `by` more items done.
@@ -191,6 +212,18 @@ impl<'a> PhaseGuard<'a> {
     /// Report one more item done.
     pub fn tick(&self) {
         self.advance(1);
+    }
+
+    /// `Err(Cancelled)` once the caller has asked to stop, for use with `?`
+    /// inside a transfer loop. Always `Ok` for a phase with no flag.
+    pub fn check(&self) -> crate::error::Result<()> {
+        Cancel::check(self.cancel)
+    }
+
+    /// Whether the caller has asked to stop, for a loop that must clean up
+    /// before returning rather than leaving through `?`.
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.is_some_and(Cancel::is_cancelled)
     }
 }
 

@@ -6,7 +6,17 @@ use velo_core::commands::blame::Blame;
 /// Width of the message column, matching the `{:<28}` layout below.
 const MSG_WIDTH: usize = 28;
 
+/// Width of the author column, when there is one.
+const WHO_WIDTH: usize = 14;
+
 pub fn print(blame: &Blame) {
+    // The column appears only when the history has authors to show. A repository
+    // saved without them would otherwise get a stripe of blanks in every line.
+    let show_author = blame
+        .lines
+        .iter()
+        .any(|l| l.origin.as_ref().is_some_and(|o| o.author.is_some()));
+
     for line in &blame.lines {
         let (hash, date, message) = match &line.origin {
             Some(o) => (
@@ -20,10 +30,24 @@ pub fn print(blame: &Blame) {
                 style("(unknown)").dim().to_string(),
             ),
         };
+        let who = if show_author {
+            let name = line
+                .origin
+                .as_ref()
+                .and_then(|o| o.author.as_ref())
+                .map_or("", |a| a.name());
+            format!(
+                "{} ",
+                style(format!("{:<WHO_WIDTH$}", truncate(name, WHO_WIDTH))).cyan()
+            )
+        } else {
+            String::new()
+        };
         println!(
-            "{} {} {:<width$}  {}  {}",
+            "{} {} {}{:<width$}  {}  {}",
             hash,
             date,
+            who,
             message,
             style(format!("{:>4}", line.line_no)).dim(),
             line.text,
