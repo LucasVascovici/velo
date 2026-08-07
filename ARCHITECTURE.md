@@ -1472,15 +1472,54 @@ down in the module docs so the behaviour is documented rather than surprising.
 
 ---
 
-## Phase 12 — crates.io 🟢
+## Phase 12 — crates.io ✅ **Done**
 
-Unchanged from [Phase 9](#phase-9--ecosystem-), with the ordering now explicit:
-**after Phases 10 and 11**. Those are most of what would otherwise force a
-breaking release immediately after publishing, and 8.5 already shrank the surface
-that publishing freezes.
+Ordered after Phases 10 and 11 deliberately: those were most of what would
+otherwise have forced a breaking release the week after publishing, and 8.5
+already shrank the surface that publishing freezes.
 
-Velum pins `rev = "4d5871b"`, which needs `cargo deny`'s `allow-git` and blocks a
-release whose dependencies all resolve from a registry.
+Five crates go out, in the order their dependencies require —
+`velo-merge`, `velo-core`, `velo-tui`, `velo-testkit`, `velo-cli`. Cargo works
+that order out itself, which is why the release is one `cargo publish
+--workspace` rather than five commands and a waiting game. `prompt-registry`
+carries `publish = false`: it is a worked example, not a product.
+
+Velum can drop the `rev = "4d5871b"` pin and with it `cargo deny`'s `allow-git`.
+
+### What publishing actually required
+
+| Added | Why |
+| :--- | :--- |
+| `readme` + a per-crate `README.md` | The registry page renders it; a link to the workspace README is not enough, and cargo will not package a file outside the crate directory |
+| `keywords`, `categories` | How anyone finds the crate at all |
+| `rust-version = "1.88"` | Derived from the highest MSRV in the dependency tree (`ignore`), not guessed |
+| `homepage` | Distinct from `repository` on the registry page |
+| A `LICENSE` in each crate | `license = "MIT"` is the metadata; the text belongs in the tarball too, and cargo cannot reach the workspace root to fetch it |
+| `[package.metadata.docs.rs] all-features` | docs.rs builds with no features by default, which would have hidden `bundle` and `ssh` — the two an embedder looks for first |
+
+### Two CI jobs, because a promise nothing checks is a guess
+
+**MSRV.** `rust-version` is a claim, and a dependency bump can raise the real
+floor without anyone noticing. A job builds on exactly 1.88. It builds rather
+than tests: dev-dependencies may want a newer compiler than the published crates
+do, and holding the test tooling to the library's floor would promise more than
+the manifests say.
+
+**Packaging.** Everything `cargo publish` does except the upload. Publishing is
+the one release step that cannot be undone — a version on crates.io is permanent
+— so the checks that would reject it run on every push rather than on the day
+someone types the command. It runs `--workspace`: `velo-core` depends on
+`velo-merge` by path, so packaging it alone sends cargo to the registry for a
+version that is not there yet.
+
+### The version
+
+v4.0.0 was **moved** rather than superseded. The first tag predated Phases 5 to
+11, and nothing depended on it — Velum pins a commit. This is the last time that
+choice is available: once 4.0.0 is on crates.io the version is permanent, and
+every later change needs a new number.
+
+The release itself is in [`DEVELOPING.md`](DEVELOPING.md#releasing).
 
 ---
 
@@ -1549,7 +1588,7 @@ regresses within a month.
 | **9** | crates.io, git importer, testkit | 🟢 |
 | **10** | Ancestry: `merge_base` must follow `merge_parent` (a live `velo merge` bug), and `history` needs an ancestry scope — one walk serves both | ✅ |
 | **11** | Finish the passes that stopped early: `blame` types + author, `gc` options, sync cancellation | ✅ |
-| **12** | crates.io, after 10 and 11 | 🟢 |
+| **12** | crates.io, after 10 and 11 | ✅ |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected
 (no `anyhow`; coupling is 3 files not pervasive; merge engine already pure;

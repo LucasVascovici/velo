@@ -83,6 +83,73 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
 
+  # ── MSRV (blocking) ────────────────────────────────────────────────────────
+  # `rust-version` in Cargo.toml is a promise, and a promise nothing checks is a
+  # guess.  This builds on exactly that toolchain so the number stays true — it
+  # was derived from the highest MSRV in the dependency tree, and a dependency
+  # bump can raise that without anyone noticing.
+  #
+  # Build, not test: dev-dependencies are allowed to want a newer compiler than
+  # the published crates do, and holding the test tooling to the library's floor
+  # would be a stricter promise than the manifests make.
+  msrv:
+    name: MSRV · 1.88
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (1.88)
+        uses: dtolnay/rust-toolchain@1.88
+
+      - name: Cache Cargo artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: msrv-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: msrv-cargo-
+
+      - name: Build every published crate
+        run: cargo build --workspace --locked --all-features
+
+  # ── Packaging (blocking) ───────────────────────────────────────────────────
+  # Everything `cargo publish` does except the upload.  Publishing is the one
+  # release step that cannot be undone — a version on crates.io is permanent —
+  # so the checks that would reject it belong on every push rather than on the
+  # day someone runs the command.
+  #
+  # `--workspace` rather than a crate at a time: velo-core depends on velo-merge
+  # by path, and packaging it alone sends cargo to the registry for a version
+  # that is not there yet.  Packaging the workspace resolves the siblings
+  # against each other, which is also the order a release goes out in.
+  package:
+    name: Package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: package-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: package-cargo-
+
+      - name: Package every published crate
+        run: cargo package --workspace --locked --exclude prompt-registry
+
   # ── Formatting (advisory) ──────────────────────────────────────────────────
   # Style only — never blocks a legitimate fix from landing.  Fix with:
   #   cargo fmt --all

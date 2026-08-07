@@ -6,9 +6,25 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
-## Unreleased
+## 4.0.0
+
+The v4.0.0 tag was **moved** rather than superseded. The first tag was pushed
+before Phases 5 to 11 landed, and nothing was depending on it — Velum, the only
+consumer outside this repository, pins a commit rather than a tag. Everything
+below therefore ships as one version, and the earlier tag is gone.
+
+Because this is also the version published to crates.io, it is the last one that
+can be replaced: a version on the registry is permanent.
 
 ### Added
+
+- **Published to crates.io.** `velo-core`, `velo-merge`, `velo-tui`,
+  `velo-testkit` and `velo-cli` resolve from the registry, so a consumer no
+  longer needs `cargo deny`'s `allow-git` for a pinned revision, and the CLI
+  installs with `cargo install velo-cli`. Each crate declares
+  `rust-version = "1.88"` — the highest MSRV in the dependency tree — and CI
+  builds on exactly that toolchain and packages every crate on every push, so
+  neither the floor nor the packaging can drift unnoticed.
 
 - **`blame` says who, not just when.** `LineOrigin` carries the snapshot's
   `Author`, resolved once per snapshot visited rather than once per line. Every
@@ -239,8 +255,6 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 - `examples/prompt-registry` — a worked example of embedding `velo-core` with no
   working tree, plus `FINDINGS.md` recording where the API was awkward.
-
-## 4.0.0
 
 ### ⚠️ Repository format v2 — breaking
 

@@ -165,6 +165,15 @@ The warm-cache path for `velo status` is essentially N × `stat()` — no file r
 
 ## Installation
 
+### With cargo
+
+```bash
+cargo install velo-cli
+```
+
+Builds from source, so it works anywhere Rust does — including platforms with no
+pre-built binary. Requires Rust 1.88 or later.
+
 ### Unix (Linux & macOS)
 
 ```bash
@@ -185,6 +194,22 @@ curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh
 
 Download the latest `velo-x86_64-windows.zip` from the [Releases page](https://github.com/LucasVascovici/velo/releases), extract `velo.exe`, and place it anywhere on your `PATH`.
 
+### As a library
+
+Velo's core is published separately, so a program can use the repository, history
+and merge engine without the CLI:
+
+```toml
+[dependencies]
+velo-core = "4"
+```
+
+It produces no terminal output at all — every command returns data — which is
+what makes it usable from a GUI or a server. See
+[`velo-core`](https://crates.io/crates/velo-core) and
+[`examples/prompt-registry`](examples/prompt-registry) for a worked example with
+no working tree.
+
 ### Pre-built binaries
 
 | Platform | File |
@@ -197,7 +222,7 @@ Download the latest `velo-x86_64-windows.zip` from the [Releases page](https://g
 
 ### Build from source
 
-Requires Rust 1.75 or later.
+Requires Rust 1.88 or later.
 
 ```bash
 git clone https://github.com/LucasVascovici/velo.git

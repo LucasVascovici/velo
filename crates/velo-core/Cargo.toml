@@ -5,6 +5,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["version-control", "vcs", "snapshot", "history", "embeddable"]
+categories = ["development-tools", "filesystem"]
+
+# docs.rs builds with no features by default, which would hide `bundle` and
+# `ssh` — the two an embedder is most likely to be looking for.
+[package.metadata.docs.rs]
+all-features = true
 
 [features]
 # Nothing on by default: an embedder should not pay for the CLI's dependencies.

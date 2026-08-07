@@ -17,6 +17,11 @@ version = "4.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/LucasVascovici/velo"
+homepage = "https://github.com/LucasVascovici/velo"
+# Derived rather than guessed: the highest MSRV among the dependency tree, which
+# `ignore` sets. CI builds the workspace on exactly this toolchain, so the number
+# is checked on every push instead of being a claim in a manifest.
+rust-version = "1.88"
 
 # Single source of truth for dependency versions across the workspace.
 [workspace.dependencies]
