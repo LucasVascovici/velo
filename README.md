@@ -13,7 +13,8 @@
 </p>
 
 <p align="center">
-  <em>v3 — now with collaboration: clone, push, pull, and offline bundles.</em>
+  <em>v4 — a new snapshot format, an API a program can hold, and merges that
+  remember what you already resolved.</em>
 </p>
 
 > **Note:** Velo was vibe-coded for fun — high-level intent, modern tech stack, tight feedback loop with an AI assistant. It's a real working tool, but built as an experiment in what's possible with that workflow, not as a production-grade Git replacement.
@@ -163,16 +164,34 @@ The warm-cache path for `velo status` is essentially N × `stat()` — no file r
 
 ---
 
+## New in v4
+
+| | |
+| :--- | :--- |
+| **A new snapshot format** | Ids are stored whole rather than truncated to 16 characters, timestamps are integers so no format-string change can shift an id, and metadata is hashed in — which is what made tamper-evident authorship possible afterwards without a second break. **Repositories written by 3.x cannot be opened**; copy the working tree into a fresh repository and save it there. |
+| **Merges remember what you resolved** | Merging the same branch twice used to re-raise every conflict settled the first time. Ancestry now follows both parents, so the base is the tip the previous merge absorbed. |
+| **History shows merged-in work** | Same cause: a branch that had merged another listed none of the merged snapshots. |
+| **Authorship** | `VELO_AUTHOR_NAME` / `VELO_AUTHOR_EMAIL` are recorded into the snapshot's identity, and `velo blame` shows who wrote each line. |
+| **A library a program can hold** | `velo-core` produces no terminal output at all, takes options structs rather than positional flags, and reports progress and accepts cancellation per call. A consumer with no working tree — an editor, a registry, a server — is a first-class caller. |
+
+The full list is in [CHANGELOG.md](CHANGELOG.md); the design record, including
+what was deliberately not done, is in [ARCHITECTURE.md](ARCHITECTURE.md).
+
+---
+
 ## Installation
 
 ### With cargo
 
 ```bash
-cargo install velo-cli
+cargo install --git https://github.com/LucasVascovici/velo velo-cli
 ```
 
 Builds from source, so it works anywhere Rust does — including platforms with no
 pre-built binary. Requires Rust 1.88 or later.
+
+The crates are packaged and ready for crates.io — `cargo install velo-cli` is
+what this becomes — but nothing is published there yet.
 
 ### Unix (Linux & macOS)
 
@@ -201,14 +220,18 @@ and merge engine without the CLI:
 
 ```toml
 [dependencies]
-velo-core = "4"
+velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v4.0.0" }
 ```
 
 It produces no terminal output at all — every command returns data — which is
 what makes it usable from a GUI or a server. See
-[`velo-core`](https://crates.io/crates/velo-core) and
+[`crates/velo-core`](crates/velo-core) for the library's own README, and
 [`examples/prompt-registry`](examples/prompt-registry) for a worked example with
 no working tree.
+
+Optional features, both off by default so an embedder does not pay for the CLI's
+dependencies: `bundle` (offline history transfer) and `ssh` (sync over a spawned
+server process).
 
 ### Pre-built binaries
 
@@ -287,6 +310,7 @@ velo pull
 | `velo show <target> -- <path>` | Restrict the diff to a specific file or directory |
 | `velo blame <file>` | Annotate each line with the snapshot that last changed it |
 | `velo blame <file> --at <target>` | Blame at a specific past snapshot, tag, or branch |
+| | Shows the author alongside each line, when the history records one |
 | `velo grep <pattern>` | Search tracked files for a regex pattern |
 | `velo grep <pattern> --snapshot <target>` | Search inside a stored snapshot |
 | `velo grep <pattern> -i` | Case-insensitive search |
@@ -302,7 +326,8 @@ velo pull
 | `velo history --graph` | ASCII branch graph with coloured lanes |
 | `velo history --graph --all` | Full topology graph across all branches |
 | `velo history --branch <n>` | History for a specific branch without switching |
-| `velo history --file <path>` | Only snapshots that touched this file or directory |
+| `velo history --file <path>` | Only snapshots that **changed** this file or directory (repeatable) |
+| `velo history --from <target>` | What led to a snapshot, across branches — follows both parents through merges |
 | `velo history --oneline` | Compact one-line-per-snapshot format |
 | `velo history --limit <n>` | Limit the number of entries shown |
 | `velo restore <target>` | Restore the working tree to a hash, prefix, tag, or branch name |

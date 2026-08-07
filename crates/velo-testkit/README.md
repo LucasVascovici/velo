@@ -17,7 +17,6 @@ The directory is removed when the `TempRepo` is dropped, and the SQLite
 connection is closed before that happens — field order in the struct is what
 guarantees it, which is the kind of detail worth not rediscovering per project.
 
-Intended as a dev-dependency of anything built on
-[`velo-core`](https://crates.io/crates/velo-core).
+Intended as a dev-dependency of anything built on `velo-core`.
 
 MIT licensed.

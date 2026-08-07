@@ -1472,7 +1472,7 @@ down in the module docs so the behaviour is documented rather than surprising.
 
 ---
 
-## Phase 12 — crates.io ✅ **Done**
+## Phase 12 — crates.io 🟡 **Ready, not published**
 
 Ordered after Phases 10 and 11 deliberately: those were most of what would
 otherwise have forced a breaking release the week after publishing, and 8.5
@@ -1484,7 +1484,11 @@ that order out itself, which is why the release is one `cargo publish
 --workspace` rather than five commands and a waiting game. `prompt-registry`
 carries `publish = false`: it is a worked example, not a product.
 
-Velum can drop the `rev = "4d5871b"` pin and with it `cargo deny`'s `allow-git`.
+**Nothing is uploaded yet.** Everything a publish needs is in place and checked
+by CI on every push; the upload is one command, and it is deliberately manual
+because it is the only step in this project that cannot be undone. Until it
+runs, Velum keeps a pin — though it can move from a revision to `tag = "v4.0.0"`,
+which at least names something.
 
 ### What publishing actually required
 
@@ -1515,9 +1519,9 @@ version that is not there yet.
 ### The version
 
 v4.0.0 was **moved** rather than superseded. The first tag predated Phases 5 to
-11, and nothing depended on it — Velum pins a commit. This is the last time that
-choice is available: once 4.0.0 is on crates.io the version is permanent, and
-every later change needs a new number.
+11, and nothing depended on it — Velum pins a commit. Moving it is available only
+because nothing is on the registry: once 4.0.0 is published the version is
+permanent, and every later change needs a new number.
 
 The release itself is in [`DEVELOPING.md`](DEVELOPING.md#releasing).
 
@@ -1588,7 +1592,7 @@ regresses within a month.
 | **9** | crates.io, git importer, testkit | 🟢 |
 | **10** | Ancestry: `merge_base` must follow `merge_parent` (a live `velo merge` bug), and `history` needs an ancestry scope — one walk serves both | ✅ |
 | **11** | Finish the passes that stopped early: `blame` types + author, `gc` options, sync cancellation | ✅ |
-| **12** | crates.io, after 10 and 11 | ✅ |
+| **12** | crates.io, after 10 and 11 — packaged and CI-checked, upload still manual | 🟡 |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected
 (no `anyhow`; coupling is 3 files not pervasive; merge engine already pure;

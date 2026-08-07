@@ -13,18 +13,20 @@ before Phases 5 to 11 landed, and nothing was depending on it — Velum, the onl
 consumer outside this repository, pins a commit rather than a tag. Everything
 below therefore ships as one version, and the earlier tag is gone.
 
-Because this is also the version published to crates.io, it is the last one that
-can be replaced: a version on the registry is permanent.
+Nothing is on crates.io yet. Once it is, this stops being possible for good — a
+version on the registry is permanent, and cannot be replaced, re-uploaded or
+deleted.
 
 ### Added
 
-- **Published to crates.io.** `velo-core`, `velo-merge`, `velo-tui`,
-  `velo-testkit` and `velo-cli` resolve from the registry, so a consumer no
-  longer needs `cargo deny`'s `allow-git` for a pinned revision, and the CLI
-  installs with `cargo install velo-cli`. Each crate declares
-  `rust-version = "1.88"` — the highest MSRV in the dependency tree — and CI
-  builds on exactly that toolchain and packages every crate on every push, so
-  neither the floor nor the packaging can drift unnoticed.
+- **Every crate is ready to publish.** `velo-core`, `velo-merge`, `velo-tui`,
+  `velo-testkit` and `velo-cli` carry the metadata crates.io requires — per-crate
+  README and LICENSE, keywords, categories, homepage, and docs.rs configured to
+  build all features so `bundle` and `ssh` are not hidden. Each declares
+  `rust-version = "1.88"`, the highest MSRV in the dependency tree rather than a
+  guess, and CI builds on exactly that toolchain and packages every crate on
+  every push, so neither the floor nor the packaging can drift unnoticed. The
+  upload itself is a deliberate manual step; see `DEVELOPING.md`.
 
 - **`blame` says who, not just when.** `LineOrigin` carries the snapshot's
   `Author`, resolved once per snapshot visited rather than once per line. Every
