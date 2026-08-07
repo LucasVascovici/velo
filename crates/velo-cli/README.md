@@ -4,7 +4,7 @@ The command-line interface for [Velo](https://github.com/LucasVascovici/velo) â€
 fast, safe, intuitive version control system. Installs the `velo` binary.
 
 ```bash
-cargo install velo-cli
+cargo install --git https://github.com/LucasVascovici/velo velo-cli
 ```
 
 Git's power without Git's sharp edges: no staging area (what is on disk is what
