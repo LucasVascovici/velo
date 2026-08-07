@@ -10,6 +10,18 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ### Added
 
+- **`blame` says who, not just when.** `LineOrigin` carries the snapshot's
+  `Author`, resolved once per snapshot visited rather than once per line. Every
+  consumer that wanted per-line provenance would otherwise have written the same
+  lookup and the same deduplication. `velo blame` shows the name in its own
+  column, which appears only when the history has authors — the first place the
+  CLI surfaces authorship at all.
+
+- **`gc` and the sync commands take options.** `gc::Options`, `sync::Options`
+  and `sync::CloneOptions` carry a per-call observer and a cancellation flag, so
+  the longest local operation and the four that wait on a network can all be
+  watched and stopped. That completes 7.6 for every command it named.
+
 - **`history` can scope to a snapshot's ancestry.** `Options::from` — and
   `velo history --from <snapshot>` — lists what led to a snapshot, across
   branches, rather than what was recorded on one branch. A branch listing stops
@@ -20,6 +32,11 @@ This file starts at the format v2 break. Earlier releases are in the git history
   tree.
 
 ### Fixed
+
+- **A cancelled transfer no longer leaves the remote process running.**
+  Cancellation is checked between transfer chunks, and the child is killed
+  explicitly, because `std::process::Child` does not kill on drop — returning
+  through `?` would have left a server talking to a client that had gone.
 
 - **Merging the same branch twice no longer re-raises settled conflicts.**
   Ancestry was walked through `parent_hash` alone, so the tip a merge absorbed
@@ -45,6 +62,13 @@ This file starts at the format v2 break. Earlier releases are in the git history
   filter set, `--limit` counts matches rather than candidates.
 
 ### Changed — breaking (API only)
+
+- **`gc`, `clone`, `fetch`, `push` and `pull` take an options struct.**
+  `gc::run(guard, keep_days)` is now `gc::run(guard, gc::Options { keep_days,
+  .. })`; `clone(url, dir, spawn, observer)` is now `clone(url, spawn,
+  CloneOptions { dir, observer, cancel })`, and `dir` is a `&Path` rather than a
+  `&str`, per 8.3. `fetch`, `push` and `pull` gain a trailing
+  `sync::Options`. `Default::default()` is the previous behaviour in every case.
 
 - **The public surface shrank before it can be frozen.** Nine items that were
   `pub` only because two modules inside `velo-core` needed them are `pub(crate)`:

@@ -1382,7 +1382,7 @@ has no ignored tests left.
 
 ---
 
-## Phase 11 — Finish the passes that stopped early 🟡 **Recommended**
+## Phase 11 — Finish the passes that stopped early ✅ **Done**
 
 Three items, each one a place where a pass was applied to some commands and not
 others. None blocks Velum; each is a visible gap at a known Velum phase.
@@ -1434,6 +1434,41 @@ either.
 
 With 11.2 and 11.3, [7.6](#76-per-call-progress-and-cancellation--restore-done) is
 finally complete for all four commands it named.
+
+### What landed
+
+All three, plus one thing the third turned up.
+
+Cancellation for the network commands went onto the `PhaseGuard` rather than
+into the `Remote` trait. The two are checked in the same place — a loop slow
+enough to be worth reporting is exactly the loop worth interrupting — so
+`PhaseGuard::cancellable` gives every transport cancellation without the trait
+growing a parameter each implementor would have to thread through by hand.
+
+That exposed a leak the flag would otherwise have created: `std::process::Child`
+does not kill on drop, so returning through `?` mid-transfer left the remote
+`serve-upload` process running against a client that had gone. The transfer
+loops now kill and reap the child before returning `Cancelled`.
+
+`clone` takes `CloneOptions` rather than four positional parameters, which is
+where `dir: Option<&Path>` belongs; `fetch`, `push` and `pull` take
+`sync::Options`. With `gc::Options`, [7.6](#76-per-call-progress-and-cancellation--restore-done)
+covers every command it named.
+
+`velo blame` is the first place the CLI shows an author at all — the column
+appears only when the history has one, so a repository saved without authors
+keeps its previous layout rather than gaining a stripe of blanks.
+
+### Found while doing it — not fixed
+
+`blame` walks first parents. After a merge, lines the absorbed branch introduced
+are attributed to the **merge** snapshot rather than to the snapshot that wrote
+them, because the merge's diff against its first parent contains all of them.
+This is the same family as the Phase 10 defects but not the same fix: Phase 10
+needed *reachability*, which one recursive query answers, while blame needs to
+ask **which parent explains this line** — a walk ordered by time that diffs
+against every parent and attributes only what none of them had. It is written
+down in the module docs so the behaviour is documented rather than surprising.
 
 ---
 
@@ -1513,7 +1548,7 @@ regresses within a month.
 | **8** | Finish the typed-ref and options-struct passes; shrink the public surface; document which half owns the working tree | 🟡 |
 | **9** | crates.io, git importer, testkit | 🟢 |
 | **10** | Ancestry: `merge_base` must follow `merge_parent` (a live `velo merge` bug), and `history` needs an ancestry scope — one walk serves both | ✅ |
-| **11** | Finish the passes that stopped early: `blame` types + author, `gc` options, sync cancellation | 🟡 |
+| **11** | Finish the passes that stopped early: `blame` types + author, `gc` options, sync cancellation | ✅ |
 | **12** | crates.io, after 10 and 11 | 🟢 |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected

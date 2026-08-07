@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::{branch_tip, bundle, get_dirty_files, remote as remotemod};
 use crate::error::{Result, VeloError};
-use crate::progress::{Observer, Phase, PhaseGuard, Silent};
+use crate::progress::{Cancel, Observer, Phase, PhaseGuard, Silent};
 use crate::storage;
 use crate::transport::{self, PushOutcome};
 use crate::Repo;
@@ -98,18 +98,45 @@ pub enum Pulled {
 
 // ─── clone ────────────────────────────────────────────────────────────────────
 
-/// Copy a repository from `url` into `dir` (or a directory named after the URL).
+/// Where to put a clone, and how to watch it.
 ///
-/// `observer` is a parameter here, unlike everywhere else: clone has no
-/// repository to configure until it has created one. It takes ownership, since
-/// the repository it configures is created and dropped inside this call.
-pub fn clone(
-    url: &str,
-    dir: Option<&str>,
-    spawn: &transport::Spawn,
-    observer: Option<Box<dyn Observer>>,
-) -> Result<Cloned> {
-    let target = PathBuf::from(dir.map(String::from).unwrap_or_else(|| default_dir(url)));
+/// `observer` is owned here, unlike everywhere else: clone has no repository to
+/// configure until it has created one, and the repository it configures is
+/// created and dropped inside the call.
+#[derive(Default)]
+pub struct CloneOptions<'a> {
+    /// Where to create the repository. `None` names a directory after the URL.
+    pub dir: Option<&'a Path>,
+    /// Where to report progress.
+    pub observer: Option<Box<dyn Observer>>,
+    /// Checked between transfer chunks. A cancelled clone leaves no repository
+    /// behind: the directory is created only once the history has arrived, so
+    /// stopping during the transfer — which is nearly all of the wait — cannot
+    /// leave a half-cloned tree.
+    pub cancel: Option<&'a Cancel>,
+}
+
+/// Copy a repository from `url`.
+///
+/// ```no_run
+/// # fn main() -> Result<(), velo_core::Error> {
+/// use velo_core::commands::sync;
+///
+/// let spawn = velo_core::transport::Spawn::new("velo");
+/// let cloned = sync::clone("velo://example.com/repo", &spawn, sync::CloneOptions {
+///     dir: Some(std::path::Path::new("repo")),
+///     ..Default::default()
+/// })?;
+/// # let _ = cloned;
+/// # Ok(()) }
+/// ```
+pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> Result<Cloned> {
+    let CloneOptions {
+        dir,
+        observer,
+        cancel,
+    } = options;
+    let target = dir.map_or_else(|| PathBuf::from(default_dir(url)), PathBuf::from);
     if target.join(".velo").exists() {
         return Err(VeloError::invalid(format!(
             "'{}' already contains a Velo repository.",
@@ -127,7 +154,7 @@ pub fn clone(
             Some(o) => &**o,
             None => &silent,
         };
-        let transfer = PhaseGuard::new(obs, Phase::Transferring, None);
+        let transfer = PhaseGuard::cancellable(obs, Phase::Transferring, None, cancel);
         remote.fetch(&HashSet::new(), &transfer)?
     };
     if refs.is_empty() {
@@ -195,17 +222,52 @@ pub fn clone(
     })
 }
 
+/// How to run a transfer against a remote.
+///
+/// `fetch`, `push` and `pull` reported progress through the handle observer and
+/// took no cancellation at all, so the operations that wait on a network were
+/// the ones that could not be stopped.
+#[derive(Default)]
+pub struct Options<'a> {
+    /// Where to report progress, overriding the repository's own observer.
+    pub observer: Option<&'a dyn Observer>,
+    /// Checked between transfer chunks.
+    ///
+    /// Cancelling stops the transfer and the import never runs, so nothing is
+    /// written: the remote process is killed and the transaction is not opened.
+    /// A cancelled `pull` may still have restored files if it is stopped after
+    /// the merge begins, which `velo status` describes accurately.
+    pub cancel: Option<&'a Cancel>,
+}
+
+impl Options<'_> {
+    /// The phase these options ask for, falling back to the handle's observer.
+    fn phase<'g>(&'g self, guard: &'g WriteGuard, phase: Phase) -> PhaseGuard<'g> {
+        PhaseGuard::cancellable(
+            self.observer.unwrap_or_else(|| guard.repo().observer()),
+            phase,
+            None,
+            self.cancel,
+        )
+    }
+}
+
 // ─── fetch ────────────────────────────────────────────────────────────────────
 
 /// Import a remote's history under `remotes/<remote>/<branch>` tracking
 /// branches. Never touches local branches or the working tree.
-pub fn fetch(guard: &WriteGuard, remote_name: &str, spawn: &transport::Spawn) -> Result<Fetched> {
+pub fn fetch(
+    guard: &WriteGuard,
+    remote_name: &str,
+    spawn: &transport::Spawn,
+    options: Options<'_>,
+) -> Result<Fetched> {
     let root = guard.root();
     let url = remote_url(guard.repo(), remote_name)?;
     let mut remote = transport::open(&url, spawn)?;
     let have = local_snapshots(guard.repo())?;
     let (refs, mut pack) = {
-        let transfer = guard.phase(Phase::Transferring, None);
+        let transfer = options.phase(guard, Phase::Transferring);
         remote.fetch(&have, &transfer)?
     };
 
@@ -243,6 +305,7 @@ pub fn push(
     remote_name: &str,
     branch: Option<&str>,
     spawn: &transport::Spawn,
+    options: Options<'_>,
 ) -> Result<Pushed> {
     let root = guard.root();
     let conn = guard.conn();
@@ -296,7 +359,7 @@ pub fn push(
     };
 
     let outcome = {
-        let transfer = guard.phase(Phase::Transferring, None);
+        let transfer = options.phase(guard, Phase::Transferring);
         remote.push(&branch, &local_tip, &mut build, &transfer)?
     };
     match outcome {
@@ -339,7 +402,12 @@ pub fn push(
 // ─── pull ─────────────────────────────────────────────────────────────────────
 
 /// Fetch the current branch and fast-forward onto it, or report divergence.
-pub fn pull(guard: &WriteGuard, remote_name: &str, spawn: &transport::Spawn) -> Result<Pulled> {
+pub fn pull(
+    guard: &WriteGuard,
+    remote_name: &str,
+    spawn: &transport::Spawn,
+    options: Options<'_>,
+) -> Result<Pulled> {
     let root = guard.root();
     let dirty = get_dirty_files(guard.repo());
     if !dirty.is_empty() {
@@ -354,7 +422,7 @@ pub fn pull(guard: &WriteGuard, remote_name: &str, spawn: &transport::Spawn) -> 
     let mut remote = transport::open(&url, spawn)?;
     let have = local_snapshots(guard.repo())?;
     let (refs, pack) = {
-        let transfer = guard.phase(Phase::Transferring, None);
+        let transfer = options.phase(guard, Phase::Transferring);
         remote.fetch(&have, &transfer)?
     };
 

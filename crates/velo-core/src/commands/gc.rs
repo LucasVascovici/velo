@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fs;
 
 use crate::error::Result;
-use crate::progress::Phase;
+use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
 use crate::WriteGuard;
 
 /// What a collection pass reclaimed.
@@ -42,8 +42,50 @@ impl Collected {
     }
 }
 
-/// Collect garbage, keeping trash newer than `keep_days`.
-pub fn run(guard: &WriteGuard, keep_days: u32) -> Result<Collected> {
+/// How to run a collection pass.
+///
+/// The last of the four commands [7.6](../../../ARCHITECTURE.md) named to get
+/// per-call progress. `gc` is the longest purely local operation velo has, and
+/// it reported through the handle observer only — so a GUI running a collection
+/// alongside anything else could not tell the two apart, and could not stop
+/// either.
+#[derive(Default)]
+pub struct Options<'a> {
+    /// Trash newer than this survives.
+    pub keep_days: u32,
+    /// Where to report progress, overriding the repository's own observer.
+    pub observer: Option<&'a dyn Observer>,
+    /// Checked between objects. Cancelling keeps what was already collected —
+    /// an earlier stopping point, not a broken repository, because everything
+    /// deleted was unreachable before the pass started.
+    ///
+    /// The database work runs first and is not interruptible: it is a handful of
+    /// statements in one transaction, and splitting it would trade a bounded
+    /// wait for a half-pruned index.
+    pub cancel: Option<&'a Cancel>,
+}
+
+/// Collect garbage.
+///
+/// ```no_run
+/// # fn main() -> Result<(), velo_core::Error> {
+/// # let mut repo = velo_core::Repo::discover(std::path::Path::new("."))?;
+/// # let guard = repo.write()?;
+/// use velo_core::commands::gc;
+///
+/// let collected = gc::run(&guard, gc::Options {
+///     keep_days: 30,
+///     ..Default::default()
+/// })?;
+/// # let _ = collected;
+/// # Ok(()) }
+/// ```
+pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
+    let Options {
+        keep_days,
+        observer,
+        cancel,
+    } = options;
     let root = guard.root();
     let conn = guard.conn();
     let mut collected = Collected {
@@ -97,9 +139,18 @@ pub fn run(guard: &WriteGuard, keep_days: u32) -> Result<Collected> {
 
     // No total: the directory is streamed rather than counted first, so a
     // consumer gets liveness without us walking the whole store twice.
-    let progress = guard.phase(Phase::Collecting, None);
+    let progress = PhaseGuard::new(
+        observer.unwrap_or_else(|| guard.repo().observer()),
+        Phase::Collecting,
+        None,
+    );
     for entry in fs::read_dir(root.join(".velo/objects"))? {
         let entry = entry?;
+        // Checked per object, so cancelling takes effect at the next one rather
+        // than part-way through a delete.
+        if cancel.is_some_and(Cancel::is_cancelled) {
+            break;
+        }
         progress.tick();
         let name = entry.file_name().to_string_lossy().to_string();
         if referenced.contains(&name) {
@@ -110,6 +161,11 @@ pub fn run(guard: &WriteGuard, keep_days: u32) -> Result<Collected> {
         collected.objects += 1;
         collected.bytes_freed += size;
     }
+
+    // A cancelled pass reports `Cancelled` rather than a partial tally, as
+    // `restore` does: what it did collect is durable either way, and a count
+    // returned as if the pass had finished would be the misleading half.
+    Cancel::check(cancel)?;
 
     Ok(collected)
 }

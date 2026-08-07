@@ -323,6 +323,15 @@ impl Remote for StreamRemote {
         let mut packbytes = Vec::new();
         let mut buf = vec![0u8; CHUNK];
         loop {
+            // Between chunks, so a cancelled clone stops at the next one rather
+            // than after the whole history has arrived. The child is killed
+            // explicitly: `Child` does not kill on drop, so returning through `?`
+            // would leave the server process running against a gone client.
+            if progress.is_cancelled() {
+                child.kill().ok();
+                child.wait().ok();
+                return Err(VeloError::Cancelled);
+            }
             let n = stdout.read(&mut buf).map_err(VeloError::Io)?;
             if n == 0 {
                 break;
@@ -356,6 +365,14 @@ impl Remote for StreamRemote {
         // alive rather than hung.
         let encoded = bundle::encode(&pack);
         for chunk in encoded.chunks(CHUNK) {
+            // Cancelling a push stops sending; the receiver sees a truncated
+            // stream and rejects it, which is the outcome a killed client would
+            // produce and the one `serve-receive` already handles.
+            if progress.is_cancelled() {
+                child.kill().ok();
+                child.wait().ok();
+                return Err(VeloError::Cancelled);
+            }
             stdin.write_all(chunk).map_err(VeloError::Io)?;
             progress.advance(chunk.len() as u64);
         }

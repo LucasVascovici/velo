@@ -1379,9 +1379,14 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Clone { url, dir } => {
             let cloned = commands::sync::clone(
                 url,
-                dir.as_deref(),
                 &spawn_config()?,
-                Some(Box::new(render::progress::Bar::new())),
+                commands::sync::CloneOptions {
+                    dir: dir.as_deref().map(Path::new),
+                    observer: Some(Box::new(render::progress::Bar::new())),
+                    // No cancel: Ctrl-C already ends a terminal process. The flag
+                    // is for an embedder whose user closes a window instead.
+                    ..Default::default()
+                },
             )?;
             render::sync::print_cloned(&cloned);
             return Ok(());
@@ -1667,7 +1672,13 @@ fn run(cli: Cli) -> Result<()> {
         }
 
         Commands::Gc { keep_days } => {
-            render::gc::print(&commands::gc::run(write(), keep_days)?);
+            render::gc::print(&commands::gc::run(
+                write(),
+                commands::gc::Options {
+                    keep_days,
+                    ..Default::default()
+                },
+            )?);
         }
 
         Commands::Fsck { repair } => {
@@ -1709,6 +1720,7 @@ fn run(cli: Cli) -> Result<()> {
                 write(),
                 &remote,
                 &spawn_config()?,
+                Default::default(),
             )?);
         }
         Commands::Push { remote, branch } => {
@@ -1717,10 +1729,16 @@ fn run(cli: Cli) -> Result<()> {
                 &remote,
                 branch.as_deref(),
                 &spawn_config()?,
+                Default::default(),
             )?);
         }
         Commands::Pull { remote } => {
-            render::sync::print_pulled(&commands::sync::pull(write(), &remote, &spawn_config()?)?);
+            render::sync::print_pulled(&commands::sync::pull(
+                write(),
+                &remote,
+                &spawn_config()?,
+                Default::default(),
+            )?);
         }
         Commands::Remote { cmd } => match cmd {
             None => render::remote::print_list(&commands::remote::list(&repo)?),
