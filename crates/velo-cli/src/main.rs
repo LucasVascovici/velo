@@ -631,6 +631,17 @@ NOTES
             help = "Snapshot, tag, or branch to inspect"
         )]
         at: Option<String>,
+
+        /// Only these lines, as `N` or `N-M` (1-based, inclusive).
+        ///
+        /// Also the fast path: the walk stops once the requested lines are
+        /// explained, rather than once the whole file is.
+        #[arg(
+            long,
+            value_name = "N[-M]",
+            help = "Annotate only these lines, e.g. 40-60"
+        )]
+        lines: Option<String>,
     },
 
     /// Search tracked files for a pattern.
@@ -1365,6 +1376,30 @@ fn is_read_only(cmd: &Commands) -> bool {
     )
 }
 
+/// `N` or `N-M`, 1-based and inclusive, to a half-open range.
+///
+/// Parsed here rather than in core: this is argv shorthand, and core takes a
+/// `Range<usize>` that says what it means.
+fn parse_line_range(spec: &str) -> Result<std::ops::Range<usize>> {
+    let bad = || {
+        VeloError::invalid(format!(
+            "'{}' is not a line range. Use N or N-M, e.g. 40-60.",
+            spec
+        ))
+    };
+    let (start, end) = match spec.split_once('-') {
+        Some((a, b)) => (a.trim(), b.trim()),
+        None => (spec.trim(), spec.trim()),
+    };
+    let start: usize = start.parse().map_err(|_| bad())?;
+    let end: usize = end.parse().map_err(|_| bad())?;
+    if start == 0 || end < start {
+        return Err(bad());
+    }
+    // Inclusive on the command line, half-open in the API.
+    Ok(start..end + 1)
+}
+
 fn run(cli: Cli) -> Result<()> {
     let current_dir = std::env::current_dir().map_err(VeloError::Io)?;
 
@@ -1607,12 +1642,21 @@ fn run(cli: Cli) -> Result<()> {
             }
         },
 
-        Commands::Blame { file, at } => {
+        Commands::Blame { file, at, lines } => {
             let at = at
                 .as_deref()
                 .map(|spec| commands::resolve_snapshot_id(&repo, spec))
                 .transpose()?;
-            render::blame::print(&commands::blame::run(&repo, Path::new(&file), at.as_ref())?);
+            let lines = lines.as_deref().map(parse_line_range).transpose()?;
+            render::blame::print(&commands::blame::run(
+                &repo,
+                Path::new(&file),
+                commands::blame::Options {
+                    at: at.as_ref(),
+                    lines,
+                    ..Default::default()
+                },
+            )?);
         }
 
         Commands::Grep {

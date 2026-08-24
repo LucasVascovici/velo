@@ -30,6 +30,7 @@
 //!     meta,
 //!     timestamp_ms: None,
 //!     author: None,
+//!     renames: &[],
 //! })?;
 //!
 //! // Chain the next one onto it. Nothing was written to disk, and the
@@ -43,6 +44,7 @@
 //!     meta: SnapshotMeta::new(),
 //!     timestamp_ms: None,
 //!     author: None,
+//!     renames: &[],
 //! })?;
 //!
 //! assert_eq!(repo.read_file_at(&first, "pkg/lib.rs")?, b"pub fn f() {}\n");
@@ -73,7 +75,7 @@
 //! a headless consumer has no working tree, and silently moving the position out
 //! from under one that does would leave every file looking modified.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
@@ -234,6 +236,21 @@ pub struct SaveTree<'a> {
     /// the id and cannot be quietly rewritten — see [`Author`]. `None` records no
     /// author, which is what every snapshot written before this existed has.
     pub author: Option<&'a Author>,
+    /// Paths this snapshot moved, as `(from, to)`.
+    ///
+    /// A rename is **recorded, not detected**. `entries` is a whole tree, so a
+    /// move arrives as a delete and an add and is gone by construction — but the
+    /// caller that moved the file knows it moved, and a fact known exactly is
+    /// worth more than a similarity score guessing at it afterwards.
+    ///
+    /// What it buys: `blame` follows the file across the rename instead of
+    /// attributing every line to the snapshot that moved it, and a path filter
+    /// on `history` finds the snapshots from before the move.
+    ///
+    /// `from` must exist in the parent and `to` in this snapshot's `entries`;
+    /// `fsck` reports edges that fail either. Empty is the normal case, and is
+    /// what every snapshot written before this existed has.
+    pub renames: &'a [(PathBuf, PathBuf)],
     /// When this snapshot was made, as epoch milliseconds, or `None` for now.
     ///
     /// The timestamp is part of a snapshot's identity, so a caller that cannot
@@ -447,6 +464,40 @@ impl WriteGuard<'_> {
                 for (path, object, mode) in &tree {
                     ins.execute(params![snapshot, path, object, mode])?;
                 }
+            }
+            // Inside `if !already`, with everything else the snapshot owns.
+            // Rename edges are not part of the id, so an identical tree saved a
+            // second time is the same snapshot — and the edges recorded the
+            // first time are the ones that stand. Letting the second call
+            // overwrite them would make the id stop describing what is stored.
+            let mut ins_rename = tx.prepare(
+                "INSERT INTO renames (snapshot_hash, from_path, to_path) VALUES (?, ?, ?)",
+            )?;
+            for (from, to) in spec.renames {
+                let from = db::normalise(&from.to_string_lossy());
+                let to = db::normalise(&to.to_string_lossy());
+                if from.is_empty() || to.is_empty() {
+                    return Err(VeloError::invalid("a rename edge needs both paths."));
+                }
+                if from == to {
+                    return Err(VeloError::invalid(format!(
+                        "'{}' is recorded as renamed to itself.",
+                        from
+                    )));
+                }
+                // Checked here rather than left to `fsck`: an edge naming a path
+                // this snapshot does not contain is wrong at the moment it is
+                // written, and reporting it later means the history already has
+                // it. The other half — that `from` existed in the parent — is
+                // `fsck`'s, because a caller may legitimately record a rename
+                // onto a parent it did not read.
+                if !seen.contains(&to) {
+                    return Err(VeloError::invalid(format!(
+                        "renamed to '{}', which is not in this tree.",
+                        to
+                    )));
+                }
+                ins_rename.execute(params![snapshot, from, to])?;
             }
         }
         // Through `tx`, not the connection: an unchecked transaction begins on the

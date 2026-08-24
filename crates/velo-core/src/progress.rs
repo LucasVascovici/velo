@@ -38,6 +38,11 @@ pub enum Phase {
     Verifying,
     /// Scanning the object store for objects nothing references.
     Collecting,
+    /// Walking history to attribute lines to the snapshots that wrote them.
+    ///
+    /// Reported without a total: how far a blame walks depends on when the last
+    /// line is explained, which is not knowable in advance.
+    Tracing,
 }
 
 impl Phase {
@@ -48,6 +53,7 @@ impl Phase {
             Phase::Replaying => "commits",
             Phase::Packing | Phase::Importing | Phase::Verifying | Phase::Collecting => "objects",
             Phase::Transferring => "bytes",
+            Phase::Tracing => "snapshots",
         }
     }
 }
@@ -65,6 +71,7 @@ impl fmt::Display for Phase {
             Phase::Importing => "Importing",
             Phase::Verifying => "Verifying",
             Phase::Collecting => "Collecting",
+            Phase::Tracing => "Tracing",
         })
     }
 }

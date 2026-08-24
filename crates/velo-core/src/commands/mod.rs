@@ -10,6 +10,7 @@ pub mod grep;
 pub mod history;
 pub mod init;
 pub mod merge;
+pub mod paths;
 pub mod rebase;
 pub mod redo;
 pub mod remote;
