@@ -6,7 +6,16 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
-## Unreleased
+## 4.0.0
+
+The v4.0.0 tag has been **moved** rather than superseded, twice. It was first
+pushed before Phases 5 to 11 landed, and again before Phase 13, and nothing was
+depending on either — Velum, the only consumer outside this repository, pins a
+commit rather than a tag. Everything below therefore ships as one version.
+
+Nothing is on crates.io yet, which is the only reason this is available. Once a
+version is published there it is permanent: it cannot be replaced, re-uploaded
+or deleted.
 
 ### Added
 
@@ -69,17 +78,6 @@ This file starts at the format v2 break. Earlier releases are in the git history
   before it. A version-2 bundle is a version-3 bundle with no edges, and readers
   accept both; older builds reject v3, which is the honest outcome since they
   would otherwise import the history and quietly drop the edges.
-
-## 4.0.0
-
-The v4.0.0 tag was **moved** rather than superseded. The first tag was pushed
-before Phases 5 to 11 landed, and nothing was depending on it — Velum, the only
-consumer outside this repository, pins a commit rather than a tag. Everything
-below therefore ships as one version, and the earlier tag is gone.
-
-Nothing is on crates.io yet. Once it is, this stops being possible for good — a
-version on the registry is permanent, and cannot be replaced, re-uploaded or
-deleted.
 
 ### Added
 
