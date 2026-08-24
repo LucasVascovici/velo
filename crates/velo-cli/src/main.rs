@@ -644,6 +644,32 @@ NOTES
         lines: Option<String>,
     },
 
+    /// Move or rename a tracked file, and record that it moved.
+    ///
+    /// Velo has no staging area — the disk is the snapshot — but a rename is
+    /// the one thing the disk cannot express: afterwards the tree looks
+    /// exactly as it would if the old file had been deleted and a new one
+    /// written.  Recording it here is what lets `velo blame` follow the file
+    /// across the move instead of crediting every line to it, and what lets
+    /// `velo history --file` reach past it.
+    ///
+    /// Using `mv` from your shell still works; the move simply reads as a
+    /// delete and an add, because by then nothing knows any better.
+    ///
+    /// Examples
+    ///   velo mv notes.txt docs/notes.md
+    ///   velo save "move the notes"
+    #[command(after_help = "The rename is recorded on the next 'velo save'.")]
+    Mv {
+        /// Path to move.
+        #[arg(value_name = "FROM")]
+        from: String,
+
+        /// Where to move it.
+        #[arg(value_name = "TO")]
+        to: String,
+    },
+
     /// Search tracked files for a pattern.
     ///
     /// Searches the working tree by default.  Use --snapshot to search
@@ -1542,6 +1568,14 @@ fn run(cli: Cli) -> Result<()> {
                 },
             )?;
             render::history::print(&history, view);
+        }
+
+        Commands::Mv { from, to } => {
+            render::mv::print(&commands::mv::run(
+                write(),
+                Path::new(&from),
+                Path::new(&to),
+            )?);
         }
 
         Commands::Undo => {

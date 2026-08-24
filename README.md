@@ -53,6 +53,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | :--- | :--- | :--- |
 | Start tracking a folder | `git init` | `velo init` |
 | Save your work | `git add -A && git commit -m "msg"` | `velo save "msg"` |
+| **Rename a file** | `git mv a b` — then blame guesses by similarity | `velo mv a b` — the move is recorded, not inferred |
 | See what changed | `git status` | `velo status` |
 | See line-level diff | `git diff` | `velo diff` |
 | View history | `git log` | `velo history` |
@@ -300,6 +301,7 @@ velo pull
 | :--- | :--- |
 | `velo init` | Initialise a new repository in the current directory |
 | `velo save "<message>"` | Snapshot all tracked files with a description |
+| `velo mv <from> <to>` | Move a file **and record that it moved**, so `blame` and `history --file` follow it across |
 | `velo save "<message>" -- <path>` | Snapshot only the listed paths; other changes remain unsaved |
 | `velo save --amend` | Fold changes into the last snapshot, keeping its message |
 | `velo save "<message>" --amend` | Replace the last snapshot and reword it (keeps same parent) |
@@ -310,6 +312,7 @@ velo pull
 | `velo show <target> -- <path>` | Restrict the diff to a specific file or directory |
 | `velo blame <file>` | Annotate each line with the snapshot that last changed it |
 | `velo blame <file> --at <target>` | Blame at a specific past snapshot, tag, or branch |
+| `velo blame <file> --lines N-M` | Only these lines — and faster, since the walk stops sooner |
 | | Shows the author alongside each line, when the history records one |
 | `velo grep <pattern>` | Search tracked files for a regex pattern |
 | `velo grep <pattern> --snapshot <target>` | Search inside a stored snapshot |

@@ -66,6 +66,20 @@ pub enum FileChange {
     BinaryChanged {
         added: bool,
     },
+    /// The file moved. `hunks` is empty when only the path changed, which is
+    /// the common case and the one worth *not* rendering as a whole-file delete
+    /// plus a whole-file add.
+    ///
+    /// Only ever produced when comparing a snapshot against a parent it
+    /// recorded rename edges against — see
+    /// [`SaveTree::renames`](crate::tree::SaveTree::renames). Velo does not
+    /// guess at moves from content similarity, so a file moved without an edge
+    /// still reads as a delete and an add.
+    Renamed {
+        /// The path it moved from, as of the older side.
+        from: String,
+        hunks: Vec<Hunk>,
+    },
 }
 
 /// One file's entry in a diff.
@@ -307,6 +321,13 @@ pub(crate) fn snapshot_diff(
     let filter = file_filter.as_deref().map(db::normalise);
     let mut files = Vec::new();
 
+    // Rename edges belong to a snapshot and describe how it differs from its
+    // parent, so they apply to exactly that comparison. Applying them to an
+    // arbitrary pair — two tips, a stash against the working tree — would claim
+    // a move that neither side recorded.
+    let moved = renames_against(conn, old_hash, new_hash);
+    let absorbed: std::collections::HashSet<&String> = moved.values().collect();
+
     for path in union_paths(&old_files, &new_files) {
         if let Some(f) = &filter {
             if !path.starts_with(f.as_str()) {
@@ -314,7 +335,32 @@ pub(crate) fn snapshot_diff(
             }
         }
 
+        // The old name's row is folded into the new name's, rather than shown
+        // as a delete beside an add.
+        if absorbed.contains(&path) {
+            continue;
+        }
+
         let full_path = root.join(db::db_to_path(&path));
+        if let Some(from) = moved.get(&path) {
+            let hunks = match (old_files.get(from), new_files.get(&path)) {
+                (Some(oh), Some(nh)) if oh != nh && !is_binary(&full_path) => {
+                    let old = read_text(&objects_dir, oh)?;
+                    let new = read_text(&objects_dir, nh)?;
+                    build_hunks(&old, &new)
+                }
+                _ => Vec::new(),
+            };
+            files.push(FileDiff {
+                path,
+                change: FileChange::Renamed {
+                    from: from.clone(),
+                    hunks,
+                },
+            });
+            continue;
+        }
+
         let change = match (old_files.get(&path), new_files.get(&path)) {
             (None, Some(nh)) => {
                 if is_binary(&full_path) {
@@ -355,6 +401,48 @@ pub(crate) fn snapshot_diff(
         new_label: new_hash[..8.min(new_hash.len())].to_string(),
         files,
     })
+}
+
+/// The rename edges that apply when comparing `old_hash` to `new_hash`, keyed
+/// by the new path.
+///
+/// Empty unless `old_hash` is a parent of `new_hash`, and an edge is dropped
+/// unless both of its ends are where it claims they are — a snapshot can be
+/// handed edges through the public API, and a diff should describe what is
+/// stored rather than what was asserted. `fsck` reports the mismatch.
+fn renames_against(
+    conn: &rusqlite::Connection,
+    old_hash: &str,
+    new_hash: &str,
+) -> std::collections::HashMap<String, String> {
+    use std::collections::HashMap;
+    if old_hash.is_empty() {
+        return HashMap::new();
+    }
+    let is_parent: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM snapshots
+                            WHERE hash = ?1 AND (parent_hash = ?2 OR merge_parent = ?2))",
+            rusqlite::params![new_hash, old_hash],
+            |r| r.get(0),
+        )
+        .unwrap_or(false);
+    if !is_parent {
+        return HashMap::new();
+    }
+    let Ok(mut stmt) =
+        conn.prepare("SELECT from_path, to_path FROM renames WHERE snapshot_hash = ?")
+    else {
+        return HashMap::new();
+    };
+    let Ok(rows) = stmt.query_map([new_hash], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    }) else {
+        return HashMap::new();
+    };
+    rows.filter_map(|r| r.ok())
+        .map(|(from, to)| (to, from))
+        .collect()
 }
 
 // ─── Hunk construction ────────────────────────────────────────────────────────

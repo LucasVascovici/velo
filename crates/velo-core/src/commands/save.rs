@@ -368,6 +368,10 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         }
     }
 
+    // Moves made since the last save become edges on this one, in the same
+    // transaction as the tree they describe.
+    crate::commands::mv::apply_pending(&tx, snapshot_hash, &tree)?;
+
     // New save invalidates the redo stack for this branch. Drop the shelved
     // tags belonging to those discarded snapshots too, so they don't linger.
     tx.execute(

@@ -6,6 +6,70 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## Unreleased
+
+### Added
+
+- **Velo has a rename concept.** It had none anywhere, and a snapshot is a whole
+  tree — so a move arrived as a delete plus an add and was gone by construction.
+  Renames are now **recorded, not detected**: `velo mv` writes the edge, and
+  `SaveTree.renames` takes it from a consumer that moved the file itself.
+  Content-similarity detection is deliberately not implemented; it is a
+  heuristic where an exact answer is available.
+
+  Reading the edges back is one shared primitive, `commands::paths`. Its
+  starting point is a parameter rather than implicit: following renames
+  backwards needs to know where backwards starts, and the only endpoint
+  available to invent is `.velo/PARENT`, which is exactly the wrong guess for a
+  consumer built on `save_tree`.
+
+- **`velo blame --lines N-M`, and `blame::Options`.** The walk reads and diffs
+  two whole file texts per snapshot and stops once the requested lines are
+  explained, so a window ends it far sooner — a gutter's worth of a document
+  whose first line is original otherwise walks the entire history. `Options`
+  also carries an observer and a cancel, and an `at` that falls back to the
+  checked-out branch tip so the default works without a working tree.
+
+- **`LineOrigin.branch`**, and `show` reports its rename edges. Both on the
+  argument that put the author on `LineOrigin`: the column is in the row the
+  walk already reads, and otherwise every consumer writes the same lookup.
+
+### Fixed
+
+- **Blame credited a merge with everything the branch it absorbed wrote.** A
+  merge's diff against its first parent contains all of it, so the wrong time,
+  the wrong message and the wrong person. Blame now asks *which parent explains
+  this line*: a line is the merge's own only when no parent had it, which is
+  exactly a conflict resolution. Where drafts are the normal way to write, this
+  was the common path, not an edge case.
+
+- **Blame stopped dead at a rename**, crediting the whole file to whoever moved
+  it — the parent text came back empty on the old path, so every line looked
+  new. **`history --file` truncated there too**, for the same reason: it was a
+  filter on a name rather than on a file.
+
+### Changed — breaking (API only)
+
+- **`blame::run` takes options.** `run(repo, file, at)` is now
+  `run(repo, file, blame::Options { at, .. })`. `Blame.path` is a `PathBuf`,
+  `Blame.snapshot` and `LineOrigin.hash` are typed ids, and `LineOrigin` gained
+  `branch` and `path`.
+
+- **`SaveTree` gained `renames`.** `&[]` is the previous behaviour.
+
+- **`show::SnapshotDetail` was missed by the typed-ids pass.** `branch` is a
+  `BranchName`, `parent` a `SnapshotId`; `merge_parent` and `renames` are new.
+
+- **`FileChange::Renamed`** is a new variant, so a `match` over `FileChange`
+  needs an arm for it.
+
+### Changed — bundle format v3
+
+- **Bundles carry rename edges**, appended after `objects` and changing nothing
+  before it. A version-2 bundle is a version-3 bundle with no edges, and readers
+  accept both; older builds reject v3, which is the honest outcome since they
+  would otherwise import the history and quietly drop the edges.
+
 ## 4.0.0
 
 The v4.0.0 tag was **moved** rather than superseded. The first tag was pushed

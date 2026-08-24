@@ -53,6 +53,20 @@ pub enum Problem {
         name: String,
         hash: String,
     },
+    /// A rename edge names a destination the snapshot does not contain.
+    RenameToMissing {
+        snapshot: String,
+        from_path: String,
+        to_path: String,
+    },
+    /// A rename edge names a source no parent of the snapshot contained.
+    RenameFromMissing {
+        snapshot: String,
+        from_path: String,
+        to_path: String,
+    },
+    /// A rename edge is attached to a snapshot that doesn't exist.
+    RenameOnMissingSnapshot { snapshot: String },
 }
 
 impl fmt::Display for Problem {
@@ -102,6 +116,35 @@ impl fmt::Display for Problem {
                 f,
                 "{} '{}' points to snapshot {} which does not exist",
                 table, name, hash
+            ),
+            Problem::RenameToMissing {
+                snapshot,
+                from_path,
+                to_path,
+            } => write!(
+                f,
+                "snapshot {} records a rename {} → {}, but does not contain {}",
+                &snapshot[..16.min(snapshot.len())],
+                from_path,
+                to_path,
+                to_path
+            ),
+            Problem::RenameFromMissing {
+                snapshot,
+                from_path,
+                to_path,
+            } => write!(
+                f,
+                "snapshot {} records a rename {} → {}, but no parent contained {}",
+                &snapshot[..16.min(snapshot.len())],
+                from_path,
+                to_path,
+                from_path
+            ),
+            Problem::RenameOnMissingSnapshot { snapshot } => write!(
+                f,
+                "a rename edge is attached to snapshot {}, which does not exist",
+                &snapshot[..16.min(snapshot.len())]
             ),
         }
     }
@@ -184,6 +227,10 @@ pub enum Section {
     Refs {
         problems: usize,
     },
+    Renames {
+        checked: usize,
+        problems: usize,
+    },
     State {
         outstanding: usize,
         repaired: bool,
@@ -195,7 +242,8 @@ impl Section {
         match self {
             Section::Objects { problems, .. }
             | Section::Snapshots { problems, .. }
-            | Section::Refs { problems } => *problems,
+            | Section::Refs { problems }
+            | Section::Renames { problems, .. } => *problems,
             Section::State { outstanding, .. } => *outstanding,
         }
     }
@@ -311,7 +359,15 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
         problems: problems.len() - before,
     });
 
-    // ── 4. Cruft, and optionally its removal ─────────────────────────────────
+    // ── 4. Rename edges point at paths that are actually there ───────────────
+    let before = problems.len();
+    let checked = check_renames(conn, &mut problems)?;
+    sections.push(Section::Renames {
+        checked,
+        problems: problems.len() - before,
+    });
+
+    // ── 5. Cruft, and optionally its removal ─────────────────────────────────
     let found = find_cruft(conn, root);
     let repaired = match guard {
         Some(g) if !found.is_empty() => {
@@ -485,6 +541,70 @@ fn check_ref_table(
         }
     }
     Ok(())
+}
+
+/// Check every rename edge against the trees it claims to describe.
+///
+/// A rename is not part of a snapshot's identity, so nothing about the id says
+/// whether an edge is true — which is exactly why it is checked here. `to` must
+/// be in the snapshot and `from` in one of its parents; an edge failing either
+/// makes `blame` follow a file that was never there.
+///
+/// `save_tree` rejects a bad `to` outright. `from` is checked only here, because
+/// a caller may legitimately record a move onto a parent it never read, and
+/// finding out at save time would mean reading it.
+fn check_renames(conn: &rusqlite::Connection, problems: &mut Vec<Problem>) -> Result<usize> {
+    let mut stmt = conn.prepare("SELECT snapshot_hash, from_path, to_path FROM renames")?;
+    let edges: Vec<(String, String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+
+    for (snapshot, from_path, to_path) in &edges {
+        let parents: Option<(String, String)> = conn
+            .query_row(
+                "SELECT parent_hash, merge_parent FROM snapshots WHERE hash = ?",
+                [snapshot],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let Some((parent, merge_parent)) = parents else {
+            problems.push(Problem::RenameOnMissingSnapshot {
+                snapshot: snapshot.clone(),
+            });
+            continue;
+        };
+
+        if !tracks(conn, snapshot, to_path) {
+            problems.push(Problem::RenameToMissing {
+                snapshot: snapshot.clone(),
+                from_path: from_path.clone(),
+                to_path: to_path.clone(),
+            });
+        }
+        // Either parent will do: a merge can absorb a branch that did the move.
+        let in_a_parent = [parent, merge_parent]
+            .iter()
+            .filter(|p| !p.is_empty())
+            .any(|p| tracks(conn, p, from_path));
+        if !in_a_parent {
+            problems.push(Problem::RenameFromMissing {
+                snapshot: snapshot.clone(),
+                from_path: from_path.clone(),
+                to_path: to_path.clone(),
+            });
+        }
+    }
+    Ok(edges.len())
+}
+
+fn tracks(conn: &rusqlite::Connection, snapshot: &str, path: &str) -> bool {
+    conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ? AND path = ?)",
+        rusqlite::params![snapshot, path],
+        |r| r.get(0),
+    )
+    .unwrap_or(false)
 }
 
 // ─── Cruft ────────────────────────────────────────────────────────────────────

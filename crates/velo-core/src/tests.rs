@@ -1285,6 +1285,230 @@ mod tests {
         );
     }
 
+    #[test]
+    fn mv_records_the_move_for_the_next_save() {
+        let (_tmp, root) = setup();
+        write(&root, "notes.txt", "first line\n");
+        save(&root, "write the notes");
+
+        with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("notes.txt"), Path::new("docs/notes.md"))
+        })
+        .unwrap();
+        assert!(!root.join("notes.txt").exists(), "the file moved on disk");
+        assert_eq!(read(&root, "docs/notes.md"), "first line\n");
+
+        let moved = save(&root, "move the notes");
+        // Recorded against the snapshot, not left pending.
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        assert_eq!(
+            commands::paths::recorded_by(&repo, &sid(&moved)).unwrap(),
+            vec![(PathBuf::from("notes.txt"), PathBuf::from("docs/notes.md"))]
+        );
+        assert!(with_write(&root, commands::mv::pending).unwrap().is_empty());
+
+        // And the point of all of it: blame reaches past the move.
+        let blame =
+            commands::blame::run(&repo, Path::new("docs/notes.md"), Default::default()).unwrap();
+        assert_eq!(
+            blame.lines[0].origin.as_ref().unwrap().message,
+            "write the notes"
+        );
+    }
+
+    #[test]
+    fn moving_a_file_twice_records_one_move() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "content\n");
+        save(&root, "first");
+
+        with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("a.txt"), Path::new("b.txt"))
+        })
+        .unwrap();
+        let second = with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("b.txt"), Path::new("c.txt"))
+        })
+        .unwrap();
+        assert!(second.extended_a_pending_move);
+
+        let moved = save(&root, "moved twice");
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        // b.txt was never in a snapshot, so an edge naming it would send the
+        // walk looking for a file in a tree that never held it.
+        assert_eq!(
+            commands::paths::recorded_by(&repo, &sid(&moved)).unwrap(),
+            vec![(PathBuf::from("a.txt"), PathBuf::from("c.txt"))]
+        );
+    }
+
+    #[test]
+    fn moving_a_file_back_records_nothing() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "content\n");
+        save(&root, "first");
+
+        with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("a.txt"), Path::new("b.txt"))
+        })
+        .unwrap();
+        with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("b.txt"), Path::new("a.txt"))
+        })
+        .unwrap();
+        // Back where it started is not a move, and `a → a` is not an edge.
+        assert!(with_write(&root, commands::mv::pending).unwrap().is_empty());
+    }
+
+    #[test]
+    fn mv_refuses_to_overwrite() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "keep me\n");
+        write(&root, "b.txt", "and me\n");
+        save(&root, "two files");
+
+        let err = with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("a.txt"), Path::new("b.txt"))
+        })
+        .unwrap_err();
+        assert!(format!("{}", err).contains("already exists"), "{}", err);
+        // Nothing was destroyed on the way to the error.
+        assert_eq!(read(&root, "a.txt"), "keep me\n");
+        assert_eq!(read(&root, "b.txt"), "and me\n");
+    }
+
+    #[test]
+    fn switching_branches_forgets_a_pending_move() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "content\n");
+        save(&root, "first");
+        // A second branch with its own snapshot, so switching to it is a
+        // whole-tree rewrite rather than carrying the current tree along.
+        with_write(&root, |vr| commands::switch::run(vr, "other", false)).unwrap();
+        write(&root, "other.txt", "elsewhere\n");
+        save(&root, "on other");
+        with_write(&root, |vr| commands::switch::run(vr, "main", true)).unwrap();
+
+        with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("a.txt"), Path::new("b.txt"))
+        })
+        .unwrap();
+        // The tree the move describes is about to be replaced, so the move
+        // cannot be attached to whatever gets saved next.
+        with_write(&root, |vr| commands::switch::run(vr, "other", true)).unwrap();
+        assert!(with_write(&root, commands::mv::pending).unwrap().is_empty());
+    }
+
+    #[test]
+    fn starting_an_unborn_branch_keeps_a_pending_move() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "content\n");
+        save(&root, "first");
+
+        with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("a.txt"), Path::new("b.txt"))
+        })
+        .unwrap();
+        // A branch with no snapshots carries the working tree over rather than
+        // writing a new one, so the move is still the move that is about to be
+        // saved — forgetting it here would lose it for no reason.
+        with_write(&root, |vr| commands::switch::run(vr, "fresh", false)).unwrap();
+        assert_eq!(
+            with_write(&root, commands::mv::pending).unwrap(),
+            vec![(PathBuf::from("a.txt"), PathBuf::from("b.txt"))]
+        );
+    }
+
+    #[test]
+    fn fsck_reports_a_rename_edge_that_points_nowhere() {
+        let (_tmp, root) = setup();
+        write(&root, "a.txt", "content\n");
+        let first = save(&root, "first");
+
+        // Written straight into the table, which is the only way to get one:
+        // `save_tree` rejects a destination the tree does not hold.
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        conn.execute(
+            "INSERT INTO renames (snapshot_hash, from_path, to_path) VALUES (?, 'ghost.txt', 'a.txt')",
+            [&first],
+        )
+        .unwrap();
+        drop(conn);
+
+        let report = with_repo(&root, commands::fsck::check).unwrap();
+        assert!(
+            report.problems.iter().any(|p| matches!(
+                p,
+                commands::fsck::Problem::RenameFromMissing { from_path, .. }
+                    if from_path == "ghost.txt"
+            )),
+            "expected a RenameFromMissing, got {:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn a_bundle_carries_rename_edges() {
+        let (_tmp, root) = setup();
+        write(&root, "old.txt", "content\n");
+        save(&root, "first");
+        with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("old.txt"), Path::new("new.txt"))
+        })
+        .unwrap();
+        let moved = save(&root, "move it");
+
+        let bundle = root.join("out.velobundle");
+        with_repo(&root, |vr| commands::bundle::create(vr, &bundle, None)).unwrap();
+
+        let (_tmp2, other) = setup();
+        with_write(&other, |vr| commands::bundle::apply(vr, &bundle)).unwrap();
+
+        // Edges are not part of a snapshot's identity, so a receiver without
+        // them would recompute the same ids and accept the import happily —
+        // then report the whole file as belonging to whoever moved it.
+        let there = Repo::open_and_migrate(&other).unwrap();
+        assert_eq!(
+            commands::paths::recorded_by(&there, &sid(&moved)).unwrap(),
+            vec![(PathBuf::from("old.txt"), PathBuf::from("new.txt"))]
+        );
+        assert!(there
+            .conn()
+            .query_row("SELECT 1 FROM snapshots WHERE hash = ?", [&moved], |r| r
+                .get::<_, i64>(0))
+            .is_ok());
+    }
+
+    #[test]
+    fn show_reports_a_move_as_a_move() {
+        let (_tmp, root) = setup();
+        write(&root, "old.txt", "one\ntwo\nthree\n");
+        save(&root, "first");
+        with_write(&root, |vr| {
+            commands::mv::run(vr, Path::new("old.txt"), Path::new("new.txt"))
+        })
+        .unwrap();
+        write(&root, "new.txt", "one\nTWO\nthree\n");
+        let moved = save(&root, "move and edit");
+
+        let detail = with_repo(&root, |vr| commands::show::run(vr, &sid(&moved), &[])).unwrap();
+        assert_eq!(
+            detail.renames,
+            vec![(PathBuf::from("old.txt"), PathBuf::from("new.txt"))]
+        );
+        // One entry, not a whole-file delete beside a whole-file add.
+        assert_eq!(detail.diff.files.len(), 1);
+        let file = &detail.diff.files[0];
+        assert_eq!(file.path, "new.txt");
+        match &file.change {
+            commands::diff::FileChange::Renamed { from, hunks } => {
+                assert_eq!(from, "old.txt");
+                assert!(!hunks.is_empty(), "the edit should still be shown");
+            }
+            other => panic!("expected a rename, got {:?}", other),
+        }
+    }
+
     // =========================================================================
     // blame: across merges, across renames, and windowed
     // =========================================================================
@@ -1990,11 +2214,12 @@ mod tests {
         let report = with_repo(&root, commands::fsck::check).unwrap();
         assert!(report.is_healthy());
         assert!(!report.repair_requested);
-        assert_eq!(report.sections.len(), 4);
+        assert_eq!(report.sections.len(), 5);
         assert!(matches!(report.sections[0], Section::Objects { .. }));
         assert!(matches!(report.sections[1], Section::Snapshots { .. }));
         assert!(matches!(report.sections[2], Section::Refs { .. }));
-        assert!(matches!(report.sections[3], Section::State { .. }));
+        assert!(matches!(report.sections[3], Section::Renames { .. }));
+        assert!(matches!(report.sections[4], Section::State { .. }));
         assert!(report.sections.iter().all(|s| s.problems() == 0));
     }
 
