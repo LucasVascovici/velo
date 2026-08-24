@@ -248,15 +248,42 @@ Present in v1 and v2 (v2 additions marked):
 | `index_cache` | `(path, mtime_ns, size, hash)` — change-detection cache, **derived**; safe to delete |
 | `remotes` | `name`(PK) → `url` |
 | `remote_refs` | last-known remote tips: `(remote, branch)` → `hash` |
+| `renames` | **v2** — rename edges: `(snapshot_hash, to_path)`(PK), `from_path` (§7.3) |
+| `pending_renames` | **v2** — working-tree moves awaiting a save: `to_path`(PK), `from_path`; **derived**, safe to delete |
 
 Indexes are performance-only and may be rebuilt: `idx_filemap_snap`,
-`idx_filemap_path`, `idx_snap_branch`, `idx_trash_branch`, `idx_stash_name`.
+`idx_filemap_path`, `idx_snap_branch`, `idx_trash_branch`, `idx_stash_name`,
+`idx_renames_to`.
 
 **Reserved branch names.** `_stash` is internal. `remotes/<remote>/<branch>` is
 remote-tracking. `_deleted_<name>` is a soft-deleted branch. Consumers must not
 create branches matching these patterns.
 
-### 7.3 Pragmas
+### 7.3 Rename edges
+
+A snapshot is a whole tree, so a move is indistinguishable from a delete plus an
+add once it has happened. `renames` records the move at the moment it is made,
+and is the only place that fact exists.
+
+- **Not part of snapshot identity.** Identity answers what a tree *is*, and two
+  identical trees are the same snapshot however each was arrived at. Adding
+  edges to the recipe would also mean an identical re-save could collide with a
+  different claim about how it came to be.
+- **A consequence:** nothing about the id proves an edge is true. `fsck` checks
+  them structurally instead — `to_path` must be in the snapshot, and `from_path`
+  in one of its parents.
+- **Never inferred.** Velo does not guess at moves from content similarity. A
+  file moved without an edge reads as a delete and an add, which is what the
+  stored trees actually say.
+- **Optional throughout.** A repository with no edges is well-formed, and is
+  what every repository written before this existed looks like.
+
+`pending_renames` is the working-tree half: `velo mv` writes it, the next `velo
+save` moves the applicable rows into `renames`, and any command that rewrites
+the tree wholesale clears it. Nothing in history depends on it, so a consumer
+may ignore or delete it.
+
+### 7.4 Pragmas
 
 `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`. WAL is required:
 readers must not block a writer.
@@ -286,22 +313,38 @@ output.
 Little-endian. Strings are `u32` byte-length followed by UTF-8 bytes.
 
 ```
-magic      : 8 bytes  "VELOBND1"   (v1)  /  "VELOBND2"  (v2)
-version    : u32                    1 (v1) / 2 (v2)
+magic      : 8 bytes  "VELOBND1"   (v1)  /  "VELOBND2"  (v2 and v3)
+version    : u32                    1 (v1) / 2 / 3
 snapshots  : u32 count, then per row:
                hash, message, branch, parent_hash, merge_parent,
                created_at            (v1: string / v2: i64 epoch ms)
 file_map   : u32 count, then per row: snapshot_hash, path, hash, i64 mode
-meta       : u32 count, then per row: snapshot_id, namespace, key, value   (v2 only)
+meta       : u32 count, then per row: snapshot_id, namespace, key, value   (v2+)
 tags       : u32 count, then per row: name, snapshot_hash
 objects    : u32 count, then per row: hash, u32 len, len bytes
                (the raw, already-Zstd-compressed object, verbatim)
+renames    : u32 count, then per row: snapshot_hash, from_path, to_path    (v3 only)
 ```
+
+Version 3 appends `renames` after `objects` and changes nothing before it, so a
+version-2 bundle is a version-3 bundle with no edges. Readers accept both; the
+section is appended rather than slotted in beside the other tables precisely so
+that stays true.
+
+Rename edges travel even though they are not part of a snapshot's identity —
+the opposite of the reason metadata does. A receiver without metadata recomputes
+a different id and rejects the import; a receiver without edges recomputes the
+*same* ids, accepts happily, and then reports a file's whole history as
+belonging to whoever moved it. Silence, not an error, which is why they are
+carried. Edges naming snapshots the receiver does not hold are dropped on
+import: storing one would manufacture exactly the problem §7.4 has `fsck`
+report.
 
 Rules:
 
-- A reader **must** reject an unknown `version` with a clear error rather than
-  guessing.
+- A reader **must** reject a `version` it does not understand with a clear error
+  rather than guessing. Accepting an *older* version it does understand is
+  correct and expected.
 - A bundle must be **self-contained**: reachability is walked to the root, so
   every included snapshot's parents are included.
 - A reader **must** verify every object (§2.3) and recompute every snapshot id

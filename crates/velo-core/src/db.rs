@@ -122,6 +122,16 @@ const SCHEMA: &str = "
         PRIMARY KEY (snapshot_hash, to_path)
     );
 
+    -- Moves made in the working tree, waiting for the save that will record
+    -- them.  Velo has no staging area because the disk is the snapshot; a
+    -- rename is the one fact the disk cannot hold, since after the move the
+    -- tree is identical to a delete plus an add.  Keyed by destination: two
+    -- files cannot arrive at one path.
+    CREATE TABLE IF NOT EXISTS pending_renames (
+        from_path TEXT NOT NULL,
+        to_path   TEXT PRIMARY KEY
+    );
+
     CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
     CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
     CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at_ms);

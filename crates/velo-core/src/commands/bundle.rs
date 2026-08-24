@@ -23,10 +23,22 @@
 //! tags     : u32 count, then per row: 2 strings (name, snapshot_hash)
 //! objects  : u32 count, then per row: string hash, u32 len, len bytes
 //!            (the raw, already-zstd-compressed object file, verbatim)
+//! renames  : u32 count, then per row: 3 strings   (version 3 and later)
+//!            (snapshot_hash, from_path, to_path)
 //! ```
 //!
 //! Metadata has to travel: it is part of a snapshot's identity, so a receiver
 //! that did not get it would recompute a different id and reject the import.
+//!
+//! Rename edges travel for the opposite reason. They are *not* part of a
+//! snapshot's identity, so a receiver without them recomputes the same ids and
+//! accepts the import happily — and then reports a file's whole history as
+//! belonging to whoever moved it. Silence, not an error, which is why they are
+//! carried.
+//!
+//! They are appended after `objects` rather than slotted in beside the other
+//! tables, so a reader that knows about them can take a version-2 bundle as one
+//! with no edges instead of failing on a layout it cannot parse.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -48,7 +60,18 @@ const MAGIC: &[u8; 8] = b"VELOBND2";
 /// Wire format version. Tracks the repository format, but is its own constant
 /// because the two are free to diverge — a repository change that does not alter
 /// what crosses the wire should not invalidate every peer.
-const BUNDLE_VERSION: u32 = 2;
+const BUNDLE_VERSION: u32 = 3;
+
+/// The oldest version this build can read.
+///
+/// A version-2 bundle is a version-3 bundle with no rename edges, and reading
+/// one costs nothing but a branch — so old bundles keep working. The reverse
+/// cannot: an older velo rejects version 3 outright, which is the honest
+/// outcome, since it would otherwise import history and quietly drop the edges.
+const MIN_BUNDLE_VERSION: u32 = 2;
+
+/// The version that first carried rename edges.
+const RENAMES_SINCE: u32 = 3;
 
 // ─── In-memory bundle ──────────────────────────────────────────────────────────
 
@@ -76,6 +99,13 @@ pub struct FileMapRow {
     pub mode: i64,
 }
 
+/// One `renames` row in transit.
+pub struct RenameRow {
+    pub snapshot_hash: String,
+    pub from_path: String,
+    pub to_path: String,
+}
+
 /// An in-memory pack of history: the interchange unit for bundles *and* for
 /// filesystem remotes (fetch/push build one from a source repo and import it
 /// into a destination repo).
@@ -85,6 +115,7 @@ pub struct Bundle {
     pub meta: Vec<MetaRow>,
     pub tags: Vec<(String, String)>,     // (name, snapshot_hash)
     pub objects: Vec<(String, Vec<u8>)>, // (hash, raw compressed bytes)
+    pub renames: Vec<RenameRow>,
 }
 
 // ─── create ─────────────────────────────────────────────────────────────────────
@@ -279,12 +310,36 @@ pub(crate) fn build_pack_excluding(
         objects.push((h.clone(), bytes));
     }
 
+    // Scoped to the snapshots being sent, like tags: an edge for history the
+    // receiver is not getting describes nothing it can look at.
+    let mut renames = Vec::new();
+    {
+        let mut stmt = conn.prepare("SELECT snapshot_hash, from_path, to_path FROM renames")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?;
+        for (snapshot_hash, from_path, to_path) in rows.flatten() {
+            if snap_set.contains(&snapshot_hash) {
+                renames.push(RenameRow {
+                    snapshot_hash,
+                    from_path,
+                    to_path,
+                });
+            }
+        }
+    }
+
     Ok(Bundle {
         snapshots,
         file_map,
         meta,
         tags,
         objects,
+        renames,
     })
 }
 
@@ -440,6 +495,23 @@ pub(crate) fn import_pack(
         for (name, hash) in &bundle.tags {
             ins_tag.execute(params![name, hash])?;
         }
+
+        // Rename edges, for the snapshots this repository actually has. Ignoring
+        // a duplicate is right for the same reason it is for metadata: the
+        // snapshot is immutable, so an edge already recorded against it came
+        // from the same history and says the same thing.
+        //
+        // Edges for snapshots the receiver does not hold are dropped rather than
+        // stored: an edge describing a tree nothing here can look at is exactly
+        // what `fsck` reports as a problem, and importing one would manufacture
+        // that problem out of a healthy bundle.
+        let mut ins_rename = tx.prepare(
+            "INSERT OR IGNORE INTO renames (snapshot_hash, from_path, to_path)
+             SELECT ?1, ?2, ?3 WHERE EXISTS(SELECT 1 FROM snapshots WHERE hash = ?1)",
+        )?;
+        for r in &bundle.renames {
+            ins_rename.execute(params![r.snapshot_hash, r.from_path, r.to_path])?;
+        }
     }
     tx.commit()?;
 
@@ -516,6 +588,13 @@ pub(crate) fn encode(b: &Bundle) -> Vec<u8> {
         put_u32(&mut out, data.len() as u32);
         out.extend_from_slice(data);
     }
+
+    put_u32(&mut out, b.renames.len() as u32);
+    for r in &b.renames {
+        put_str(&mut out, &r.snapshot_hash);
+        put_str(&mut out, &r.from_path);
+        put_str(&mut out, &r.to_path);
+    }
     out
 }
 
@@ -526,10 +605,10 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
         return Err(VeloError::invalid("Not a Velo bundle (bad magic)."));
     }
     let version = r.u32()?;
-    if version != BUNDLE_VERSION {
+    if !(MIN_BUNDLE_VERSION..=BUNDLE_VERSION).contains(&version) {
         return Err(VeloError::invalid(format!(
-            "Unsupported bundle format version {} (this velo understands {}).",
-            version, BUNDLE_VERSION
+            "Unsupported bundle format version {} (this velo reads {} to {}).",
+            version, MIN_BUNDLE_VERSION, BUNDLE_VERSION
         )));
     }
 
@@ -583,12 +662,28 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
         objects.push((hash, data));
     }
 
+    // Absent before version 3, and absent is exactly right: a bundle written
+    // then recorded no moves.
+    let mut renames = Vec::new();
+    if version >= RENAMES_SINCE {
+        let n = r.u32()?;
+        renames.reserve(n as usize);
+        for _ in 0..n {
+            renames.push(RenameRow {
+                snapshot_hash: r.string()?,
+                from_path: r.string()?,
+                to_path: r.string()?,
+            });
+        }
+    }
+
     Ok(Bundle {
         snapshots,
         file_map,
         meta,
         tags,
         objects,
+        renames,
     })
 }
 

@@ -1539,6 +1539,98 @@ elsewhere in this plan:
 | Removing `Repo::observing` | Once 11.2 and 11.3 land, a handle-level default is a reasonable fallback rather than the global the anti-goal warned about |
 | Per-call progress on `status` / `history` | Both are inside a GUI's latency budget already |
 
+---
+
+# Phase 13 — Provenance ✅ **Done**
+
+Velum's third round. Four items that turned out to be two: blame was following a
+**name** down a **chain**, and a file is neither.
+
+## 13.1 Rename edges
+
+Velo had no rename concept anywhere. A snapshot is a whole tree, so a move
+arrives as a delete and an add and is gone by construction — and the damage was
+total rather than cosmetic. At the rename the parent text came back empty on the
+old path, every line looked introduced, the walk stopped, and blame credited the
+entire file to whoever moved it. `history --file` truncated at the same point,
+because it was a filter on a name.
+
+**Recorded, not detected.** The caller that moved the file knows it moved;
+a similarity score afterwards only guesses at what was once known exactly.
+`SaveTree.renames` takes the edges from a consumer, `velo mv` writes them for
+someone at a command line. Content-similarity detection stays out: it is a
+heuristic where an exact answer is available, and if it is ever wanted for
+hand-`mv`'d files it belongs behind an option, after this.
+
+**Not part of snapshot identity.** Identity answers what a tree *is*, and two
+identical trees are the same snapshot however each was arrived at. The
+consequence is that nothing about an id proves an edge is true, so `fsck` checks
+them structurally instead — `to` in the snapshot, `from` in a parent.
+
+**One reader, several consumers** — `commands::paths`, the shape
+`commands::ancestors` took for merge-base. Its starting point is a parameter,
+which the plan's `path_at(repo, path, snapshot)` left implicit: following
+renames backwards has to know where backwards *starts*, and the only endpoint
+available to invent is `.velo/PARENT` — exactly the wrong guess for a consumer
+built on `save_tree`, which deliberately never writes it.
+
+`velo mv` needed somewhere to hold an edge between the move and the next save,
+which is a staging area in a tool whose whole pitch is not having one. It is
+justified by the same argument as recording rather than detecting: after the
+move the disk cannot express what happened, so the fact has to be kept from the
+moment it exists. The narrowness is the point — it holds no content, losing it
+costs provenance rather than work, and any command that rewrites the tree
+wholesale clears it.
+
+Bundles carry the edges as **wire version 3**, appended after `objects` so a
+version-2 bundle is a version-3 bundle with no edges and both still read. They
+travel for the opposite reason metadata does: a receiver missing metadata
+recomputes a different id and rejects the import, while a receiver missing edges
+recomputes the *same* ids, accepts happily, and then misattributes a file's
+whole history. Silence, not an error.
+
+## 13.2 Parent-aware blame
+
+The walk followed first parents, so a merge was credited with everything the
+branch it absorbed wrote — the wrong time, the wrong message, and since
+`LineOrigin` gained an author, the wrong person. The old punch list rated this
+cosmetic on the assumption of a solo linear history; where drafts are the normal
+way to write, content arrives by merge as a matter of course, and this is the
+common path.
+
+Different fix from 13.1, and worth saying why: that needed **reachability**,
+which one recursive query answers. This needs **explanation** — which parent
+accounts for *this line* — so it asks whether **no** parent had the line, which
+is exactly a conflict resolution, and keeps walking down whichever parent does.
+That makes the walk a queue over the graph, newest first, so the nearest
+explanation wins.
+
+## 13.3 `blame::Options`
+
+A line range, because the walk reads and diffs two whole file texts per snapshot
+and stops once every requested line is explained — a gutter's worth of a
+document whose first line is original otherwise walks the entire history. An
+observer and a cancel, for the reason `restore`, `save` and `gc` have them. And
+a default `at` that falls back to the checked-out branch tip: reading
+`.velo/PARENT` failed for exactly the consumers `save_tree` exists for.
+
+## 13.4 `LineOrigin.branch`, and `show`
+
+The argument that put `author` on `LineOrigin`: the column is in the row the
+walk already reads, and otherwise every consumer writes the same per-snapshot
+lookup and the same deduplication. `show` was the crate's last holdout from the
+typed-ids pass, and now also reports the moves a snapshot recorded.
+
+## Deliberately not done
+
+| Not doing | Why |
+| :--- | :--- |
+| Similarity-based rename detection | A heuristic where an exact answer is available. Behind an option, after this, if hand-`mv`'d files ever need it |
+| Rename edges in snapshot identity | Identity answers what a tree is; two identical trees are one snapshot however each was reached. It would also make an identical re-save collide with a different claim about its own past |
+| Directory moves as one edge | A directory move is several file moves. One edge would name a path no `file_map` row has, so `velo mv` refuses rather than half-recording |
+| Following both parents in `paths::aliases` | Two chains can give one name two histories with nothing to choose between them. The chain leading to where the caller is looking is the answer that matches what they see |
+
+
 ## Anti-goals
 
 ⛔ **Don't async-ify core.** SQLite is synchronous. Guarantee `Repo: Send` so
@@ -1593,6 +1685,7 @@ regresses within a month.
 | **10** | Ancestry: `merge_base` must follow `merge_parent` (a live `velo merge` bug), and `history` needs an ancestry scope — one walk serves both | ✅ |
 | **11** | Finish the passes that stopped early: `blame` types + author, `gc` options, sync cancellation | ✅ |
 | **12** | crates.io, after 10 and 11 — packaged and CI-checked, upload still manual | 🟡 |
+| **13** | Provenance: rename edges recorded and followed, blame asks which parent explains a line, `blame::Options` | ✅ |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected
 (no `anyhow`; coupling is 3 files not pervasive; merge engine already pure;

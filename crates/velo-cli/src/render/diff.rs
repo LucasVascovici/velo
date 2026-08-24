@@ -39,6 +39,18 @@ pub fn print_comparison(diff: &Diff) {
             FileChange::Deleted => {
                 println!("{} '{}' was deleted.", style("[-]").red().bold(), file.path);
             }
+            FileChange::Renamed { from, hunks } => {
+                println!(
+                    "{} '{}' → '{}'",
+                    style("[>]").magenta().bold(),
+                    style(from).dim(),
+                    file.path
+                );
+                if !hunks.is_empty() {
+                    print_labels(diff);
+                    print_hunks(hunks);
+                }
+            }
             FileChange::BinaryChanged { .. } => {
                 println!(
                     "{} Binary file '{}' modified (diff omitted).",
@@ -120,6 +132,16 @@ pub fn print_change_list(diff: &Diff) {
                 style("--- deleted:").red().bold(),
                 style(&file.path).red()
             ),
+            FileChange::Renamed { from, hunks } => {
+                println!(
+                    "\n{} {} {} {}",
+                    style(">>> renamed:").magenta().bold(),
+                    style(from).dim(),
+                    style("→").dim(),
+                    style(&file.path).magenta().underlined()
+                );
+                print_hunks(hunks);
+            }
             FileChange::Modified { hunks } => {
                 println!(
                     "\n{} {}",

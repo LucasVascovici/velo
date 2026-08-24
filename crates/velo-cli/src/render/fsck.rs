@@ -74,6 +74,11 @@ fn label(section: &Section) -> String {
             )
         }
         Section::Refs { .. } => "Refs: PARENT, tags, stash".to_string(),
+        Section::Renames { checked, .. } => format!(
+            "Renames: {} edge{} checked",
+            checked,
+            if *checked == 1 { "" } else { "s" }
+        ),
         Section::State {
             outstanding,
             repaired,

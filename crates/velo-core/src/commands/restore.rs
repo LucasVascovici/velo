@@ -159,6 +159,9 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
         });
     }
 
+    // A whole-tree rewrite lands a tree that no pending move describes, so the
+    // moves are forgotten rather than attached to whatever gets saved next.
+    crate::commands::mv::discard_pending(guard.conn())?;
     storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
     let message: String = conn
         .query_row(

@@ -17,6 +17,7 @@ pub mod history;
 pub mod id;
 pub mod init;
 pub mod merge;
+pub mod mv;
 pub mod progress;
 pub mod rebase;
 pub mod remote;

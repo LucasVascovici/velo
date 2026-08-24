@@ -141,6 +141,9 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
     conn.execute("DELETE FROM hunk_decisions", [])?;
     conn.execute("DELETE FROM conflict_files", [])?;
     let _ = fs::remove_file(&merge_head_path);
+    // A whole-tree rewrite lands a tree that no pending move describes, so the
+    // moves are forgotten rather than attached to whatever gets saved next.
+    crate::commands::mv::discard_pending(guard.conn())?;
 
     if pre_merge_hash.is_empty() {
         return Ok(Outcome::Aborted {

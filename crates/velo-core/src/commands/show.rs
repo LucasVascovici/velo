@@ -8,7 +8,7 @@ use crate::commands::diff::{self, Diff};
 use crate::error::{RefKind, Result, VeloError};
 use std::path::Path;
 
-use crate::{Repo, SnapshotId};
+use crate::{BranchName, Repo, SnapshotId};
 use chrono::{DateTime, Utc};
 
 /// A snapshot's metadata plus what it changed.
@@ -18,9 +18,16 @@ pub struct SnapshotDetail {
     pub hash: SnapshotId,
     /// Branch the snapshot was recorded on. Display only — it is not part of the
     /// snapshot's identity.
-    pub branch: String,
-    /// `None` for the root snapshot.
-    pub parent: Option<String>,
+    pub branch: BranchName,
+    /// First parent; `None` for the root snapshot.
+    pub parent: Option<SnapshotId>,
+    /// Second parent, set on merge snapshots.
+    pub merge_parent: Option<SnapshotId>,
+    /// Paths this snapshot moved, as `(from, to)`.
+    ///
+    /// The same edges the diff folds into [`FileChange::Renamed`], listed
+    /// whole so a consumer can report the moves without walking the file list.
+    pub renames: Vec<(std::path::PathBuf, std::path::PathBuf)>,
     /// Raw stored timestamp; formatting is the consumer's choice.
     pub created_at: DateTime<Utc>,
     pub message: String,
@@ -40,11 +47,18 @@ pub fn run(repo: &Repo, hash: &SnapshotId, paths: &[&Path]) -> Result<SnapshotDe
     let conn = repo.conn();
     let hash = hash.clone();
 
-    let (message, branch, parent_hash, created_at_ms): (String, String, String, i64) = conn
+    let (message, branch, parent_hash, merge_parent, created_at_ms): (
+        String,
+        String,
+        String,
+        String,
+        i64,
+    ) = conn
         .query_row(
-            "SELECT message, branch, parent_hash, created_at_ms FROM snapshots WHERE hash = ?",
+            "SELECT message, branch, parent_hash, merge_parent, created_at_ms
+             FROM snapshots WHERE hash = ?",
             [&hash],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .map_err(|_| VeloError::not_found(RefKind::Snapshot, hash.as_str()))?;
 
@@ -53,10 +67,14 @@ pub fn run(repo: &Repo, hash: &SnapshotId, paths: &[&Path]) -> Result<SnapshotDe
         .map(|p| crate::db::normalise(&p.to_string_lossy()));
     let diff = diff::snapshot_diff(repo, conn, &parent_hash, &hash, &filter)?;
 
+    let renames = crate::commands::paths::recorded_by(repo, &hash)?;
+
     Ok(SnapshotDetail {
         hash,
-        branch,
-        parent: (!parent_hash.is_empty()).then_some(parent_hash),
+        branch: BranchName::from_stored(branch),
+        parent: (!parent_hash.is_empty()).then(|| SnapshotId::from_stored(parent_hash)),
+        merge_parent: (!merge_parent.is_empty()).then(|| SnapshotId::from_stored(merge_parent)),
+        renames,
         created_at: crate::commands::timestamp_from_ms(created_at_ms),
         message,
         diff,

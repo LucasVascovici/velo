@@ -88,6 +88,9 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
                     ..Default::default()
                 },
             )?;
+            // A whole-tree rewrite lands a tree that no pending move describes, so the
+            // moves are forgotten rather than attached to whatever gets saved next.
+            crate::commands::mv::discard_pending(guard.conn())?;
             Ok(Outcome::Switched {
                 branch: branch_name.to_string(),
                 at,
