@@ -159,6 +159,7 @@ impl Registry {
             meta,
             timestamp_ms: None,
             author: None,
+            renames: &[],
         })?;
         Ok(id)
     }

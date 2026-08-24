@@ -107,12 +107,31 @@ const SCHEMA: &str = "
         PRIMARY KEY (remote, branch)
     );
 
+    -- Paths a snapshot moved.  A rename cannot be recovered from `file_map`,
+    -- which holds whole trees: there a move is a delete and an add, and telling
+    -- those apart afterwards is guesswork.  So it is recorded when it happens,
+    -- by the caller who knows it happened.
+    --
+    -- Not part of a snapshot's identity, deliberately.  Identity answers what
+    -- a tree is, and two identical trees are the same snapshot however each was
+    -- arrived at.  `fsck` checks the edges structurally instead.
+    CREATE TABLE IF NOT EXISTS renames (
+        snapshot_hash TEXT NOT NULL,
+        from_path     TEXT NOT NULL,
+        to_path       TEXT NOT NULL,
+        PRIMARY KEY (snapshot_hash, to_path)
+    );
+
     CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
     CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
     CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at_ms);
     CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at_ms);
     CREATE INDEX IF NOT EXISTS idx_stash_name    ON stash (name);
     CREATE INDEX IF NOT EXISTS idx_meta_snap     ON snapshot_meta (snapshot_id);
+    -- The backward walk asks 'which snapshot renamed something to this path',
+    -- so `to_path` leads.  The primary key already covers the per-snapshot
+    -- lookup that follows.
+    CREATE INDEX IF NOT EXISTS idx_renames_to     ON renames (to_path);
 ";
 
 /// Create a repository database, stamped with the format version that wrote it.

@@ -215,10 +215,31 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
 
     let mut empty = None;
     if !file_filter.is_empty() {
-        let normalised: Vec<String> = file_filter
-            .iter()
-            .map(|p| db::normalise(&p.to_string_lossy()))
-            .collect();
+        // Each requested path stands for every name it has had. Without this the
+        // filter is a filter on a *name*, so a listing for a renamed file stops
+        // dead at the move — the snapshots before it changed a path that, by
+        // then, nothing was called.
+        //
+        // Anchored at the newest entry in scope, because that is the frame the
+        // caller's path is a name in. With nothing in scope there is nothing to
+        // filter, so the plain name is enough. Under `all` the newest entry may
+        // be on an unrelated branch, and then the aliases are that branch's —
+        // the cost of a scope that deliberately has no single line of history.
+        let anchor = entries.first().map(|e| e.hash.clone());
+        let mut normalised: Vec<String> = Vec::new();
+        for path in file_filter {
+            match &anchor {
+                Some(from) => {
+                    normalised.extend(crate::commands::paths::alias_strings(repo, path, from)?)
+                }
+                None => normalised.push(db::normalise(&path.to_string_lossy())),
+            }
+        }
+        // Two requested paths can share an alias, and checking one twice per
+        // snapshot is pure waste. Sorted first because `dedup` only removes
+        // neighbours.
+        normalised.sort();
+        normalised.dedup();
         // A snapshot qualifies if it changed *any* of the paths, so one pass over
         // the entries answers for all of them.
         entries.retain(|e| {
@@ -232,7 +253,13 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
         }
         if entries.is_empty() {
             empty = Some(EmptyReason::NoSnapshotsTouching {
-                file: normalised.join(", "),
+                // The name the caller asked about, not every alias of it: a
+                // consumer saying "no snapshots touched X" should say X.
+                file: file_filter
+                    .iter()
+                    .map(|p| db::normalise(&p.to_string_lossy()))
+                    .collect::<Vec<_>>()
+                    .join(", "),
             });
         }
     }
