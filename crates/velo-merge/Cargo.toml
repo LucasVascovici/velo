@@ -11,8 +11,21 @@ readme = "README.md"
 keywords = ["merge", "diff3", "three-way", "conflict", "diff"]
 categories = ["algorithms", "text-processing"]
 
+[features]
+# Nothing on by default: each structured driver pulls in a parser.
+default = []
+# Key-aware merge of JSON documents (`JsonDriver`).
+json = ["dep:serde_json"]
+# Key-aware merge of YAML documents (`YamlDriver`).
+yaml = ["dep:serde_yaml_ng"]
+# Key-aware merge of TOML documents (`TomlDriver`).
+toml = ["dep:toml"]
+
 [dependencies]
 similar.workspace = true
+serde_json = { workspace = true, optional = true }
+serde_yaml_ng = { workspace = true, optional = true }
+toml = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

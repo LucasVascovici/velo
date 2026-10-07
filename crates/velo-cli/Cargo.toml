@@ -16,7 +16,7 @@ name = "velo"
 path = "src/main.rs"
 
 [dependencies]
-velo-core = { workspace = true, features = ["bundle", "ssh"] }
+velo-core = { workspace = true, features = ["bundle", "ssh", "json", "yaml", "toml"] }
 velo-merge.workspace = true
 velo-tui.workspace = true
 

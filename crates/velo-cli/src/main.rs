@@ -1496,7 +1496,15 @@ fn run(cli: Cli) -> Result<()> {
     // written by a newer Velo is refused instead of half-read.
     // Long operations report through this. Inert on a non-TTY, so piped output
     // stays clean.
-    let repo = velo_core::Repo::open_and_migrate(&root)?.observing(render::progress::Bar::new());
+    let repo = velo_core::Repo::open_and_migrate(&root)?
+        .observing(render::progress::Bar::new())
+        .merging(
+            velo_core::Drivers::new()
+                .with("*.json", velo_merge::JsonDriver)?
+                .with("*.yaml", velo_merge::YamlDriver)?
+                .with("*.yml", velo_merge::YamlDriver)?
+                .with("*.toml", velo_merge::TomlDriver)?,
+        );
 
     // Serialise mutating commands against other velo processes. Read-only
     // commands skip the lock so they never block on a long-running mutation.
