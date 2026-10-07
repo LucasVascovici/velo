@@ -254,7 +254,8 @@ const doneTasks = tasks.filter((t) => results[t.id].status === 'done')
 let final = null
 if (doneTasks.length) {
   const items = [...new Set(doneTasks.map((t) => t.item))]
-  const fullyDone = items.filter((it) => tasks.filter((t) => t.item === it).every((t) => results[t.id].status === 'done'))
+  // Judge against the whole plan, so an item with skipped tasks is never marked done.
+  const fullyDone = items.filter((it) => plan.tasks.filter((t) => t.item === it).every((t) => results[t.id] && results[t.id].status === 'done'))
   final = await agent(`BRANCH=${BRANCH}
 MODE=main
 
