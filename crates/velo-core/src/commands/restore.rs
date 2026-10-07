@@ -145,7 +145,13 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
             Phase::Writing,
             Some(snapshot_files.len() as u64),
         );
-        write_files(root, &snapshot_files, &progress, cancel)?;
+        write_files(
+            root,
+            &guard.repo().objects(),
+            &snapshot_files,
+            &progress,
+            cancel,
+        )?;
     }
 
     let written: Vec<String> = snapshot_files.iter().map(|(p, _, _)| p.clone()).collect();
@@ -241,11 +247,11 @@ fn remove_ghosts(
 /// Write every file in parallel, collecting the failures rather than the first.
 fn write_files(
     root: &Path,
+    objects: &crate::storage::ObjectStore,
     files: &[(String, String, i64)],
     progress: &PhaseGuard<'_>,
     cancel: Option<&Cancel>,
 ) -> Result<()> {
-    let objects_dir = root.join(".velo/objects");
     let errors: Vec<String> = files
         .par_iter()
         .inspect(|_| progress.tick())
@@ -262,7 +268,7 @@ fn write_files(
                     return Some(format!("mkdir '{}': {}", rel_path, e));
                 }
             }
-            match storage::read_object(&objects_dir, hash) {
+            match objects.get(hash) {
                 Ok(data) => match storage::apply_file(&full_path, *mode, &data) {
                     Ok(_) => None,
                     Err(e) => Some(format!("write '{}': {} (is the file locked?)", rel_path, e)),

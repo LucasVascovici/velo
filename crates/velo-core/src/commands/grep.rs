@@ -12,7 +12,6 @@ use rusqlite::params;
 
 use crate::db;
 use crate::error::{Result, VeloError};
-use crate::storage;
 use crate::{Repo, SnapshotId};
 
 /// One line of output: either a match or a context line around one.
@@ -152,7 +151,7 @@ fn grep_snapshot(
     context: usize,
 ) -> Result<(SearchedSnapshot, Vec<FileMatches>)> {
     let conn = repo.conn();
-    let objects_dir = repo.root().join(".velo/objects");
+    let objects = repo.objects();
 
     let hash = crate::commands::resolve_snapshot_id(repo, target)?;
     let message: String = conn
@@ -172,7 +171,7 @@ fn grep_snapshot(
 
     let mut out = Vec::new();
     for (path, object) in files {
-        let Ok(bytes) = storage::read_object(&objects_dir, &object) else {
+        let Ok(bytes) = objects.get(&object) else {
             continue;
         };
         let Ok(content) = String::from_utf8(bytes) else {

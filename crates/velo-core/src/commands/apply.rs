@@ -135,7 +135,7 @@ pub fn reconcile_tree(
     theirs: &Tree,
 ) -> Result<Applied> {
     let root = guard.root();
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
 
     // Every path any of the three sides knows about. A path only the ancestor has
     // was deleted on both sides, which reconciles to "nothing" — including it
@@ -168,7 +168,7 @@ pub fn reconcile_tree(
         let full = root.join(crate::db::db_to_path(path));
 
         let action = match crate::commands::reconcile_file(
-            &objects_dir,
+            &guard.repo().objects(),
             anc,
             our,
             thr,
@@ -182,7 +182,7 @@ pub fn reconcile_tree(
                 FileAction::Deleted
             }
             crate::commands::Reconcile::TakeTheirs { hash, mode, is_new } => {
-                write_file(&full, mode, &storage::read_object(&objects_dir, &hash)?)?;
+                write_file(&full, mode, &objects.get(&hash)?)?;
                 if is_new {
                     FileAction::Added
                 } else {

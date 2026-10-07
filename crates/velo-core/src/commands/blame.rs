@@ -43,7 +43,6 @@ use crate::db;
 use crate::error::{RefKind, Result, VeloError};
 use crate::meta::Author;
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
-use crate::storage;
 use crate::BranchName;
 use crate::Repo;
 use crate::SnapshotId;
@@ -172,9 +171,8 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         observer,
         cancel,
     } = options;
-    let root = repo.root();
     let conn = repo.conn();
-    let objects_dir = root.join(".velo/objects");
+    let objects = repo.objects();
     let rel = db::normalise(&file.to_string_lossy());
 
     let start_hash = match at {
@@ -196,7 +194,7 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
             ))
         })?;
 
-    let tip_text = read_text(&objects_dir, &tip_object)?;
+    let tip_text = read_text(&objects, &tip_object)?;
     let total_lines = tip_text.lines().count();
     // Half-open and clamped, so a viewport hanging off the end of a file that
     // shrank asks for nothing rather than failing.
@@ -234,7 +232,7 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         let Some(visit) = queue.pop() else { break };
         progress.tick();
 
-        let our_text = read_tracked(conn, &objects_dir, &visit.hash, &visit.path)?;
+        let our_text = read_tracked(conn, &objects, &visit.hash, &visit.path)?;
 
         // The path each parent knew the file by. A rename recorded on this
         // snapshot means the parents held the old name; without this the parent
@@ -254,7 +252,7 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         // absorbed branch's work, which it did not.
         let mut introduced: Option<HashSet<usize>> = None;
         for (parent, parent_path) in &parents {
-            let parent_text = read_tracked(conn, &objects_dir, parent, parent_path)?;
+            let parent_text = read_tracked(conn, &objects, parent, parent_path)?;
             let against: HashSet<usize> = introduced_lines(&parent_text, &our_text)
                 .into_iter()
                 .collect();
@@ -417,7 +415,7 @@ fn default_start(repo: &Repo) -> Result<String> {
 /// Content of `path` at `snapshot`, or empty when it isn't tracked there.
 fn read_tracked(
     conn: &rusqlite::Connection,
-    objects_dir: &Path,
+    objects: &crate::storage::ObjectStore,
     snapshot: &str,
     path: &str,
 ) -> Result<String> {
@@ -429,13 +427,14 @@ fn read_tracked(
         )
         .ok();
     match object {
-        Some(h) => read_text(objects_dir, &h),
+        Some(h) => read_text(objects, &h),
         None => Ok(String::new()),
     }
 }
 
-fn read_text(objects_dir: &Path, object: &str) -> Result<String> {
-    let bytes = storage::read_object(objects_dir, object)
+fn read_text(objects: &crate::storage::ObjectStore, object: &str) -> Result<String> {
+    let bytes = objects
+        .get(object)
         .map_err(|_| VeloError::not_found(RefKind::Snapshot, object))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }

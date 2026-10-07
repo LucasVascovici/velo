@@ -224,7 +224,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         .count();
 
     // ── Parallel hash + compress ───────────────────────────────────────────────
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
     let files_to_hash: Vec<String> = dirty
         .iter()
         .filter(|(_, s)| **s != FileStatus::Deleted)
@@ -249,9 +249,9 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
             let full = root.join(&rel);
             let mode = storage::capture_mode(&full);
             let hash = if mode == storage::MODE_SYMLINK {
-                storage::store_raw(&objects_dir, &storage::read_symlink_target(&full)?)?
+                objects.put(&storage::read_symlink_target(&full)?)?
             } else {
-                storage::hash_and_compress(&full, &objects_dir)?
+                objects.put_file(&full)?
             };
             Ok((rel, hash, mode))
         })

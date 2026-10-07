@@ -235,6 +235,11 @@ impl Repo {
         &self.root
     }
 
+    /// The object store: the one way commands reach stored file content.
+    pub(crate) fn objects(&self) -> crate::storage::ObjectStore {
+        crate::storage::ObjectStore::at(self.root.join(".velo/objects"))
+    }
+
     /// The long-lived connection, for command implementations inside this crate.
     ///
     /// Deliberately not public: SQLite is an implementation detail, and exposing

@@ -3,7 +3,6 @@
 //! Returns a tally of what was collected; wording lives in `velo-cli`.
 
 use std::collections::HashSet;
-use std::fs;
 
 use crate::error::Result;
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
@@ -86,7 +85,6 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         observer,
         cancel,
     } = options;
-    let root = guard.root();
     let conn = guard.conn();
     let mut collected = Collected {
         keep_days,
@@ -144,20 +142,18 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         Phase::Collecting,
         None,
     );
-    for entry in fs::read_dir(root.join(".velo/objects"))? {
-        let entry = entry?;
+    let objects = guard.repo().objects();
+    for (name, size) in objects.list()? {
         // Checked per object, so cancelling takes effect at the next one rather
         // than part-way through a delete.
         if cancel.is_some_and(Cancel::is_cancelled) {
             break;
         }
         progress.tick();
-        let name = entry.file_name().to_string_lossy().to_string();
         if referenced.contains(&name) {
             continue;
         }
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        fs::remove_file(entry.path())?;
+        objects.remove(&name)?;
         collected.objects += 1;
         collected.bytes_freed += size;
     }

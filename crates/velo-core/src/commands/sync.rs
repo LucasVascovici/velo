@@ -181,7 +181,7 @@ pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> 
     let guard = repo.write()?;
     let conn = guard.conn();
 
-    let (snaps, objs) = bundle::import_pack(&guard, &target.join(".velo/objects"), &pack)?;
+    let (snaps, objs) = bundle::import_pack(&guard, &pack)?;
 
     conn.execute(
         "INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)",
@@ -262,7 +262,6 @@ pub fn fetch(
     spawn: &transport::Spawn,
     options: Options<'_>,
 ) -> Result<Fetched> {
-    let root = guard.root();
     let url = remote_url(guard.repo(), remote_name)?;
     let mut remote = transport::open(&url, spawn)?;
     let have = local_snapshots(guard.repo())?;
@@ -278,7 +277,7 @@ pub fn fetch(
         s.branch = format!("remotes/{}/{}", remote_name, s.branch);
     }
     let conn = guard.conn();
-    let (snaps, objs) = bundle::import_pack(guard, &root.join(".velo/objects"), &pack)?;
+    let (snaps, objs) = bundle::import_pack(guard, &pack)?;
     for r in &refs {
         remotemod::set_remote_ref(conn, remote_name, &r.branch, &r.hash)?;
     }
@@ -307,7 +306,6 @@ pub fn push(
     spawn: &transport::Spawn,
     options: Options<'_>,
 ) -> Result<Pushed> {
-    let root = guard.root();
     let conn = guard.conn();
     let branch = branch
         .map(String::from)
@@ -320,7 +318,7 @@ pub fn push(
     })?;
 
     let url = remote_url(guard.repo(), remote_name)?;
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
     let mut remote = transport::open(&url, spawn)?;
 
     // Build the pack once the remote has told us what it already has, so we
@@ -344,7 +342,7 @@ pub fn push(
             snap_set.remove(h);
         }
         let _packing = guard.phase(Phase::Packing, Some(snap_set.len() as u64));
-        let mut pack = bundle::build_pack_excluding(conn, &objects_dir, &snap_set, &peer_has)?;
+        let mut pack = bundle::build_pack_excluding(conn, &objects, &snap_set, &peer_has)?;
         // Send commits under their real branch name: a commit we obtained via
         // `fetch` carries our local `remotes/<remote>/<branch>` label, which is
         // bookkeeping local to us and meaningless to the receiver.
@@ -408,7 +406,6 @@ pub fn pull(
     spawn: &transport::Spawn,
     options: Options<'_>,
 ) -> Result<Pulled> {
-    let root = guard.root();
     let dirty = get_dirty_files(guard.repo());
     if !dirty.is_empty() {
         let mut paths: Vec<std::path::PathBuf> =
@@ -458,7 +455,7 @@ pub fn pull(
     };
 
     if is_ff {
-        bundle::import_pack(guard, &root.join(".velo/objects"), &pack)?;
+        bundle::import_pack(guard, &pack)?;
         // A previous `velo fetch` may already have imported these commits under
         // the remote-tracking branch. Since Velo derives branch tips from the
         // `branch` column, the label has to move with the branch — otherwise the
@@ -482,7 +479,7 @@ pub fn pull(
             s.branch = format!("remotes/{}/{}", remote_name, s.branch);
         }
         let conn = guard.conn();
-        bundle::import_pack(guard, &root.join(".velo/objects"), &pack)?;
+        bundle::import_pack(guard, &pack)?;
         remotemod::set_remote_ref(conn, remote_name, &branch, &remote_tip)?;
         Ok(Pulled::Diverged {
             branch,

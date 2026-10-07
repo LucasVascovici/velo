@@ -41,7 +41,7 @@ fn check_repo(root: &Path) -> Result<()> {
 /// objects it already holds through the snapshots it reported.
 fn pack_for(
     conn: &rusqlite::Connection,
-    objects: &Path,
+    objects: &crate::storage::ObjectStore,
     tips: &[(String, String)],
     have: &HashSet<String>,
 ) -> Result<bundle::Bundle> {
@@ -59,7 +59,6 @@ fn pack_for(
 /// string the client expects (`OK <snapshots> <objects>` or `REJECT <reason>`).
 fn apply_push(
     guard: &crate::WriteGuard,
-    objects: &Path,
     branch: &str,
     new_tip: &str,
     pack: &bundle::Bundle,
@@ -68,7 +67,7 @@ fn apply_push(
         match transport::fast_forward_check(guard.conn(), branch, new_tip, pack) {
             Some(reason) => format!("REJECT {}", reason),
             None => {
-                let (s, o) = bundle::import_pack(guard, objects, pack)?;
+                let (s, o) = bundle::import_pack(guard, pack)?;
                 format!("OK {} {}", s, o)
             }
         },
@@ -81,7 +80,6 @@ pub fn upload(path: &str) -> Result<()> {
     let root = require_repo(path)?;
     let repo = crate::Repo::open_and_migrate(&root)?;
     let conn = repo.conn();
-    let objects = root.join(".velo/objects");
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -98,7 +96,7 @@ pub fn upload(path: &str) -> Result<()> {
         have.insert(h);
     }
 
-    let pack = pack_for(conn, &objects, &tips, &have)?;
+    let pack = pack_for(conn, &repo.objects(), &tips, &have)?;
     out.write_all(&bundle::encode(&pack))
         .map_err(VeloError::Io)?;
     out.flush().map_err(VeloError::Io)?;
@@ -113,7 +111,6 @@ pub fn receive(path: &str) -> Result<()> {
     // Hold the repo lock for the whole exchange so the push is atomic against
     // other velo processes on this host. The guard is also what lets us import.
     let guard = repo.write()?;
-    let objects = root.join(".velo/objects");
 
     let stdout = io::stdout();
     let mut out = stdout.lock();
@@ -132,7 +129,7 @@ pub fn receive(path: &str) -> Result<()> {
     inp.read_to_end(&mut packbytes).map_err(VeloError::Io)?;
     let pack = bundle::decode(&packbytes)?;
 
-    let status = apply_push(&guard, &objects, &branch, &new_tip, &pack)?;
+    let status = apply_push(&guard, &branch, &new_tip, &pack)?;
     transport::write_string(&mut out, &status)?;
     out.flush().map_err(VeloError::Io)?;
     Ok(())
@@ -179,7 +176,6 @@ pub mod http {
         check_repo(root)?;
         let repo = crate::Repo::open_and_migrate(root)?;
         let conn = repo.conn();
-        let objects = root.join(".velo/objects");
 
         let mut inp = Cursor::new(body);
         let mut have: HashSet<String> = HashSet::new();
@@ -190,7 +186,7 @@ pub mod http {
         let tips = all_branch_tips(conn);
         let mut out = Vec::new();
         transport::write_refs(&mut out, &tips)?;
-        let pack = pack_for(conn, &objects, &tips, &have)?;
+        let pack = pack_for(conn, &repo.objects(), &tips, &have)?;
         out.extend_from_slice(&bundle::encode(&pack));
         Ok(out)
     }
@@ -204,7 +200,6 @@ pub mod http {
         check_repo(root)?;
         let repo = crate::Repo::open_and_migrate(root)?;
         let guard = repo.write()?;
-        let objects = root.join(".velo/objects");
 
         let mut inp = Cursor::new(body);
         let branch = transport::read_string(&mut inp)?;
@@ -212,7 +207,7 @@ pub mod http {
         let at = inp.position() as usize;
         let pack = bundle::decode(&body[at..])?;
 
-        let status = apply_push(&guard, &objects, &branch, &new_tip, &pack)?;
+        let status = apply_push(&guard, &branch, &new_tip, &pack)?;
         let mut out = Vec::new();
         transport::write_string(&mut out, &status)?;
         Ok(out)

@@ -17,7 +17,7 @@ use std::path::Path;
 
 use crate::error::Result;
 use crate::progress::Phase;
-use crate::storage;
+use crate::storage::Verified;
 use crate::Repo;
 use crate::WriteGuard;
 
@@ -296,7 +296,7 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     let repair = guard.is_some();
     let root = repo.root();
     let conn = repo.conn();
-    let objects_dir = root.join(".velo/objects");
+    let objects = repo.objects();
 
     let mut problems: Vec<Problem> = Vec::new();
     let mut sections: Vec<Section> = Vec::new();
@@ -308,23 +308,16 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     let progress = repo.phase(Phase::Verifying, Some(referenced.len() as u64));
     for hash in &referenced {
         progress.tick();
-        if !objects_dir.join(hash).exists() {
-            problems.push(Problem::MissingObject { hash: hash.clone() });
-            continue;
-        }
-        match storage::read_object(&objects_dir, hash) {
-            Ok(bytes) => {
-                let actual = blake3::hash(&bytes).to_hex().to_string();
-                if &actual == hash {
-                    verified += 1;
-                } else {
-                    problems.push(Problem::CorruptObject {
-                        hash: hash.clone(),
-                        actual,
-                    });
-                }
+        match objects.verify(hash) {
+            Verified::Ok => verified += 1,
+            Verified::Missing => problems.push(Problem::MissingObject { hash: hash.clone() }),
+            Verified::Undecodable => {
+                problems.push(Problem::UndecodableObject { hash: hash.clone() })
             }
-            Err(_) => problems.push(Problem::UndecodableObject { hash: hash.clone() }),
+            Verified::Mismatch { actual } => problems.push(Problem::CorruptObject {
+                hash: hash.clone(),
+                actual,
+            }),
         }
     }
     sections.push(Section::Objects {
