@@ -393,7 +393,7 @@ velo pull
 | Command | Description |
 | :--- | :--- |
 | `velo clone <url> [dir]` | Copy a repository, set up `origin`, and check out its default branch |
-| `velo remote add <name> <url>` | Add a remote (a filesystem path or `ssh://[user@]host[:port]/path`) |
+| `velo remote add <name> <url>` | Add a remote (a filesystem path, `ssh://[user@]host[:port]/path` or `http://host[:port]/`) |
 | `velo remote` | List configured remotes |
 | `velo remote remove <name>` | Remove a remote and its tracking refs |
 | `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
@@ -401,6 +401,15 @@ velo pull
 | `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
 
 Remote defaults to `origin`, and branch defaults to the current branch.
+
+To host a repository over HTTP, run `velo serve-http <path> [--listen <addr>]`
+(default `127.0.0.1:8417`); it prints `listening on http://<addr>/`. Then
+`velo clone http://<addr>/` and the usual `push` / `pull` work against it, with
+the same fast-forward-only rule. **`serve-http` is a reference server with no
+authentication and no TLS**: anyone who can reach the port can read and push.
+Put it behind a reverse proxy that authenticates and terminates TLS for
+anything public.
+
 After a `fetch`, `velo status` shows ahead/behind, and `origin/<branch>`
 can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 

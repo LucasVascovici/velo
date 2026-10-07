@@ -16,7 +16,7 @@ name = "velo"
 path = "src/main.rs"
 
 [dependencies]
-velo-core = { workspace = true, features = ["bundle", "ssh", "json", "yaml", "toml"] }
+velo-core = { workspace = true, features = ["bundle", "ssh", "http", "json", "yaml", "toml"] }
 velo-merge.workspace = true
 velo-tui.workspace = true
 
@@ -24,6 +24,7 @@ chrono.workspace = true
 clap.workspace = true
 console.workspace = true
 similar.workspace = true
+tiny_http.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

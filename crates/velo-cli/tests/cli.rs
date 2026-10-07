@@ -833,3 +833,141 @@ fn merge_combines_json_keys_added_on_both_branches() {
     );
     assert!(!merged.contains("<<<<"), "{merged}");
 }
+
+// ─── HTTP transport ───────────────────────────────────────────────────────────
+
+/// A running `velo serve-http`, killed when dropped.
+struct HttpServer {
+    child: std::process::Child,
+    url: String,
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn serve_http(dir: &Path) -> HttpServer {
+    use std::io::{BufRead, BufReader};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args([
+            "serve-http",
+            dir.to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:0",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn velo serve-http");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let url = line
+        .trim()
+        .strip_prefix("listening on ")
+        .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
+        .to_string();
+    assert!(url.starts_with("http://127.0.0.1:") && url.ends_with('/'));
+    HttpServer { child, url }
+}
+
+/// Snapshot ids of the current branch, newest first.
+fn history_ids(dir: &Path) -> Vec<String> {
+    let (out, ok) = velo(dir, &["history", "--oneline", "--branch", "main"]);
+    assert!(ok, "{out}");
+    out.lines()
+        .filter(|l| l.starts_with("* ") || l.starts_with("  "))
+        .filter_map(|l| l.get(2..)?.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// An origin repo with two snapshots, served over http, plus a clone of it.
+fn http_fixture() -> (TempDir, std::path::PathBuf, HttpServer, std::path::PathBuf) {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velo(&origin, &["init"]).1);
+    write(&origin, "shared.txt", "base\n");
+    assert!(velo(&origin, &["save", "C0"]).1);
+    write(&origin, "shared.txt", "base\nmore\n");
+    assert!(velo(&origin, &["save", "C1"]).1);
+    let server = serve_http(&origin);
+    let (out, ok) = velo(root.path(), &["clone", &server.url, "clone"]);
+    assert!(ok, "clone over http failed:\n{out}");
+    let clone = root.path().join("clone");
+    (root, origin, server, clone)
+}
+
+#[test]
+fn http_clone_reproduces_history() {
+    let (_root, origin, _server, clone) = http_fixture();
+    let ids = history_ids(&origin);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(history_ids(&clone), ids);
+}
+
+#[test]
+fn http_push_fast_forwards_the_server() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&clone, "new.txt", "x\n");
+    assert!(velo(&clone, &["save", "C2"]).1);
+    let (out, ok) = velo(&clone, &["push"]);
+    assert!(ok && out.contains("Pushed"), "{out}");
+    assert_eq!(history_ids(&origin), history_ids(&clone));
+    assert_eq!(history_ids(&origin).len(), 3);
+}
+
+#[test]
+fn http_diverged_push_is_rejected_and_server_unchanged() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&origin, "o.txt", "o\n");
+    assert!(velo(&origin, &["save", "server side"]).1);
+    let before = history_ids(&origin);
+    write(&clone, "c.txt", "c\n");
+    assert!(velo(&clone, &["save", "client side"]).1);
+    let (out, ok) = velo(&clone, &["push"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("non-fast-forward"), "{out}");
+    assert_eq!(history_ids(&origin), before);
+}
+
+#[test]
+fn http_pull_fast_forwards_the_client() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&origin, "s.txt", "s\n");
+    assert!(velo(&origin, &["save", "C2"]).1);
+    let (out, ok) = velo(&clone, &["pull"]);
+    assert!(ok, "{out}");
+    assert_eq!(history_ids(&clone), history_ids(&origin));
+    assert!(clone.join("s.txt").exists());
+}
+
+#[test]
+fn http_unknown_path_is_404_and_wrong_method_405() {
+    use std::io::{Read, Write};
+    let (_root, _origin, server, _clone) = http_fixture();
+    let addr = server
+        .url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    let get = |req: &str| {
+        let mut s = std::net::TcpStream::connect(&addr).unwrap();
+        s.write_all(req.as_bytes()).unwrap();
+        let mut resp = String::new();
+        s.read_to_string(&mut resp).unwrap();
+        resp
+    };
+    let r = get("GET /nope HTTP/1.0\r\n\r\n");
+    assert!(
+        r.starts_with("HTTP/1.0 404") || r.starts_with("HTTP/1.1 404"),
+        "{r}"
+    );
+    let r = get("POST /velo/v1/refs HTTP/1.0\r\nContent-Length: 0\r\n\r\n");
+    assert!(r.contains(" 405 "), "{r}");
+    let r = get("GET /velo/v1/refs HTTP/1.0\r\n\r\n");
+    assert!(r.contains(" 200 "), "{r}");
+}
