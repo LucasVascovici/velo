@@ -13,6 +13,15 @@
 
 use similar::{DiffOp, TextDiff};
 
+#[cfg(any(feature = "json", feature = "yaml", feature = "toml"))]
+mod structured;
+#[cfg(feature = "json")]
+pub use structured::JsonDriver;
+#[cfg(feature = "toml")]
+pub use structured::TomlDriver;
+#[cfg(feature = "yaml")]
+pub use structured::YamlDriver;
+
 // ─── Public types ─────────────────────────────────────────────────────────────
 
 /// How a single conflicting region should be resolved.

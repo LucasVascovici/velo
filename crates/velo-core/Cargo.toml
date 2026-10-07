@@ -25,6 +25,10 @@ bundle = []
 ssh = []
 # Sync over HTTP(S) (http:// and https:// URLs) with a blocking client.
 http = ["dep:ureq"]
+# Key-aware merge drivers, forwarded from velo-merge.
+json = ["velo-merge/json"]
+yaml = ["velo-merge/yaml"]
+toml = ["velo-merge/toml"]
 
 [dependencies]
 velo-merge.workspace = true

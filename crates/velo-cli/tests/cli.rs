@@ -808,3 +808,28 @@ fn history_where_rejects_a_malformed_filter() {
         assert!(out.contains("NAMESPACE:KEY"), "{bad}: {out}");
     }
 }
+
+#[test]
+fn merge_combines_json_keys_added_on_both_branches() {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    assert!(velo(d, &["init"]).1);
+    write(d, "config.json", "{\n  \"a\": 1\n}\n");
+    assert!(velo(d, &["save", "base"]).1);
+    assert!(velo(d, &["switch", "feature"]).1);
+    write(d, "config.json", "{\n  \"a\": 1,\n  \"theirs\": 2\n}\n");
+    assert!(velo(d, &["save", "feature key"]).1);
+    assert!(velo(d, &["switch", "main"]).1);
+    write(d, "config.json", "{\n  \"a\": 1,\n  \"ours\": 3\n}\n");
+    assert!(velo(d, &["save", "main key"]).1);
+
+    let (out, ok) = velo(d, &["merge", "feature"]);
+    assert!(ok, "merge should succeed:\n{out}");
+    assert!(out.contains("Clean merge"), "{out}");
+    let merged = std::fs::read_to_string(d.join("config.json")).unwrap();
+    assert!(
+        merged.contains("\"ours\"") && merged.contains("\"theirs\""),
+        "{merged}"
+    );
+    assert!(!merged.contains("<<<<"), "{merged}");
+}
