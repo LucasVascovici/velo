@@ -79,10 +79,10 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     // deliberately left in place so redo can restore the tree.
     let tx = guard.transaction()?;
     tx.execute(
-        "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, merge_parent, created_at_ms)
-         SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms
+        "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, merge_parent, created_at_ms, deleted_at_ms)
+         SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms, ?
          FROM snapshots WHERE hash = ?",
-        [&snapshot],
+        rusqlite::params![crate::commands::snapshot_timestamp_ms(), snapshot],
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO trash_tags (name, snapshot_hash)

@@ -20,6 +20,7 @@ pub mod redo;
 pub mod remote;
 pub mod resolve;
 pub mod restore;
+pub mod retention;
 pub mod save;
 pub mod show;
 pub mod squash;

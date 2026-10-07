@@ -111,7 +111,7 @@ impl fmt::Display for Protected {
 }
 
 /// Every snapshot reachable from a remote-tracking ref.
-fn published(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
+pub(crate) fn published(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
     let tips: Vec<String> = {
         let mut stmt = conn.prepare("SELECT DISTINCT hash FROM remote_refs")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
@@ -128,7 +128,7 @@ fn published(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
 ///
 /// `ParentOfOutside` is not here: it depends on which snapshots are being
 /// rewritten, so it is judged by [`outside_dependant`] against a rewrite set.
-fn protection_in(
+pub(crate) fn protection_in(
     conn: &rusqlite::Connection,
     checked_out: &str,
     published: &HashSet<String>,
@@ -155,7 +155,7 @@ fn protection_in(
     None
 }
 
-fn checked_out(root: &Path) -> String {
+pub(crate) fn checked_out(root: &Path) -> String {
     std::fs::read_to_string(root.join(".velo/PARENT"))
         .unwrap_or_default()
         .trim()
