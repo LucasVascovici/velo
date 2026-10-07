@@ -94,10 +94,12 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         ..Default::default()
     };
 
-    collected.expired_trash = conn.execute(
-        "DELETE FROM trash WHERE deleted_at_ms <= datetime('now', ?)",
-        [format!("-{} days", keep_days)],
-    )?;
+    // The cutoff is computed here and bound as an integer: `deleted_at_ms` is an
+    // INTEGER column, and comparing it with SQLite's TEXT `datetime()` always
+    // holds (an integer sorts below any text), which expired every row.
+    let cutoff_ms = crate::commands::snapshot_timestamp_ms() - i64::from(keep_days) * 86_400_000;
+    collected.expired_trash =
+        conn.execute("DELETE FROM trash WHERE deleted_at_ms <= ?", [cutoff_ms])?;
 
     collected.orphan_file_map = conn.execute(
         "DELETE FROM file_map
