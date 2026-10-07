@@ -11833,7 +11833,9 @@ mod meta_query {
         let (_t, repo) = setup();
         let m = [("ci", "status", "pass")];
         let root = save(&repo, "main", None, "r", &m, None, 1_000);
-        let on_main = save(&repo, "main", Some(&root), "m", &m, None, 2_000);
+        // An ancestor of on_main that carries no metadata must be filtered out.
+        let unmarked = save(&repo, "main", Some(&root), "u", &[], None, 1_500);
+        let on_main = save(&repo, "main", Some(&unmarked), "m", &m, None, 2_000);
         let on_side = save(&repo, "side", Some(&root), "s", &m, None, 3_000);
         let h = history::run(
             &repo,
@@ -11845,6 +11847,7 @@ mod meta_query {
         )
         .unwrap();
         assert_eq!(hashes(&h.entries), vec![on_main, root]);
+        assert!(!hashes(&h.entries).contains(&unmarked));
         assert!(!hashes(&h.entries).contains(&on_side));
     }
 
@@ -11854,7 +11857,10 @@ mod meta_query {
         let m = [("ci", "status", "pass")];
         let a = save(&repo, "main", None, "a.txt", &m, None, 1_000);
         let b = save(&repo, "main", Some(&a), "b.txt", &m, None, 2_000);
-        // Newest, matching metadata, but touches only a.txt-unrelated content.
+        // The newest snapshot rewrites b.txt but has no ci/status metadata. It
+        // passes the path filter, so only the meta filter can exclude it, and
+        // the limit must then be applied after both filters.
+        let _newest = save(&repo, "main", Some(&b), "b.txt", &[], None, 3_000);
         let paths = [Path::new("b.txt")];
         let main: BranchName = "main".parse().unwrap();
         let h = history::run(
