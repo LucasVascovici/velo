@@ -207,6 +207,11 @@ pub fn git_fast_import(repo: &Repo, out: &mut dyn Write, options: Options<'_>) -
 
         next_mark += 1;
         let mark = next_mark;
+        // A commit with no `from` otherwise inherits the ref's current tip as
+        // its parent, which would chain independent roots together.
+        if !commit_marks.contains_key(row.parent.as_str()) {
+            out.write_all(b"reset refs/velo/export\n")?;
+        }
         write!(
             out,
             "commit refs/velo/export\nmark :{mark}\nauthor {name} <{email}> {secs} +0000\ncommitter {name} <{email}> {secs} +0000\ndata {}\n{message}\n",
