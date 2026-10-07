@@ -618,6 +618,26 @@ Underneath, a few things protect your data:
 
 ---
 
+## Leaving velo
+
+You can take your history with you. `velo export-git` writes every branch, tag,
+file mode and symlink as a `git fast-import` stream, with no git needed on the
+velo side:
+
+```bash
+velo export-git | (mkdir ../out && cd ../out && git init -q && git fast-import)
+velo export-git --branch main --output history.fi   # one branch, to a file
+```
+
+Merge commits keep both parents. What git has no place for -- snapshot metadata,
+recorded renames, the branch a snapshot was made on and its exact millisecond
+timestamp -- goes into `Velo-*` trailers at the end of each commit message. Snapshot
+ids are preserved in the `Velo-Snapshot` trailer, so the history can be brought back
+with identical ids. Stashes, deleted-branch shelves and remote-tracking branches are
+not exported.
+
+---
+
 ## Architecture
 
 | Layer | Technology | Role |

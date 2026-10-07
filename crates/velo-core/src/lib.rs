@@ -35,7 +35,7 @@
 //! | :--- | :--- |
 //! | **Writes your files** — never call these from an app with its own storage | [`commands::restore`], [`commands::switch`], [`commands::merge::run`], [`commands::rebase`], [`commands::cherry_pick`], [`commands::stash`], [`commands::undo`], [`commands::redo`], [`commands::resolve`], [`commands::apply`], [`commands::sync`] (clone/pull), [`commands::init`] |
 //! | **Reads your files** — answers depend on what is on disk right now | [`commands::save`], [`commands::status`], [`commands::diff`], [`commands::grep`], [`commands::squash`] |
-//! | **Store only** — safe with no working tree at all | [`tree`] (the whole module), [`commands::history`], [`commands::show`], [`commands::blame`], [`commands::branches`], [`commands::tag`], [`commands::fsck`], [`commands::remote`], [`commands::gc`], [`commands::merge::plan`], [`commands::merge::commit`], [`commands::merge::merge_base`], [`Repo::snapshot`], [`Repo::snapshot_meta`], [`Repo::branch_tip`], [`Repo::head_token`] |
+//! | **Store only** — safe with no working tree at all | [`tree`] (the whole module), [`commands::history`], [`commands::show`], [`commands::blame`], [`commands::branches`], [`commands::tag`], [`commands::fsck`], [`commands::remote`], [`commands::gc`], [`commands::export`], [`commands::merge::plan`], [`commands::merge::commit`], [`commands::merge::merge_base`], [`Repo::snapshot`], [`Repo::snapshot_meta`], [`Repo::branch_tip`], [`Repo::head_token`] |
 //!
 //! [`commands::bundle`] is its own case: it reads and writes one file at a path
 //! you name, and touches nothing else.
