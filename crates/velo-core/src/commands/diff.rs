@@ -221,6 +221,9 @@ pub fn between(
     b: Option<&SnapshotId>,
     paths: &[&Path],
 ) -> Result<Diff> {
+    if b.is_none() {
+        require_working_tree(repo, "diff")?;
+    }
     let root = repo.root();
     let conn = repo.conn();
     let objects = repo.objects();

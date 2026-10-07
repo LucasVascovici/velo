@@ -14427,6 +14427,8 @@ mod database_objects {
         }
         refused(commands::status::run(&repo, &[]), "status");
         refused(commands::diff::run(&repo, &None), "diff");
+        refused(commands::diff::between(&repo, &m1, None, &[]), "diff");
+        commands::diff::between(&repo, &m1, Some(&m1), &[]).unwrap();
         refused(commands::grep::run(&repo, "a", Default::default()), "grep");
     }
 
