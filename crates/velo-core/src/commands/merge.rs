@@ -329,6 +329,9 @@ fn do_fast_forward(
         }
     }
     tx.commit()?;
+    guard
+        .repo()
+        .emit_saved_raw(&new_hash, head_branch, current_hash, "");
 
     // restore::run writes PARENT itself.
     crate::commands::restore::run(

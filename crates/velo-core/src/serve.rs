@@ -68,6 +68,7 @@ fn apply_push(
             Some(reason) => format!("REJECT {}", reason),
             None => {
                 let (s, o) = bundle::import_pack(guard, pack)?;
+                guard.repo().emit_imported(s);
                 format!("OK {} {}", s, o)
             }
         },

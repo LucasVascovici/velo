@@ -229,6 +229,7 @@ impl Remote for LocalRemote {
             Some(reason) => Ok(PushOutcome::Rejected(reason)),
             None => {
                 let (s, o) = bundle::import_pack(&guard, &pack)?;
+                guard.repo().emit_imported(s);
                 Ok(PushOutcome::Ok {
                     new_snapshots: s,
                     new_objects: o,

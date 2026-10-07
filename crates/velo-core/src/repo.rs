@@ -32,6 +32,8 @@ pub struct Repo {
     /// Which merge driver handles which path. Line-based diff3 for everything,
     /// unless set via [`Repo::merging`].
     drivers: crate::Drivers,
+    /// Who hears about commits made through this handle. See [`crate::events`].
+    listeners: Vec<Box<dyn crate::events::Listener>>,
 }
 
 impl std::fmt::Debug for Repo {
@@ -91,6 +93,7 @@ impl Repo {
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
+            listeners: Vec::new(),
         })
     }
 
@@ -129,6 +132,7 @@ impl Repo {
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
+            listeners: Vec::new(),
         })
     }
 
@@ -161,6 +165,83 @@ impl Repo {
     pub fn observing(mut self, observer: impl Observer + 'static) -> Self {
         self.observer = Box::new(observer);
         self
+    }
+
+    /// Subscribe to the changes committed through this handle.
+    ///
+    /// Consumes the handle like [`Repo::observing`]; call it again to add more
+    /// listeners, which are notified in registration order. Same-handle only —
+    /// see [`crate::events`].
+    pub fn listening(mut self, listener: impl crate::events::Listener + 'static) -> Self {
+        self.listeners.push(Box::new(listener));
+        self
+    }
+
+    /// Tell every listener about a change that has already committed.
+    pub(crate) fn emit(&self, event: crate::events::Event) {
+        for listener in &self.listeners {
+            listener.notify(&event);
+        }
+    }
+
+    /// Announce a committed snapshot: `Saved`, then `Merged` when it has a
+    /// second parent.
+    pub(crate) fn emit_saved(
+        &self,
+        snapshot: &SnapshotId,
+        branch: &BranchName,
+        parent: Option<&SnapshotId>,
+        merge_parent: Option<&SnapshotId>,
+    ) {
+        if self.listeners.is_empty() {
+            return;
+        }
+        use crate::events::Event;
+        self.emit(Event::Saved {
+            snapshot: snapshot.clone(),
+            branch: branch.clone(),
+            parent: parent.cloned(),
+            merge_parent: merge_parent.cloned(),
+        });
+        if let (Some(ours), Some(theirs)) = (parent, merge_parent) {
+            self.emit(Event::Merged {
+                snapshot: snapshot.clone(),
+                into: branch.clone(),
+                ours: ours.clone(),
+                theirs: theirs.clone(),
+            });
+        }
+    }
+
+    /// Emit `Saved` for rows known only by their stored strings (the commands
+    /// that predate typed ids). Empty strings mean "no parent".
+    pub(crate) fn emit_saved_raw(
+        &self,
+        snapshot: &str,
+        branch: &str,
+        parent: &str,
+        merge_parent: &str,
+    ) {
+        if self.listeners.is_empty() {
+            return;
+        }
+        let opt = |s: &str| {
+            let s = s.trim();
+            (!s.is_empty()).then(|| SnapshotId::from_stored(s))
+        };
+        self.emit_saved(
+            &SnapshotId::from_stored(snapshot),
+            &BranchName::from_stored(branch.trim()),
+            opt(parent).as_ref(),
+            opt(merge_parent).as_ref(),
+        );
+    }
+
+    /// Announce history that arrived from elsewhere, if any did.
+    pub(crate) fn emit_imported(&self, snapshots: usize) {
+        if snapshots > 0 {
+            self.emit(crate::events::Event::Imported { snapshots });
+        }
     }
 
     /// Open a phase of work. The returned guard closes it when dropped.

@@ -87,6 +87,7 @@ pub mod commands;
 pub mod db;
 pub mod drivers;
 pub mod error;
+pub mod events;
 pub mod ids;
 pub mod lock;
 pub mod meta;
@@ -105,6 +106,7 @@ mod tests;
 
 pub use drivers::Drivers;
 pub use error::{Error, Result};
+pub use events::{Event, Listener};
 pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
 pub use meta::{Author, SnapshotMeta};
 pub use repo::{Repo, WriteGuard};

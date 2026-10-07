@@ -187,6 +187,9 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
     }
 
     tx.commit()?;
+    guard
+        .repo()
+        .emit_saved_raw(new_hash, branch, new_parent, "");
 
     // Update PARENT to point at the new snapshot
     crate::storage::write_atomic(&root.join(".velo/PARENT"), new_hash.as_bytes())?;

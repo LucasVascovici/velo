@@ -182,6 +182,7 @@ pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> 
     let conn = guard.conn();
 
     let (snaps, objs) = bundle::import_pack(&guard, &pack)?;
+    guard.repo().emit_imported(snaps);
 
     conn.execute(
         "INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)",
@@ -278,6 +279,7 @@ pub fn fetch(
     }
     let conn = guard.conn();
     let (snaps, objs) = bundle::import_pack(guard, &pack)?;
+    guard.repo().emit_imported(snaps);
     for r in &refs {
         remotemod::set_remote_ref(conn, remote_name, &r.branch, &r.hash)?;
     }
@@ -455,7 +457,8 @@ pub fn pull(
     };
 
     if is_ff {
-        bundle::import_pack(guard, &pack)?;
+        let (snaps, _) = bundle::import_pack(guard, &pack)?;
+        guard.repo().emit_imported(snaps);
         // A previous `velo fetch` may already have imported these commits under
         // the remote-tracking branch. Since Velo derives branch tips from the
         // `branch` column, the label has to move with the branch — otherwise the
@@ -479,7 +482,8 @@ pub fn pull(
             s.branch = format!("remotes/{}/{}", remote_name, s.branch);
         }
         let conn = guard.conn();
-        bundle::import_pack(guard, &pack)?;
+        let (snaps, _) = bundle::import_pack(guard, &pack)?;
+        guard.repo().emit_imported(snaps);
         remotemod::set_remote_ref(conn, remote_name, &branch, &remote_tip)?;
         Ok(Pulled::Diverged {
             branch,

@@ -11,6 +11,7 @@ use std::path::Path;
 use rusqlite::params;
 
 use crate::error::{RefKind, Result, VeloError};
+use crate::events::{Event, Ref};
 use crate::{BranchName, Repo, SnapshotId, WriteGuard};
 
 /// The snapshot a branch points at.
@@ -96,6 +97,8 @@ pub fn delete(guard: &WriteGuard, name: &BranchName) -> Result<()> {
         ));
     }
 
+    // Read before the snapshots are renamed away from it.
+    let from = guard.repo().branch_tip(name)?;
     let moved = conn.execute(
         "UPDATE snapshots SET branch = ?1 WHERE branch = ?2",
         params![format!("_deleted_{}", name), name],
@@ -104,6 +107,11 @@ pub fn delete(guard: &WriteGuard, name: &BranchName) -> Result<()> {
     if moved == 0 && refs == 0 {
         return Err(VeloError::not_found(RefKind::Branch, name.as_str()));
     }
+    guard.repo().emit(Event::RefMoved {
+        reference: Ref::Branch(name.clone()),
+        from,
+        to: None,
+    });
     Ok(())
 }
 
@@ -135,6 +143,11 @@ pub fn create(guard: &WriteGuard, name: &BranchName, at: Option<&SnapshotId>) ->
         }
         None => crate::commands::register_branch(conn, name.as_str(), "")?,
     }
+    guard.repo().emit(Event::RefMoved {
+        reference: Ref::Branch(name.clone()),
+        from: None,
+        to: at.cloned(),
+    });
     Ok(())
 }
 
@@ -152,7 +165,13 @@ pub fn set_tip(guard: &WriteGuard, name: &BranchName, to: &SnapshotId) -> Result
         return Err(VeloError::not_found(RefKind::Branch, name.as_str()));
     }
     require_snapshot(conn, to)?;
+    let from = guard.repo().branch_tip(name)?;
     crate::commands::set_branch_tip(conn, name.as_str(), to.as_str())?;
+    guard.repo().emit(Event::RefMoved {
+        reference: Ref::Branch(name.clone()),
+        from,
+        to: Some(to.clone()),
+    });
     Ok(())
 }
 

@@ -507,6 +507,13 @@ impl WriteGuard<'_> {
         crate::commands::register_branch(&tx, spec.branch, &snapshot)?;
         tx.commit()?;
 
+        // After the commit, and only for a row this call inserted: an idempotent
+        // re-save changed nothing, so there is nothing to announce.
+        if !already {
+            self.repo()
+                .emit_saved(&snapshot, spec.branch, spec.parent, spec.merge_parent);
+        }
+
         Ok(snapshot)
     }
 }
