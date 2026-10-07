@@ -253,7 +253,8 @@ Present in v1 and v2 (v2 additions marked):
 
 Indexes are performance-only and may be rebuilt: `idx_filemap_snap`,
 `idx_filemap_path`, `idx_snap_branch`, `idx_trash_branch`, `idx_stash_name`,
-`idx_renames_to`.
+`idx_renames_to`, `idx_meta_lookup` (`snapshot_meta (namespace, key, value)`,
+for metadata queries).
 
 **Reserved branch names.** `_stash` is internal. `remotes/<remote>/<branch>` is
 remote-tracking. `_deleted_<name>` is a soft-deleted branch. Consumers must not

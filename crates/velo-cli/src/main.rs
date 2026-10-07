@@ -272,6 +272,16 @@ NOTES
             help = "Filter to snapshots that modified PATH (repeatable)"
         )]
         file_filter: Vec<String>,
+
+        /// Show only snapshots whose metadata matches.
+        ///
+        /// Repeatable; every condition must hold.
+        #[arg(
+            long = "where",
+            value_name = "NS:KEY[=VALUE]",
+            help = "Filter by snapshot metadata, NS:KEY=VALUE or NS:KEY (repeatable)"
+        )]
+        meta_filter: Vec<String>,
     },
 
     /// Remove the most recent snapshot on the current branch.
@@ -1562,6 +1572,7 @@ fn run(cli: Cli) -> Result<()> {
             oneline,
             graph,
             file_filter,
+            meta_filter,
         } => {
             // The flags choose a presentation; core just returns the entries.
             let view = if graph {
@@ -1578,6 +1589,10 @@ fn run(cli: Cli) -> Result<()> {
                 .map(|t| commands::resolve_snapshot_id(&repo, t.as_str()))
                 .transpose()?;
             let file_paths: Vec<&Path> = file_filter.iter().map(Path::new).collect();
+            let meta = meta_filter
+                .iter()
+                .map(|w| parse_where(w))
+                .collect::<Result<Vec<_>>>()?;
             let history = commands::history::run(
                 &repo,
                 commands::history::Options {
@@ -1585,6 +1600,7 @@ fn run(cli: Cli) -> Result<()> {
                     branch: branch.as_ref(),
                     from: from.as_ref(),
                     paths: &file_paths,
+                    meta: &meta,
                     limit: Some(limit),
                 },
             )?;
@@ -1874,4 +1890,30 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse `NS:KEY=VALUE` or `NS:KEY` into a metadata filter.
+///
+/// Split on the first `:` and then the first `=`, so a value may itself contain
+/// either character.
+fn parse_where(text: &str) -> Result<commands::history::MetaFilter<'_>> {
+    let shape = "Expected --where NAMESPACE:KEY=VALUE or NAMESPACE:KEY";
+    let Some((namespace, rest)) = text.split_once(':') else {
+        return Err(VeloError::invalid(format!(
+            "'{text}' is not a metadata filter. {shape}."
+        )));
+    };
+    let (key, value) = match rest.split_once('=') {
+        Some((key, value)) => (key, Some(value)),
+        None => (rest, None),
+    };
+    if namespace.is_empty() || key.is_empty() {
+        return Err(VeloError::invalid(format!(
+            "'{text}' has an empty namespace or key. {shape}."
+        )));
+    }
+    Ok(match value {
+        Some(value) => commands::history::MetaFilter::equals(namespace, key, value),
+        None => commands::history::MetaFilter::has(namespace, key),
+    })
 }

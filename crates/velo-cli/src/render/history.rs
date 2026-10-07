@@ -67,6 +67,12 @@ fn print_empty(reason: &EmptyReason) {
             style("!").yellow(),
             file
         ),
+        EmptyReason::NoSnapshotsMatching => println!(
+            "  {} No snapshots match the --where filter.",
+            style("!").yellow()
+        ),
+        // A reason added later still gets a message rather than a silent listing.
+        _ => println!("  {}", style("No snapshots found.").dim()),
     }
 }
 
