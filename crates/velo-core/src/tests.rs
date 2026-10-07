@@ -11393,6 +11393,54 @@ line three CHANGED
         }
 
         #[test]
+        fn ref_names_git_would_reject_are_sanitised() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let odd = branch_name("my feature");
+            {
+                let g = repo.write().unwrap();
+                let a = save_at(&g, &odd, None, None, "m", vec![file("a", "1")], &[], 1_000);
+                commands::tag::create(&g, &tag_name("v1 final"), Some(&a), false).unwrap();
+                commands::tag::create(&g, &tag_name("a..b"), Some(&a), false).unwrap();
+            }
+            let (text, n) = export_text(&repo);
+            assert_eq!(n.branches, 1);
+            assert_eq!(n.tags, 2);
+            assert!(text.contains(
+                "reset refs/heads/my_feature
+from :"
+            ));
+            assert!(text.contains(
+                "reset refs/tags/v1_final
+from :"
+            ));
+            assert!(text.contains(
+                "reset refs/tags/a._b
+from :"
+            ));
+            assert!(text.contains(
+                "Velo-Branch: \"my feature\"
+"
+            ));
+            for bad in [
+                "a..b", "x~1", "fix:typo", "wip.lock", "v1^", "a*b", "@", "-x", ".x", "a.", "a//b",
+            ] {
+                let good = export::sanitize_ref_name(bad);
+                assert!(
+                    !good.contains("..")
+                        && !good.ends_with(".lock")
+                        && !good.ends_with('.')
+                        && !good.starts_with(['-', '.'])
+                        && !good.contains(['~', '^', ':', '*', ' ', '?', '[', '\\'])
+                        && !good.contains("//")
+                        && good != "@",
+                    "{bad} -> {good}"
+                );
+            }
+            assert_eq!(export::sanitize_ref_name("feature/ok-1"), "feature/ok-1");
+        }
+
+        #[test]
         fn metadata_author_and_time_become_trailers() {
             let (_tmp, root) = setup();
             let repo = Repo::open_and_migrate(&root).unwrap();
