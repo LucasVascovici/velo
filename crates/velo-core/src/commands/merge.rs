@@ -471,7 +471,7 @@ impl MergePlan {
 /// ```
 pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<MergePlan> {
     let conn = repo.conn();
-    let objects_dir = repo.root().join(".velo/objects");
+    let objects = repo.objects();
 
     let base = merge_base(repo, ours, theirs)?;
     let base_tree = apply::load_tree(conn, base.as_ref().map_or("", |b| b.as_str()))?;
@@ -501,7 +501,7 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
         let object = |h: &str| (!h.is_empty()).then(|| ObjectHash::from_stored(h));
 
         let change = match crate::commands::reconcile_file(
-            &objects_dir,
+            &objects,
             (base_h.as_str(), base_m),
             (our_h.as_str(), our_m),
             (their_h.as_str(), their_m),

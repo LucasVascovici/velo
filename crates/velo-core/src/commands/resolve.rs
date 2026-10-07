@@ -5,14 +5,11 @@
 //! functions here. Non-interactive resolution (`--take ours|theirs`) needs no UI
 //! and is fully served by [`take_side`].
 
-use std::path::Path;
-
 use rusqlite::params;
 use velo_merge::{build_resolved_content, compute_conflict_hunks, ConflictHunk, Decision};
 
 use crate::db;
 use crate::error::{RefKind, Result, VeloError};
-use crate::storage;
 use crate::{Repo, WriteGuard};
 
 /// Which side to take when resolving without per-hunk decisions.
@@ -126,10 +123,10 @@ pub fn get_conflict(repo: &Repo, path: &str) -> Result<ConflictFile> {
 /// persisted by a previous session so resolution is resumable.
 pub fn open_session(repo: &Repo, file: ConflictFile) -> Result<ConflictSession> {
     let conn = repo.conn();
-    let objects_dir = repo.root().join(".velo/objects");
-    let ancestor = read_text(&objects_dir, &file.ancestor_hash)?;
-    let ours = read_text(&objects_dir, &file.our_hash)?;
-    let theirs = read_text(&objects_dir, &file.their_hash)?;
+    let objects = repo.objects();
+    let ancestor = read_text(&objects, &file.ancestor_hash)?;
+    let ours = read_text(&objects, &file.our_hash)?;
+    let theirs = read_text(&objects, &file.their_hash)?;
 
     let mut hunks = compute_conflict_hunks(&ancestor, &ours, &theirs);
     if hunks.is_empty() {
@@ -259,10 +256,10 @@ pub(crate) fn decision_from_db(kind: &str, content: Option<&str>) -> Option<Deci
 
 /// Decompress an object as text. An empty hash means "absent", which is a valid
 /// side of a conflict (a file added or deleted on one side).
-pub(crate) fn read_text(objects_dir: &Path, hash: &str) -> Result<String> {
+pub(crate) fn read_text(objects: &crate::storage::ObjectStore, hash: &str) -> Result<String> {
     if hash.is_empty() {
         return Ok(String::new());
     }
-    let bytes = storage::read_object(objects_dir, hash)?;
+    let bytes = objects.get(hash)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }

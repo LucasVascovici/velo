@@ -13,7 +13,6 @@ use similar::{ChangeTag, TextDiff};
 use crate::commands::{get_dirty_files, is_binary, FileStatus};
 use crate::db;
 use crate::error::Result;
-use crate::storage;
 use crate::Repo;
 use crate::SnapshotId;
 
@@ -189,7 +188,7 @@ fn working_tree_change(
 
     let old = match stored {
         Some(h) => {
-            let bytes = storage::read_object(&root.join(".velo/objects"), &h)?;
+            let bytes = repo.objects().get(&h)?;
             String::from_utf8_lossy(&bytes).into_owned()
         }
         None => String::new(),
@@ -222,7 +221,7 @@ pub fn between(
 ) -> Result<Diff> {
     let root = repo.root();
     let conn = repo.conn();
-    let objects_dir = root.join(".velo/objects");
+    let objects = repo.objects();
     let paths: Vec<String> = paths
         .iter()
         .map(|p| db::normalise(&p.to_string_lossy()))
@@ -247,8 +246,8 @@ pub fn between(
                 if !matches_filter(&path) {
                     continue;
                 }
-                let old = read_opt(&objects_dir, a_files.get(&path))?;
-                let new = read_opt(&objects_dir, b_files.get(&path))?;
+                let old = read_opt(&objects, a_files.get(&path))?;
+                let new = read_opt(&objects, b_files.get(&path))?;
                 if old == new {
                     continue;
                 }
@@ -276,7 +275,7 @@ pub fn between(
                 if !matches_filter(&path) {
                     continue;
                 }
-                let old = read_opt(&objects_dir, a_files.get(&path))?;
+                let old = read_opt(&objects, a_files.get(&path))?;
                 let new = fs::read_to_string(root.join(db::db_to_path(&path))).unwrap_or_default();
                 if old == new {
                     continue;
@@ -314,7 +313,7 @@ pub(crate) fn snapshot_diff(
     file_filter: &Option<String>,
 ) -> Result<Diff> {
     let root = repo.root();
-    let objects_dir = root.join(".velo/objects");
+    let objects = repo.objects();
     let old_files = load_file_map(conn, old_hash)?;
     let new_files = load_file_map(conn, new_hash)?;
 
@@ -345,8 +344,8 @@ pub(crate) fn snapshot_diff(
         if let Some(from) = moved.get(&path) {
             let hunks = match (old_files.get(from), new_files.get(&path)) {
                 (Some(oh), Some(nh)) if oh != nh && !is_binary(&full_path) => {
-                    let old = read_text(&objects_dir, oh)?;
-                    let new = read_text(&objects_dir, nh)?;
+                    let old = read_text(&objects, oh)?;
+                    let new = read_text(&objects, nh)?;
                     build_hunks(&old, &new)
                 }
                 _ => Vec::new(),
@@ -366,7 +365,7 @@ pub(crate) fn snapshot_diff(
                 if is_binary(&full_path) {
                     FileChange::BinaryChanged { added: true }
                 } else {
-                    let bytes = storage::read_object(&objects_dir, nh)?;
+                    let bytes = objects.get(nh)?;
                     FileChange::Added {
                         lines: String::from_utf8_lossy(&bytes)
                             .lines()
@@ -380,8 +379,8 @@ pub(crate) fn snapshot_diff(
                 if is_binary(&full_path) {
                     FileChange::BinaryChanged { added: false }
                 } else {
-                    let old = read_text(&objects_dir, oh)?;
-                    let new = read_text(&objects_dir, nh)?;
+                    let old = read_text(&objects, oh)?;
+                    let new = read_text(&objects, nh)?;
                     FileChange::Modified {
                         hunks: build_hunks(&old, &new),
                     }
@@ -518,15 +517,15 @@ fn union_paths(a: &HashMap<String, String>, b: &HashMap<String, String>) -> Vec<
     all
 }
 
-fn read_text(objects_dir: &Path, object: &str) -> Result<String> {
-    let bytes = storage::read_object(objects_dir, object)?;
+fn read_text(objects: &crate::storage::ObjectStore, object: &str) -> Result<String> {
+    let bytes = objects.get(object)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// Content of an optional object, empty when absent.
-fn read_opt(objects_dir: &Path, object: Option<&String>) -> Result<String> {
+fn read_opt(objects: &crate::storage::ObjectStore, object: Option<&String>) -> Result<String> {
     match object {
-        Some(h) => read_text(objects_dir, h),
+        Some(h) => read_text(objects, h),
         None => Ok(String::new()),
     }
 }

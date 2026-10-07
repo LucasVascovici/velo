@@ -78,13 +78,7 @@ pub fn read_symlink_target(path: &Path) -> Result<Vec<u8>> {
 /// Hash and store arbitrary bytes verbatim (no CRLF normalisation). Used for
 /// symlink targets. Returns the object's BLAKE3 name.
 pub fn store_raw(objects_dir: &Path, data: &[u8]) -> Result<String> {
-    let hash = blake3::hash(data).to_hex().to_string();
-    let obj_path = objects_dir.join(&hash);
-    if !obj_path.exists() {
-        let compressed = zstd::encode_all(data, 1).map_err(VeloError::Io)?;
-        write_atomic(&obj_path, &compressed).map_err(VeloError::Io)?;
-    }
-    Ok(hash)
+    ObjectStore::at(objects_dir.to_path_buf()).put(data)
 }
 
 /// Write object `content` to `dest` honouring `mode`: create a symlink for
@@ -139,43 +133,157 @@ fn create_symlink(_target: &str, _dest: &Path) -> std::io::Result<()> {
 /// For files ≥ 256 KB the file is memory-mapped to avoid double-buffering.
 /// For very large files (≥ 1 MB) blake3's built-in rayon parallelism is used.
 pub fn hash_and_compress(file_path: &Path, objects_dir: &Path) -> Result<String> {
-    let meta = fs::metadata(file_path).map_err(VeloError::Io)?;
-    let size = meta.len();
-
-    let hash = if size >= MMAP_THRESHOLD {
-        hash_mmap(file_path)?
-    } else {
-        hash_small(file_path)?
-    };
-
-    let obj_path = objects_dir.join(&hash);
-    if !obj_path.exists() {
-        // Re-read for compression (mmap again for large files)
-        let data = normalise_crlf(if size >= MMAP_THRESHOLD {
-            read_mmap(file_path)?
-        } else {
-            fs::read(file_path).map_err(VeloError::Io)?
-        });
-        let compressed = zstd::encode_all(&data[..], 1) // level 1: fast save
-            .map_err(VeloError::Io)?;
-        // Atomic write: a crash can't leave a half-written object under its
-        // final content-addressed name (which would corrupt reads forever).
-        write_atomic(&obj_path, &compressed).map_err(VeloError::Io)?;
-    }
-    Ok(hash)
+    ObjectStore::at(objects_dir.to_path_buf()).put_file(file_path)
 }
 
 /// Decompress and return the raw bytes of a stored object.
 pub fn read_object(objects_dir: &Path, hash: &str) -> Result<Vec<u8>> {
-    let obj_path = objects_dir.join(hash);
-    let compressed = fs::read(&obj_path).map_err(|_| {
-        VeloError::corrupt(format!(
-            "object '{}' is missing from storage. The repository may be corrupt.",
-            hash
-        ))
-    })?;
-    zstd::decode_all(&compressed[..])
-        .map_err(|_| VeloError::corrupt(format!("object '{}' could not be decompressed.", hash)))
+    ObjectStore::at(objects_dir.to_path_buf()).get(hash)
+}
+
+/// The outcome of checking one stored object against its name.
+pub(crate) enum Verified {
+    Ok,
+    Missing,
+    Undecodable,
+    Mismatch { actual: String },
+}
+
+/// The one place that knows how objects are laid out on disk. A concrete type
+/// rather than a trait: it is the seam later storage work (chunking, a
+/// database backend) changes, sized to what those need and no wider.
+#[derive(Clone, Debug)]
+pub(crate) struct ObjectStore {
+    dir: PathBuf,
+}
+
+impl ObjectStore {
+    pub(crate) fn at(objects_dir: PathBuf) -> Self {
+        Self { dir: objects_dir }
+    }
+
+    fn path(&self, hash: &str) -> PathBuf {
+        self.dir.join(hash)
+    }
+
+    /// Hash and store already-normalised bytes verbatim. Returns the name.
+    pub(crate) fn put(&self, normalised: &[u8]) -> Result<String> {
+        let hash = blake3::hash(normalised).to_hex().to_string();
+        let obj_path = self.path(&hash);
+        if !obj_path.exists() {
+            let compressed = zstd::encode_all(normalised, 1).map_err(VeloError::Io)?;
+            write_atomic(&obj_path, &compressed).map_err(VeloError::Io)?;
+        }
+        Ok(hash)
+    }
+
+    /// Hash a working-tree file (CRLF-normalised) and store it.
+    pub(crate) fn put_file(&self, file_path: &Path) -> Result<String> {
+        let meta = fs::metadata(file_path).map_err(VeloError::Io)?;
+        let size = meta.len();
+
+        let hash = if size >= MMAP_THRESHOLD {
+            hash_mmap(file_path)?
+        } else {
+            hash_small(file_path)?
+        };
+
+        let obj_path = self.path(&hash);
+        if !obj_path.exists() {
+            // Re-read for compression (mmap again for large files)
+            let data = normalise_crlf(if size >= MMAP_THRESHOLD {
+                read_mmap(file_path)?
+            } else {
+                fs::read(file_path).map_err(VeloError::Io)?
+            });
+            let compressed = zstd::encode_all(&data[..], 1) // level 1: fast save
+                .map_err(VeloError::Io)?;
+            // Atomic write: a crash can't leave a half-written object under its
+            // final content-addressed name (which would corrupt reads forever).
+            write_atomic(&obj_path, &compressed).map_err(VeloError::Io)?;
+        }
+        Ok(hash)
+    }
+
+    /// Decompress and return the full content of an object.
+    pub(crate) fn get(&self, hash: &str) -> Result<Vec<u8>> {
+        let compressed = fs::read(self.path(hash)).map_err(|_| {
+            VeloError::corrupt(format!(
+                "object '{}' is missing from storage. The repository may be corrupt.",
+                hash
+            ))
+        })?;
+        zstd::decode_all(&compressed[..]).map_err(|_| {
+            VeloError::corrupt(format!("object '{}' could not be decompressed.", hash))
+        })
+    }
+
+    pub(crate) fn contains(&self, hash: &str) -> bool {
+        self.path(hash).exists()
+    }
+
+    /// One zstd frame of the full content, as packs and bundles carry it.
+    pub(crate) fn compressed(&self, hash: &str) -> Result<Vec<u8>> {
+        fs::read(self.path(hash)).map_err(|_| {
+            VeloError::corrupt(format!("object {} is missing — run 'velo fsck'", hash))
+        })
+    }
+
+    /// Verify a received frame decompresses and hashes to `hash`, then store
+    /// it. `Ok(true)` if the object was new.
+    pub(crate) fn import_compressed(&self, hash: &str, frame: &[u8]) -> Result<bool> {
+        let decompressed = zstd::decode_all(frame).map_err(|_| {
+            VeloError::corrupt(format!("object {} could not be decompressed", hash))
+        })?;
+        let actual = blake3::hash(&decompressed).to_hex().to_string();
+        if actual != hash {
+            return Err(VeloError::corrupt(format!(
+                "object {} is corrupt (content hashes to {})",
+                hash, actual
+            )));
+        }
+        let obj_path = self.path(hash);
+        if obj_path.exists() {
+            return Ok(false);
+        }
+        write_atomic(&obj_path, frame)?;
+        Ok(true)
+    }
+
+    /// Every stored object name with its on-disk size, for gc.
+    pub(crate) fn list(&self) -> Result<Vec<(String, u64)>> {
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&self.dir)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            out.push((name, size));
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn remove(&self, hash: &str) -> Result<()> {
+        fs::remove_file(self.path(hash))?;
+        Ok(())
+    }
+
+    /// Integrity check for fsck: present, decodable, and hashing to its name.
+    pub(crate) fn verify(&self, hash: &str) -> Verified {
+        if !self.contains(hash) {
+            return Verified::Missing;
+        }
+        match self.get(hash) {
+            Ok(bytes) => {
+                let actual = blake3::hash(&bytes).to_hex().to_string();
+                if actual == hash {
+                    Verified::Ok
+                } else {
+                    Verified::Mismatch { actual }
+                }
+            }
+            Err(_) => Verified::Undecodable,
+        }
+    }
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -271,5 +379,41 @@ pub fn fast_hash(path: &Path) -> String {
         blake3::hash(&data).to_hex().to_string()
     } else {
         hash_small(path).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn store() -> (tempfile::TempDir, ObjectStore) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ObjectStore::at(dir.path().to_path_buf());
+        (dir, store)
+    }
+
+    #[test]
+    fn put_get_and_compressed_round_trip() {
+        let (_d, s) = store();
+        let h = s.put(b"hello objects").unwrap();
+        assert!(s.contains(&h));
+        assert_eq!(s.get(&h).unwrap(), b"hello objects");
+        let frame = s.compressed(&h).unwrap();
+        assert_eq!(zstd::decode_all(&frame[..]).unwrap(), b"hello objects");
+        assert!(matches!(s.verify(&h), Verified::Ok));
+    }
+
+    #[test]
+    fn import_rejects_wrong_name_and_verify_flags_tamper() {
+        let (_d, s) = store();
+        let frame = zstd::encode_all(&b"content"[..], 1).unwrap();
+        let wrong = blake3::hash(b"other").to_hex().to_string();
+        let err = s.import_compressed(&wrong, &frame).unwrap_err();
+        assert!(matches!(err, VeloError::Corrupt { .. }));
+
+        let h = s.put(b"original").unwrap();
+        let tampered = zstd::encode_all(&b"tampered"[..], 1).unwrap();
+        fs::write(s.path(&h), tampered).unwrap();
+        assert!(matches!(s.verify(&h), Verified::Mismatch { .. }));
     }
 }

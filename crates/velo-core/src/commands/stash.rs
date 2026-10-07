@@ -115,7 +115,7 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     }
 
     // Hash and compress every dirty file that still exists, in parallel.
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
     let to_hash: Vec<String> = dirty
         .iter()
         .filter(|(_, status)| **status != FileStatus::Deleted)
@@ -129,9 +129,9 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
             let full = root.join(db::db_to_path(&rel));
             let mode = storage::capture_mode(&full);
             let hash = if mode == storage::MODE_SYMLINK {
-                storage::store_raw(&objects_dir, &storage::read_symlink_target(&full)?)?
+                objects.put(&storage::read_symlink_target(&full)?)?
             } else {
-                storage::hash_and_compress(&full, &objects_dir)?
+                objects.put_file(&full)?
             };
             Ok((rel, hash, mode))
         })
@@ -307,7 +307,7 @@ pub fn drop_shelf(guard: &WriteGuard, name: Option<String>) -> Result<String> {
 fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
     let root = guard.root();
     let conn = guard.conn();
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
 
     // The mode is read alongside the hash so exec bits and symlinks survive a
     // round trip: this used to `fs::write` the bytes and drop the mode entirely.
@@ -329,7 +329,7 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
                     return Some(format!("{}: {}", rel, e));
                 }
             }
-            match storage::read_object(&objects_dir, hash) {
+            match objects.get(hash) {
                 Ok(data) => storage::apply_file(&full, *mode, &data)
                     .err()
                     .map(|e| format!("{}: {}", rel, e)),

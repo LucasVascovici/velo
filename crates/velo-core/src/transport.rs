@@ -187,7 +187,7 @@ impl Remote for LocalRemote {
         // checked too — a remote written by a newer Velo is refused, not misread.
         let repo = crate::Repo::open_and_migrate(&self.root)?;
         let conn = repo.conn();
-        let objects = self.root.join(".velo/objects");
+        let objects = repo.objects();
         let tips = all_branch_tips(conn);
 
         let mut snap_set: HashSet<String> = HashSet::new();
@@ -218,7 +218,6 @@ impl Remote for LocalRemote {
         let repo = crate::Repo::open_and_migrate(&self.root)?;
         let guard = repo.write()?;
         let conn = guard.conn();
-        let objects = self.root.join(".velo/objects");
 
         let refs: Vec<RemoteRef> = all_branch_tips(conn)
             .into_iter()
@@ -229,7 +228,7 @@ impl Remote for LocalRemote {
         match fast_forward_check(conn, branch, new_tip, &pack) {
             Some(reason) => Ok(PushOutcome::Rejected(reason)),
             None => {
-                let (s, o) = bundle::import_pack(&guard, &objects, &pack)?;
+                let (s, o) = bundle::import_pack(&guard, &pack)?;
                 Ok(PushOutcome::Ok {
                     new_snapshots: s,
                     new_objects: o,

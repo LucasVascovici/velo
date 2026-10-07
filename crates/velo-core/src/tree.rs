@@ -338,7 +338,7 @@ impl WriteGuard<'_> {
             }
         }
 
-        let objects_dir = self.root().join(".velo/objects");
+        let objects = self.repo().objects();
         let mut tree: Vec<(String, String, i64)> = Vec::with_capacity(spec.entries.len());
         let mut seen = std::collections::HashSet::new();
 
@@ -367,7 +367,7 @@ impl WriteGuard<'_> {
                     } else {
                         storage::normalise_crlf(bytes)
                     };
-                    storage::store_raw(&objects_dir, &content)?
+                    objects.put(&content)?
                 }
                 Content::Stored(object) => {
                     // Already-stored content is already normalised, so it is
@@ -375,7 +375,7 @@ impl WriteGuard<'_> {
                     // snapshot that names a missing object would manufacture
                     // corruption through the public API, discoverable only later
                     // by `fsck`.
-                    if !objects_dir.join(object.as_str()).exists() {
+                    if !objects.contains(object.as_str()) {
                         return Err(VeloError::MissingObject {
                             hash: object.into_string(),
                         });
@@ -573,7 +573,7 @@ impl Repo {
     /// The hash is verified on the way out, so a corrupted store is an error
     /// rather than silently wrong content.
     pub fn read_object(&self, object: &ObjectHash) -> Result<Vec<u8>> {
-        storage::read_object(&self.root().join(".velo/objects"), object)
+        self.objects().get(object)
     }
 
     /// The metadata attached to `snapshot`.

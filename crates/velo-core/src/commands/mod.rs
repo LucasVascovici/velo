@@ -746,7 +746,7 @@ pub(crate) enum Reconcile {
 /// can't be line-merged) become conflicts. A file's mode is part of its
 /// identity, so an executable-bit or file↔symlink change counts as a change.
 pub(crate) fn reconcile_file(
-    objects_dir: &Path,
+    objects: &crate::storage::ObjectStore,
     anc: FileRef,
     our: FileRef,
     thr: FileRef,
@@ -803,10 +803,10 @@ pub(crate) fn reconcile_file(
     let anc_bytes = if anc.0.is_empty() {
         Vec::new()
     } else {
-        crate::storage::read_object(objects_dir, anc.0)?
+        objects.get(anc.0)?
     };
-    let our_bytes = crate::storage::read_object(objects_dir, our.0)?;
-    let thr_bytes = crate::storage::read_object(objects_dir, thr.0)?;
+    let our_bytes = objects.get(our.0)?;
+    let thr_bytes = objects.get(thr.0)?;
 
     if anc_bytes.contains(&0) || our_bytes.contains(&0) || thr_bytes.contains(&0) {
         return Ok(Reconcile::Conflict); // binary — cannot auto-merge

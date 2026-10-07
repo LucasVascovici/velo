@@ -3721,7 +3721,12 @@ mod tests {
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
         let tip = tip_of(root);
         let set = commands::bundle::reachable_ancestry(&conn, &tip);
-        let pack = commands::bundle::build_pack(&conn, &root.join(".velo/objects"), &set).unwrap();
+        let pack = commands::bundle::build_pack(
+            &conn,
+            &crate::storage::ObjectStore::at(root.join(".velo/objects")),
+            &set,
+        )
+        .unwrap();
         let mut body = Vec::new();
         crate::transport::write_string(&mut body, "main").unwrap();
         crate::transport::write_string(&mut body, &tip).unwrap();
@@ -3758,10 +3763,7 @@ mod tests {
 
         let fresh = TempDir::new().unwrap();
         commands::init::run(fresh.path()).unwrap();
-        with_write(fresh.path(), |g| {
-            commands::bundle::import_pack(g, &fresh.path().join(".velo/objects"), &pack)
-        })
-        .unwrap();
+        with_write(fresh.path(), |g| commands::bundle::import_pack(g, &pack)).unwrap();
         assert!(snapshot_exists(fresh.path(), &second));
     }
 
@@ -8362,7 +8364,7 @@ beta
         let s2 = save(&root, "touch one file");
 
         let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
-        let objects = root.join(".velo/objects");
+        let objects = crate::storage::ObjectStore::at(root.join(".velo/objects"));
 
         // Self-contained pack (what `bundle create` produces): whole tree.
         let all = commands::bundle::reachable_ancestry(&conn, &s2);
