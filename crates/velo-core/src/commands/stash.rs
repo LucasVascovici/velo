@@ -17,7 +17,6 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::fs;
 
-use rayon::prelude::*;
 use rusqlite::params;
 
 use crate::commands::SnapshotIdentity;
@@ -122,20 +121,8 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
         .map(|(path, _)| path.clone())
         .collect();
     let progress = guard.phase(Phase::Hashing, Some(to_hash.len() as u64));
-    let hashed: Vec<(String, String, i64)> = to_hash
-        .into_par_iter()
-        .inspect(|_| progress.tick())
-        .map(|rel| {
-            let full = root.join(db::db_to_path(&rel));
-            let mode = storage::capture_mode(&full);
-            let hash = if mode == storage::MODE_SYMLINK {
-                objects.put(&storage::read_symlink_target(&full)?)?
-            } else {
-                objects.put_file(&full)?
-            };
-            Ok((rel, hash, mode))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let hashed: Vec<(String, String, i64)> =
+        objects.put_paths(root, to_hash, &progress, || Ok(()))?;
 
     // The shelf's tree: unchanged files carried from the parent, plus the freshly
     // hashed dirty ones. Deleted files are simply absent, which is what records
@@ -321,24 +308,25 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
     drop(stmt);
 
     let progress = guard.phase(Phase::Writing, Some(files.len() as u64));
-    let errors: Vec<String> = files
-        .par_iter()
-        .inspect(|_| progress.tick())
-        .filter_map(|(rel, hash, mode)| {
+    let errors: Vec<String> = objects.par_with_content(
+        &files,
+        |(_, hash, _)| hash.as_str(),
+        |(rel, _, mode), content| {
+            progress.tick();
             let full = root.join(db::db_to_path(rel));
             if let Some(parent) = full.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
                     return Some(format!("{}: {}", rel, e));
                 }
             }
-            match objects.get(hash) {
+            match content {
                 Ok(data) => storage::apply_file(&full, *mode, &data)
                     .err()
                     .map(|e| format!("{}: {}", rel, e)),
                 Err(e) => Some(format!("{}: {}", rel, e)),
             }
-        })
-        .collect();
+        },
+    );
     if !errors.is_empty() {
         return Err(VeloError::invalid(format!(
             "{} file(s) could not be restored from the shelf: {}",

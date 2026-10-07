@@ -104,6 +104,7 @@ mod tests;
 
 // ─── Public surface ───────────────────────────────────────────────────────────
 
+pub use commands::init::InitOptions;
 pub use drivers::Drivers;
 pub use error::{Error, Result};
 pub use events::{Event, Listener};
@@ -111,6 +112,7 @@ pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
 pub use meta::{Author, SnapshotMeta};
 pub use repo::{Repo, WriteGuard};
 pub use scope::Scope;
+pub use storage::ObjectLocation;
 
 /// Re-exported so callers can match on merge outcomes without adding a second
 /// dependency.

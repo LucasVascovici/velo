@@ -1,7 +1,6 @@
 use std::collections::HashSet;
 use std::fs;
 
-use rayon::prelude::*;
 use rusqlite::params;
 
 use crate::commands::FileStatus;
@@ -238,24 +237,13 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         Phase::Hashing,
         Some(files_to_hash.len() as u64),
     );
-    let hash_results: Result<Vec<(String, String, i64)>> = files_to_hash
-        .into_par_iter()
-        .inspect(|_| progress.tick())
-        .map(|rel| {
-            // Checked per file. Hashing writes objects, which is harmless to
-            // abandon — an object nothing references is what `gc` collects — so
-            // stopping here leaves no snapshot and no dangling reference.
-            crate::progress::Cancel::check(cancel)?;
-            let full = root.join(&rel);
-            let mode = storage::capture_mode(&full);
-            let hash = if mode == storage::MODE_SYMLINK {
-                objects.put(&storage::read_symlink_target(&full)?)?
-            } else {
-                objects.put_file(&full)?
-            };
-            Ok((rel, hash, mode))
-        })
-        .collect();
+    // Checked per file. Hashing writes objects, which is harmless to abandon:
+    // an object nothing references is what `gc` collects, so stopping here
+    // leaves no snapshot and no dangling reference.
+    let hash_results: Result<Vec<(String, String, i64)>> =
+        objects.put_paths(root, files_to_hash, &progress, || {
+            crate::progress::Cancel::check(cancel)
+        });
     // `mut` is only needed by the non-Unix sticky-exec-bit pass below; on Unix
     // nothing mutates this, so silence the lint there rather than diverge the
     // two platforms' code paths.

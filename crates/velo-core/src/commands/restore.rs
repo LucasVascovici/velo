@@ -252,10 +252,11 @@ fn write_files(
     progress: &PhaseGuard<'_>,
     cancel: Option<&Cancel>,
 ) -> Result<()> {
-    let errors: Vec<String> = files
-        .par_iter()
-        .inspect(|_| progress.tick())
-        .filter_map(|(rel_path, hash, mode)| {
+    let errors: Vec<String> = objects.par_with_content(
+        files,
+        |(_, hash, _)| hash.as_str(),
+        |(rel_path, _, mode), content| {
+            progress.tick();
             // Checked per file, so cancelling takes effect at the next one and
             // never part-way through writing a file. Workers already in flight
             // finish what they are holding.
@@ -268,15 +269,15 @@ fn write_files(
                     return Some(format!("mkdir '{}': {}", rel_path, e));
                 }
             }
-            match objects.get(hash) {
+            match content {
                 Ok(data) => match storage::apply_file(&full_path, *mode, &data) {
                     Ok(_) => None,
                     Err(e) => Some(format!("write '{}': {} (is the file locked?)", rel_path, e)),
                 },
                 Err(e) => Some(format!("read object for '{}': {}", rel_path, e)),
             }
-        })
-        .collect();
+        },
+    );
 
     // Reported before any write error: a cancelled restore skipped files rather
     // than failing on them, so "you asked me to stop" is the truthful answer.

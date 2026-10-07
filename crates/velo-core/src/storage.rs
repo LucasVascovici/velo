@@ -158,15 +158,390 @@ pub(crate) enum Verified {
     Mismatch { actual: String },
 }
 
-/// The one place that knows how objects are laid out on disk. A concrete type
-/// rather than a trait: it is the seam later storage work (chunking, a
-/// database backend) changes, sized to what those need and no wider.
+/// Where a repository keeps its objects. Chosen when it is created and
+/// recorded in the `settings` table (docs/FORMAT.md 7.2); a repository with no
+/// such row predates the choice and keeps them in files.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ObjectLocation {
+    /// One file per object under `.velo/objects`, large ones as chunks.
+    #[default]
+    Files,
+    /// zstd blobs in the `objects` table of `velo.db`. The only location a
+    /// browser build can use, where the SQLite VFS is the one persistent store.
+    Database,
+}
+
+impl ObjectLocation {
+    /// The value stored in the `settings` table.
+    pub(crate) fn as_setting(self) -> &'static str {
+        match self {
+            ObjectLocation::Files => "files",
+            ObjectLocation::Database => "database",
+        }
+    }
+
+    /// Read the recorded location. A missing table or row means `Files`, which
+    /// is every repository created before the setting existed.
+    pub(crate) fn read(conn: &rusqlite::Connection) -> Result<Self> {
+        use rusqlite::OptionalExtension;
+        let has_table: bool = conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !has_table {
+            return Ok(ObjectLocation::Files);
+        }
+        let value: Option<String> = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'objects'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        match value.as_deref() {
+            None | Some("files") => Ok(ObjectLocation::Files),
+            Some("database") => Ok(ObjectLocation::Database),
+            Some(other) => Err(VeloError::corrupt(format!(
+                "this repository keeps its objects in '{}', which this build does not know",
+                other
+            ))),
+        }
+    }
+}
+
+/// The objects of a repository, wherever they live: the one seam every object
+/// access goes through. An enum rather than a trait because the database
+/// variant needs the repository's connection and there are exactly two
+/// backends; a trait would be wider than that need.
+pub(crate) enum ObjectStore<'r> {
+    Files(FileObjects),
+    Database(&'r rusqlite::Connection),
+}
+
+impl ObjectStore<'static> {
+    /// A file-backed store over `objects_dir`.
+    pub(crate) fn at(objects_dir: PathBuf) -> Self {
+        ObjectStore::Files(FileObjects::at(objects_dir))
+    }
+}
+
+/// Compress `content` as the database backend stores it: one zstd frame.
+fn frame_of(content: &[u8]) -> Result<Vec<u8>> {
+    zstd::encode_all(content, 1).map_err(VeloError::Io)
+}
+
+/// Read a working-tree file as it would be stored (CRLF-normalised) and
+/// compute its name and compressed frame. Touches no store, so it can run on
+/// many threads while the database connection stays on one.
+pub(crate) fn prepare_file(file_path: &Path) -> Result<(String, Vec<u8>)> {
+    let data = normalise_crlf(fs::read(file_path).map_err(VeloError::Io)?);
+    prepare_bytes(&data)
+}
+
+/// The name and compressed frame of already-normalised bytes.
+pub(crate) fn prepare_bytes(data: &[u8]) -> Result<(String, Vec<u8>)> {
+    Ok((blake3::hash(data).to_hex().to_string(), frame_of(data)?))
+}
+
+impl ObjectStore<'_> {
+    /// Hash and store working-tree files in parallel, returning each path with
+    /// its object name and mode. A symlink stores its target, not the content
+    /// it points at. `check` runs before each file so a caller can cancel.
+    ///
+    /// The file backend stores from the worker threads. A database connection
+    /// cannot be shared between threads, so there the expensive part (read,
+    /// hash, compress) runs in parallel and the cheap inserts follow on the
+    /// calling thread.
+    pub(crate) fn put_paths(
+        &self,
+        root: &Path,
+        rels: Vec<String>,
+        progress: &crate::progress::PhaseGuard<'_>,
+        check: impl Fn() -> Result<()> + Sync + Send,
+    ) -> Result<Vec<(String, String, i64)>> {
+        use rayon::prelude::*;
+        let locate = |rel: &str| root.join(crate::db::db_to_path(rel));
+        match self {
+            ObjectStore::Files(f) => rels
+                .into_par_iter()
+                .inspect(|_| progress.tick())
+                .map(|rel| {
+                    // Hashing writes objects, which is harmless to abandon: an
+                    // object nothing references is what `gc` collects.
+                    check()?;
+                    let full = locate(&rel);
+                    let mode = capture_mode(&full);
+                    let hash = if mode == MODE_SYMLINK {
+                        f.put(&read_symlink_target(&full)?)?
+                    } else {
+                        f.put_file(&full)?
+                    };
+                    Ok((rel, hash, mode))
+                })
+                .collect(),
+            ObjectStore::Database(c) => {
+                let prepared: Vec<(String, String, Vec<u8>, i64)> = rels
+                    .into_par_iter()
+                    .inspect(|_| progress.tick())
+                    .map(|rel| {
+                        check()?;
+                        let full = locate(&rel);
+                        let mode = capture_mode(&full);
+                        let (hash, frame) = if mode == MODE_SYMLINK {
+                            prepare_bytes(&read_symlink_target(&full)?)?
+                        } else {
+                            prepare_file(&full)?
+                        };
+                        Ok((rel, hash, frame, mode))
+                    })
+                    .collect::<Result<_>>()?;
+                prepared
+                    .into_iter()
+                    .map(|(rel, hash, frame, mode)| {
+                        db_insert(c, &hash, &frame)?;
+                        Ok((rel, hash, mode))
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Call `work(item, content)` for every item in parallel, where `content`
+    /// is the object `hash_of(item)` names. Results come back in item order.
+    ///
+    /// The database backend cannot read from worker threads, so it fetches a
+    /// bounded batch on the calling thread and hands that batch to the pool.
+    pub(crate) fn par_with_content<T: Sync, R: Send>(
+        &self,
+        items: &[T],
+        hash_of: impl Fn(&T) -> &str + Sync + Send,
+        work: impl Fn(&T, Result<Vec<u8>>) -> Option<R> + Sync + Send,
+    ) -> Vec<R> {
+        use rayon::prelude::*;
+        match self {
+            ObjectStore::Files(f) => items
+                .par_iter()
+                .filter_map(|it| work(it, f.get(hash_of(it))))
+                .collect(),
+            ObjectStore::Database(_) => {
+                const BATCH: usize = 128;
+                let mut out = Vec::new();
+                for batch in items.chunks(BATCH) {
+                    let fetched: Vec<(&T, Result<Vec<u8>>)> =
+                        batch.iter().map(|it| (it, self.get(hash_of(it)))).collect();
+                    out.extend(
+                        fetched
+                            .into_par_iter()
+                            .filter_map(|(it, content)| work(it, content))
+                            .collect::<Vec<R>>(),
+                    );
+                }
+                out
+            }
+        }
+    }
+
+    pub(crate) fn put(&self, normalised: &[u8]) -> Result<String> {
+        match self {
+            ObjectStore::Files(f) => f.put(normalised),
+            ObjectStore::Database(c) => {
+                let hash = blake3::hash(normalised).to_hex().to_string();
+                if !db_contains(c, &hash)? {
+                    db_insert(c, &hash, &frame_of(normalised)?)?;
+                }
+                Ok(hash)
+            }
+        }
+    }
+
+    pub(crate) fn put_file(&self, file_path: &Path) -> Result<String> {
+        match self {
+            ObjectStore::Files(f) => f.put_file(file_path),
+            ObjectStore::Database(c) => {
+                let (hash, frame) = prepare_file(file_path)?;
+                db_insert(c, &hash, &frame)?;
+                Ok(hash)
+            }
+        }
+    }
+
+    pub(crate) fn get(&self, hash: &str) -> Result<Vec<u8>> {
+        match self {
+            ObjectStore::Files(f) => f.get(hash),
+            ObjectStore::Database(c) => {
+                let frame = db_frame(c, hash)?.ok_or_else(|| {
+                    VeloError::corrupt(format!(
+                        "object '{}' is missing from storage. The repository may be corrupt.",
+                        hash
+                    ))
+                })?;
+                let data = zstd::decode_all(&frame[..]).map_err(|_| {
+                    VeloError::corrupt(format!("object '{}' could not be decompressed.", hash))
+                })?;
+                if blake3::hash(&data).to_hex().as_str() != hash {
+                    return Err(VeloError::corrupt(format!(
+                        "object '{}' does not match its content",
+                        hash
+                    )));
+                }
+                Ok(data)
+            }
+        }
+    }
+
+    pub(crate) fn contains(&self, hash: &str) -> bool {
+        match self {
+            ObjectStore::Files(f) => f.contains(hash),
+            ObjectStore::Database(c) => db_contains(c, hash).unwrap_or(false),
+        }
+    }
+
+    pub(crate) fn compressed(&self, hash: &str) -> Result<Vec<u8>> {
+        match self {
+            ObjectStore::Files(f) => f.compressed(hash),
+            ObjectStore::Database(c) => db_frame(c, hash)?.ok_or_else(|| {
+                VeloError::corrupt(format!("object {} is missing — run 'velo fsck'", hash))
+            }),
+        }
+    }
+
+    pub(crate) fn import_compressed(&self, hash: &str, frame: &[u8]) -> Result<bool> {
+        match self {
+            ObjectStore::Files(f) => f.import_compressed(hash, frame),
+            ObjectStore::Database(c) => {
+                let decompressed = zstd::decode_all(frame).map_err(|_| {
+                    VeloError::corrupt(format!("object {} could not be decompressed", hash))
+                })?;
+                let actual = blake3::hash(&decompressed).to_hex().to_string();
+                if actual != hash {
+                    return Err(VeloError::corrupt(format!(
+                        "object {} is corrupt (content hashes to {})",
+                        hash, actual
+                    )));
+                }
+                db_insert(c, hash, frame)
+            }
+        }
+    }
+
+    pub(crate) fn list(&self) -> Result<Vec<(String, u64)>> {
+        match self {
+            ObjectStore::Files(f) => f.list(),
+            ObjectStore::Database(c) => {
+                let mut stmt = c.prepare("SELECT hash, length(data) FROM objects")?;
+                let rows =
+                    stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+                let mut out = Vec::new();
+                for row in rows {
+                    let (h, n) = row?;
+                    out.push((h, n.max(0) as u64));
+                }
+                Ok(out)
+            }
+        }
+    }
+
+    pub(crate) fn remove(&self, hash: &str) -> Result<()> {
+        match self {
+            ObjectStore::Files(f) => f.remove(hash),
+            ObjectStore::Database(c) => {
+                c.execute("DELETE FROM objects WHERE hash = ?", [hash])?;
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) fn verify(&self, hash: &str) -> Verified {
+        match self {
+            ObjectStore::Files(f) => f.verify(hash),
+            ObjectStore::Database(c) => {
+                let frame = match db_frame(c, hash) {
+                    Ok(Some(frame)) => frame,
+                    Ok(None) => return Verified::Missing,
+                    Err(_) => return Verified::Undecodable,
+                };
+                let Ok(data) = zstd::decode_all(&frame[..]) else {
+                    return Verified::Undecodable;
+                };
+                let actual = blake3::hash(&data).to_hex().to_string();
+                if actual == hash {
+                    Verified::Ok
+                } else {
+                    Verified::Mismatch { actual }
+                }
+            }
+        }
+    }
+
+    // Chunking is a disk-layout optimisation: it lets two large files share
+    // the pieces they have in common as separate files. In the database the
+    // unit is the SQLite page, which already stores and reuses space its own
+    // way, so this backend keeps one whole frame per object and has no chunks.
+
+    pub(crate) fn chunks_of(&self, hash: &str) -> Result<Option<Vec<String>>> {
+        match self {
+            ObjectStore::Files(f) => f.chunks_of(hash),
+            ObjectStore::Database(_) => Ok(None),
+        }
+    }
+
+    pub(crate) fn list_chunks(&self) -> Result<Vec<(String, u64)>> {
+        match self {
+            ObjectStore::Files(f) => f.list_chunks(),
+            ObjectStore::Database(_) => Ok(Vec::new()),
+        }
+    }
+
+    pub(crate) fn remove_chunk(&self, chunk: &str) -> Result<()> {
+        match self {
+            ObjectStore::Files(f) => f.remove_chunk(chunk),
+            ObjectStore::Database(_) => Ok(()),
+        }
+    }
+
+    pub(crate) fn verify_chunk(&self, chunk: &str) -> Verified {
+        match self {
+            ObjectStore::Files(f) => f.verify_chunk(chunk),
+            ObjectStore::Database(_) => Verified::Missing,
+        }
+    }
+}
+
+fn db_contains(conn: &rusqlite::Connection, hash: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM objects WHERE hash = ?)",
+        [hash],
+        |r| r.get(0),
+    )?)
+}
+
+fn db_frame(conn: &rusqlite::Connection, hash: &str) -> Result<Option<Vec<u8>>> {
+    use rusqlite::OptionalExtension;
+    Ok(conn
+        .query_row("SELECT data FROM objects WHERE hash = ?", [hash], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
+/// `INSERT OR IGNORE`; true when the object was new.
+fn db_insert(conn: &rusqlite::Connection, hash: &str, frame: &[u8]) -> Result<bool> {
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO objects (hash, data) VALUES (?, ?)",
+        rusqlite::params![hash, frame],
+    )?;
+    Ok(n > 0)
+}
+
+/// The file layout: one file per object, large ones as chunks.
 #[derive(Clone, Debug)]
-pub(crate) struct ObjectStore {
+pub(crate) struct FileObjects {
     dir: PathBuf,
 }
 
-impl ObjectStore {
+impl FileObjects {
     pub(crate) fn at(objects_dir: PathBuf) -> Self {
         Self { dir: objects_dir }
     }
@@ -594,9 +969,9 @@ pub fn fast_hash(path: &Path) -> String {
 mod tests {
     use super::*;
 
-    fn store() -> (tempfile::TempDir, ObjectStore) {
+    fn store() -> (tempfile::TempDir, FileObjects) {
         let dir = tempfile::tempdir().unwrap();
-        let store = ObjectStore::at(dir.path().to_path_buf());
+        let store = FileObjects::at(dir.path().to_path_buf());
         (dir, store)
     }
 
