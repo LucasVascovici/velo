@@ -10,6 +10,7 @@ use rusqlite::OptionalExtension;
 
 use crate::commands::get_dirty_files;
 use crate::error::{InProgress, Result, VeloError};
+use crate::events::{Event, Ref};
 use crate::SnapshotId;
 use crate::WriteGuard;
 
@@ -93,6 +94,11 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     tx.commit()?;
 
     let now_at = parent_hash.trim().to_string();
+    guard.repo().emit(Event::RefMoved {
+        reference: Ref::Branch(crate::BranchName::from_stored(branch.trim())),
+        from: Some(SnapshotId::from_stored(snapshot.as_str())),
+        to: (!now_at.is_empty()).then(|| SnapshotId::from_stored(now_at.as_str())),
+    });
     if now_at.is_empty() {
         // The root snapshot went, so there is nothing to restore to: clear the
         // position and remove the files it tracked.

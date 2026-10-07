@@ -187,6 +187,8 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
         params![shelf_name, snapshot, branch.trim(), parent_hash],
     )?;
     tx.commit()?;
+    // Deliberately no event: the shelf's snapshot lives on the internal
+    // '_stash' branch, which is bookkeeping rather than history.
 
     // Clear the brand-new files just shelved. `restore` deliberately leaves
     // untracked files alone — they exist in no snapshot, so removing them would

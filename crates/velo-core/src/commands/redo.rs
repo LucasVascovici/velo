@@ -72,6 +72,24 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
         [&snapshot],
     )?;
     tx.commit()?;
+    // The row came back from the trash, so it is a snapshot the repository did
+    // not have a moment ago. Its branch and parents are read from the row itself.
+    let row: Option<(String, Option<String>, Option<String>)> = guard
+        .conn()
+        .query_row(
+            "SELECT branch, parent_hash, merge_parent FROM snapshots WHERE hash = ?",
+            [&snapshot],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?;
+    if let Some((snap_branch, parent, merge_parent)) = row {
+        guard.repo().emit_saved_raw(
+            &snapshot,
+            &snap_branch,
+            parent.as_deref().unwrap_or(""),
+            merge_parent.as_deref().unwrap_or(""),
+        );
+    }
 
     // restore::run writes PARENT itself.
     crate::commands::restore::run(

@@ -350,6 +350,7 @@ pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
     let bundle = decode(&raw)?;
 
     let (new_snaps, new_objects) = import_pack(guard, &bundle)?;
+    guard.repo().emit_imported(new_snaps);
 
     Ok(Applied {
         snapshots: new_snaps,

@@ -389,6 +389,12 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     )?;
     tx.execute("DELETE FROM trash WHERE branch = ?", [branch.trim()])?;
     tx.commit()?;
+    guard.repo().emit_saved_raw(
+        snapshot_hash,
+        branch.trim(),
+        effective_parent.as_str(),
+        merge_parent.as_str(),
+    );
 
     storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
 
