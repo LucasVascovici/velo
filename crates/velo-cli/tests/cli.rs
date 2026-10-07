@@ -672,3 +672,64 @@ fn history_file_filter_reports_when_nothing_matched() {
         "expected the no-match message:\n{out}"
     );
 }
+
+#[test]
+fn export_git_stream_is_accepted_by_git_fast_import() {
+    use std::process::Stdio;
+    if !Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("skipping: git is not installed");
+        return;
+    }
+    let tmp = repo();
+    let out = tmp.path().join("history.fi");
+
+    // The stream goes to stdout by default, and to a file with --output.
+    let exported = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(["export-git"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+    let (_, ok) = velo(
+        tmp.path(),
+        &["export-git", "--output", out.to_str().unwrap()],
+    );
+    assert!(ok);
+    assert_eq!(std::fs::read(&out).unwrap(), exported.stdout);
+    std::fs::remove_file(&out).unwrap();
+
+    let git_dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(git_dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-q", "-b", "main"]).status.success());
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(git_dir.path())
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&exported.stdout)
+            .unwrap();
+    }
+    assert!(child.wait().unwrap().success(), "git rejected the stream");
+
+    let count = git(&["rev-list", "--all", "--count"]);
+    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+    let message = git(&["log", "-1", "--format=%B", "main"]);
+    assert!(String::from_utf8_lossy(&message.stdout).contains("Velo-Snapshot:"));
+}

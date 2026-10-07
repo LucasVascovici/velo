@@ -4,6 +4,7 @@ pub mod branches;
 pub mod bundle;
 pub mod cherry_pick;
 pub mod diff;
+pub mod export;
 pub mod fsck;
 pub mod gc;
 pub mod grep;

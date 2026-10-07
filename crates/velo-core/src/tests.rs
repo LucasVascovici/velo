@@ -11149,6 +11149,325 @@ line three CHANGED
             assert_eq!(Drivers::new().for_path("q").name(), "line");
         }
     }
+
+    mod export_git {
+        use super::*;
+        use crate::commands::export;
+        use crate::tree::{FileKind, SaveTree, TreeEntry};
+
+        #[allow(clippy::too_many_arguments)]
+        fn save_at(
+            guard: &crate::WriteGuard,
+            branch: &BranchName,
+            parent: Option<&SnapshotId>,
+            merge_parent: Option<&SnapshotId>,
+            message: &str,
+            entries: Vec<TreeEntry>,
+            renames: &[(PathBuf, PathBuf)],
+            ms: i64,
+        ) -> SnapshotId {
+            guard
+                .save_tree(SaveTree {
+                    branch,
+                    parent,
+                    merge_parent,
+                    message,
+                    entries,
+                    meta: SnapshotMeta::new(),
+                    author: None,
+                    timestamp_ms: Some(ms),
+                    renames,
+                })
+                .unwrap()
+        }
+
+        fn export_text(repo: &Repo) -> (String, export::Exported) {
+            let mut out = Vec::new();
+            let n = export::git_fast_import(repo, &mut out, Default::default()).unwrap();
+            (String::from_utf8(out).unwrap(), n)
+        }
+
+        fn file(path: &str, text: &str) -> TreeEntry {
+            TreeEntry::file(path, text.as_bytes().to_vec())
+        }
+
+        #[test]
+        fn linear_history_is_parents_first_with_chained_from_marks() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let main = branch_name("main");
+            {
+                let g = repo.write().unwrap();
+                let a = save_at(
+                    &g,
+                    &main,
+                    None,
+                    None,
+                    "one",
+                    vec![file("a", "1")],
+                    &[],
+                    1_000,
+                );
+                let b = save_at(
+                    &g,
+                    &main,
+                    Some(&a),
+                    None,
+                    "two",
+                    vec![file("a", "2")],
+                    &[],
+                    2_000,
+                );
+                save_at(
+                    &g,
+                    &main,
+                    Some(&b),
+                    None,
+                    "three",
+                    vec![file("a", "3")],
+                    &[],
+                    3_000,
+                );
+            }
+            let (text, n) = export_text(&repo);
+            assert_eq!(n.commits, 3);
+            assert_eq!(n.branches, 1);
+            assert!(text.ends_with("done\n"));
+            assert_eq!(text.matches("commit refs/velo/export\n").count(), 3);
+            // Parents first.
+            let pos = |m: &str| text.find(m).unwrap();
+            assert!(pos("\none\n") < pos("\ntwo\n"));
+            assert!(pos("\ntwo\n") < pos("\nthree\n"));
+            assert_eq!(
+                text.matches("\nfrom :").count(),
+                3,
+                "two chains and the branch reset"
+            );
+            assert!(text.contains("reset refs/heads/main\nfrom :"));
+        }
+
+        #[test]
+        fn a_merge_has_from_and_merge() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let main = branch_name("main");
+            let side = branch_name("side");
+            {
+                let g = repo.write().unwrap();
+                let a = save_at(
+                    &g,
+                    &main,
+                    None,
+                    None,
+                    "base",
+                    vec![file("a", "1")],
+                    &[],
+                    1_000,
+                );
+                let b = save_at(
+                    &g,
+                    &main,
+                    Some(&a),
+                    None,
+                    "left",
+                    vec![file("a", "2")],
+                    &[],
+                    2_000,
+                );
+                let c = save_at(
+                    &g,
+                    &side,
+                    Some(&a),
+                    None,
+                    "right",
+                    vec![file("a", "3")],
+                    &[],
+                    3_000,
+                );
+                save_at(
+                    &g,
+                    &main,
+                    Some(&b),
+                    Some(&c),
+                    "joined",
+                    vec![file("a", "4")],
+                    &[],
+                    4_000,
+                );
+            }
+            let (text, n) = export_text(&repo);
+            assert_eq!(n.commits, 4);
+            assert_eq!(n.branches, 2);
+            let joined = &text[text.find("joined\n").unwrap()..];
+            let block = &joined[..joined.find("deleteall").unwrap()];
+            assert!(block.contains("\nfrom :"));
+            assert!(block.contains("\nmerge :"));
+        }
+
+        #[test]
+        fn modes_cover_executable_and_symlink() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let main = branch_name("main");
+            {
+                let g = repo.write().unwrap();
+                let mut exe = file("run.sh", "#!/bin/sh\n");
+                exe.kind = FileKind::Executable;
+                let mut link = file("link", "run.sh");
+                link.kind = FileKind::Symlink;
+                save_at(
+                    &g,
+                    &main,
+                    None,
+                    None,
+                    "modes",
+                    vec![file("plain", "x"), exe, link],
+                    &[],
+                    1_000,
+                );
+            }
+            let (text, n) = export_text(&repo);
+            assert_eq!(n.blobs, 3);
+            assert!(text.contains("deleteall\n"));
+            assert!(text.contains("M 100644 :"));
+            assert!(text.contains("M 100755 :") && text.contains(" run.sh\n"));
+            assert!(text.contains("M 120000 :"));
+            assert!(text.contains("blob\nmark :1\ndata "));
+        }
+
+        #[test]
+        fn quoting_round_trips_newlines_quotes_and_controls() {
+            for raw in [
+                "plain",
+                "two\nlines",
+                "say \"hi\"",
+                "back\\slash",
+                "tab\tcr\r",
+                "bell\u{7}",
+                "ünï",
+                "",
+            ] {
+                let q = export::quote(raw);
+                assert!(!q.contains('\n'), "a trailer must stay on one line");
+                let joined = format!("{q} tail");
+                let (back, rest) = export::unquote(&joined).unwrap();
+                assert_eq!(back, raw);
+                assert_eq!(rest, " tail");
+            }
+            assert!(export::unquote("no quote").is_none());
+            assert!(export::unquote("\"open").is_none());
+        }
+
+        #[test]
+        fn metadata_author_and_time_become_trailers() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let main = branch_name("main");
+            {
+                let g = repo.write().unwrap();
+                let mut meta = SnapshotMeta::new();
+                meta.set("app", "note", "line\n\"quoted\"").unwrap();
+                let author = crate::Author::with_email("Ada", "ada@example.com").unwrap();
+                g.save_tree(SaveTree {
+                    branch: &main,
+                    parent: None,
+                    merge_parent: None,
+                    message: "with meta",
+                    entries: vec![file("a", "1")],
+                    meta,
+                    author: Some(&author),
+                    timestamp_ms: Some(1_234_567),
+                    renames: &[],
+                })
+                .unwrap();
+            }
+            let (text, _) = export_text(&repo);
+            assert!(text.contains("author Ada <ada@example.com> 1234 +0000\n"));
+            assert!(text.contains("Velo-Time-Ms: 1234567\n"));
+            assert!(text.contains("Velo-Branch: \"main\"\n"));
+            assert!(text.contains("Velo-Author: \"Ada\" \"ada@example.com\"\n"));
+            assert!(text.contains(
+                r#"Velo-Meta: "app" "note" "line\n\"quoted\""
+"#
+            ));
+            assert!(!text.contains("Velo-Meta: \"velo\""));
+            assert!(text.contains("Velo-Snapshot: "));
+        }
+
+        #[test]
+        fn a_rename_edge_gives_a_trailer() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let main = branch_name("main");
+            {
+                let g = repo.write().unwrap();
+                let a = save_at(
+                    &g,
+                    &main,
+                    None,
+                    None,
+                    "write",
+                    vec![file("old.txt", "x")],
+                    &[],
+                    1_000,
+                );
+                save_at(
+                    &g,
+                    &main,
+                    Some(&a),
+                    None,
+                    "move",
+                    vec![file("new.txt", "x")],
+                    &[(PathBuf::from("old.txt"), PathBuf::from("new.txt"))],
+                    2_000,
+                );
+            }
+            let (text, _) = export_text(&repo);
+            assert_eq!(
+                text.matches("Velo-Rename: \"old.txt\" \"new.txt\"\n")
+                    .count(),
+                1
+            );
+        }
+
+        #[test]
+        fn a_tag_gives_a_reset_and_stash_is_left_out() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let main = branch_name("main");
+            {
+                let g = repo.write().unwrap();
+                let a = save_at(
+                    &g,
+                    &main,
+                    None,
+                    None,
+                    "release",
+                    vec![file("a", "1")],
+                    &[],
+                    1_000,
+                );
+                commands::tag::create(&g, &tag_name("v1"), Some(&a), false).unwrap();
+                let stash = BranchName::from_stored("_stash");
+                save_at(
+                    &g,
+                    &stash,
+                    Some(&a),
+                    None,
+                    "hidden shelf",
+                    vec![file("a", "dirty")],
+                    &[],
+                    2_000,
+                );
+            }
+            let (text, n) = export_text(&repo);
+            assert_eq!(n.tags, 1);
+            assert_eq!(n.commits, 1);
+            assert!(text.contains("reset refs/tags/v1\nfrom :"));
+            assert!(!text.contains("hidden shelf"));
+            assert!(!text.contains("_stash"));
+        }
+    }
 }
 
 // =============================================================================

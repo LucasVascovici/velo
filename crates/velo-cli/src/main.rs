@@ -6,7 +6,7 @@ mod author;
 mod diffargs;
 mod render;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use velo_core::{commands, error, serve, BranchName, TagName};
 
@@ -668,6 +668,26 @@ NOTES
         /// Where to move it.
         #[arg(value_name = "TO")]
         to: String,
+    },
+
+    /// Write the history as a `git fast-import` stream.
+    ///
+    /// The way out: history, file modes and tags go to a stream git can read,
+    /// with velo's metadata, rename edges and snapshot ids in `Velo-*`
+    /// commit trailers. Writes to stdout unless --output is given.
+    ///
+    /// Examples
+    ///   velo export-git | (mkdir ../out && cd ../out && git init -q && git fast-import)
+    ///   velo export-git --output history.fi --branch main
+    #[command(verbatim_doc_comment)]
+    ExportGit {
+        /// Write the stream to this file instead of stdout.
+        #[arg(long, short, value_name = "FILE")]
+        output: Option<PathBuf>,
+
+        /// Export only this branch (repeatable; default: every branch).
+        #[arg(long, value_name = "BRANCH")]
+        branch: Vec<String>,
     },
 
     /// Search tracked files for a pattern.
@@ -1397,6 +1417,7 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Show { .. }
             | Commands::Blame { .. }
             | Commands::Grep { .. }
+            | Commands::ExportGit { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
     )
@@ -1691,6 +1712,28 @@ fn run(cli: Cli) -> Result<()> {
                     ..Default::default()
                 },
             )?);
+        }
+
+        Commands::ExportGit { output, branch } => {
+            let branches: Vec<BranchName> = branch
+                .iter()
+                .map(|b| b.parse::<BranchName>())
+                .collect::<std::result::Result<_, _>>()?;
+            let refs: Vec<&BranchName> = branches.iter().collect();
+            let options = commands::export::Options {
+                branches: &refs,
+                ..Default::default()
+            };
+            match output {
+                Some(path) => {
+                    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+                    commands::export::git_fast_import(&repo, &mut file, options)?;
+                }
+                None => {
+                    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+                    commands::export::git_fast_import(&repo, &mut out, options)?;
+                }
+            }
         }
 
         Commands::Grep {
