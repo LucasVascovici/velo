@@ -960,6 +960,24 @@ NOTES
         #[arg(value_name = "PATH")]
         path: String,
     },
+
+    /// Serve a repository over HTTP, for `velo clone/push/pull http://...`.
+    ///
+    /// A reference server: it handles one request at a time and has NO
+    /// authentication and no TLS. Anyone who can reach the port can read
+    /// the history and push to it. Put it behind a reverse proxy that
+    /// authenticates and terminates TLS for anything public.
+    ///
+    ///   velo serve-http /srv/project
+    ///   velo serve-http /srv/project --listen 0.0.0.0:8417
+    #[command(verbatim_doc_comment)]
+    ServeHttp {
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Address to listen on (port 0 picks a free one).
+        #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:8417")]
+        listen: String,
+    },
 }
 
 // ─── Bundle subcommands ────────────────────────────────────────────────────────
@@ -1457,6 +1475,94 @@ fn parse_line_range(spec: &str) -> Result<std::ops::Range<usize>> {
     Ok(start..end + 1)
 }
 
+/// Run the reference HTTP server until the process is killed.
+///
+/// Requests are served one at a time: the core handlers take the repository
+/// write lock themselves, and a reference server has no need for more. The only
+/// thing written to stdout is the single `listening on` line, so a caller can
+/// read it to learn the port chosen for `--listen ...:0`.
+fn serve_http(path: &str, listen: &str) -> Result<()> {
+    use std::io::Write;
+    use tiny_http::{Header, Method, Response, Server};
+
+    let root = Path::new(path);
+    // Fail at start-up, not on the first request, if this is not a repository.
+    serve::http::refs(root)?;
+
+    let io_err = |e: Box<dyn std::error::Error + Send + Sync>| {
+        VeloError::Io(std::io::Error::other(e.to_string()))
+    };
+    let server = Server::http(listen).map_err(io_err)?;
+    let addr = server
+        .server_addr()
+        .to_ip()
+        .ok_or_else(|| VeloError::Io(std::io::Error::other("server has no IP address")))?;
+    {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "listening on http://{addr}/").map_err(VeloError::Io)?;
+        out.flush().map_err(VeloError::Io)?;
+    }
+
+    let text = |s: &str| Header::from_bytes("Content-Type", s).expect("static header");
+    for mut req in server.incoming_requests() {
+        let method = req.method().clone();
+        let full = req.url().to_string();
+        let route = full.split('?').next().unwrap_or("").to_string();
+
+        let (want, endpoint) = if route.ends_with("/velo/v1/refs") {
+            (Method::Get, 0)
+        } else if route.ends_with("/velo/v1/upload") {
+            (Method::Post, 1)
+        } else if route.ends_with("/velo/v1/receive") {
+            (Method::Post, 2)
+        } else {
+            eprintln!("{method} {full} -> 404");
+            let _ = req.respond(
+                Response::from_string("not found\n")
+                    .with_status_code(404)
+                    .with_header(text("text/plain")),
+            );
+            continue;
+        };
+        if method != want {
+            eprintln!("{method} {full} -> 405");
+            let _ = req.respond(
+                Response::from_string("method not allowed\n")
+                    .with_status_code(405)
+                    .with_header(text("text/plain")),
+            );
+            continue;
+        }
+
+        let mut body = Vec::new();
+        let result = match req.as_reader().read_to_end(&mut body) {
+            Err(e) => Err(VeloError::Io(e)),
+            Ok(_) => match endpoint {
+                0 => serve::http::refs(root),
+                1 => serve::http::upload(root, &body),
+                _ => serve::http::receive(root, &body),
+            },
+        };
+        match result {
+            Ok(bytes) => {
+                eprintln!("{method} {full} -> 200 ({} bytes)", bytes.len());
+                let _ = req.respond(
+                    Response::from_data(bytes).with_header(text("application/octet-stream")),
+                );
+            }
+            Err(e) => {
+                eprintln!("{method} {full} -> 500: {e}");
+                let _ = req.respond(
+                    Response::from_string(e.to_string())
+                        .with_status_code(500)
+                        .with_header(text("text/plain")),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 fn run(cli: Cli) -> Result<()> {
     let current_dir = std::env::current_dir().map_err(VeloError::Io)?;
 
@@ -1485,6 +1591,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Commands::ServeUpload { path } => return serve::upload(path),
         Commands::ServeReceive { path } => return serve::receive(path),
+        Commands::ServeHttp { path, listen } => return serve_http(path, listen),
         _ => {}
     }
 
@@ -1527,7 +1634,8 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Init
         | Commands::Clone { .. }
         | Commands::ServeUpload { .. }
-        | Commands::ServeReceive { .. } => unreachable!(),
+        | Commands::ServeReceive { .. }
+        | Commands::ServeHttp { .. } => unreachable!(),
 
         Commands::Save {
             message,
