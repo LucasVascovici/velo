@@ -341,9 +341,17 @@ pub(crate) fn snapshot(repo: &Repo, id: &SnapshotId) -> Result<Entry> {
     );
     repo.conn()
         .query_row(&sql, [id], row_to_entry)
-        .map_err(|_| {
-            crate::error::VeloError::not_found(crate::error::RefKind::Snapshot, id.as_str())
-        })
+        .map_err(
+            |_| match crate::commands::compacted_into(repo.conn(), id.as_str()) {
+                Some(into) => crate::error::VeloError::Compacted {
+                    id: id.to_string(),
+                    into,
+                },
+                None => {
+                    crate::error::VeloError::not_found(crate::error::RefKind::Snapshot, id.as_str())
+                }
+            },
+        )
 }
 
 // ─── Queries ──────────────────────────────────────────────────────────────────

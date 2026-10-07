@@ -293,6 +293,7 @@ Present in v1 and v2 (v2 additions marked):
 | `remote_refs` | last-known remote tips: `(remote, branch)` → `hash` |
 | `renames` | **v2** — rename edges: `(snapshot_hash, to_path)`(PK), `from_path` (§7.3) |
 | `pending_renames` | **v2** — working-tree moves awaiting a save: `to_path`(PK), `from_path`; **derived**, safe to delete |
+| `compactions` | **v3, additive** — `old_hash`(PK) → `new_hash`, `compacted_at_ms`: one row per snapshot id that compaction removed or re-minted (§11.3); **local only**, never collected by `gc`, not in bundles |
 
 Indexes are performance-only and may be rebuilt: `idx_filemap_snap`,
 `idx_filemap_path`, `idx_snap_branch`, `idx_trash_branch`, `idx_stash_name`,
@@ -482,8 +483,8 @@ unchanged. Older builds refuse a v3 repository with `SchemaTooNew`, per §7.1.
 
 ## 11. Decided, not yet implemented
 
-Apart from D6 (§11.2, now implemented), nothing in this section is written or
-read by the current code. These are decisions
+Apart from D6 (§11.2) and D7 (§11.3), both now implemented, nothing in this
+section is written or read by the current code. These are decisions
 taken before any code exists, because each is cheap now and a format break
 later. Later work implements them to the letter.
 
@@ -532,7 +533,16 @@ Implemented; the normative layout is §2 and §2.4, and the migration is
 object's name stays the BLAKE3 of its full content, chunking is a storage
 detail, and the bundle wire format does not change.
 
-### 11.3 What compaction leaves behind (D7)
+### 11.3 What compaction leaves behind (D7) — implemented
+
+Implemented by `commands::compact` (store only). The `compactions` table is
+created by the schema script like any other, with no version bump: it is
+additive and an older v3 build simply never reads it. Compaction writes every
+removed and re-minted id in the same transaction as the rewrite, and refuses
+(`InvalidInput`) rather than rewriting anything the eligibility rules below
+protect; signed-snapshot protection arrives with signatures. No `Saved` events
+are emitted for re-mints; `RefMoved` is emitted for the branch and for each
+retargeted tag.
 
 Compaction squashes a range of snapshots into one. Every descendant on the
 rewritten chain gets a new parent and therefore a new id (it is *re-minted*).

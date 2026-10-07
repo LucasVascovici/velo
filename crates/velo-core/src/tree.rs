@@ -533,7 +533,7 @@ impl Repo {
             )
             .unwrap_or(false);
         if !known {
-            return Err(VeloError::not_found(RefKind::Snapshot, snapshot.as_str()));
+            return Err(self.missing_snapshot(snapshot));
         }
 
         let mut stmt = self.conn().prepare(
@@ -567,11 +567,43 @@ impl Repo {
             .ok();
         match object {
             Some(object) => self.read_object(&object),
-            None => Err(VeloError::invalid(format!(
-                "'{}' is not in snapshot {}.",
-                rel,
-                snapshot.short()
-            ))),
+            None => {
+                // A compacted snapshot has no rows left, so say where it went
+                // rather than blaming the path.
+                if let Some(into) = crate::commands::compacted_into(self.conn(), snapshot) {
+                    let live: bool = self
+                        .conn()
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+                            [snapshot],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(false);
+                    if !live {
+                        return Err(VeloError::Compacted {
+                            id: snapshot.to_string(),
+                            into,
+                        });
+                    }
+                }
+                Err(VeloError::invalid(format!(
+                    "'{}' is not in snapshot {}.",
+                    rel,
+                    snapshot.short()
+                )))
+            }
+        }
+    }
+
+    /// The error for a snapshot id with no row: `Compacted` when compaction
+    /// removed it, `NotFound` otherwise.
+    fn missing_snapshot(&self, snapshot: &SnapshotId) -> VeloError {
+        match crate::commands::compacted_into(self.conn(), snapshot) {
+            Some(into) => VeloError::Compacted {
+                id: snapshot.to_string(),
+                into,
+            },
+            None => VeloError::not_found(RefKind::Snapshot, snapshot.as_str()),
         }
     }
 
@@ -587,8 +619,29 @@ impl Repo {
     ///
     /// Empty when none was attached — which is not distinguishable from "the
     /// snapshot has no metadata", because to the id recipe those are the same
-    /// thing.
+    /// thing. A snapshot that compaction removed is the exception, and reports
+    /// [`Error::Compacted`](crate::Error::Compacted); any other unknown id stays
+    /// empty.
     pub fn snapshot_meta(&self, snapshot: &SnapshotId) -> Result<SnapshotMeta> {
-        Ok(crate::commands::load_snapshot_meta(self.conn(), snapshot)?)
+        let meta = crate::commands::load_snapshot_meta(self.conn(), snapshot)?;
+        if meta.iter().next().is_none() {
+            let live: bool = self
+                .conn()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+                    [snapshot],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if !live {
+                if let Some(into) = crate::commands::compacted_into(self.conn(), snapshot) {
+                    return Err(VeloError::Compacted {
+                        id: snapshot.to_string(),
+                        into,
+                    });
+                }
+            }
+        }
+        Ok(meta)
     }
 }
