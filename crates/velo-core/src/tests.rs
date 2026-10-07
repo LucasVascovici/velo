@@ -11247,6 +11247,40 @@ line three CHANGED
         }
 
         #[test]
+        fn independent_roots_are_each_preceded_by_a_ref_reset() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            {
+                let g = repo.write().unwrap();
+                for (name, msg, ms) in [("main", "rootone", 1_000), ("other", "roottwo", 2_000)] {
+                    save_at(
+                        &g,
+                        &branch_name(name),
+                        None,
+                        None,
+                        msg,
+                        vec![file("a", msg)],
+                        &[],
+                        ms,
+                    );
+                }
+            }
+            let (text, n) = export_text(&repo);
+            assert_eq!(n.commits, 2);
+            let blocks: Vec<&str> = text.split("commit refs/velo/export\n").collect();
+            assert_eq!(blocks.len(), 3);
+            for (i, block) in blocks[1..].iter().enumerate() {
+                let head = blocks[i];
+                assert!(
+                    head.ends_with("reset refs/velo/export\n"),
+                    "root {i} must reset the ref"
+                );
+                let commit_part = block.split("deleteall").next().unwrap();
+                assert!(!commit_part.contains("\nfrom :"), "root {i} has no from");
+            }
+        }
+
+        #[test]
         fn a_merge_has_from_and_merge() {
             let (_tmp, root) = setup();
             let repo = Repo::open_and_migrate(&root).unwrap();
