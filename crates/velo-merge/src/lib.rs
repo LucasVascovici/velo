@@ -75,6 +75,55 @@ pub fn diff3(ancestor: &str, ours: &str, theirs: &str) -> MergeResult {
         MergeResult::Conflicted(hunks)
     }
 }
+
+// ─── Merge drivers ────────────────────────────────────────────────────────────
+
+/// A three-way merge strategy for one kind of file.
+///
+/// Line-based diff3 is right for prose and source and wrong for structured
+/// documents, where a line merge yields syntactically valid conflicts in the
+/// wrong places and invalid documents in the right ones. A driver lets a
+/// caller merge a kind of file by its own rules while everything else keeps
+/// using [`LineDriver`].
+pub trait MergeDriver: Send + Sync {
+    /// Short stable name, e.g. `line`, `json`.
+    fn name(&self) -> &str;
+    /// Merge `ours` and `theirs` against `ancestor`.
+    fn merge(&self, ancestor: &str, ours: &str, theirs: &str) -> MergeResult;
+}
+
+/// The default: line-based diff3, exactly [`diff3`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LineDriver;
+
+impl MergeDriver for LineDriver {
+    fn name(&self) -> &str {
+        "line"
+    }
+    fn merge(&self, ancestor: &str, ours: &str, theirs: &str) -> MergeResult {
+        diff3(ancestor, ours, theirs)
+    }
+}
+
+/// One hunk covering the whole file, for a driver that finds a conflict diff3
+/// has no line region for.
+///
+/// A resolver session needs something to decide; this gives it "ours or theirs
+/// for the whole file". [`build_resolved_content`] honours such a hunk even
+/// though diff3 would have merged the file cleanly.
+pub fn whole_file_conflict(ancestor: &str, ours: &str, theirs: &str) -> Vec<ConflictHunk> {
+    vec![ConflictHunk {
+        id: 0,
+        ancestor_start: 0,
+        ancestor_end: ancestor.lines().count(),
+        context_before: Vec::new(),
+        ours: ours.lines().map(str::to_string).collect(),
+        theirs: theirs.lines().map(str::to_string).collect(),
+        context_after: Vec::new(),
+        decision: None,
+    }]
+}
+
 // ─── 3-way merge (diff3) ───────────────────────────────────────────────────────
 
 /// One segment of a 3-way merge, aligned against the common ancestor.
@@ -278,6 +327,24 @@ pub fn build_resolved_content(
         .iter()
         .map(|h| ((h.ancestor_start, h.ancestor_end), h))
         .collect();
+
+    // A driver can raise a conflict diff3 has no region for, as one hunk over
+    // the whole file. If diff3 produced no conflict with that range, the hunk
+    // stands for the entire file and its decision is the result.
+    let whole = anc.len();
+    if let Some(h) = decisions.get(&(0, whole)) {
+        let matched = segments.iter().any(
+            |s| matches!(s, Segment::Conflict { anc_start: 0, anc_end, .. } if *anc_end == whole),
+        );
+        if !matched {
+            let joined = hunk_lines(h).join("\n");
+            return if trailing_newline && !joined.ends_with('\n') {
+                format!("{}\n", joined)
+            } else {
+                joined
+            };
+        }
+    }
 
     let mut output: Vec<String> = Vec::new();
     for seg in segments {

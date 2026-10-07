@@ -505,6 +505,7 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
             (base_h.as_str(), base_m),
             (our_h.as_str(), our_m),
             (their_h.as_str(), their_m),
+            repo.drivers().for_path(path),
         )? {
             crate::commands::Reconcile::Nothing => continue,
             crate::commands::Reconcile::Delete => PlannedChange::Delete,

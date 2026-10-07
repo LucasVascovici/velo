@@ -85,6 +85,7 @@
 
 pub mod commands;
 pub mod db;
+pub mod drivers;
 pub mod error;
 pub mod ids;
 pub mod lock;
@@ -102,6 +103,7 @@ mod tests;
 
 // ─── Public surface ───────────────────────────────────────────────────────────
 
+pub use drivers::Drivers;
 pub use error::{Error, Result};
 pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
 pub use meta::{Author, SnapshotMeta};

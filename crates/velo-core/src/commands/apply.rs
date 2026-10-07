@@ -167,7 +167,13 @@ pub fn reconcile_tree(
 
         let full = root.join(crate::db::db_to_path(path));
 
-        let action = match crate::commands::reconcile_file(&objects_dir, anc, our, thr)? {
+        let action = match crate::commands::reconcile_file(
+            &objects_dir,
+            anc,
+            our,
+            thr,
+            guard.repo().drivers().for_path(path),
+        )? {
             crate::commands::Reconcile::Nothing => continue,
             crate::commands::Reconcile::Delete => {
                 if full.exists() {

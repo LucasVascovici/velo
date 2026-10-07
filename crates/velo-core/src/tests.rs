@@ -10934,6 +10934,135 @@ line three CHANGED
                 .all(|p| !matches!(p, commands::fsck::Problem::IdMismatch { .. })));
         }
     }
+
+    /// Pluggable merge drivers, chosen per path on the handle.
+    mod merge_drivers {
+        use super::*;
+        use crate::commands::merge::{self, PlannedChange};
+        use crate::Drivers;
+        use velo_merge::{MergeDriver, MergeResult};
+
+        struct AlwaysMerged;
+        impl MergeDriver for AlwaysMerged {
+            fn name(&self) -> &str {
+                "always-merged"
+            }
+            fn merge(&self, _: &str, _: &str, _: &str) -> MergeResult {
+                MergeResult::Clean("MERGED\n".to_string())
+            }
+        }
+
+        struct AlwaysConflict;
+        impl MergeDriver for AlwaysConflict {
+            fn name(&self) -> &str {
+                "always-conflict"
+            }
+            fn merge(&self, a: &str, o: &str, t: &str) -> MergeResult {
+                MergeResult::Conflicted(velo_merge::whole_file_conflict(a, o, t))
+            }
+        }
+
+        const BASE: &str = "1\n2\n3\n4\n5\n";
+
+        /// main edits the last line, `side` the first, of two files.
+        fn diverged(paths: &[&str]) -> (TempDir, PathBuf, SnapshotId, SnapshotId) {
+            let (tmp, root) = setup();
+            for p in paths {
+                write(&root, p, BASE);
+            }
+            save(&root, "base");
+            with_write(&root, |g| commands::switch::run(g, "side", false)).unwrap();
+            for p in paths {
+                write(&root, p, "ONE\n2\n3\n4\n5\n");
+            }
+            let theirs = SnapshotId::from_stored(save(&root, "theirs"));
+            with_write(&root, |g| commands::switch::run(g, "main", true)).unwrap();
+            for p in paths {
+                write(&root, p, "1\n2\n3\n4\nFIVE\n");
+            }
+            let ours = SnapshotId::from_stored(save(&root, "ours"));
+            (tmp, root, ours, theirs)
+        }
+
+        #[test]
+        fn a_driver_chosen_by_name_takes_over_the_merge_of_that_path_only() {
+            let (_tmp, root, ours, theirs) = diverged(&["a/b/x.cfg", "x.txt"]);
+            let repo = Repo::open_and_migrate(&root)
+                .unwrap()
+                .merging(Drivers::new().with("*.cfg", AlwaysMerged).unwrap());
+            let plan = merge::plan(&repo, &ours, &theirs).unwrap();
+            let change = |p: &str| &plan.files.iter().find(|f| f.path == p).unwrap().change;
+            assert!(matches!(
+                change("a/b/x.cfg"),
+                PlannedChange::AutoMerge { content, .. } if content == b"MERGED\n"
+            ));
+            assert!(matches!(
+                change("x.txt"),
+                PlannedChange::AutoMerge { content, .. } if content != b"MERGED\n"
+            ));
+        }
+
+        #[test]
+        fn a_driver_can_turn_a_clean_line_merge_into_a_conflict() {
+            let (_tmp, root, ours, theirs) = diverged(&["x.txt"]);
+            let plain = Repo::open_and_migrate(&root).unwrap();
+            assert!(merge::plan(&plain, &ours, &theirs).unwrap().is_clean());
+            let repo = plain.merging(Drivers::new().with("*.txt", AlwaysConflict).unwrap());
+            let plan = merge::plan(&repo, &ours, &theirs).unwrap();
+            assert!(!plan.is_clean());
+            assert!(matches!(
+                plan.files[0].change,
+                PlannedChange::Conflict { .. }
+            ));
+        }
+
+        #[test]
+        fn a_working_tree_merge_follows_the_driver_and_the_session_gets_a_hunk() {
+            let (_tmp, root, _ours, _theirs) = diverged(&["x.txt"]);
+            let repo = Repo::open_and_migrate(&root)
+                .unwrap()
+                .merging(Drivers::new().with("x.txt", AlwaysConflict).unwrap());
+            {
+                let guard = repo.write().unwrap();
+                let out =
+                    commands::merge::run(&guard, commands::merge::Mode::Bring { source: "side" })
+                        .unwrap();
+                let commands::merge::Outcome::Merged(result) = out else {
+                    panic!("expected a three-way merge");
+                };
+                assert_eq!(result.conflicts(), vec!["x.txt"]);
+            }
+            let files = commands::resolve::list_conflicts(&repo).unwrap();
+            assert_eq!(files.len(), 1);
+            let session = commands::resolve::open_session(&repo, files[0].clone()).unwrap();
+            assert_eq!(session.hunks.len(), 1);
+            assert_eq!(session.hunks[0].ancestor_start, 0);
+            assert_eq!(session.hunks[0].ancestor_end, 5);
+        }
+
+        #[test]
+        fn a_bad_pattern_is_invalid_input() {
+            let r = Drivers::new().with("[", AlwaysMerged);
+            assert!(matches!(r, Err(Error::InvalidInput { .. })));
+        }
+
+        #[test]
+        fn the_first_matching_rule_wins() {
+            let d = Drivers::new()
+                .with("*.cfg", AlwaysMerged)
+                .unwrap()
+                .with("*", AlwaysConflict)
+                .unwrap()
+                .with("dir/*.md", AlwaysMerged)
+                .unwrap();
+            assert_eq!(d.for_path("a/b/x.cfg").name(), "always-merged");
+            assert_eq!(d.for_path("x.txt").name(), "always-conflict");
+            let d = Drivers::new().with("dir/*.md", AlwaysMerged).unwrap();
+            assert_eq!(d.for_path("dir/a.md").name(), "always-merged");
+            assert_eq!(d.for_path("x/dir/a.md").name(), "line");
+            assert_eq!(Drivers::new().for_path("q").name(), "line");
+        }
+    }
 }
 
 // =============================================================================
