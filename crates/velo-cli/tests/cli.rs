@@ -685,6 +685,17 @@ fn export_git_stream_is_accepted_by_git_fast_import() {
         return;
     }
     let tmp = repo();
+    // Names git's check-ref-format rejects must not sink the whole stream.
+    assert!(velo(tmp.path(), &["switch", "my feature"]).1);
+    write(
+        tmp.path(),
+        "extra.txt",
+        "x
+",
+    );
+    assert!(velo(tmp.path(), &["save", "on odd branch"]).1);
+    assert!(velo(tmp.path(), &["tag", "v1 final"]).1);
+    assert!(velo(tmp.path(), &["switch", "main", "--force"]).1);
     let out = tmp.path().join("history.fi");
 
     // The stream goes to stdout by default, and to a file with --output.
@@ -729,7 +740,7 @@ fn export_git_stream_is_accepted_by_git_fast_import() {
     assert!(child.wait().unwrap().success(), "git rejected the stream");
 
     let count = git(&["rev-list", "--all", "--count"]);
-    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "2");
+    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "3");
     let message = git(&["log", "-1", "--format=%B", "main"]);
     assert!(String::from_utf8_lossy(&message.stdout).contains("Velo-Snapshot:"));
 }

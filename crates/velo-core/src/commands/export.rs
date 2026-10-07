@@ -239,14 +239,18 @@ pub fn git_fast_import(repo: &Repo, out: &mut dyn Write, options: Options<'_>) -
         progress.tick();
     }
 
+    let mut used_heads = HashSet::new();
+    let mut used_tags = HashSet::new();
     for (name, tip) in &tips {
         if let Some(mark) = commit_marks.get(tip.as_str()) {
+            let name = unique_ref_name(name, &mut used_heads);
             write!(out, "reset refs/heads/{name}\nfrom :{mark}\n\n")?;
             exported.branches += 1;
         }
     }
     for (name, snap) in &tags {
         if let Some(mark) = commit_marks.get(snap.as_str()) {
+            let name = unique_ref_name(name, &mut used_tags);
             write!(out, "reset refs/tags/{name}\nfrom :{mark}\n\n")?;
             exported.tags += 1;
         }
@@ -254,6 +258,74 @@ pub fn git_fast_import(repo: &Repo, out: &mut dyn Write, options: Options<'_>) -
     out.write_all(b"done\n")?;
     out.flush()?;
     Ok(exported)
+}
+
+/// Maps a velo branch or tag name to a name `git check-ref-format` accepts.
+/// Velo allows nearly any printable name, git does not, and one bad ref name
+/// makes `git fast-import` abort without updating any ref. A name that is
+/// already valid is returned unchanged; the original is kept in the
+/// `Velo-Branch` trailer, so nothing is lost.
+pub(crate) fn sanitize_ref_name(name: &str) -> String {
+    let mut text = String::with_capacity(name.len());
+    for c in name.chars() {
+        text.push(match c {
+            ' ' | '~' | '^' | ':' | '?' | '*' | '[' | '\\' | '\x7f' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        });
+    }
+    while text.contains("..") {
+        text = text.replace("..", "._");
+    }
+    while text.contains("@{") {
+        text = text.replace("@{", "@_");
+    }
+    let parts: Vec<String> = text
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut part = part.to_string();
+            while part.ends_with(".lock") {
+                part.truncate(part.len() - ".lock".len());
+                part.push_str("_lock");
+            }
+            let part = part.trim_end_matches('.');
+            let mut part = part.to_string();
+            if part.starts_with('.') || part.starts_with('-') {
+                part.replace_range(..1, "_");
+            }
+            part
+        })
+        .filter(|part| !part.is_empty())
+        .collect();
+    let joined = parts.join("/");
+    if joined.is_empty() || joined == "@" {
+        "_".to_string()
+    } else {
+        joined
+    }
+}
+
+/// Sanitises `name` and, if the result collides with an earlier ref (equal, or
+/// one a directory prefix of the other, which git cannot store together),
+/// appends `-2`, `-3`, ... so the output is deterministic.
+fn unique_ref_name(name: &str, used: &mut HashSet<String>) -> String {
+    let base = sanitize_ref_name(name);
+    let clash = |candidate: &str, used: &HashSet<String>| {
+        used.iter().any(|u| {
+            u == candidate
+                || u.starts_with(&format!("{candidate}/"))
+                || candidate.starts_with(&format!("{u}/"))
+        })
+    };
+    let mut candidate = base.clone();
+    let mut n = 1;
+    while clash(&candidate, used) {
+        n += 1;
+        candidate = format!("{base}-{n}");
+    }
+    used.insert(candidate.clone());
+    candidate
 }
 
 /// Parents first; among the ready, oldest first, then by id, so the stream is
