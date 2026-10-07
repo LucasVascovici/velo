@@ -971,3 +971,112 @@ fn http_unknown_path_is_404_and_wrong_method_405() {
     let r = get("GET /velo/v1/refs HTTP/1.0\r\n\r\n");
     assert!(r.contains(" 200 "), "{r}");
 }
+
+/// The ids `velo history --all --oneline` lists, sorted.
+fn all_history_ids(dir: &Path) -> Vec<String> {
+    let (out, ok) = velo(dir, &["history", "--all", "--oneline"]);
+    assert!(ok, "{out}");
+    let mut ids: Vec<String> = out
+        .lines()
+        .filter(|l| l.starts_with("* ") || l.starts_with("  "))
+        .filter_map(|l| l.get(2..)?.split_whitespace().next())
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn export_git_then_import_git_round_trips_snapshot_ids() {
+    use std::io::Write;
+    use std::process::Stdio;
+    if !Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("skipping: git is not installed");
+        return;
+    }
+    let tmp = repo();
+    let d = tmp.path();
+    assert!(velo(d, &["switch", "side"]).1);
+    write(d, "extra.txt", "extra\n");
+    assert!(velo(d, &["save", "on side"]).1);
+    assert!(velo(d, &["tag", "v1"]).1);
+    assert!(velo(d, &["switch", "main", "--force"]).1);
+    let original = all_history_ids(d);
+    assert_eq!(original.len(), 3, "{original:?}");
+
+    let exported = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(["export-git"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+
+    let git_dir = TempDir::new().unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(git_dir.path())
+        .status()
+        .unwrap()
+        .success());
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(git_dir.path())
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&exported.stdout)
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "git rejected the stream");
+
+    let fe = Command::new("git")
+        .args([
+            "fast-export",
+            "--all",
+            "--reencode=yes",
+            "--signed-tags=strip",
+            "-M",
+        ])
+        .current_dir(git_dir.path())
+        .output()
+        .unwrap();
+    assert!(fe.status.success());
+
+    let fresh = TempDir::new().unwrap();
+    assert!(velo(fresh.path(), &["init"]).1);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(["import-git"])
+        .current_dir(fresh.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&fe.stdout).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{text}");
+    assert!(text.contains("Imported 3 commit(s)"), "{text}");
+
+    assert_eq!(all_history_ids(fresh.path()), original);
+
+    // --input reads a file, too.
+    let file = fresh.path().join("stream.fe");
+    std::fs::write(&file, &fe.stdout).unwrap();
+    let again = TempDir::new().unwrap();
+    assert!(velo(again.path(), &["init"]).1);
+    let (out, ok) = velo(
+        again.path(),
+        &["import-git", "--input", file.to_str().unwrap()],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(all_history_ids(again.path()), original);
+}

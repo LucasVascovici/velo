@@ -700,6 +700,24 @@ NOTES
         branch: Vec<String>,
     },
 
+    /// Read a `git fast-export` stream into velo.
+    ///
+    /// The way back in. A history velo exported keeps its snapshot ids, metadata
+    /// and rename edges (they ride in `Velo-*` trailers); a plain git history
+    /// imports with its authors, timestamps, branches, tags and merges.
+    /// Annotated tags become lightweight tags, and submodules are skipped.
+    /// Reads stdin unless --input is given.
+    ///
+    /// Examples
+    ///   git fast-export --all --reencode=yes --signed-tags=strip --tag-of-filtered-object=drop -M | velo import-git
+    ///   velo import-git --input history.fe
+    #[command(verbatim_doc_comment)]
+    ImportGit {
+        /// Read the stream from this file instead of stdin.
+        #[arg(long, short, value_name = "FILE")]
+        input: Option<PathBuf>,
+    },
+
     /// Search tracked files for a pattern.
     ///
     /// Searches the working tree by default.  Use --snapshot to search
@@ -1866,6 +1884,36 @@ fn run(cli: Cli) -> Result<()> {
                     commands::export::git_fast_import(&repo, &mut out, options)?;
                 }
             }
+        }
+
+        Commands::ImportGit { input } => {
+            let imported = match input {
+                Some(path) => {
+                    let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
+                    commands::import::git_fast_export(write(), &mut file, Default::default())?
+                }
+                None => {
+                    let mut stdin = std::io::stdin().lock();
+                    commands::import::git_fast_export(write(), &mut stdin, Default::default())?
+                }
+            };
+            let mut line = format!(
+                "Imported {} commit(s), {} branch(es), {} tag(s).",
+                imported.commits, imported.branches, imported.tags
+            );
+            if imported.skipped_submodules > 0 {
+                line.push_str(&format!(
+                    " Skipped {} submodule(s).",
+                    imported.skipped_submodules
+                ));
+            }
+            if imported.mismatched_ids > 0 {
+                line.push_str(&format!(
+                    " {} snapshot id(s) differ from their Velo-Snapshot trailer.",
+                    imported.mismatched_ids
+                ));
+            }
+            println!("{line}");
         }
 
         Commands::Grep {

@@ -9,6 +9,7 @@ pub mod fsck;
 pub mod gc;
 pub mod grep;
 pub mod history;
+pub mod import;
 pub mod init;
 pub mod merge;
 pub mod mv;
