@@ -23,7 +23,9 @@ pub struct Collected {
     pub stale_cache: usize,
     /// Objects nothing references any more.
     pub objects: usize,
-    /// Bytes those objects occupied on disk.
+    /// Chunks no surviving object's manifest names.
+    pub chunks: usize,
+    /// Bytes the objects and chunks occupied on disk.
     pub bytes_freed: u64,
     /// The retention window that was applied, in days.
     pub keep_days: u32,
@@ -38,6 +40,7 @@ impl Collected {
             && self.orphan_shelved_tags == 0
             && self.stale_cache == 0
             && self.objects == 0
+            && self.chunks == 0
     }
 }
 
@@ -156,6 +159,31 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         objects.remove(&name)?;
         collected.objects += 1;
         collected.bytes_freed += size;
+    }
+
+    // Chunks live only for the manifests that name them. Which manifests
+    // survive is read from disk after the object pass, not from the database,
+    // so a cancelled or partial pass can never strand a chunk a remaining
+    // object needs. A chunk shared with a survivor is in the set and stays.
+    if !cancel.is_some_and(Cancel::is_cancelled) {
+        let mut needed: HashSet<String> = HashSet::new();
+        for (name, _) in objects.list()? {
+            if let Some(chunks) = objects.chunks_of(&name)? {
+                needed.extend(chunks);
+            }
+        }
+        for (name, size) in objects.list_chunks()? {
+            if cancel.is_some_and(Cancel::is_cancelled) {
+                break;
+            }
+            progress.tick();
+            if needed.contains(&name) {
+                continue;
+            }
+            objects.remove_chunk(&name)?;
+            collected.chunks += 1;
+            collected.bytes_freed += size;
+        }
     }
 
     // A cancelled pass reports `Cancelled` rather than a partial tally, as
