@@ -291,28 +291,10 @@ impl ObjectStore {
     /// the manifest declares; callers compare both so `get` can say `Corrupt`
     /// while `verify` can report a `Mismatch`.
     fn reassemble(&self, hash: &str, raw: &[u8]) -> Result<(Vec<u8>, u64)> {
-        let bad = |why: &str| VeloError::corrupt(format!("manifest of object '{}' {}", hash, why));
-        let rest = &raw[MANIFEST_MAGIC.len()..];
-        if rest.len() < 16 {
-            return Err(bad("is truncated"));
-        }
-        let version = u32::from_le_bytes(rest[0..4].try_into().unwrap());
-        if version != 1 {
-            return Err(bad("has an unknown version"));
-        }
-        let total = u64::from_le_bytes(rest[4..12].try_into().unwrap());
-        let count = u32::from_le_bytes(rest[12..16].try_into().unwrap()) as usize;
-        let entries = &rest[16..];
-        if entries.len() != count.checked_mul(36).ok_or_else(|| bad("is malformed"))? {
-            return Err(bad("has the wrong length for its chunk count"));
-        }
+        let (total, entries) = parse_manifest(hash, raw)?;
         // Capacity is capped: `total` is untrusted until the hash checks out.
         let mut out = Vec::with_capacity((total as usize).min(1 << 28));
-        for e in entries.chunks_exact(36) {
-            let hex = blake3::Hash::from_bytes(e[..32].try_into().unwrap())
-                .to_hex()
-                .to_string();
-            let len = u32::from_le_bytes(e[32..36].try_into().unwrap()) as usize;
+        for (hex, len) in entries {
             let frame = fs::read(self.chunk_path(&hex))
                 .map_err(|_| VeloError::MissingObject { hash: hex.clone() })?;
             let data = zstd::decode_all(&frame[..]).map_err(|_| {
@@ -324,6 +306,67 @@ impl ObjectStore {
             out.extend_from_slice(&data);
         }
         Ok((out, total))
+    }
+
+    /// The chunk names a manifest object lists, in order (repeats included).
+    /// `None` when the object is stored as a plain frame. Only the first bytes
+    /// of a plain object are read, so scanning a whole store stays cheap.
+    pub(crate) fn chunks_of(&self, hash: &str) -> Result<Option<Vec<String>>> {
+        use std::io::Read;
+        let mut file = fs::File::open(self.path(hash))?;
+        let mut magic = [0u8; 8];
+        let mut got = 0;
+        while got < magic.len() {
+            let n = file.read(&mut magic[got..])?;
+            if n == 0 {
+                break;
+            }
+            got += n;
+        }
+        if got < magic.len() || &magic != MANIFEST_MAGIC {
+            return Ok(None);
+        }
+        let raw = fs::read(self.path(hash))?;
+        let (_, entries) = parse_manifest(hash, &raw)?;
+        Ok(Some(entries.into_iter().map(|(hex, _)| hex).collect()))
+    }
+
+    /// Every chunk file with its on-disk size, for gc. Empty when the
+    /// repository has never stored a chunk.
+    pub(crate) fn list_chunks(&self) -> Result<Vec<(String, u64)>> {
+        let dir = self.chunks_dir();
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let name = entry.file_name().to_string_lossy().to_string();
+            let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
+            out.push((name, size));
+        }
+        Ok(out)
+    }
+
+    pub(crate) fn remove_chunk(&self, chunk: &str) -> Result<()> {
+        fs::remove_file(self.chunk_path(chunk))?;
+        Ok(())
+    }
+
+    /// Integrity check of one chunk: present, decodable, hashing to its name.
+    pub(crate) fn verify_chunk(&self, chunk: &str) -> Verified {
+        let Ok(frame) = fs::read(self.chunk_path(chunk)) else {
+            return Verified::Missing;
+        };
+        let Ok(data) = zstd::decode_all(&frame[..]) else {
+            return Verified::Undecodable;
+        };
+        let actual = blake3::hash(&data).to_hex().to_string();
+        if actual == chunk {
+            Verified::Ok
+        } else {
+            Verified::Mismatch { actual }
+        }
     }
 
     pub(crate) fn contains(&self, hash: &str) -> bool {
@@ -414,6 +457,41 @@ impl ObjectStore {
             Err(_) => Verified::Undecodable,
         }
     }
+}
+
+/// Parse a manifest into its declared total length and `(chunk hex, length)`
+/// entries, rejecting anything malformed as `Corrupt`.
+fn parse_manifest(hash: &str, raw: &[u8]) -> Result<(u64, Vec<(String, usize)>)> {
+    let bad = |why: &str| VeloError::corrupt(format!("manifest of object '{}' {}", hash, why));
+    let rest = raw
+        .get(MANIFEST_MAGIC.len()..)
+        .ok_or_else(|| bad("is truncated"))?;
+    if rest.len() < 16 {
+        return Err(bad("is truncated"));
+    }
+    let version = u32::from_le_bytes(rest[0..4].try_into().unwrap());
+    if version != 1 {
+        return Err(bad("has an unknown version"));
+    }
+    let total = u64::from_le_bytes(rest[4..12].try_into().unwrap());
+    let count = u32::from_le_bytes(rest[12..16].try_into().unwrap()) as usize;
+    let entries = &rest[16..];
+    if entries.len() != count.checked_mul(36).ok_or_else(|| bad("is malformed"))? {
+        return Err(bad("has the wrong length for its chunk count"));
+    }
+    Ok((
+        total,
+        entries
+            .chunks_exact(36)
+            .map(|e| {
+                let hex = blake3::Hash::from_bytes(e[..32].try_into().unwrap())
+                    .to_hex()
+                    .to_string();
+                let len = u32::from_le_bytes(e[32..36].try_into().unwrap()) as usize;
+                (hex, len)
+            })
+            .collect(),
+    ))
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────

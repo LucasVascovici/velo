@@ -10,7 +10,7 @@
 //! can answer from a [`Report`] without parsing text. Rendering and the exit code
 //! live in `velo-cli`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::Path;
@@ -31,6 +31,11 @@ pub enum Problem {
     CorruptObject { hash: String, actual: String },
     /// An object exists but could not be decompressed.
     UndecodableObject { hash: String },
+    /// A chunked object's manifest names a chunk that is absent.
+    MissingChunk { object: String, chunk: String },
+    /// A chunk file no longer hashes to its own name (or cannot be decoded,
+    /// in which case `actual` says so instead of naming a hash).
+    CorruptChunk { chunk: String, actual: String },
     /// A snapshot names a parent that doesn't exist.
     MissingParent { snapshot: String, parent: String },
     /// A merge commit names a second parent that doesn't exist.
@@ -86,6 +91,18 @@ impl fmt::Display for Problem {
             Problem::UndecodableObject { hash } => {
                 write!(f, "object {} could not be decompressed (corrupt)", hash)
             }
+            Problem::MissingChunk { object, chunk } => write!(
+                f,
+                "object {} needs chunk {} which is missing from the store",
+                &object[..16.min(object.len())],
+                &chunk[..16.min(chunk.len())]
+            ),
+            Problem::CorruptChunk { chunk, actual } => write!(
+                f,
+                "chunk {} is corrupt — its content hashes to {}",
+                &chunk[..16.min(chunk.len())],
+                &actual[..16.min(actual.len())]
+            ),
             Problem::MissingParent { snapshot, parent } => write!(
                 f,
                 "snapshot {} has parent {} which does not exist",
@@ -166,6 +183,8 @@ pub enum Cruft {
     StaleRemoteRefs(usize),
     /// Tracking refs for a remote that has since been removed.
     OrphanRemoteRefs(usize),
+    /// Chunk files no object's manifest names. Harmless; `gc` collects them too.
+    UnreferencedChunks(usize),
 }
 
 impl Cruft {
@@ -185,6 +204,9 @@ impl Cruft {
             Cruft::OrphanRemoteRefs(n) => {
                 format!("{} remote-tracking ref(s) for removed remote(s)", n)
             }
+            Cruft::UnreferencedChunks(n) => {
+                format!("{} chunk file(s) no object references", n)
+            }
         }
     }
 
@@ -200,6 +222,7 @@ impl Cruft {
             Cruft::OrphanRemoteRefs(n) => {
                 format!("pruned {} remote-tracking ref(s) for removed remote(s)", n)
             }
+            Cruft::UnreferencedChunks(n) => format!("removed {} unreferenced chunk file(s)", n),
         }
     }
 }
@@ -306,8 +329,59 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     let mut verified = 0usize;
     let before = problems.len();
     let progress = repo.phase(Phase::Verifying, Some(referenced.len() as u64));
+    // Chunks are shared between objects, so each is checked once.
+    let mut chunk_ok: HashMap<String, ChunkState> = HashMap::new();
     for hash in &referenced {
         progress.tick();
+        let before_object = problems.len();
+        // A manifest's chunks are checked first so a damaged one is named
+        // precisely rather than surfacing as a vague reassembly failure. Any
+        // error here (absent or malformed manifest) is left to `verify` below.
+        if let Ok(Some(chunks)) = objects.chunks_of(hash) {
+            for chunk in chunks {
+                match chunk_ok.get(&chunk) {
+                    Some(ChunkState::Good) | Some(ChunkState::Reported) => continue,
+                    // Reported once per object that needs it.
+                    Some(ChunkState::Missing) => {
+                        problems.push(Problem::MissingChunk {
+                            object: hash.clone(),
+                            chunk,
+                        });
+                        continue;
+                    }
+                    None => {}
+                }
+                match objects.verify_chunk(&chunk) {
+                    Verified::Ok => {
+                        chunk_ok.insert(chunk, ChunkState::Good);
+                    }
+                    Verified::Missing => {
+                        problems.push(Problem::MissingChunk {
+                            object: hash.clone(),
+                            chunk: chunk.clone(),
+                        });
+                        chunk_ok.insert(chunk, ChunkState::Missing);
+                    }
+                    Verified::Undecodable => {
+                        problems.push(Problem::CorruptChunk {
+                            chunk: chunk.clone(),
+                            actual: "undecodable".into(),
+                        });
+                        chunk_ok.insert(chunk, ChunkState::Reported);
+                    }
+                    Verified::Mismatch { actual } => {
+                        problems.push(Problem::CorruptChunk {
+                            chunk: chunk.clone(),
+                            actual,
+                        });
+                        chunk_ok.insert(chunk, ChunkState::Reported);
+                    }
+                }
+            }
+            if problems.len() > before_object {
+                continue; // reassembly would only repeat the chunk findings
+            }
+        }
         match objects.verify(hash) {
             Verified::Ok => verified += 1,
             Verified::Missing => problems.push(Problem::MissingObject { hash: hash.clone() }),
@@ -361,10 +435,17 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     });
 
     // ── 5. Cruft, and optionally its removal ─────────────────────────────────
-    let found = find_cruft(conn, root);
+    let mut found = find_cruft(conn, root);
+    let orphan_chunks = unreferenced_chunks(&objects)?;
+    if !orphan_chunks.is_empty() {
+        found.push(Cruft::UnreferencedChunks(orphan_chunks.len()));
+    }
     let repaired = match guard {
         Some(g) if !found.is_empty() => {
             repair_cruft(g.conn(), &found)?;
+            for chunk in &orphan_chunks {
+                objects.remove_chunk(chunk)?;
+            }
             found.clone()
         }
         _ => Vec::new(),
@@ -386,6 +467,14 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
         repaired,
         repair_requested: repair,
     })
+}
+
+/// What fsck already learnt about a chunk, so a shared one is read once.
+enum ChunkState {
+    Good,
+    Missing,
+    /// Corrupt and already reported.
+    Reported,
 }
 
 // ─── Object and snapshot checks ───────────────────────────────────────────────
@@ -656,6 +745,29 @@ fn find_cruft(conn: &rusqlite::Connection, root: &Path) -> Vec<Cruft> {
     found
 }
 
+/// Chunk files that no object on disk names. Read from the objects directory
+/// rather than the database so it agrees with what `gc` keeps. If a manifest
+/// cannot be parsed its chunks are unknowable, so nothing is called cruft.
+fn unreferenced_chunks(objects: &crate::storage::ObjectStore) -> Result<Vec<String>> {
+    let on_disk = objects.list_chunks()?;
+    if on_disk.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut needed: HashSet<String> = HashSet::new();
+    for (name, _) in objects.list()? {
+        match objects.chunks_of(&name) {
+            Ok(Some(chunks)) => needed.extend(chunks),
+            Ok(None) => {}
+            Err(_) => return Ok(Vec::new()),
+        }
+    }
+    Ok(on_disk
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| !needed.contains(name))
+        .collect())
+}
+
 fn repair_cruft(conn: &rusqlite::Connection, cruft: &[Cruft]) -> Result<()> {
     for item in cruft {
         match item {
@@ -690,6 +802,8 @@ fn repair_cruft(conn: &rusqlite::Connection, cruft: &[Cruft]) -> Result<()> {
                     [],
                 )?;
             }
+            // Files, not rows: removed by the caller, which holds the list.
+            Cruft::UnreferencedChunks(_) => {}
         }
     }
     Ok(())

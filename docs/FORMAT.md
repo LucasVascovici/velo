@@ -88,7 +88,10 @@ For a chunked object, every chunk must additionally hash to its own name and
 have the length the manifest records, and the reassembled length must equal the
 manifest's total. A manifest that is truncated, has the wrong length for its
 count, or an unknown version is corrupt. A chunk the manifest names but that is
-absent is reported as a missing object carrying the chunk's hex name.
+absent is reported as a missing object carrying the chunk's hex name. `velo
+fsck` checks each chunk of every referenced manifest (present, decodable,
+hashing to its name) and names a missing or corrupt one precisely, then checks
+the reassembled content as for any object.
 
 ### 2.4 Chunked objects (v3)
 
@@ -112,8 +115,12 @@ chunk's bytes, named by the BLAKE3 of the uncompressed chunk. A writer stores
 every missing chunk **before** the manifest, so a manifest never names a chunk
 that was not written. The chunking algorithm and size threshold are not part of
 the format; this implementation uses FastCDC (16 KiB / 64 KiB / 256 KiB) for
-objects of 1 MiB or more. Until garbage collection learns about chunks, `gc`
-keeps every chunk.
+objects of 1 MiB or more.
+
+A chunk is live only while some object's manifest names it. Unreferenced chunks
+are collectable: `velo gc` removes every chunk that no surviving manifest lists
+(a chunk shared with a surviving object always stays), and `velo fsck` reports
+them as cruft, not corruption, which `--repair` removes.
 
 ---
 

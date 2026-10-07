@@ -12825,6 +12825,185 @@ mod chunked_objects {
         assert_eq!(repo.format_version().unwrap(), 3);
         assert_eq!(crate::FORMAT_VERSION, 3);
     }
+
+    // ── gc and fsck over chunks (14.7-c) ─────────────────────────────────────
+
+    /// Remove every snapshot using `hash`, as `undo` followed by an expired trash
+    /// would, leaving the object unreferenced.
+    fn unreference(root: &Path, hash: &str) {
+        let conn = db::connect(&root.join(".velo/velo.db")).unwrap();
+        // The snapshots go too, or fsck would rightly find their ids unproven.
+        conn.execute(
+            "DELETE FROM snapshots WHERE hash IN
+             (SELECT snapshot_hash FROM file_map WHERE hash = ?1)",
+            [hash],
+        )
+        .unwrap();
+        conn.execute("DELETE FROM file_map WHERE hash = ?", [hash])
+            .unwrap();
+    }
+
+    fn gc_now(repo: &Repo) -> commands::gc::Collected {
+        commands::gc::run(
+            &repo.write().unwrap(),
+            commands::gc::Options {
+                keep_days: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap()
+    }
+
+    fn chunk_files(root: &Path) -> Vec<PathBuf> {
+        fs::read_dir(root.join(".velo/chunks"))
+            .unwrap()
+            .map(|e| e.unwrap().path())
+            .collect()
+    }
+
+    #[test]
+    fn gc_reclaims_the_chunks_of_an_unreachable_object() {
+        let (_t, root) = fresh();
+        let repo = Repo::open(&root).unwrap();
+        let content = noise(2 * 1024 * 1024, 21);
+        save(&repo, None, "big.bin", content.clone());
+        let (hex, _) = object_of(&content);
+        let before = chunk_files(&root).len();
+        assert!(before > 4);
+
+        unreference(&root, &hex);
+        let collected = gc_now(&repo);
+        assert_eq!(collected.objects, 1);
+        assert_eq!(collected.chunks, before);
+        assert!(!collected.is_empty());
+        assert!(collected.bytes_freed > 1024 * 1024, "chunk bytes counted");
+        assert!(chunk_files(&root).is_empty());
+        assert!(commands::fsck::check(&repo).unwrap().is_healthy());
+    }
+
+    #[test]
+    fn gc_keeps_chunks_shared_with_a_surviving_object() {
+        let (_t, root) = fresh();
+        let repo = Repo::open(&root).unwrap();
+        let mut content = noise(2 * 1024 * 1024, 23);
+        let s1 = save(&repo, None, "big.bin", content.clone());
+        let first = chunk_files(&root).len();
+        let original = content.clone();
+        content[1_000_000] ^= 0xff;
+        content[1_000_001] ^= 0xff;
+        save(&repo, Some(&s1), "other.bin", content.clone());
+        let both = chunk_files(&root).len();
+        assert!(both > first, "the edit must add at least one chunk");
+
+        let (hex, _) = object_of(&content);
+        unreference(&root, &hex);
+        let collected = gc_now(&repo);
+        assert_eq!(collected.objects, 1);
+        assert_eq!(collected.chunks, both - first, "only the unique chunks go");
+        assert_eq!(chunk_files(&root).len(), first);
+        assert_eq!(repo.read_file_at(&s1, "big.bin").unwrap(), original);
+        assert!(commands::fsck::check(&repo).unwrap().is_healthy());
+    }
+
+    #[test]
+    fn fsck_names_a_deleted_chunk() {
+        let (_t, root) = fresh();
+        let repo = Repo::open(&root).unwrap();
+        let content = noise(2 * 1024 * 1024, 25);
+        save(&repo, None, "big.bin", content.clone());
+        let (hex, _) = object_of(&content);
+        let victim = chunk_files(&root).remove(0);
+        let name = victim.file_name().unwrap().to_string_lossy().to_string();
+        fs::remove_file(victim).unwrap();
+
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(!report.is_healthy());
+        assert!(
+            report
+                .problems
+                .contains(&commands::fsck::Problem::MissingChunk {
+                    object: hex,
+                    chunk: name
+                }),
+            "got {:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn fsck_names_a_tampered_chunk() {
+        let (_t, root) = fresh();
+        let repo = Repo::open(&root).unwrap();
+        save(&repo, None, "big.bin", noise(2 * 1024 * 1024, 27));
+        let victim = chunk_files(&root).remove(0);
+        let name = victim.file_name().unwrap().to_string_lossy().to_string();
+        let other = zstd::encode_all(&b"not the chunk"[..], 1).unwrap();
+        fs::write(&victim, other).unwrap();
+
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(
+            report.problems.iter().any(|p| matches!(
+                p,
+                commands::fsck::Problem::CorruptChunk { chunk, .. } if *chunk == name
+            )),
+            "got {:?}",
+            report.problems
+        );
+        assert!(report
+            .problems
+            .iter()
+            .all(|p| !matches!(p, commands::fsck::Problem::CorruptObject { .. })));
+    }
+
+    #[test]
+    fn an_orphan_chunk_is_cruft_that_repair_removes() {
+        let (_t, root) = fresh();
+        let repo = Repo::open(&root).unwrap();
+        save(&repo, None, "big.bin", noise(2 * 1024 * 1024, 29));
+        let orphan = blake3::hash(b"orphan").to_hex().to_string();
+        let frame = zstd::encode_all(&b"orphan"[..], 1).unwrap();
+        fs::write(root.join(".velo/chunks").join(&orphan), frame).unwrap();
+
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(report.is_healthy(), "cruft is not corruption");
+        assert_eq!(
+            report.cruft,
+            vec![commands::fsck::Cruft::UnreferencedChunks(1)]
+        );
+
+        let repaired = commands::fsck::repair(&repo.write().unwrap()).unwrap();
+        assert_eq!(
+            repaired.repaired,
+            vec![commands::fsck::Cruft::UnreferencedChunks(1)]
+        );
+        assert!(!root.join(".velo/chunks").join(&orphan).exists());
+        let after = commands::fsck::check(&repo).unwrap();
+        assert!(after.cruft.is_empty() && after.is_healthy());
+    }
+
+    #[test]
+    fn a_cancelled_gc_leaves_fsck_healthy() {
+        let (_t, root) = fresh();
+        let repo = Repo::open(&root).unwrap();
+        let content = noise(2 * 1024 * 1024, 31);
+        save(&repo, None, "big.bin", content.clone());
+        let (hex, _) = object_of(&content);
+        unreference(&root, &hex);
+
+        let cancel = crate::progress::Cancel::new();
+        cancel.cancel();
+        let err = commands::gc::run(
+            &repo.write().unwrap(),
+            commands::gc::Options {
+                keep_days: 0,
+                cancel: Some(&cancel),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Cancelled));
+        assert!(commands::fsck::check(&repo).unwrap().is_healthy());
+    }
 }
 
 /// Compaction (`commands::compact`): squashing ranges and the record it leaves.
