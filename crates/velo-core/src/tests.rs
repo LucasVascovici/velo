@@ -12777,6 +12777,35 @@ mod chunked_objects {
     }
 
     #[test]
+    fn reordered_chunks_are_a_mismatch_in_verify_and_corrupt_in_fsck() {
+        let (_t, root) = fresh();
+        let repo = Repo::open(&root).unwrap();
+        let content = noise(2 * 1024 * 1024, 17);
+        save(&repo, None, "big.bin", content.clone());
+        let (hex, obj) = object_of(&content);
+        let path = root.join(".velo/objects").join(&hex);
+        let mut raw = fs::read(&path).unwrap();
+        // Entries start after magic (8) + version (4) + total (8) + count (4).
+        let a: Vec<u8> = raw[24..60].to_vec();
+        let b: Vec<u8> = raw[60..96].to_vec();
+        assert_ne!(a, b);
+        raw[24..60].copy_from_slice(&b);
+        raw[60..96].copy_from_slice(&a);
+        fs::write(&path, raw).unwrap();
+
+        assert!(matches!(repo.read_object(&obj), Err(Error::Corrupt { .. })));
+        let report = commands::fsck::check(&repo).unwrap();
+        assert!(
+            report.problems.iter().any(|p| matches!(
+                p,
+                commands::fsck::Problem::CorruptObject { hash, .. } if *hash == hex
+            )),
+            "fsck should report CorruptObject, got {:?}",
+            report.problems
+        );
+    }
+
+    #[test]
     fn a_v2_repository_needs_migration_and_gains_the_chunks_directory() {
         let (_t, root) = fresh();
         {

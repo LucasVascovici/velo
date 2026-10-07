@@ -276,6 +276,21 @@ impl ObjectStore {
                 VeloError::corrupt(format!("object '{}' could not be decompressed.", hash))
             });
         }
+        let (out, total) = self.reassemble(hash, &raw)?;
+        if out.len() as u64 != total || blake3::hash(&out).to_hex().as_str() != hash {
+            return Err(VeloError::corrupt(format!(
+                "object '{}' does not match its reassembled chunks",
+                hash
+            )));
+        }
+        Ok(out)
+    }
+
+    /// Parse a manifest and concatenate its chunks, checking each chunk but
+    /// not the final content hash. Returns the content and the total length
+    /// the manifest declares; callers compare both so `get` can say `Corrupt`
+    /// while `verify` can report a `Mismatch`.
+    fn reassemble(&self, hash: &str, raw: &[u8]) -> Result<(Vec<u8>, u64)> {
         let bad = |why: &str| VeloError::corrupt(format!("manifest of object '{}' {}", hash, why));
         let rest = &raw[MANIFEST_MAGIC.len()..];
         if rest.len() < 16 {
@@ -308,13 +323,7 @@ impl ObjectStore {
             }
             out.extend_from_slice(&data);
         }
-        if out.len() as u64 != total || blake3::hash(&out).to_hex().as_str() != hash {
-            return Err(VeloError::corrupt(format!(
-                "object '{}' does not match its reassembled chunks",
-                hash
-            )));
-        }
-        Ok(out)
+        Ok((out, total))
     }
 
     pub(crate) fn contains(&self, hash: &str) -> bool {
@@ -380,7 +389,19 @@ impl ObjectStore {
         if !self.contains(hash) {
             return Verified::Missing;
         }
-        match self.get(hash) {
+        let Ok(raw) = fs::read(self.path(hash)) else {
+            return Verified::Undecodable;
+        };
+        let content = if raw.starts_with(MANIFEST_MAGIC) {
+            match self.reassemble(hash, &raw) {
+                Ok((bytes, total)) if bytes.len() as u64 == total => Ok(bytes),
+                Ok(_) => Err(VeloError::corrupt("manifest length mismatch")),
+                Err(e) => Err(e),
+            }
+        } else {
+            self.get(hash)
+        };
+        match content {
             Err(VeloError::MissingObject { .. }) => Verified::Missing,
             Ok(bytes) => {
                 let actual = blake3::hash(&bytes).to_hex().to_string();
