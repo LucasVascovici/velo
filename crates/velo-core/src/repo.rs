@@ -21,7 +21,8 @@ use crate::{db, BranchName, SnapshotId, FORMAT_VERSION};
 /// `Send` but **not** `Sync` — `rusqlite::Connection` cannot be shared between
 /// threads. Use one `Repo` per thread, or `Arc<Mutex<Repo>>`.
 pub struct Repo {
-    root: PathBuf,
+    /// Whether this is a directory repository or a single SQLite file.
+    layout: Layout,
     conn: rusqlite::Connection,
     /// Where long operations report progress. `Silent` unless a caller supplies
     /// one via [`Repo::observing`].
@@ -38,11 +39,74 @@ pub struct Repo {
     object_location: crate::ObjectLocation,
 }
 
+/// How a repository sits on disk.
+#[derive(Clone, Debug)]
+enum Layout {
+    /// The usual layout: `root/.velo/` beside a working tree.
+    Directory { root: PathBuf },
+    /// One SQLite file holding everything: no `.velo`, no working tree.
+    SingleFile { db: PathBuf },
+}
+
+/// The `settings` value that marks a database as a single-file repository.
+const SINGLE_FILE: &str = "single-file";
+
+/// Read one row of the `settings` table; `None` when the table or row is absent.
+fn read_setting(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_table {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row("SELECT value FROM settings WHERE key = ?", [key], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
+/// Refuse a database whose format this build cannot open as it is.
+fn check_format(conn: &rusqlite::Connection) -> Result<()> {
+    match db::format_version(conn)? {
+        v if v > FORMAT_VERSION => Err(Error::SchemaTooNew {
+            found: v,
+            supported: FORMAT_VERSION,
+        }),
+        v if db::is_pre_v2(v) => Err(Error::FormatTooOld {
+            found: v,
+            supported: FORMAT_VERSION,
+        }),
+        v if v < FORMAT_VERSION => Err(Error::MigrationRequired {
+            found: v,
+            supported: FORMAT_VERSION,
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse a database that is not a single-file repository, so a directory
+/// repository's `velo.db` is never opened without its object files and refs.
+fn check_single_file(conn: &rusqlite::Connection) -> Result<()> {
+    if read_setting(conn, "layout")?.as_deref() == Some(SINGLE_FILE) {
+        Ok(())
+    } else {
+        Err(Error::invalid(
+            "This database is not a single-file repository; open the directory instead.",
+        ))
+    }
+}
+
 impl std::fmt::Debug for Repo {
     /// Hand-written because `dyn Observer` isn't `Debug` — and requiring it of
     /// every consumer's progress bar would be a poor trade.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Repo").field("root", &self.root).finish()
+        f.debug_struct("Repo")
+            .field("layout", &self.layout)
+            .finish()
     }
 }
 
@@ -80,30 +144,12 @@ impl Repo {
             });
         }
         let conn = db::connect(&root.join(".velo/velo.db"))?;
-        match db::format_version(&conn)? {
-            v if v > FORMAT_VERSION => {
-                return Err(Error::SchemaTooNew {
-                    found: v,
-                    supported: FORMAT_VERSION,
-                })
-            }
-            v if db::is_pre_v2(v) => {
-                return Err(Error::FormatTooOld {
-                    found: v,
-                    supported: FORMAT_VERSION,
-                })
-            }
-            v if v < FORMAT_VERSION => {
-                return Err(Error::MigrationRequired {
-                    found: v,
-                    supported: FORMAT_VERSION,
-                })
-            }
-            _ => {}
-        }
+        check_format(&conn)?;
         let object_location = crate::ObjectLocation::read(&conn)?;
         Ok(Repo {
-            root: root.to_path_buf(),
+            layout: Layout::Directory {
+                root: root.to_path_buf(),
+            },
             conn,
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
@@ -149,7 +195,9 @@ impl Repo {
         }
         let object_location = crate::ObjectLocation::read(&conn)?;
         Ok(Repo {
-            root: root.to_path_buf(),
+            layout: Layout::Directory {
+                root: root.to_path_buf(),
+            },
             conn,
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
@@ -157,6 +205,140 @@ impl Repo {
             listeners: Vec::new(),
             object_location,
         })
+    }
+
+    /// Create a single-file repository: everything lives in the SQLite file at
+    /// `path`, with objects in its `objects` table.
+    ///
+    /// There is no `.velo` directory and no working tree, so only the store-only
+    /// API works; commands that read or write files return
+    /// [`Error::Unsupported`]. This is the shape a browser build opens through
+    /// the SQLite VFS, and a portable single-file store natively.
+    ///
+    /// Fails with [`Error::AlreadyInitialized`] if `path` exists.
+    pub fn create_file(path: &Path) -> Result<Self> {
+        if path.exists() {
+            return Err(Error::AlreadyInitialized {
+                at: path.to_path_buf(),
+            });
+        }
+        db::init_db_at_path(path)?;
+        {
+            let conn = db::connect(path)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('objects', 'database')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('layout', ?)",
+                [SINGLE_FILE],
+            )?;
+            crate::commands::register_branch(&conn, "main", "")?;
+        }
+        Self::open_file(path)
+    }
+
+    /// Open the single-file repository at `path`.
+    ///
+    /// Refuses an older format with [`Error::MigrationRequired`], as
+    /// [`Repo::open`] does, and a database that is not a single-file repository
+    /// (such as a directory repository's `velo.db`) with [`Error::InvalidInput`].
+    pub fn open_file(path: &Path) -> Result<Self> {
+        let conn = Self::connect_file(path)?;
+        check_format(&conn)?;
+        check_single_file(&conn)?;
+        Self::from_file(path, conn)
+    }
+
+    /// Open a single-file repository, applying any pending migration first.
+    pub fn open_file_and_migrate(path: &Path) -> Result<Self> {
+        let conn = Self::connect_file(path)?;
+        let found = db::format_version(&conn)?;
+        if found > FORMAT_VERSION {
+            return Err(Error::SchemaTooNew {
+                found,
+                supported: FORMAT_VERSION,
+            });
+        }
+        if db::is_pre_v2(found) {
+            return Err(Error::FormatTooOld {
+                found,
+                supported: FORMAT_VERSION,
+            });
+        }
+        // Checked before migrating: never rewrite a database that is not ours.
+        check_single_file(&conn)?;
+        db::migrate(&conn)?;
+        Self::from_file(path, conn)
+    }
+
+    fn connect_file(path: &Path) -> Result<rusqlite::Connection> {
+        if !path.is_file() {
+            return Err(Error::NotARepo {
+                searched_from: path.to_path_buf(),
+            });
+        }
+        Ok(db::connect(path)?)
+    }
+
+    fn from_file(path: &Path, conn: rusqlite::Connection) -> Result<Self> {
+        let object_location = crate::ObjectLocation::read(&conn)?;
+        Ok(Repo {
+            layout: Layout::SingleFile {
+                db: path.to_path_buf(),
+            },
+            conn,
+            observer: Box::new(Silent),
+            scope: crate::Scope::new(),
+            drivers: crate::Drivers::new(),
+            listeners: Vec::new(),
+            object_location,
+        })
+    }
+
+    /// Whether this repository has a working tree. `false` for a single-file
+    /// repository, whose only store is the database.
+    pub fn has_working_tree(&self) -> bool {
+        matches!(self.layout, Layout::Directory { .. })
+    }
+
+    /// The branch `HEAD` names: `.velo/HEAD`, or `main` in a single-file
+    /// repository. Store-only code must not read `.velo/HEAD` directly: in a
+    /// shared directory it could belong to an unrelated repository.
+    pub(crate) fn head_branch(&self) -> BranchName {
+        match &self.layout {
+            Layout::Directory { root } => BranchName::from_stored(
+                std::fs::read_to_string(root.join(".velo/HEAD"))
+                    .unwrap_or_else(|_| "main".into())
+                    .trim(),
+            ),
+            Layout::SingleFile { .. } => BranchName::from_stored("main"),
+        }
+    }
+
+    /// The checked-out snapshot (`.velo/PARENT`), or `None` when nothing is
+    /// checked out or the repository has no working tree.
+    pub(crate) fn position(&self) -> Option<SnapshotId> {
+        match &self.layout {
+            Layout::Directory { root } => {
+                let raw = std::fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+                let raw = raw.trim();
+                (!raw.is_empty()).then(|| SnapshotId::from_stored(raw))
+            }
+            Layout::SingleFile { .. } => None,
+        }
+    }
+
+    /// The lock file this repository's writers contend on.
+    fn lock_path(&self) -> PathBuf {
+        match &self.layout {
+            Layout::Directory { root } => root.join(".velo/lock"),
+            Layout::SingleFile { db } => {
+                let mut name = db.as_os_str().to_owned();
+                name.push(".lock");
+                PathBuf::from(name)
+            }
+        }
     }
 
     /// Search `start` and its ancestors for a repository and open it.
@@ -335,15 +517,25 @@ impl Repo {
     }
 
     /// The repository root (the directory *containing* `.velo`).
+    ///
+    /// For a single-file repository this is the database file's parent
+    /// directory. There is **no working tree** there: it is only where the file
+    /// happens to sit, and nothing velo does will read or write it.
     pub fn root(&self) -> &Path {
-        &self.root
+        match &self.layout {
+            Layout::Directory { root } => root,
+            Layout::SingleFile { db } => match db.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p,
+                _ => Path::new("."),
+            },
+        }
     }
 
     /// The object store: the one way commands reach stored file content.
     pub(crate) fn objects(&self) -> crate::storage::ObjectStore<'_> {
         match self.object_location {
             crate::ObjectLocation::Files => {
-                crate::storage::ObjectStore::at(self.root.join(".velo/objects"))
+                crate::storage::ObjectStore::at(self.root().join(".velo/objects"))
             }
             crate::ObjectLocation::Database => crate::storage::ObjectStore::Database(&self.conn),
         }
@@ -488,7 +680,7 @@ impl Repo {
     /// shows a modal will wedge every other process.
     pub fn write(&self) -> Result<WriteGuard<'_>> {
         Ok(WriteGuard {
-            _lock: RepoLock::acquire(&self.root)?,
+            _lock: RepoLock::acquire_at(&self.lock_path())?,
             repo: self,
         })
     }
@@ -496,7 +688,7 @@ impl Repo {
     /// Like [`Repo::write`] but returns `Ok(None)` instead of erroring when the
     /// lock is already held.
     pub fn try_write(&self) -> Result<Option<WriteGuard<'_>>> {
-        match RepoLock::try_acquire(&self.root)? {
+        match RepoLock::try_acquire_at(&self.lock_path())? {
             Some(lock) => Ok(Some(WriteGuard {
                 _lock: lock,
                 repo: self,

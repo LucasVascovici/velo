@@ -10,6 +10,7 @@ use std::path::Path;
 
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::db;
 use crate::error::{Result, VeloError};
 use crate::{Repo, SnapshotId};
@@ -92,6 +93,7 @@ pub struct Options<'a> {
 
 /// Search for `pattern`.
 pub fn run(repo: &Repo, pattern: &str, options: Options<'_>) -> Result<GrepResults> {
+    require_working_tree(repo, "grep")?;
     let Options {
         snapshot,
         case_insensitive,

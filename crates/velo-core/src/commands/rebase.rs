@@ -16,6 +16,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 
+use crate::commands::require_working_tree;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
 use crate::progress::Phase;
@@ -86,6 +87,7 @@ pub enum Mode<'a> {
 
 /// Rebase, continue one, or abort one.
 pub fn run(guard: &WriteGuard, mode: Mode<'_>, author: Option<&Author>) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "rebase")?;
     match mode {
         Mode::Abort => do_abort(guard),
         Mode::Continue => do_continue(guard, author),

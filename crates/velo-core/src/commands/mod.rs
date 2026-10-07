@@ -47,6 +47,18 @@ use chrono::{DateTime, Utc};
 use crate::error::{RefKind, Result, VeloError};
 use crate::{Repo, SnapshotId, SnapshotMeta};
 
+/// Refuse a command that reads or writes the working tree when the repository
+/// is a single file and has none.
+pub(crate) fn require_working_tree(repo: &Repo, command: &str) -> Result<()> {
+    if repo.has_working_tree() {
+        return Ok(());
+    }
+    Err(VeloError::unsupported(format!(
+        "{} needs a working tree; this repository is a single file",
+        command
+    )))
+}
+
 /// Hex characters of a snapshot id shown in output.
 ///
 /// **Display only.** Ids are stored, compared, keyed and transmitted at full

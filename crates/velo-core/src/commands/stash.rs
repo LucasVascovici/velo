@@ -19,6 +19,7 @@ use std::fs;
 
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::commands::SnapshotIdentity;
 use crate::commands::{get_dirty_files, get_tracked_files, FileStatus};
 use crate::db;
@@ -87,6 +88,7 @@ pub struct Popped {
 /// Shelve the current dirty state, returning the working tree to its last
 /// snapshot.
 pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
+    require_working_tree(guard.repo(), "stash")?;
     let root = guard.root();
     let dirty = get_dirty_files(guard.repo());
     if dirty.is_empty() {
@@ -244,6 +246,7 @@ pub fn list(repo: &Repo) -> Result<Vec<Shelf>> {
 
 /// Apply a shelf to the working tree and forget it.
 pub fn pop(guard: &WriteGuard, name: Option<String>) -> Result<Popped> {
+    require_working_tree(guard.repo(), "stash")?;
     let root = guard.root();
     let conn = guard.conn();
     let shelf = find_shelf(conn, name)?;

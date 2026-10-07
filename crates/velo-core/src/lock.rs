@@ -30,7 +30,13 @@ impl RepoLock {
     /// Acquire the exclusive repo lock, failing fast with [`VeloError::Locked`]
     /// if another process already holds it (rather than blocking indefinitely).
     pub fn acquire(root: &Path) -> Result<Self> {
-        match Self::try_acquire(root)? {
+        Self::acquire_at(&root.join(".velo/lock"))
+    }
+
+    /// Like [`RepoLock::acquire`], on an explicit lock-file path. A single-file
+    /// repository locks `<file>.lock` beside its database.
+    pub fn acquire_at(path: &Path) -> Result<Self> {
+        match Self::try_acquire_at(path)? {
             Some(lock) => Ok(lock),
             None => Err(VeloError::Locked { held_by: None }),
         }
@@ -40,12 +46,16 @@ impl RepoLock {
     /// a normal outcome rather than an error — callers that want to wait or skip
     /// can decide for themselves.
     pub fn try_acquire(root: &Path) -> Result<Option<Self>> {
-        let path = root.join(".velo/lock");
+        Self::try_acquire_at(&root.join(".velo/lock"))
+    }
+
+    /// Like [`RepoLock::try_acquire`], on an explicit lock-file path.
+    pub fn try_acquire_at(path: &Path) -> Result<Option<Self>> {
         let file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(false)
-            .open(&path)
+            .open(path)
             .map_err(VeloError::Io)?;
 
         match file.try_lock_exclusive() {

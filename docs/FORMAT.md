@@ -41,6 +41,15 @@ third-party tool — must conform to this document.
 `HEAD` and `PARENT` are refs written **atomically** (temp file + rename). A reader
 must tolerate a missing or empty `PARENT` (a repository with no commits).
 
+### Single-file layout
+
+A repository may instead be **one SQLite file**, created by `Repo::create_file`. It has the same schema and the same format version as a directory repository, and its `settings` table holds `layout = single-file` and `objects = database`. Objects are rows of the `objects` table (section 2.5).
+
+- There is no `.velo` directory, no working tree, and no `HEAD` or `PARENT`: the default branch is `main` and nothing is checked out.
+- Writers lock `<file>.lock`, a sibling of the database, instead of `.velo/lock`.
+- Only store-only operations apply; commands that read or write files refuse with `Unsupported`.
+- A database without `layout = single-file`, such as a directory repository's `velo.db`, is not opened as a single-file repository.
+
 ---
 
 ## 2. Object store

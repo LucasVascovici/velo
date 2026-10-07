@@ -6,7 +6,6 @@
 
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use std::fs;
 
 use rusqlite::{params, params_from_iter, types::Value};
 
@@ -212,18 +211,20 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
     // SQLite reads a negative limit as "no limit". Stating it here means the
     // unlimited case is deliberate rather than a consequence of a wrapping cast.
     let limit = limit.map_or(-1_i64, |n| n as i64);
-    let root = repo.root();
     let conn = repo.conn();
 
-    let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let position = position.trim().to_string();
-    let current = (!position.is_empty()).then(|| SnapshotId::from_stored(position.clone()));
-
-    let branch = BranchName::from_stored(
-        fs::read_to_string(root.join(".velo/HEAD"))
-            .unwrap_or_else(|_| "main".into())
-            .trim(),
-    );
+    let current = repo.position();
+    let branch = repo.head_branch();
+    // With no working tree there is no checked-out position, so the default
+    // history walks back from the tip of the default branch instead.
+    let position = match (&current, repo.has_working_tree()) {
+        (Some(p), _) => p.as_str().to_string(),
+        (None, false) => repo
+            .branch_tip(&branch)?
+            .map(|t| t.into_string())
+            .unwrap_or_default(),
+        (None, true) => String::new(),
+    };
 
     let scope = match (from, all, filter_branch) {
         (Some(id), _, _) => Scope::Ancestry { of: id.clone() },

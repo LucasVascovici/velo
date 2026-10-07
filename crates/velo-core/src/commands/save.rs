@@ -3,6 +3,7 @@ use std::fs;
 
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::commands::FileStatus;
 use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
@@ -95,6 +96,7 @@ pub struct Options<'a> {
 /// snapshot keeps its existing message — so fixing a forgotten file doesn't
 /// force you to retype it.
 pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "save")?;
     let Options {
         amend,
         paths,

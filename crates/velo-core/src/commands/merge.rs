@@ -8,6 +8,7 @@ use std::fs;
 
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::commands::SnapshotIdentity;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
@@ -108,6 +109,7 @@ pub enum Mode<'a> {
 
 /// Merge, or abort one.
 pub fn run(guard: &WriteGuard, mode: Mode<'_>) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "merge")?;
     match mode {
         Mode::Abort => do_abort(guard),
         Mode::Bring { source } => do_merge(guard, source),
