@@ -744,3 +744,67 @@ fn export_git_stream_is_accepted_by_git_fast_import() {
     let message = git(&["log", "-1", "--format=%B", "main"]);
     assert!(String::from_utf8_lossy(&message.stdout).contains("Velo-Snapshot:"));
 }
+
+/// Run `velo <args>` in `dir` as the author `name`.
+fn velo_as(dir: &Path, name: &str, args: &[&str]) -> (String, bool) {
+    let out = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(args)
+        .env("VELO_AUTHOR_NAME", name)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run velo binary");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (s, out.status.success())
+}
+
+#[test]
+fn history_where_filters_by_metadata() {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    assert!(velo(d, &["init"]).1);
+    write(d, "a.txt", "one\n");
+    assert!(velo_as(d, "ada", &["save", "by ada"]).1);
+    write(d, "a.txt", "two\n");
+    assert!(velo_as(d, "bob", &["save", "by bob"]).1);
+
+    let (out, ok) = velo(
+        d,
+        &["history", "--oneline", "--where", "velo:author.name=ada"],
+    );
+    assert!(ok, "{out}");
+    assert!(out.contains("by ada") && !out.contains("by bob"), "{out}");
+
+    // Without `=` the filter means "is set"; two filters AND together.
+    let (out, ok) = velo(d, &["history", "--oneline", "--where", "velo:author.name"]);
+    assert!(
+        ok && out.contains("by ada") && out.contains("by bob"),
+        "{out}"
+    );
+    let (out, ok) = velo(
+        d,
+        &[
+            "history",
+            "--oneline",
+            "--where",
+            "velo:author.name=ada",
+            "--where",
+            "velo:author.name=bob",
+        ],
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("No snapshots match the --where filter"),
+        "{out}"
+    );
+}
+
+#[test]
+fn history_where_rejects_a_malformed_filter() {
+    let tmp = repo();
+    for bad in ["nocolon", ":key=v", "ns:=v"] {
+        let (out, ok) = velo(tmp.path(), &["history", "--where", bad]);
+        assert!(!ok, "{bad} should be rejected:\n{out}");
+        assert!(out.contains("NAMESPACE:KEY"), "{bad}: {out}");
+    }
+}

@@ -138,6 +138,7 @@ const SCHEMA: &str = "
     CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at_ms);
     CREATE INDEX IF NOT EXISTS idx_stash_name    ON stash (name);
     CREATE INDEX IF NOT EXISTS idx_meta_snap     ON snapshot_meta (snapshot_id);
+    CREATE INDEX IF NOT EXISTS idx_meta_lookup   ON snapshot_meta (namespace, key, value);
     -- The backward walk asks 'which snapshot renamed something to this path',
     -- so `to_path` leads.  The primary key already covers the per-snapshot
     -- lookup that follows.

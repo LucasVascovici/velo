@@ -276,6 +276,41 @@ impl Repo {
         crate::commands::history::snapshot(self, id)
     }
 
+    /// Every snapshot whose metadata satisfies all of `filters`, across all
+    /// branches, newest first.
+    ///
+    /// One indexed query instead of walking history and calling
+    /// [`Repo::snapshot_meta`] per entry. Soft-deleted and stash branches are
+    /// excluded, exactly as `history::Options { all: true }` excludes them. To
+    /// scope to one branch or ancestry, or to combine with a path filter, use
+    /// [`commands::history::run`](crate::commands::history::run) with
+    /// `Options::meta`.
+    ///
+    /// Store only: needs no working tree.
+    ///
+    /// # Errors
+    /// [`Error::InvalidInput`] when `filters` is empty — "everything" is not a
+    /// query, and an accidental empty slice should not return a whole history.
+    pub fn find_snapshots(
+        &self,
+        filters: &[crate::commands::history::MetaFilter<'_>],
+    ) -> Result<Vec<crate::commands::history::Entry>> {
+        if filters.is_empty() {
+            return Err(Error::invalid(
+                "find_snapshots needs at least one metadata filter.",
+            ));
+        }
+        let history = crate::commands::history::run(
+            self,
+            crate::commands::history::Options {
+                all: true,
+                meta: filters,
+                ..Default::default()
+            },
+        )?;
+        Ok(history.entries)
+    }
+
     /// A value that changes whenever the repository's history does.
     ///
     /// For an application that has to notice a second window, a `pull`, or the
