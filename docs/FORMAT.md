@@ -8,7 +8,8 @@ third-party tool — must conform to this document.
 
 | | |
 | :--- | :--- |
-| **Current implemented format** | **v2** (repository format version `2`) |
+| **Current implemented format** | **v3** (repository format version `3`) |
+| Status of v3 | **Implemented.** A layout-only change from v2 (chunked large objects, §2.4): no id, tree, object name or bundle byte changed. See [Migration v2 → v3](#migration-v2--v3). |
 | Status of v2 | **Implemented.** All four decisions landed in one commit, as required. |
 | Status of v1 | **Refused.** A pre-v2 repository cannot be opened; see [Migration](#migration-v1--v2). |
 
@@ -27,6 +28,8 @@ third-party tool — must conform to this document.
 .velo/
 ├── velo.db       SQLite (WAL): snapshots, trees, refs, remotes, stash, conflicts
 ├── objects/      content-addressed blobs, Zstd-compressed, named by BLAKE3 hex
+│                 (or a chunk manifest for large objects, §2.4)
+├── chunks/       v3: deduplicated chunks of large objects, named by BLAKE3 hex
 ├── HEAD          current branch name (text, no trailing newline required)
 ├── PARENT        snapshot id the working tree is based on ("" if unborn)
 ├── lock          advisory lock file (fs2); held by mutating operations
@@ -41,11 +44,18 @@ must tolerate a missing or empty `PARENT` (a repository with no commits).
 
 ## 2. Object store
 
-An object is the **Zstd-compressed** (level 1) content of a single file, stored at
-`.velo/objects/<hash>` where `<hash>` is the **full 64-hex BLAKE3** of the
-*uncompressed, normalised* bytes.
+An object is the content of a single file, stored at `.velo/objects/<hash>`
+where `<hash>` is the **full 64-hex BLAKE3** of the *uncompressed, normalised*
+bytes. The file is in one of two forms (a reader must accept both):
 
-Object naming is unchanged between v1 and v2.
+- **(a) a Zstd frame** (level 1) of the full content; or
+- **(b) a chunk manifest** (v3), used for large objects, laid out in §2.4.
+
+The two cannot be confused: a Zstd frame starts `28 B5 2F FD`, a manifest starts
+`VELOCHK1`.
+
+Object naming is unchanged between v1, v2 and v3: the name is always the hash
+of the full content, never of what is on disk.
 
 ### 2.1 Content normalisation
 
@@ -69,9 +79,41 @@ normalised to `/`. It is stored raw (no CRLF normalisation).
 
 ### 2.3 Integrity invariant
 
-For every object, `BLAKE3(zstd_decompress(file)) == file_name`. `velo fsck`
-verifies this, and any import (bundle or sync) must verify it **before** trusting
-received data.
+For every object, `BLAKE3(content) == file_name`, where `content` is the
+decompressed frame (form a) or the concatenation of the manifest's chunks (form
+b). `velo fsck` verifies this, and any import (bundle or sync) must verify it
+**before** trusting received data.
+
+For a chunked object, every chunk must additionally hash to its own name and
+have the length the manifest records, and the reassembled length must equal the
+manifest's total. A manifest that is truncated, has the wrong length for its
+count, or an unknown version is corrupt. A chunk the manifest names but that is
+absent is reported as a missing object carrying the chunk's hex name.
+
+### 2.4 Chunked objects (v3)
+
+Objects of 1 MiB or more are stored below object identity as content-defined
+chunks, so a near-duplicate large file costs only its changed chunks. Trees,
+snapshot ids and the bundle/pack wire format do not change: on the wire an
+object is always one Zstd frame of its full content.
+
+`.velo/objects/<hash>` is then a manifest:
+
+| Field | Size | Value |
+| :--- | :--- | :--- |
+| magic | 8 bytes | `VELOCHK1` |
+| manifest version | u32 LE | `1` |
+| total content length | u64 LE | length of the reassembled content |
+| chunk count | u32 LE | number of entries that follow |
+| per chunk | 32 bytes + u32 LE | the chunk's raw BLAKE3, then its length |
+
+Chunks live at `.velo/chunks/<hex>`. Each is a Zstd frame (level 1) of the
+chunk's bytes, named by the BLAKE3 of the uncompressed chunk. A writer stores
+every missing chunk **before** the manifest, so a manifest never names a chunk
+that was not written. The chunking algorithm and size threshold are not part of
+the format; this implementation uses FastCDC (16 KiB / 64 KiB / 256 KiB) for
+objects of 1 MiB or more. Until garbage collection learns about chunks, `gc`
+keeps every chunk.
 
 ---
 
@@ -207,6 +249,7 @@ tie-break on a stable secondary key (`rowid`) when timestamps collide.
 | :--- | :--- |
 | **v1** | **No version marker.** Migrations sniff `pragma_table_info(...)` and add missing columns. There is no way to detect a repository written by a *newer* implementation. |
 | **v2** | `PRAGMA user_version` holds the repository format version, stamped when the database is created. |
+| **v3** | Same marker, stamped `3`. Adds the `.velo/chunks/` directory; the schema is unchanged. |
 
 The v1 `ALTER TABLE` sniffing migrations are gone. They existed only to bring a v1
 repository forward, and v2 refuses to open one, so keeping them would have meant
@@ -216,7 +259,7 @@ an earlier build of v2.
 
 **v2 rules — normative:**
 
-- `user_version = 2` for this specification.
+- `user_version = 3` for this specification.
 - An implementation **must refuse to open** a repository whose `user_version`
   exceeds the highest version it understands, with a distinct, catchable error
   (`SchemaTooNew { found, supported }`). Silently proceeding risks half-migration
@@ -426,10 +469,21 @@ peer, because ids differ. All participants must migrate together.
 
 ---
 
+## Migration v2 → v3
+
+Additive and in place. `open_and_migrate` creates `.velo/chunks/` and stamps
+`user_version = 3`; `open` on a v2 repository returns `MigrationRequired`.
+**No snapshot id, tree, row or object is rewritten**: existing objects stay
+valid as form (a) frames, and only objects stored from then on may be chunked.
+Peers need not migrate together, since the bundle and sync wire formats are
+unchanged. Older builds refuse a v3 repository with `SchemaTooNew`, per §7.1.
+
+---
+
 ## 11. Decided, not yet implemented
 
-Nothing in this section is written or read by the current code; the "Current
-implemented format" table at the top is still accurate. These are decisions
+Apart from D6 (§11.2, now implemented), nothing in this section is written or
+read by the current code. These are decisions
 taken before any code exists, because each is cheap now and a format break
 later. Later work implements them to the letter.
 
@@ -471,37 +525,12 @@ later. Later work implements them to the letter.
 - **Trust:** velo verifies signatures; which keys to trust is the caller's
   policy. Velo stores no private keys, and signing takes the key per call.
 
-### 11.2 Chunked objects, below object identity (D6)
+### 11.2 Chunked objects, below object identity (D6) — implemented in v3
 
-- An object's name stays the BLAKE3 of its full normalised content (§2). Trees,
-  snapshot ids and the bundle/pack wire format do not change. On the wire an
-  object is always one zstd frame of its full content, so a chunking peer and a
-  non-chunking peer interoperate.
-- On disk, `.velo/objects/<hash>` is either (a) a zstd frame of the full
-  content, as today, or (b) a **chunk manifest**:
-
-  | Field | Size | Value |
-  | :--- | :--- | :--- |
-  | magic | 8 bytes | `VELOCHK1` (a zstd frame starts `28 B5 2F FD`, so the two forms cannot be confused) |
-  | manifest version | u32 LE | `1` |
-  | total content length | u64 LE | length of the reassembled content |
-  | chunk count | u32 LE | number of entries that follow |
-  | per chunk | 32 bytes + u32 LE | the chunk's raw BLAKE3, then its length |
-
-- Chunks live at `.velo/chunks/<hex>`. Each is a zstd frame of the chunk's
-  bytes, named by the BLAKE3 of the uncompressed chunk.
-- Chunking parameters (algorithm, size threshold) are **not** part of the
-  format: a reader only needs the manifest. The implementation will use
-  content-defined chunking (FastCDC) for objects of 1 MiB or more.
-- **Integrity:** §2.3 still holds for the reassembled content, and every chunk
-  must hash to its own name. `fsck` checks both.
-- **Repository format v3.** A pre-chunking build would read a manifest as a
-  corrupt object, so the repository format becomes v3 when chunked storage
-  lands. The v2 -> v3 migration is additive: it creates `.velo/chunks/` and
-  stamps `user_version = 3`. It rewrites no rows and no objects and changes no
-  ids. Older builds refuse a v3 repository with `SchemaTooNew`, per §7.1.
-  Objects are format-stable: that survives, and chunking is a storage change,
-  not a format change of objects, trees, ids or bundles.
+Implemented; the normative layout is §2 and §2.4, and the migration is
+[v2 → v3](#migration-v2--v3). The decision stands as recorded in D6: an
+object's name stays the BLAKE3 of its full content, chunking is a storage
+detail, and the bundle wire format does not change.
 
 ### 11.3 What compaction leaves behind (D7)
 

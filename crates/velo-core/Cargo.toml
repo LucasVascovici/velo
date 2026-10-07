@@ -34,6 +34,7 @@ toml = ["velo-merge/toml"]
 velo-merge.workspace = true
 
 blake3.workspace = true
+fastcdc.workspace = true
 chrono.workspace = true
 fs2.workspace = true
 globset.workspace = true

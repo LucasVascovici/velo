@@ -121,4 +121,4 @@ pub use velo_merge as merge;
 /// Recorded in SQLite's `PRAGMA user_version`. Opening a repository with a
 /// higher value fails with [`Error::SchemaTooNew`] rather than risking a
 /// half-migration — see `docs/FORMAT.md`.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;
