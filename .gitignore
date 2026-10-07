@@ -1,5 +1,6 @@
 /target
 /.velo
 **/*.rs.bk
-*.py/.claude/worktrees/
+*.py
+/.claude/worktrees/
 /.claude/settings.local.json
