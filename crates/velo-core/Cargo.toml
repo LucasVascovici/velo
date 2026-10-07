@@ -23,6 +23,8 @@ default = []
 bundle = []
 # Sync over a spawned server process (ssh:// and child:).
 ssh = []
+# Sync over HTTP(S) (http:// and https:// URLs) with a blocking client.
+http = ["dep:ureq"]
 
 [dependencies]
 velo-merge.workspace = true
@@ -38,6 +40,7 @@ rayon.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 similar.workspace = true
+ureq = { workspace = true, optional = true }
 zstd.workspace = true
 
 [dev-dependencies]

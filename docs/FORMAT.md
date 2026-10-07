@@ -353,6 +353,17 @@ Rules:
 - Packs used for sync share this encoding but may legitimately omit objects the
   peer already holds. Only `bundle create` guarantees self-containment.
 
+### 9.1 Packs over HTTP
+
+The HTTP transport carries packs with exactly this encoding; nothing about the
+bundle changes. Under `<base>/velo/v1/`: `GET refs` returns a refs block;
+`POST upload` takes the client's have-ids (length-prefixed strings) and returns
+a refs block followed by the pack; `POST receive` takes branch and new tip
+(length-prefixed) followed by the pack and returns a length-prefixed status
+(`OK <snapshots> <objects>` or `REJECT <reason>`). A refused push is a `200`
+carrying `REJECT`, as over ssh; other non-2xx codes are failures.
+Fast-forward-only semantics are unchanged.
+
 ---
 
 ## 10. Decisions

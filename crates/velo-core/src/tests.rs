@@ -3708,6 +3708,92 @@ mod tests {
         (holder, origin, copy)
     }
 
+    // ---- HTTP handlers (no sockets) ----
+
+    fn tip_of(root: &Path) -> String {
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        commands::branch_tip(&conn, "main").expect("main has a tip")
+    }
+
+    /// A body for `serve::http::receive` carrying everything reachable from
+    /// `root`'s main tip.
+    fn push_body(root: &Path) -> Vec<u8> {
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let tip = tip_of(root);
+        let set = commands::bundle::reachable_ancestry(&conn, &tip);
+        let pack = commands::bundle::build_pack(&conn, &root.join(".velo/objects"), &set).unwrap();
+        let mut body = Vec::new();
+        crate::transport::write_string(&mut body, "main").unwrap();
+        crate::transport::write_string(&mut body, &tip).unwrap();
+        body.extend_from_slice(&commands::bundle::encode(&pack));
+        body
+    }
+
+    fn status_of(resp: &[u8]) -> String {
+        crate::transport::read_string(&mut std::io::Cursor::new(resp)).unwrap()
+    }
+
+    #[test]
+    fn http_refs_lists_the_branch_tips() {
+        let (_holder, origin, _copy) = origin_and_clone();
+        let bytes = crate::serve::http::refs(&origin).unwrap();
+        let refs = crate::transport::read_refs(&mut std::io::Cursor::new(&bytes[..])).unwrap();
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].branch, "main");
+        assert_eq!(refs[0].hash, tip_of(&origin));
+    }
+
+    #[test]
+    fn http_upload_with_no_haves_sends_everything() {
+        let (_holder, origin, _copy) = origin_and_clone();
+        write(&origin, "b.txt", "second\n");
+        let second = save(&origin, "second");
+
+        let bytes = crate::serve::http::upload(&origin, &[]).unwrap();
+        let mut cur = std::io::Cursor::new(&bytes[..]);
+        let refs = crate::transport::read_refs(&mut cur).unwrap();
+        assert_eq!(refs[0].hash, second);
+        let pack = commands::bundle::decode(&bytes[cur.position() as usize..]).unwrap();
+        assert_eq!(pack.snapshots.len(), 2);
+
+        let fresh = TempDir::new().unwrap();
+        commands::init::run(fresh.path()).unwrap();
+        with_write(fresh.path(), |g| {
+            commands::bundle::import_pack(g, &fresh.path().join(".velo/objects"), &pack)
+        })
+        .unwrap();
+        assert!(snapshot_exists(fresh.path(), &second));
+    }
+
+    #[test]
+    fn http_receive_accepts_a_fast_forward_and_rejects_the_rest() {
+        let (_holder, origin, copy) = origin_and_clone();
+        write(&copy, "b.txt", "from the clone\n");
+        let pushed = save(&copy, "clone work");
+
+        let resp = crate::serve::http::receive(&origin, &push_body(&copy)).unwrap();
+        assert!(status_of(&resp).starts_with("OK "), "{}", status_of(&resp));
+        assert_eq!(tip_of(&origin), pushed);
+
+        // Now diverge: origin and clone each add a commit on top of the same base.
+        write(&origin, "c.txt", "origin side\n");
+        let origin_tip = save(&origin, "origin side");
+        write(&copy, "d.txt", "clone side\n");
+        save(&copy, "clone side");
+
+        let resp = crate::serve::http::receive(&origin, &push_body(&copy)).unwrap();
+        assert!(
+            status_of(&resp).starts_with("REJECT "),
+            "{}",
+            status_of(&resp)
+        );
+        assert_eq!(
+            tip_of(&origin),
+            origin_tip,
+            "a rejected push changes nothing"
+        );
+    }
+
     #[test]
     fn clone_reports_what_it_copied_and_checks_out_main() {
         let holder = TempDir::new().unwrap();
