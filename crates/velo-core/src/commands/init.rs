@@ -74,6 +74,7 @@ pub fn run(root: &Path) -> Result<Initialised> {
 
     // ── Create directory structure ────────────────────────────────────────────
     fs::create_dir_all(velo_dir.join("objects"))?;
+    fs::create_dir_all(velo_dir.join("chunks"))?;
     crate::db::init_db_at_path(&velo_dir.join("velo.db"))?;
     fs::write(velo_dir.join("HEAD"), "main")?;
     fs::write(velo_dir.join("PARENT"), "")?;

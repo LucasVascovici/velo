@@ -39,6 +39,15 @@ fn temp_sibling(target: &Path) -> PathBuf {
 /// Avoids the kernel→userspace copy that `fs::read` incurs on large files.
 const MMAP_THRESHOLD: u64 = 256 * 1024; // 256 KB
 
+/// Objects at least this large are stored as content-defined chunks. Not part
+/// of the format: a reader handles either form whatever the writer chose.
+const CHUNK_THRESHOLD: usize = 1024 * 1024;
+const CHUNK_MIN: usize = 16 * 1024;
+const CHUNK_AVG: usize = 64 * 1024;
+const CHUNK_MAX: usize = 256 * 1024;
+/// First bytes of a chunk manifest (a zstd frame never starts with these).
+const MANIFEST_MAGIC: &[u8; 8] = b"VELOCHK1";
+
 // ─── File modes ────────────────────────────────────────────────────────────────
 // A file's mode is part of its identity in the tree (see `snapshot_id`).
 pub const MODE_REGULAR: i64 = 0;
@@ -166,13 +175,62 @@ impl ObjectStore {
         self.dir.join(hash)
     }
 
+    /// Where chunks live: `.velo/chunks`, a sibling of the objects directory.
+    fn chunks_dir(&self) -> PathBuf {
+        self.dir
+            .parent()
+            .map(|p| p.join("chunks"))
+            .unwrap_or_else(|| self.dir.join("chunks"))
+    }
+
+    fn chunk_path(&self, hex: &str) -> PathBuf {
+        self.chunks_dir().join(hex)
+    }
+
+    /// Store `normalised` under `hash`: one zstd frame, or a manifest of
+    /// deduplicated chunks for large content. Chunks are written first so a
+    /// manifest never names a chunk that is not on disk.
+    fn store(&self, hash: &str, normalised: &[u8]) -> Result<()> {
+        let obj_path = self.path(hash);
+        if normalised.len() < CHUNK_THRESHOLD {
+            let compressed = zstd::encode_all(normalised, 1).map_err(VeloError::Io)?;
+            return write_atomic(&obj_path, &compressed).map_err(VeloError::Io);
+        }
+        let chunks_dir = self.chunks_dir();
+        fs::create_dir_all(&chunks_dir).map_err(VeloError::Io)?;
+        let mut manifest = Vec::new();
+        manifest.extend_from_slice(MANIFEST_MAGIC);
+        manifest.extend_from_slice(&1u32.to_le_bytes());
+        manifest.extend_from_slice(&(normalised.len() as u64).to_le_bytes());
+        let count_at = manifest.len();
+        manifest.extend_from_slice(&0u32.to_le_bytes());
+        let mut count: u32 = 0;
+        for c in fastcdc::v2020::FastCDC::new(
+            normalised,
+            CHUNK_MIN as u32,
+            CHUNK_AVG as u32,
+            CHUNK_MAX as u32,
+        ) {
+            let data = &normalised[c.offset..c.offset + c.length];
+            let digest = blake3::hash(data);
+            let path = chunks_dir.join(digest.to_hex().as_str());
+            if !path.exists() {
+                let frame = zstd::encode_all(data, 1).map_err(VeloError::Io)?;
+                write_atomic(&path, &frame).map_err(VeloError::Io)?;
+            }
+            manifest.extend_from_slice(digest.as_bytes());
+            manifest.extend_from_slice(&(c.length as u32).to_le_bytes());
+            count += 1;
+        }
+        manifest[count_at..count_at + 4].copy_from_slice(&count.to_le_bytes());
+        write_atomic(&obj_path, &manifest).map_err(VeloError::Io)
+    }
+
     /// Hash and store already-normalised bytes verbatim. Returns the name.
     pub(crate) fn put(&self, normalised: &[u8]) -> Result<String> {
         let hash = blake3::hash(normalised).to_hex().to_string();
-        let obj_path = self.path(&hash);
-        if !obj_path.exists() {
-            let compressed = zstd::encode_all(normalised, 1).map_err(VeloError::Io)?;
-            write_atomic(&obj_path, &compressed).map_err(VeloError::Io)?;
+        if !self.path(&hash).exists() {
+            self.store(&hash, normalised)?;
         }
         Ok(hash)
     }
@@ -188,34 +246,75 @@ impl ObjectStore {
             hash_small(file_path)?
         };
 
-        let obj_path = self.path(&hash);
-        if !obj_path.exists() {
+        if !self.path(&hash).exists() {
             // Re-read for compression (mmap again for large files)
             let data = normalise_crlf(if size >= MMAP_THRESHOLD {
                 read_mmap(file_path)?
             } else {
                 fs::read(file_path).map_err(VeloError::Io)?
             });
-            let compressed = zstd::encode_all(&data[..], 1) // level 1: fast save
-                .map_err(VeloError::Io)?;
-            // Atomic write: a crash can't leave a half-written object under its
-            // final content-addressed name (which would corrupt reads forever).
-            write_atomic(&obj_path, &compressed).map_err(VeloError::Io)?;
+            // Atomic writes: a crash can't leave a half-written object under
+            // its final content-addressed name (which would corrupt reads forever).
+            self.store(&hash, &data)?;
         }
         Ok(hash)
     }
 
-    /// Decompress and return the full content of an object.
+    /// Return the full content of an object, reassembling chunked ones.
+    ///
+    /// A manifest naming an absent chunk yields `MissingObject` carrying the
+    /// chunk's hex name; every other malformation is `Corrupt`.
     pub(crate) fn get(&self, hash: &str) -> Result<Vec<u8>> {
-        let compressed = fs::read(self.path(hash)).map_err(|_| {
+        let raw = fs::read(self.path(hash)).map_err(|_| {
             VeloError::corrupt(format!(
                 "object '{}' is missing from storage. The repository may be corrupt.",
                 hash
             ))
         })?;
-        zstd::decode_all(&compressed[..]).map_err(|_| {
-            VeloError::corrupt(format!("object '{}' could not be decompressed.", hash))
-        })
+        if !raw.starts_with(MANIFEST_MAGIC) {
+            return zstd::decode_all(&raw[..]).map_err(|_| {
+                VeloError::corrupt(format!("object '{}' could not be decompressed.", hash))
+            });
+        }
+        let bad = |why: &str| VeloError::corrupt(format!("manifest of object '{}' {}", hash, why));
+        let rest = &raw[MANIFEST_MAGIC.len()..];
+        if rest.len() < 16 {
+            return Err(bad("is truncated"));
+        }
+        let version = u32::from_le_bytes(rest[0..4].try_into().unwrap());
+        if version != 1 {
+            return Err(bad("has an unknown version"));
+        }
+        let total = u64::from_le_bytes(rest[4..12].try_into().unwrap());
+        let count = u32::from_le_bytes(rest[12..16].try_into().unwrap()) as usize;
+        let entries = &rest[16..];
+        if entries.len() != count.checked_mul(36).ok_or_else(|| bad("is malformed"))? {
+            return Err(bad("has the wrong length for its chunk count"));
+        }
+        // Capacity is capped: `total` is untrusted until the hash checks out.
+        let mut out = Vec::with_capacity((total as usize).min(1 << 28));
+        for e in entries.chunks_exact(36) {
+            let hex = blake3::Hash::from_bytes(e[..32].try_into().unwrap())
+                .to_hex()
+                .to_string();
+            let len = u32::from_le_bytes(e[32..36].try_into().unwrap()) as usize;
+            let frame = fs::read(self.chunk_path(&hex))
+                .map_err(|_| VeloError::MissingObject { hash: hex.clone() })?;
+            let data = zstd::decode_all(&frame[..]).map_err(|_| {
+                VeloError::corrupt(format!("chunk '{}' could not be decompressed", hex))
+            })?;
+            if data.len() != len || blake3::hash(&data).to_hex().as_str() != hex {
+                return Err(VeloError::corrupt(format!("chunk '{}' is corrupt", hex)));
+            }
+            out.extend_from_slice(&data);
+        }
+        if out.len() as u64 != total || blake3::hash(&out).to_hex().as_str() != hash {
+            return Err(VeloError::corrupt(format!(
+                "object '{}' does not match its reassembled chunks",
+                hash
+            )));
+        }
+        Ok(out)
     }
 
     pub(crate) fn contains(&self, hash: &str) -> bool {
@@ -224,9 +323,15 @@ impl ObjectStore {
 
     /// One zstd frame of the full content, as packs and bundles carry it.
     pub(crate) fn compressed(&self, hash: &str) -> Result<Vec<u8>> {
-        fs::read(self.path(hash)).map_err(|_| {
+        let raw = fs::read(self.path(hash)).map_err(|_| {
             VeloError::corrupt(format!("object {} is missing — run 'velo fsck'", hash))
-        })
+        })?;
+        if raw.starts_with(MANIFEST_MAGIC) {
+            // The wire format is always one frame of the full content.
+            let full = self.get(hash)?;
+            return zstd::encode_all(&full[..], 1).map_err(VeloError::Io);
+        }
+        Ok(raw)
     }
 
     /// Verify a received frame decompresses and hashes to `hash`, then store
@@ -242,11 +347,14 @@ impl ObjectStore {
                 hash, actual
             )));
         }
-        let obj_path = self.path(hash);
-        if obj_path.exists() {
+        if self.path(hash).exists() {
             return Ok(false);
         }
-        write_atomic(&obj_path, frame)?;
+        if decompressed.len() >= CHUNK_THRESHOLD {
+            self.store(hash, &decompressed)?;
+        } else {
+            write_atomic(&self.path(hash), frame)?;
+        }
         Ok(true)
     }
 
@@ -273,6 +381,7 @@ impl ObjectStore {
             return Verified::Missing;
         }
         match self.get(hash) {
+            Err(VeloError::MissingObject { .. }) => Verified::Missing,
             Ok(bytes) => {
                 let actual = blake3::hash(&bytes).to_hex().to_string();
                 if actual == hash {

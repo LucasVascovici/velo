@@ -125,6 +125,8 @@ impl Repo {
                 supported: FORMAT_VERSION,
             });
         }
+        // v2 -> v3 adds the chunk directory; nothing else on disk changes.
+        std::fs::create_dir_all(root.join(".velo/chunks"))?;
         db::migrate(&conn)?;
         Ok(Repo {
             root: root.to_path_buf(),
