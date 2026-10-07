@@ -12,7 +12,7 @@ use crate::commands::SnapshotIdentity;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
 use crate::storage;
-use crate::{ObjectHash, Repo, SnapshotId, SnapshotMeta, WriteGuard};
+use crate::{Author, BranchName, ObjectHash, Repo, SnapshotId, SnapshotMeta, WriteGuard};
 
 /// Re-exported so `merge::FileAction` keeps working: the vocabulary is shared
 /// with cherry-pick and rebase, so it lives in [`crate::commands::apply`].
@@ -530,6 +530,189 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
     }
 
     Ok(MergePlan { base, files })
+}
+
+/// How one path the plan could not settle is settled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Resolution {
+    /// Keep our side; the path is removed if ours lacks it.
+    Ours,
+    /// Take their side; the path is removed if theirs lacks it.
+    Theirs,
+    /// Write exactly these bytes, with ours' mode (theirs' if ours lacks the
+    /// file, regular if neither has it).
+    Content(Vec<u8>),
+    /// Remove the path.
+    Delete,
+}
+
+/// A merge to record, store-only.
+#[derive(Clone, Debug)]
+pub struct MergeCommit<'a> {
+    /// The branch the merge snapshot is recorded on.
+    pub branch: &'a BranchName,
+    pub ours: &'a SnapshotId,
+    pub theirs: &'a SnapshotId,
+    /// Settlements for conflicted (and optionally kept-ours) paths.
+    pub resolutions: &'a [(String, Resolution)],
+    pub message: &'a str,
+    pub meta: SnapshotMeta,
+    pub author: Option<&'a Author>,
+    pub timestamp_ms: Option<i64>,
+}
+
+/// Record the merge of `theirs` into `ours` as a snapshot, with no working tree.
+///
+/// The apply half of [`plan`]: the plan is recomputed here rather than accepted,
+/// because it is deterministic, so a caller cannot hand in a stale one. Every
+/// conflicted path needs a [`Resolution`]; kept-ours paths may have one.
+///
+/// The snapshot has `ours` as parent and `theirs` as merge parent, so the next
+/// merge finds `theirs` as the base and does not re-raise settled conflicts.
+/// Rename edges are not inferred; the snapshot records none.
+///
+/// Store-only: `.velo/PARENT`, `MERGE_HEAD` and the working tree are untouched.
+///
+/// # Errors
+/// [`VeloError::Conflicts`] (paths sorted) when a conflict has no resolution;
+/// [`VeloError::InvalidInput`] when `theirs` is already contained in `ours`, a
+/// resolution names a path the plan did not leave open, or a path is resolved
+/// twice.
+pub fn commit(guard: &WriteGuard, spec: MergeCommit<'_>) -> Result<SnapshotId> {
+    use crate::tree::{Content, FileKind, SaveTree, TreeEntry};
+    use std::collections::BTreeMap;
+
+    let repo = guard.repo();
+    if merge_base(repo, spec.ours, spec.theirs)?.as_ref() == Some(spec.theirs) {
+        return Err(VeloError::invalid(format!(
+            "{} already contains {}; there is nothing to merge.",
+            spec.ours.short(),
+            spec.theirs.short()
+        )));
+    }
+    let plan = plan(repo, spec.ours, spec.theirs)?;
+
+    let mut resolutions: BTreeMap<String, &Resolution> = BTreeMap::new();
+    for (path, resolution) in spec.resolutions {
+        let path = crate::db::normalise(path);
+        if resolutions.insert(path.clone(), resolution).is_some() {
+            return Err(VeloError::invalid(format!(
+                "'{}' is resolved more than once.",
+                path
+            )));
+        }
+    }
+    for path in resolutions.keys() {
+        let open = plan.files.iter().any(|f| {
+            f.path == *path
+                && matches!(
+                    f.change,
+                    PlannedChange::Conflict { .. } | PlannedChange::KeepOurs
+                )
+        });
+        if !open {
+            return Err(VeloError::invalid(format!(
+                "'{}' is neither conflicted nor kept from ours; it cannot be resolved.",
+                path
+            )));
+        }
+    }
+
+    let mut unresolved: Vec<std::path::PathBuf> = plan
+        .conflicts()
+        .filter(|f| !resolutions.contains_key(&f.path))
+        .map(|f| std::path::PathBuf::from(&f.path))
+        .collect();
+    if !unresolved.is_empty() {
+        unresolved.sort();
+        return Err(VeloError::Conflicts { paths: unresolved });
+    }
+
+    let mut tree: BTreeMap<String, TreeEntry> = repo
+        .tree_at(spec.ours)?
+        .into_iter()
+        .map(|f| (f.path.clone(), TreeEntry::stored(f.path, f.object, f.kind)))
+        .collect();
+    let theirs_tree: BTreeMap<String, crate::tree::TreeFile> = repo
+        .tree_at(spec.theirs)?
+        .into_iter()
+        .map(|f| (f.path.clone(), f))
+        .collect();
+
+    for file in &plan.files {
+        let path = file.path.clone();
+        match (&file.change, resolutions.get(&file.path)) {
+            (PlannedChange::Conflict { .. } | PlannedChange::KeepOurs, Some(resolution)) => {
+                match resolution {
+                    Resolution::Ours => {}
+                    Resolution::Theirs => match theirs_tree.get(&path) {
+                        Some(t) => {
+                            tree.insert(
+                                path.clone(),
+                                TreeEntry::stored(path, t.object.clone(), t.kind),
+                            );
+                        }
+                        None => {
+                            tree.remove(&path);
+                        }
+                    },
+                    Resolution::Content(bytes) => {
+                        let kind = tree
+                            .get(&path)
+                            .map(|e| e.kind)
+                            .or_else(|| theirs_tree.get(&path).map(|t| t.kind))
+                            .unwrap_or(FileKind::Regular);
+                        tree.insert(
+                            path.clone(),
+                            TreeEntry {
+                                path,
+                                content: Content::Bytes(bytes.clone()),
+                                kind,
+                            },
+                        );
+                    }
+                    Resolution::Delete => {
+                        tree.remove(&path);
+                    }
+                }
+            }
+            (PlannedChange::KeepOurs, None) => {}
+            (PlannedChange::Delete, _) => {
+                tree.remove(&path);
+            }
+            (PlannedChange::Take { object, mode, .. }, _) => {
+                tree.insert(
+                    path.clone(),
+                    TreeEntry::stored(path, object.clone(), FileKind::from_mode(*mode)),
+                );
+            }
+            (PlannedChange::AutoMerge { content, mode }, _) => {
+                tree.insert(
+                    path.clone(),
+                    TreeEntry {
+                        path,
+                        content: Content::Bytes(content.clone()),
+                        kind: FileKind::from_mode(*mode),
+                    },
+                );
+            }
+            // Unresolved conflicts were rejected above.
+            (PlannedChange::Conflict { .. }, None) => unreachable!("conflicts checked"),
+        }
+    }
+
+    guard.save_tree(SaveTree {
+        branch: spec.branch,
+        parent: Some(spec.ours),
+        merge_parent: Some(spec.theirs),
+        message: spec.message,
+        entries: tree.into_values().collect(),
+        meta: spec.meta,
+        author: spec.author,
+        timestamp_ms: spec.timestamp_ms,
+        renames: &[],
+    })
 }
 
 /// The most recent snapshot reachable from both `a` and `b`.

@@ -10686,6 +10686,254 @@ line three CHANGED
         })
         .unwrap();
     }
+
+    // ─── merge::commit and save::Options.meta ────────────────────────────────
+
+    mod merge_commit {
+        use super::*;
+        use crate::commands::merge::{self, MergeCommit, Resolution};
+        use crate::tree::{SaveTree, TreeEntry};
+
+        fn put(
+            g: &crate::WriteGuard,
+            branch: &str,
+            parent: Option<&SnapshotId>,
+            files: &[(&str, &str)],
+            ts: i64,
+        ) -> SnapshotId {
+            let branch = branch_name(branch);
+            g.save_tree(SaveTree {
+                branch: &branch,
+                parent,
+                merge_parent: None,
+                message: "t",
+                entries: files
+                    .iter()
+                    .map(|(p, c)| TreeEntry::file(*p, c.as_bytes().to_vec()))
+                    .collect(),
+                meta: SnapshotMeta::new(),
+                author: None,
+                timestamp_ms: Some(ts),
+                renames: &[],
+            })
+            .unwrap()
+        }
+
+        /// base, ours, theirs where `c.txt` conflicts and `m.txt` auto-merges.
+        fn diverged(g: &crate::WriteGuard) -> (SnapshotId, SnapshotId, SnapshotId) {
+            let m = "1\n2\n3\n4\n5\n6\n7\n";
+            let base = put(
+                g,
+                "base",
+                None,
+                &[("m.txt", m), ("c.txt", "base\n"), ("gone.txt", "x\n")],
+                1,
+            );
+            let ours = put(
+                g,
+                "ours",
+                Some(&base),
+                &[
+                    ("m.txt", "ONE\n2\n3\n4\n5\n6\n7\n"),
+                    ("c.txt", "ours\n"),
+                    ("gone.txt", "x\n"),
+                ],
+                2,
+            );
+            let theirs = put(
+                g,
+                "theirs",
+                Some(&base),
+                &[
+                    ("m.txt", "1\n2\n3\n4\n5\n6\nSEVEN\n"),
+                    ("c.txt", "theirs\n"),
+                    ("added.txt", "new\n"),
+                ],
+                3,
+            );
+            (base, ours, theirs)
+        }
+
+        fn spec<'a>(
+            branch: &'a crate::BranchName,
+            ours: &'a SnapshotId,
+            theirs: &'a SnapshotId,
+            resolutions: &'a [(String, Resolution)],
+        ) -> MergeCommit<'a> {
+            MergeCommit {
+                branch,
+                ours,
+                theirs,
+                resolutions,
+                message: "merge",
+                meta: SnapshotMeta::new(),
+                author: None,
+                timestamp_ms: Some(10),
+            }
+        }
+
+        #[test]
+        fn clean_and_resolved_merges_record_the_expected_tree() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let guard = repo.write().unwrap();
+            let (_b, ours, theirs) = diverged(&guard);
+            let branch = branch_name("ours");
+
+            // (c) unresolved conflict
+            let err = merge::commit(&guard, spec(&branch, &ours, &theirs, &[])).unwrap_err();
+            match err {
+                VeloError::Conflicts { paths } => {
+                    assert_eq!(paths, vec![PathBuf::from("c.txt")])
+                }
+                other => panic!("got {:?}", other),
+            }
+
+            // (b) Content, and (a) the rest of the tree
+            let res = [("c.txt".to_string(), Resolution::Content(b"mine\n".to_vec()))];
+            let id = merge::commit(&guard, spec(&branch, &ours, &theirs, &res)).unwrap();
+            let read = |p: &str| String::from_utf8(repo.read_file_at(&id, p).unwrap()).unwrap();
+            assert_eq!(read("c.txt"), "mine\n");
+            assert_eq!(read("m.txt"), "ONE\n2\n3\n4\n5\n6\nSEVEN\n");
+            assert_eq!(read("added.txt"), "new\n");
+            let paths: Vec<String> = repo
+                .tree_at(&id)
+                .unwrap()
+                .into_iter()
+                .map(|f| f.path)
+                .collect();
+            assert!(!paths.contains(&"gone.txt".to_string()), "{:?}", paths);
+            let snap = repo.snapshot(&id).unwrap();
+            assert_eq!(snap.parent.as_ref(), Some(&ours));
+            assert_eq!(snap.merge_parent.as_ref(), Some(&theirs));
+
+            // (e) settled: theirs is now the base, and the next plan is empty
+            assert_eq!(
+                merge::merge_base(&repo, &id, &theirs).unwrap(),
+                Some(theirs.clone())
+            );
+            assert!(merge::plan(&repo, &id, &theirs).unwrap().files.is_empty());
+            let again = merge::commit(&guard, spec(&branch, &id, &theirs, &[])).unwrap_err();
+            assert!(
+                matches!(again, VeloError::InvalidInput { .. }),
+                "{:?}",
+                again
+            );
+        }
+
+        #[test]
+        fn theirs_resolution_takes_their_object() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let guard = repo.write().unwrap();
+            let (_b, ours, theirs) = diverged(&guard);
+            let branch = branch_name("ours");
+            let res = [("c.txt".to_string(), Resolution::Theirs)];
+            let id = merge::commit(&guard, spec(&branch, &ours, &theirs, &res)).unwrap();
+            assert_eq!(repo.read_file_at(&id, "c.txt").unwrap(), b"theirs\n");
+        }
+
+        #[test]
+        fn bad_resolutions_are_invalid_input() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let guard = repo.write().unwrap();
+            let (_b, ours, theirs) = diverged(&guard);
+            let branch = branch_name("ours");
+            let untouched = [
+                ("c.txt".to_string(), Resolution::Ours),
+                ("gone.txt".to_string(), Resolution::Ours),
+            ];
+            let err = merge::commit(&guard, spec(&branch, &ours, &theirs, &untouched)).unwrap_err();
+            assert!(matches!(err, VeloError::InvalidInput { .. }), "{:?}", err);
+            let twice = [
+                ("c.txt".to_string(), Resolution::Ours),
+                ("c.txt".to_string(), Resolution::Theirs),
+            ];
+            let err = merge::commit(&guard, spec(&branch, &ours, &theirs, &twice)).unwrap_err();
+            assert!(matches!(err, VeloError::InvalidInput { .. }), "{:?}", err);
+        }
+
+        #[test]
+        fn commit_leaves_parent_alone() {
+            let (_tmp, root) = setup();
+            write(&root, "f.txt", "one");
+            save(&root, "first");
+            let before = parent(&root);
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let guard = repo.write().unwrap();
+            let (_b, ours, theirs) = diverged(&guard);
+            let branch = branch_name("ours");
+            let res = [("c.txt".to_string(), Resolution::Ours)];
+            merge::commit(&guard, spec(&branch, &ours, &theirs, &res)).unwrap();
+            assert_eq!(parent(&root), before);
+            assert!(!root.join("c.txt").exists());
+        }
+
+        #[test]
+        fn save_records_caller_metadata_and_amend_keeps_the_supplied_pair() {
+            let (_tmp, root) = setup();
+            let meta = || {
+                let mut m = SnapshotMeta::new();
+                m.set("app", "run", "42").unwrap();
+                m
+            };
+            write(&root, "f.txt", "one");
+            let first = with_write(&root, |g| {
+                commands::save::run(
+                    g,
+                    Some("s"),
+                    commands::save::Options {
+                        meta: meta(),
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap()
+            .into_result()
+            .unwrap()
+            .hash;
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let stored = repo.snapshot_meta(&first).unwrap();
+            assert_eq!(stored.get("app", "run"), Some("42"));
+            assert!(commands::fsck::check(&repo)
+                .unwrap()
+                .problems
+                .iter()
+                .all(|p| !matches!(p, commands::fsck::Problem::IdMismatch { .. })));
+            drop(repo);
+
+            // (h) amend with new meta
+            write(&root, "f.txt", "two");
+            let mut other = SnapshotMeta::new();
+            other.set("app", "run", "43").unwrap();
+            let amended = with_write(&root, |g| {
+                commands::save::run(
+                    g,
+                    None,
+                    commands::save::Options {
+                        amend: true,
+                        meta: other,
+                        ..Default::default()
+                    },
+                )
+            })
+            .unwrap()
+            .into_result()
+            .unwrap()
+            .hash;
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            assert_eq!(
+                repo.snapshot_meta(&amended).unwrap().get("app", "run"),
+                Some("43")
+            );
+            assert!(commands::fsck::check(&repo)
+                .unwrap()
+                .problems
+                .iter()
+                .all(|p| !matches!(p, commands::fsck::Problem::IdMismatch { .. })));
+        }
+    }
 }
 
 // =============================================================================

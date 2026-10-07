@@ -105,7 +105,7 @@ impl FileKind {
         }
     }
 
-    fn from_mode(mode: i64) -> FileKind {
+    pub(crate) fn from_mode(mode: i64) -> FileKind {
         match mode {
             storage::MODE_EXEC => FileKind::Executable,
             storage::MODE_SYMLINK => FileKind::Symlink,

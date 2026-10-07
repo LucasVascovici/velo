@@ -77,6 +77,13 @@ pub struct Options<'a> {
     /// Who is saving. Recorded in the reserved metadata namespace, so it is part
     /// of the snapshot's identity — see [`Author`].
     pub author: Option<&'a Author>,
+    /// App-namespaced metadata to attach, hashed into the snapshot's id exactly
+    /// as [`WriteGuard::save_tree`] does. Empty by default.
+    ///
+    /// The author is applied on top, so it always wins the reserved keys. When
+    /// amending, the new snapshot carries this plus the author, as a fresh save
+    /// would: the replaced snapshot's metadata is **not** carried forward.
+    pub meta: SnapshotMeta,
     /// Where to report hashing progress, overriding the repository's observer.
     pub observer: Option<&'a dyn Observer>,
     /// Checked while hashing. A cancelled save records nothing.
@@ -93,6 +100,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         amend,
         paths,
         author,
+        meta,
         observer,
         cancel,
     } = options;
@@ -304,9 +312,9 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     tree.extend(hashed_files.iter().cloned());
 
     // ── Content-addressed snapshot id ─────────────────────────────────────────
-    // Authorship is the only metadata `velo save` records. A consumer that
-    // wants more builds the snapshot through `WriteGuard::save_tree`.
-    let mut snapshot_meta = SnapshotMeta::new();
+    // Caller metadata first, then authorship on top so the author always wins
+    // the reserved keys.
+    let mut snapshot_meta = meta;
     if let Some(author) = author {
         snapshot_meta.set_author(author);
     }
