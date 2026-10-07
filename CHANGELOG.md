@@ -43,6 +43,60 @@ or deleted.
   argument that put the author on `LineOrigin`: the column is in the row the
   walk already reads, and otherwise every consumer writes the same lookup.
 
+### Added — Phase 14
+
+- **Metadata queries.** An index on `snapshot_meta`, a history filter,
+  `Repo::find_snapshots` and `velo history --where`, composing with the path
+  and ancestry scopes.
+
+- **`merge::commit`**, with `merge::Resolution` and `merge::MergeCommit`:
+  concludes a planned merge without a working tree, from a recomputed plan plus
+  the caller's resolutions. `save::Options.meta` records metadata on a save.
+
+- **Change events.** The `events` module (`Event`, `Ref`, `Listener`, an
+  `mpsc::Sender` impl) and `Repo::listening`: `Saved`, `Merged`, `RefMoved` and
+  `Imported` are delivered after commit, per handle.
+
+- **`MergeDriver`** in `velo-merge`, with `LineDriver` and `whole_file_conflict`,
+  chosen per path on the handle (`Repo::merging`) and used by plan, merge,
+  cherry-pick and rebase.
+
+- **Chunked objects** below object identity, with `gc` collecting unreferenced
+  chunks and `fsck` reporting `MissingChunk`, `CorruptChunk` and
+  `Cruft::UnreferencedChunks`.
+
+- **Compaction**: `commands::compact` and a `compactions` table, so a compacted
+  id yields `Error::Compacted` / `compacted_into` instead of `NotFound`.
+  `commands::retention` applies a tiered keep policy over it.
+
+- **HTTP sync**: `serve::http` handlers, an `HttpRemote` client behind the
+  `http` feature, and `velo serve-http` (no authentication; see the README).
+
+- **git interchange**: `velo export-git` writes a fast-import stream with Velo
+  trailers; `velo import-git` reads a fast-export stream and restores ids
+  losslessly when the trailers are present. Octopus merges are `Unsupported`.
+
+- **A second object backend**: objects as zstd blobs in the SQLite database,
+  chosen by `Repo::init_with(InitOptions)` and recorded in a `settings` table,
+  and **single-file repositories** with no working tree. Working-tree commands,
+  including `diff::between` against the tree, return `Unsupported` there.
+
+### Changed — Phase 14
+
+- **`ObjectStore`** is now the one seam behind every object access;
+  `store_raw`, `hash_and_compress` and `read_object` keep their signatures.
+- **`gc`'s trash expiry** compared the wrong way round; the cutoff is now
+  computed in Rust and bound as an integer.
+- `FileKind::from_mode` is `pub(crate)`.
+
+### Changed — repository format (Phase 14)
+
+- **Repository format v3**: large objects may be stored as chunks behind a
+  manifest, and objects may live in the database. Object hashes and bundles are
+  unchanged. `FORMAT.md` records signatures, chunked objects and compaction as
+  decisions (§10 D5 to D7, §11), documents the HTTP transport (§9.1) and updates
+  §2, §7.1 and §7.2.
+
 ### Fixed
 
 - **Blame credited a merge with everything the branch it absorbed wrote.** A

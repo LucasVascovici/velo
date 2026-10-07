@@ -1693,20 +1693,20 @@ capability, then ecosystem.** 14.1 has no code, like Phase 0, and gates 14.5 and
 
 | # | Item | Marker | Gated on |
 | :--- | :--- | :--- | :--- |
-| 14.1 | Format decisions: signatures, chunked objects, compaction | 🔴 | — |
+| 14.1 | Format decisions: signatures, chunked objects, compaction | ✅ **DONE** | — |
 | 14.2 | Language bindings: C ABI, Python, Node | 🔴 | — |
 | 14.3 | `velo-mcp` | 🔴 | — |
 | 14.4 | Pluggable merge and diff drivers | 🟡 | — |
-| 14.5 | Retention and compaction | 🟡 | 14.1 |
-| 14.6 | Querying metadata | 🟡 | — |
-| 14.7 | Chunked object storage | 🟡 | 14.1 |
-| 14.8 | Change events | 🟡 | — |
-| 14.9 | Sync beyond ssh | 🟢 | — |
-| 14.10 | git export, then import | 🟢 | — |
+| 14.5 | Retention and compaction | ✅ **DONE** | 14.1 |
+| 14.6 | Querying metadata | ✅ **DONE** | — |
+| 14.7 | Chunked object storage | ✅ **DONE** | 14.1 |
+| 14.8 | Change events | ✅ **DONE** | — |
+| 14.9 | Sync beyond ssh | ✅ **DONE** | — |
+| 14.10 | git export, then import | ✅ **DONE** | — |
 | 14.11 | WASM | 🟢 | 14.7's storage seam |
 | 14.12 | Positioning and docs | 🟡 | ships alongside 14.2 / 14.3 |
 
-## 14.1 Format decisions to make now 🔴
+## 14.1 Format decisions to make now ✅ **DONE**
 
 Decisions only, recorded in `FORMAT.md` before any code — for the reason Phase 0
 existed: each is cheap to decide today and a format break to retrofit.
@@ -1752,6 +1752,8 @@ needs a working tree is wrapping the wrong half (see 8.6).
 
 ## 14.3 `velo-mcp` 🔴
 
+*Partly landed: the store-only half the server needs — `merge::commit` concludes a planned merge without a working tree, and `save::Options.meta` records the calling run. The `velo-mcp` crate itself is not written.*
+
 An MCP server over the same surface: `save`, `restore`, `diff`, `branch`,
 `merge` (plan + apply), `blame`, `history`, `metadata`. Cheap, and it makes velo
 the checkpoint layer for any agent without that agent's author writing
@@ -1762,6 +1764,8 @@ equivalent, merges as a plan the agent must apply explicitly, and every write
 tool records the calling run in metadata so blame can name it.
 
 ## 14.4 Pluggable merge and diff drivers 🟡
+
+*Partly landed: the `MergeDriver` trait, the default `LineDriver`, and per-path drivers on the handle (`Repo::merging`), used by plan, merge, cherry-pick and rebase. The JSON, YAML and TOML drivers and driver-aware diff and blame are not.*
 
 `velo-merge` is line-based `&str → String`. Configuration, CMS content and
 low-code definitions are JSON, YAML and TOML, where a line merge produces
@@ -1776,7 +1780,7 @@ right ones.
 - Diff and blame follow the same driver, so blame can answer at key or paragraph
   granularity rather than line.
 
-## 14.5 Retention and compaction 🟡
+## 14.5 Retention and compaction ✅ **DONE**
 
 Checkpointing every agent step produces thousands of snapshots that matter for
 an hour. A retention policy ("keep everything for a day, hourly for a month,
@@ -1784,35 +1788,35 @@ then daily") and an off-branch range squash, both producing the record decided
 in 14.1. `gc` already reclaims what becomes unreachable; this decides what
 becomes unreachable.
 
-## 14.6 Querying metadata 🟡
+## 14.6 Querying metadata ✅ **DONE**
 
 "Every snapshot where `ci/status = pass`", "everything from `eval_run = 42`".
 Today a consumer walks history and calls `snapshot_meta` per entry. An index on
 `snapshot_meta (namespace, key, value)` and a query on the handle returning
 `history::Entry`s, composing with the existing ancestry and path scopes.
 
-## 14.7 Chunked object storage 🟡
+## 14.7 Chunked object storage ✅ **DONE**
 
 The implementation of 14.1's decision: content-defined chunking for objects
 above a size threshold, stored and deduplicated by chunk, reassembled behind
 `read_object`. This is the point at which a storage seam stops being
 speculative — see *Anti-goal tensions* below.
 
-## 14.8 Change events 🟡
+## 14.8 Change events ✅ **DONE**
 
 `head_token` answers "did anything change?" by polling. GUIs and webhooks want
 "what changed": a per-handle subscription delivering `Saved`, `RefMoved`,
 `Merged` as they are committed. Same-process only — cross-process notification
 stays a poll on `head_token`, which is honest about what SQLite can tell us.
 
-## 14.9 Sync beyond ssh 🟢
+## 14.9 Sync beyond ssh ✅ **DONE**
 
 ssh and `child:` serve developers; a SaaS hosting velo repositories needs an
 HTTP transport for `velo serve`, and possibly an object-store remote (S3, R2)
 for history that lives next to the rest of a product's data. Fast-forward-only
 semantics carry over unchanged.
 
-## 14.10 git export, then import 🟢
+## 14.10 git export, then import ✅ **DONE**
 
 Phase 9 deferred the importer because nothing needed it. For adoption the
 **exporter** matters more: it answers "can I leave if this doesn't work out?",
@@ -1820,6 +1824,8 @@ which is the question an evaluator asks before trusting a history format.
 Metadata and rename edges have no git home and would go into trailers.
 
 ## 14.11 WASM 🟢
+
+*Partly landed: the storage seam and a second backend — objects in SQLite, and single-file repositories with no `.velo` directory. The WASM build and an IndexedDB or OPFS backend are not.*
 
 Browser-based local-first apps. SQLite in WASM is workable, but objects on disk
 are not — this needs the storage seam 14.7 introduces, with an IndexedDB or OPFS
@@ -1836,6 +1842,32 @@ each runnable against the bindings.
 The "vibe-coded for fun, not production-grade" note stays until velo is in the
 production state that also gates publishing. Removing it is part of that
 milestone, not of this phase.
+
+## What landed
+
+Seven of the twelve items, and the seams under three more.
+
+14.1 was decisions only: signatures, chunked objects and compaction records are
+written down in `FORMAT.md` §10 and §11 before the code that needed them.
+Chunking went in exactly as decided, **below object identity** (14.7): a hash is
+still the hash of the full content, chunks are a storage detail, and `gc` and
+`fsck` know about them. No tree, snapshot id or bundle reader changed.
+
+The storage seam arrived with the first thing that needed it, as the anti-goal
+required — one `ObjectStore` behind every object access — and the second
+backend (objects in SQLite, chosen at `init`, up to a single-file repository)
+turned the speculative trait into a real one.
+
+Compaction (14.5) leaves the old-id to new-id record the format decision asked
+for, so a held id gets `Error::Compacted` rather than `NotFound`; retention is a
+policy over that one primitive. Metadata queries (14.6), change events (14.8,
+same process only, after commit), HTTP sync (14.9, with `velo serve-http` as a
+reference server and no auth) and git export and import (14.10, lossless
+through Velo trailers) are as briefed.
+
+Not landed: bindings (14.2), the `velo-mcp` crate (14.3, though `merge::commit`
+and `save::Options.meta` are its store-only prerequisites), key-aware merge
+drivers (14.4), WASM (14.11) and the positioning work (14.12).
 
 ## Anti-goal tensions
 
