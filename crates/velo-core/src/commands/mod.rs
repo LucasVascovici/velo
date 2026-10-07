@@ -749,6 +749,7 @@ pub(crate) fn reconcile_file(
     anc: FileRef,
     our: FileRef,
     thr: FileRef,
+    driver: &dyn velo_merge::MergeDriver,
 ) -> Result<Reconcile> {
     // Identical on both sides (content AND mode) — nothing to bring in.
     if thr == our {
@@ -810,16 +811,16 @@ pub(crate) fn reconcile_file(
         return Ok(Reconcile::Conflict); // binary — cannot auto-merge
     }
 
-    match velo_merge::try_auto_merge(
+    match driver.merge(
         &String::from_utf8_lossy(&anc_bytes),
         &String::from_utf8_lossy(&our_bytes),
         &String::from_utf8_lossy(&thr_bytes),
     ) {
-        Some(merged) => Ok(Reconcile::AutoMerged {
+        velo_merge::MergeResult::Clean(merged) => Ok(Reconcile::AutoMerged {
             content: merged.into_bytes(),
             mode: thr.1,
         }),
-        None => Ok(Reconcile::Conflict),
+        _ => Ok(Reconcile::Conflict),
     }
 }
 

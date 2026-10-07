@@ -29,6 +29,9 @@ pub struct Repo {
     /// Which paths count as the working tree. Everything, unless narrowed via
     /// [`Repo::scoped`].
     scope: crate::Scope,
+    /// Which merge driver handles which path. Line-based diff3 for everything,
+    /// unless set via [`Repo::merging`].
+    drivers: crate::Drivers,
 }
 
 impl std::fmt::Debug for Repo {
@@ -87,6 +90,7 @@ impl Repo {
             conn,
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
+            drivers: crate::Drivers::new(),
         })
     }
 
@@ -124,6 +128,7 @@ impl Repo {
             conn,
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
+            drivers: crate::Drivers::new(),
         })
     }
 
@@ -191,6 +196,33 @@ impl Repo {
     pub fn scoped(mut self, scope: crate::Scope) -> Self {
         self.scope = scope;
         self
+    }
+
+    /// Choose merge drivers by path pattern.
+    ///
+    /// Like a [`Scope`](crate::Scope), this lives on the handle rather than on
+    /// one merge: which files are JSON is a property of the repository, not of
+    /// one merge. Plan, merge, cherry-pick and rebase all consult it, so they
+    /// cannot disagree about how a file is merged.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// use velo_core::{Drivers, Repo};
+    /// use velo_merge::LineDriver;
+    ///
+    /// let repo = Repo::discover(std::path::Path::new("."))?
+    ///     .merging(Drivers::new().with("*.cfg", LineDriver)?);
+    /// # let _ = repo;
+    /// # Ok(()) }
+    /// ```
+    pub fn merging(mut self, drivers: crate::Drivers) -> Self {
+        self.drivers = drivers;
+        self
+    }
+
+    /// The handle's merge drivers.
+    pub(crate) fn drivers(&self) -> &crate::Drivers {
+        &self.drivers
     }
 
     /// The handle's scope, for the directory walk.

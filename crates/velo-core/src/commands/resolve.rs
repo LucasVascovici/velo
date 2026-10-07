@@ -132,6 +132,11 @@ pub fn open_session(repo: &Repo, file: ConflictFile) -> Result<ConflictSession> 
     let theirs = read_text(&objects_dir, &file.their_hash)?;
 
     let mut hunks = compute_conflict_hunks(&ancestor, &ours, &theirs);
+    if hunks.is_empty() {
+        // The conflict was raised by a merge driver for something diff3 sees as
+        // clean; give the session the whole file to decide.
+        hunks = velo_merge::whole_file_conflict(&ancestor, &ours, &theirs);
+    }
     for h in &mut hunks {
         if let Ok((kind, manual)) = conn.query_row(
             "SELECT decision, manual_content FROM hunk_decisions

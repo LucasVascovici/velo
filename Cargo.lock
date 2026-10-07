@@ -1015,6 +1015,7 @@ dependencies = [
  "blake3",
  "chrono",
  "fs2",
+ "globset",
  "ignore",
  "memmap2",
  "parking_lot",
