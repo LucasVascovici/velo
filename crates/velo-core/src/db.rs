@@ -142,6 +142,20 @@ const SCHEMA: &str = "
         compacted_at_ms INTEGER NOT NULL
     );
 
+    -- Repository settings. `objects` = 'database' puts object content in the
+    -- `objects` table below; no row means files under .velo/objects.
+    CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+
+    -- Object content when the repository's object location is the database:
+    -- one zstd frame of the full content per object (docs/FORMAT.md 7.2).
+    CREATE TABLE IF NOT EXISTS objects (
+        hash TEXT PRIMARY KEY,
+        data BLOB NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
     CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
     CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at_ms);

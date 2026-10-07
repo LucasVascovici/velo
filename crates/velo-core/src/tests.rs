@@ -13886,3 +13886,335 @@ mod retention_policy {
         healthy(&repo);
     }
 }
+
+// =============================================================================
+// Objects stored in the database (14.11-a)
+// =============================================================================
+#[cfg(test)]
+mod database_objects {
+    use crate::commands::{self, fsck::Problem};
+    use crate::{db, BranchName, Repo, SnapshotId, SnapshotMeta};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use tempfile::TempDir;
+
+    fn with_repo<T>(root: &Path, f: impl FnOnce(&Repo) -> T) -> T {
+        let repo = Repo::open_and_migrate(root).expect("open repository");
+        f(&repo)
+    }
+
+    fn with_write<T>(root: &Path, f: impl FnOnce(&crate::WriteGuard) -> T) -> T {
+        let repo = Repo::open_and_migrate(root).expect("open repository");
+        let guard = repo.write().expect("take write lock");
+        f(&guard)
+    }
+
+    fn setup() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        commands::init::run(&path).unwrap();
+        (tmp, path)
+    }
+
+    fn write(root: &Path, rel: &str, content: &str) {
+        let p = root.join(rel);
+        if let Some(d) = p.parent() {
+            fs::create_dir_all(d).unwrap();
+        }
+        fs::write(p, content).unwrap();
+    }
+
+    fn read(root: &Path, rel: &str) -> String {
+        fs::read_to_string(root.join(rel)).unwrap()
+    }
+
+    fn sid(hash: impl AsRef<str>) -> SnapshotId {
+        SnapshotId::from_stored(hash.as_ref())
+    }
+
+    fn branch_name(name: &str) -> BranchName {
+        name.parse().expect("valid branch name")
+    }
+
+    fn save(root: &Path, msg: &str) -> String {
+        with_write(root, |g| {
+            commands::save::run(g, Some(msg), commands::save::Options::default())
+        })
+        .unwrap();
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        conn.query_row(
+            "SELECT hash FROM snapshots ORDER BY rowid DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn snapshot_exists(root: &Path, hash: &str) -> bool {
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+            [hash],
+            |r| r.get::<_, bool>(0),
+        )
+        .unwrap()
+    }
+
+    // =========================================================================
+    // Database object location (docs/FORMAT.md 7.2)
+    // =========================================================================
+
+    /// A repository whose objects live in `velo.db` rather than in files.
+    fn setup_db() -> (TempDir, PathBuf) {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().to_path_buf();
+        crate::commands::init::run_with(
+            &path,
+            crate::InitOptions::new().objects(crate::ObjectLocation::Database),
+        )
+        .unwrap();
+        (tmp, path)
+    }
+
+    /// Plain files under `.velo/objects`; zero when the directory is absent.
+    fn object_file_count(root: &Path) -> usize {
+        fs::read_dir(root.join(".velo/objects"))
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .filter(|e| e.path().is_file())
+                    .count()
+            })
+            .unwrap_or(0)
+    }
+
+    fn object_rows(root: &Path) -> i64 {
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        conn.query_row("SELECT count(*) FROM objects", [], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn database_objects_round_trip_through_the_tree_api() {
+        use crate::tree::{SaveTree, TreeEntry};
+        let (_tmp, root) = setup_db();
+        let repo = Repo::open(&root).unwrap();
+        assert_eq!(repo.object_location(), crate::ObjectLocation::Database);
+        let branch = branch_name("main");
+        let snap = {
+            let guard = repo.write().unwrap();
+            guard
+                .save_tree(SaveTree {
+                    branch: &branch,
+                    parent: None,
+                    merge_parent: None,
+                    message: "in the database",
+                    entries: vec![
+                        TreeEntry::file("a.txt", b"alpha\n".to_vec()),
+                        TreeEntry::file("dir/b.txt", b"beta\n".to_vec()),
+                    ],
+                    meta: SnapshotMeta::new(),
+                    author: None,
+                    timestamp_ms: Some(1_000),
+                    renames: &[],
+                })
+                .unwrap()
+        };
+        let tree = repo.tree_at(&snap).unwrap();
+        assert_eq!(tree.len(), 2);
+        assert_eq!(repo.read_file_at(&snap, "a.txt").unwrap(), b"alpha\n");
+        assert_eq!(repo.read_file_at(&snap, "dir/b.txt").unwrap(), b"beta\n");
+
+        assert_eq!(object_file_count(&root), 0, "no object files on disk");
+        assert_eq!(object_rows(&root), 2);
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let setting: String = conn
+            .query_row(
+                "SELECT value FROM settings WHERE key = 'objects'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(setting, "database");
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    #[test]
+    fn database_objects_survive_a_parallel_working_tree_save_and_restore() {
+        let (_tmp, root) = setup_db();
+        for i in 0..150 {
+            write(
+                &root,
+                &format!("d{}/f{}.txt", i % 7, i),
+                &format!("content of file {i}\n"),
+            );
+        }
+        let snap = save(&root, "many files");
+        assert_eq!(object_file_count(&root), 0);
+        assert_eq!(object_rows(&root), 151, "150 files and .veloignore");
+
+        // Wipe the working files, then bring them back from the database.
+        for i in 0..150 {
+            fs::remove_file(root.join(format!("d{}/f{}.txt", i % 7, i))).unwrap();
+        }
+        with_write(&root, |vr| {
+            commands::restore::run(
+                vr,
+                &sid(&snap),
+                commands::restore::Options {
+                    force: true,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+        for i in 0..150 {
+            assert_eq!(
+                read(&root, &format!("d{}/f{}.txt", i % 7, i)),
+                format!("content of file {i}\n")
+            );
+        }
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    #[test]
+    fn a_bundle_moves_between_object_locations_with_the_same_ids() {
+        let bd = TempDir::new().unwrap();
+        for (from_db, to_db) in [(false, true), (true, false)] {
+            let (_ta, a) = if from_db { setup_db() } else { setup() };
+            write(&a, "f.txt", "v1\n");
+            save(&a, "s1");
+            write(&a, "f.txt", "v2\n");
+            write(&a, "g.txt", "second\n");
+            let tip = save(&a, "s2");
+
+            let bundle = bd.path().join(format!("{from_db}.velo"));
+            with_repo(&a, |vr| commands::bundle::create(vr, &bundle, None)).unwrap();
+
+            let (_tb, b) = if to_db { setup_db() } else { setup() };
+            with_write(&b, |vr| commands::bundle::apply(vr, &bundle)).unwrap();
+
+            assert!(snapshot_exists(&b, &tip), "same snapshot id on both sides");
+            let repo_b = Repo::open(&b).unwrap();
+            assert_eq!(repo_b.read_file_at(&sid(&tip), "f.txt").unwrap(), b"v2\n");
+            assert_eq!(
+                repo_b.read_file_at(&sid(&tip), "g.txt").unwrap(),
+                b"second\n"
+            );
+            assert!(commands::fsck::check(&repo_b).unwrap().is_healthy());
+            if to_db {
+                assert_eq!(object_file_count(&b), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn gc_removes_unreferenced_database_objects() {
+        let (_tmp, root) = setup_db();
+        write(&root, "f.txt", "main\n");
+        save(&root, "main save");
+        write(&root, "only_in_the_second.txt", "second only\n");
+        save(&root, "second save");
+        // Undo moves the snapshot to the trash, where `keep_days: 0` expires it
+        // and leaves its object unreferenced.
+        with_write(&root, commands::undo::run).unwrap();
+        let before = object_rows(&root);
+
+        let collected = with_write(&root, |vr| {
+            commands::gc::run(
+                vr,
+                commands::gc::Options {
+                    keep_days: 0,
+                    ..Default::default()
+                },
+            )
+        })
+        .unwrap();
+        assert!(collected.objects >= 1, "{collected:?}");
+        assert!(object_rows(&root) < before, "rows were removed");
+        assert!(with_repo(&root, commands::fsck::check)
+            .unwrap()
+            .is_healthy());
+    }
+
+    #[test]
+    fn fsck_reports_a_tampered_database_blob() {
+        let (_tmp, root) = setup_db();
+        write(&root, "f.txt", "genuine\n");
+        save(&root, "s1");
+        let hash: String = {
+            let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+            let frame = zstd::encode_all(&b"tampered"[..], 1).unwrap();
+            let hash: String = conn
+                .query_row("SELECT hash FROM objects LIMIT 1", [], |r| r.get(0))
+                .unwrap();
+            conn.execute("UPDATE objects SET data = ?", [frame])
+                .unwrap();
+            hash
+        };
+        let report = with_repo(&root, commands::fsck::check).unwrap();
+        assert!(
+            report.problems.iter().any(|p| matches!(
+                p,
+                Problem::CorruptObject { hash: h, .. } if *h == hash
+            )),
+            "expected CorruptObject for {hash}, got {:?}",
+            report.problems
+        );
+    }
+
+    #[test]
+    fn the_object_location_is_remembered_across_opens() {
+        let (_tmp, root) = setup_db();
+        assert_eq!(
+            Repo::open(&root).unwrap().object_location(),
+            crate::ObjectLocation::Database
+        );
+        assert_eq!(
+            Repo::open_and_migrate(&root).unwrap().object_location(),
+            crate::ObjectLocation::Database
+        );
+        let (_tmp2, files) = setup();
+        assert_eq!(
+            Repo::open(&files).unwrap().object_location(),
+            crate::ObjectLocation::Files
+        );
+        // `init` is `init_with` the defaults.
+        let tmp3 = TempDir::new().unwrap();
+        assert_eq!(
+            Repo::init(tmp3.path()).unwrap().object_location(),
+            crate::ObjectLocation::Files
+        );
+    }
+
+    #[test]
+    fn a_repository_without_a_settings_row_keeps_its_objects_in_files() {
+        let (_tmp, root) = setup();
+        write(&root, "f.txt", "x\n");
+        save(&root, "s1");
+        let conn = db::get_conn_at_path(&root.join(".velo/velo.db")).unwrap();
+        let rows: i64 = conn
+            .query_row("SELECT count(*) FROM settings", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
+
+        // A repository written before the tables existed has neither of them.
+        conn.execute_batch("DROP TABLE settings; DROP TABLE objects;")
+            .unwrap();
+        drop(conn);
+        assert_eq!(
+            Repo::open(&root).unwrap().object_location(),
+            crate::ObjectLocation::Files
+        );
+        // Migrating again is idempotent and does not change the answer.
+        let migrated = Repo::open_and_migrate(&root).unwrap();
+        assert_eq!(migrated.object_location(), crate::ObjectLocation::Files);
+        drop(migrated);
+        let migrated = Repo::open_and_migrate(&root).unwrap();
+        assert_eq!(migrated.object_location(), crate::ObjectLocation::Files);
+        assert!(commands::fsck::check(&migrated).unwrap().is_healthy());
+    }
+}

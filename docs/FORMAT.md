@@ -28,7 +28,8 @@ third-party tool — must conform to this document.
 .velo/
 ├── velo.db       SQLite (WAL): snapshots, trees, refs, remotes, stash, conflicts
 ├── objects/      content-addressed blobs, Zstd-compressed, named by BLAKE3 hex
-│                 (or a chunk manifest for large objects, §2.4)
+│                 (or a chunk manifest for large objects, §2.4); empty or absent
+│                 when objects live in the database (§2.5)
 ├── chunks/       v3: deduplicated chunks of large objects, named by BLAKE3 hex
 ├── HEAD          current branch name (text, no trailing newline required)
 ├── PARENT        snapshot id the working tree is based on ("" if unborn)
@@ -56,6 +57,11 @@ The two cannot be confused: a Zstd frame starts `28 B5 2F FD`, a manifest starts
 
 Object naming is unchanged between v1, v2 and v3: the name is always the hash
 of the full content, never of what is on disk.
+
+A v3 repository holds its objects in one of two **locations**, recorded in the
+`settings` table (§7.2) and fixed when the repository is created: files, as
+described above, or the database (§2.5). Everything else in this document is
+independent of the location.
 
 ### 2.1 Content normalisation
 
@@ -121,6 +127,22 @@ A chunk is live only while some object's manifest names it. Unreferenced chunks
 are collectable: `velo gc` removes every chunk that no surviving manifest lists
 (a chunk shared with a surviving object always stays), and `velo fsck` reports
 them as cruft, not corruption, which `--repair` removes.
+
+---
+
+### 2.5 Objects in the database (v3)
+
+When the `settings` row `objects` is `database`, objects are rows of the
+`objects` table (§7.2) instead of files: `hash` is the same 64-hex BLAKE3 of
+the full normalised content, and `data` is one Zstd frame (level 1) of it, i.e.
+exactly form (a) of §2. There is no chunking in this location: chunk
+deduplication is a disk-layout optimisation, and in the database the unit of
+storage is the SQLite page. `.velo/objects/` and `.velo/chunks/` are unused.
+
+The integrity invariant (§2.3) is unchanged: `data` must decode and hash to its
+row's `hash`. `velo gc` deletes rows no snapshot references, `velo fsck`
+verifies them, and bundles and sync carry the same frames either way, so a
+bundle from one location applies into the other with identical snapshot ids.
 
 ---
 
@@ -256,7 +278,7 @@ tie-break on a stable secondary key (`rowid`) when timestamps collide.
 | :--- | :--- |
 | **v1** | **No version marker.** Migrations sniff `pragma_table_info(...)` and add missing columns. There is no way to detect a repository written by a *newer* implementation. |
 | **v2** | `PRAGMA user_version` holds the repository format version, stamped when the database is created. |
-| **v3** | Same marker, stamped `3`. Adds the `.velo/chunks/` directory; the schema is unchanged. |
+| **v3** | Same marker, stamped `3`. Adds the `.velo/chunks/` directory and the additive `settings` and `objects` tables (§7.2); a v3 repository may keep its objects in files or in the database. |
 
 The v1 `ALTER TABLE` sniffing migrations are gone. They existed only to bring a v1
 repository forward, and v2 refuses to open one, so keeping them would have meant
@@ -300,6 +322,8 @@ Present in v1 and v2 (v2 additions marked):
 | `remote_refs` | last-known remote tips: `(remote, branch)` → `hash` |
 | `renames` | **v2** — rename edges: `(snapshot_hash, to_path)`(PK), `from_path` (§7.3) |
 | `pending_renames` | **v2** — working-tree moves awaiting a save: `to_path`(PK), `from_path`; **derived**, safe to delete |
+| `settings` | **v3, additive** — `key`(PK) → `value`. The one key today is `objects`: `database` when objects live in the `objects` table (§2.5). A missing row, or a missing table, means files, which is every repository created before the setting existed. Written once at creation |
+| `objects` | **v3, additive** — `hash`(PK), `data` BLOB: one Zstd frame of the full object content (§2.5). Empty unless `settings.objects` is `database` |
 | `compactions` | **v3, additive** — `old_hash`(PK) → `new_hash`, `compacted_at_ms`: one row per snapshot id that compaction removed or re-minted (§11.3); **local only**, never collected by `gc`, not in bundles |
 
 Indexes are performance-only and may be rebuilt: `idx_filemap_snap`,
@@ -485,6 +509,12 @@ Additive and in place. `open_and_migrate` creates `.velo/chunks/` and stamps
 valid as form (a) frames, and only objects stored from then on may be chunked.
 Peers need not migrate together, since the bundle and sync wire formats are
 unchanged. Older builds refuse a v3 repository with `SchemaTooNew`, per §7.1.
+
+A v3 repository may hold its objects in files or in the database (§2.5); the
+choice is recorded in `settings` when it is created. Migration creates the
+`settings` and `objects` tables (`CREATE TABLE IF NOT EXISTS`, so it is
+idempotent) but never writes a setting row: an existing repository has none and
+stays in the files location.
 
 ---
 

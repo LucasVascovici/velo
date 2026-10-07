@@ -34,6 +34,8 @@ pub struct Repo {
     drivers: crate::Drivers,
     /// Who hears about commits made through this handle. See [`crate::events`].
     listeners: Vec<Box<dyn crate::events::Listener>>,
+    /// Where objects live, read once when the handle opens.
+    object_location: crate::ObjectLocation,
 }
 
 impl std::fmt::Debug for Repo {
@@ -50,8 +52,20 @@ impl Repo {
     /// Fails with [`Error::AlreadyInitialized`] if one exists there, or
     /// [`Error::NestedRepo`] if an enclosing repository is found.
     pub fn init(root: &Path) -> Result<Self> {
-        crate::commands::init::run(root)?;
+        Self::init_with(root, crate::InitOptions::default())
+    }
+
+    /// Create a repository at `root` with explicit [`InitOptions`], such as
+    /// keeping objects in the database. The choice is recorded and cannot be
+    /// changed afterwards.
+    pub fn init_with(root: &Path, options: crate::InitOptions) -> Result<Self> {
+        crate::commands::init::run_with(root, options)?;
         Self::open(root)
+    }
+
+    /// Where this repository keeps its objects.
+    pub fn object_location(&self) -> crate::ObjectLocation {
+        self.object_location
     }
 
     /// Open the repository rooted exactly at `root` (i.e. `root/.velo` must
@@ -87,6 +101,7 @@ impl Repo {
             }
             _ => {}
         }
+        let object_location = crate::ObjectLocation::read(&conn)?;
         Ok(Repo {
             root: root.to_path_buf(),
             conn,
@@ -94,6 +109,7 @@ impl Repo {
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
             listeners: Vec::new(),
+            object_location,
         })
     }
 
@@ -125,9 +141,13 @@ impl Repo {
                 supported: FORMAT_VERSION,
             });
         }
-        // v2 -> v3 adds the chunk directory; nothing else on disk changes.
-        std::fs::create_dir_all(root.join(".velo/chunks"))?;
         db::migrate(&conn)?;
+        // v2 -> v3 adds the chunk directory; nothing else on disk changes. A
+        // database-located repository has no object files, so no directory.
+        if crate::ObjectLocation::read(&conn)? == crate::ObjectLocation::Files {
+            std::fs::create_dir_all(root.join(".velo/chunks"))?;
+        }
+        let object_location = crate::ObjectLocation::read(&conn)?;
         Ok(Repo {
             root: root.to_path_buf(),
             conn,
@@ -135,6 +155,7 @@ impl Repo {
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
             listeners: Vec::new(),
+            object_location,
         })
     }
 
@@ -319,8 +340,13 @@ impl Repo {
     }
 
     /// The object store: the one way commands reach stored file content.
-    pub(crate) fn objects(&self) -> crate::storage::ObjectStore {
-        crate::storage::ObjectStore::at(self.root.join(".velo/objects"))
+    pub(crate) fn objects(&self) -> crate::storage::ObjectStore<'_> {
+        match self.object_location {
+            crate::ObjectLocation::Files => {
+                crate::storage::ObjectStore::at(self.root.join(".velo/objects"))
+            }
+            crate::ObjectLocation::Database => crate::storage::ObjectStore::Database(&self.conn),
+        }
     }
 
     /// The long-lived connection, for command implementations inside this crate.
