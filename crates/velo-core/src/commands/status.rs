@@ -5,6 +5,7 @@
 
 use std::fs;
 
+use crate::commands::require_working_tree;
 use crate::commands::{get_conflict_files, get_dirty_files, FileStatus};
 use crate::error::Result;
 use crate::Repo;
@@ -72,6 +73,7 @@ impl Status {
 
 /// Collect the working-tree status, optionally restricted to `paths`.
 pub fn run(repo: &Repo, paths: &[String]) -> Result<Status> {
+    require_working_tree(repo, "status")?;
     let root = repo.root();
     let branch = fs::read_to_string(root.join(".velo/HEAD"))
         .unwrap_or_else(|_| "main".into())

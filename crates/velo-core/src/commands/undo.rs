@@ -9,6 +9,7 @@ use std::fs;
 use rusqlite::OptionalExtension;
 
 use crate::commands::get_dirty_files;
+use crate::commands::require_working_tree;
 use crate::error::{InProgress, Result, VeloError};
 use crate::events::{Event, Ref};
 use crate::SnapshotId;
@@ -35,6 +36,7 @@ impl Outcome {
 
 /// Shelve the newest snapshot on the current branch.
 pub fn run(guard: &WriteGuard) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "undo")?;
     let root = guard.root();
     // A merge or rebase leaves MERGE_HEAD / REBASE_STATE and conflict rows
     // behind; removing the tip underneath them produces an inconsistent

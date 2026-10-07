@@ -5,8 +5,6 @@
 //! in `velo-cli`.
 
 use chrono::{DateTime, Utc};
-use std::fs;
-use std::path::Path;
 
 use rusqlite::params;
 
@@ -40,7 +38,7 @@ pub struct Branch {
 /// so a fresh repository still lists `main`.
 pub fn list(repo: &Repo) -> Result<Vec<Branch>> {
     let conn = repo.conn();
-    let current = current_branch(repo.root());
+    let current = repo.head_branch().into_string();
 
     let mut names = crate::commands::all_branch_names(conn);
     if !names.iter().any(|b| b.trim() == current) {
@@ -83,7 +81,7 @@ pub fn list(repo: &Repo) -> Result<Vec<Branch>> {
 /// can be deleted at all.
 pub fn delete(guard: &WriteGuard, name: &BranchName) -> Result<()> {
     let conn = guard.conn();
-    let current = current_branch(guard.root());
+    let current = guard.repo().head_branch().into_string();
 
     if name.trim() == current {
         return Err(VeloError::invalid(format!(
@@ -190,11 +188,4 @@ fn require_snapshot(conn: &rusqlite::Connection, id: &SnapshotId) -> Result<()> 
     } else {
         Err(VeloError::not_found(RefKind::Snapshot, id.as_str()))
     }
-}
-
-fn current_branch(root: &Path) -> String {
-    fs::read_to_string(root.join(".velo/HEAD"))
-        .unwrap_or_else(|_| "main".into())
-        .trim()
-        .to_string()
 }

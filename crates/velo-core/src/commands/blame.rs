@@ -388,22 +388,13 @@ fn visit_of(conn: &rusqlite::Connection, hash: &str, path: &str) -> Option<Visit
 
 /// Where a blame starts when the caller did not say.
 fn default_start(repo: &Repo) -> Result<String> {
-    let root = repo.root();
-    let position = std::fs::read_to_string(root.join(".velo/PARENT"))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if !position.is_empty() {
-        return Ok(position);
+    if let Some(position) = repo.position() {
+        return Ok(position.into_string());
     }
     // No working-tree position — which is the normal state for a consumer built
     // on `save_tree`, not an error. The branch a tip is derived for is still
     // recorded, so there is a defensible answer.
-    let branch = BranchName::from_stored(
-        std::fs::read_to_string(root.join(".velo/HEAD"))
-            .unwrap_or_else(|_| "main".into())
-            .trim(),
-    );
+    let branch = repo.head_branch();
     match repo.branch_tip(&branch)? {
         Some(tip) => Ok(tip.into_string()),
         None => Err(VeloError::UnbornBranch {

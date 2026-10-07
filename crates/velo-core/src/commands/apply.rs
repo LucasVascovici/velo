@@ -16,6 +16,7 @@ use std::path::Path;
 
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::error::Result;
 use crate::progress::Phase;
 use crate::storage;
@@ -134,6 +135,7 @@ pub fn reconcile_tree(
     ours: &Tree,
     theirs: &Tree,
 ) -> Result<Applied> {
+    require_working_tree(guard.repo(), "apply")?;
     let root = guard.root();
     let objects = guard.repo().objects();
 

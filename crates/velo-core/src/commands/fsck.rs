@@ -12,8 +12,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::fs;
-use std::path::Path;
 
 use crate::error::Result;
 use crate::progress::Phase;
@@ -317,7 +315,6 @@ pub fn repair(guard: &WriteGuard) -> Result<Report> {
 
 fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     let repair = guard.is_some();
-    let root = repo.root();
     let conn = repo.conn();
     let objects = repo.objects();
 
@@ -413,8 +410,8 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
 
     // ── 3. Refs resolve: PARENT, tags, stash ─────────────────────────────────
     let before = problems.len();
-    let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let position = position.trim();
+    let position = repo.position().map(|p| p.into_string()).unwrap_or_default();
+    let position = position.as_str();
     if !position.is_empty() && !all_snaps.contains(position) {
         problems.push(Problem::DanglingPosition {
             hash: position.to_string(),
@@ -435,7 +432,7 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     });
 
     // ── 5. Cruft, and optionally its removal ─────────────────────────────────
-    let mut found = find_cruft(conn, root);
+    let mut found = find_cruft(conn, repo);
     let orphan_chunks = unreferenced_chunks(&objects)?;
     if !orphan_chunks.is_empty() {
         found.push(Cruft::UnreferencedChunks(orphan_chunks.len()));
@@ -697,7 +694,7 @@ fn count(conn: &rusqlite::Connection, sql: &str) -> usize {
         .max(0) as usize
 }
 
-fn find_cruft(conn: &rusqlite::Connection, root: &Path) -> Vec<Cruft> {
+fn find_cruft(conn: &rusqlite::Connection, repo: &Repo) -> Vec<Cruft> {
     let mut found = Vec::new();
 
     let orphan_hunks = count(
@@ -720,7 +717,7 @@ fn find_cruft(conn: &rusqlite::Connection, root: &Path) -> Vec<Cruft> {
     }
 
     let conflicts = count(conn, "SELECT count(*) FROM conflict_files");
-    if conflicts > 0 && !root.join(".velo/MERGE_HEAD").exists() {
+    if conflicts > 0 && repo.has_working_tree() && !repo.root().join(".velo/MERGE_HEAD").exists() {
         found.push(Cruft::BrokenConflictState(conflicts));
     }
 

@@ -17,6 +17,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::commands::require_working_tree;
 use crate::commands::{branch_tip, bundle, get_dirty_files, remote as remotemod};
 use crate::error::{Result, VeloError};
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard, Silent};
@@ -311,7 +312,7 @@ pub fn push(
     let conn = guard.conn();
     let branch = branch
         .map(String::from)
-        .unwrap_or_else(|| current_branch(guard.root()));
+        .unwrap_or_else(|| guard.repo().head_branch().into_string());
     let local_tip = branch_tip(conn, &branch).ok_or_else(|| {
         VeloError::invalid(format!(
             "Local branch '{}' has no snapshots to push.",
@@ -408,6 +409,7 @@ pub fn pull(
     spawn: &transport::Spawn,
     options: Options<'_>,
 ) -> Result<Pulled> {
+    require_working_tree(guard.repo(), "pull")?;
     let dirty = get_dirty_files(guard.repo());
     if !dirty.is_empty() {
         let mut paths: Vec<std::path::PathBuf> =
@@ -415,7 +417,7 @@ pub fn pull(
         paths.sort();
         return Err(VeloError::DirtyWorkingTree { paths });
     }
-    let branch = current_branch(guard.root());
+    let branch = guard.repo().head_branch().into_string();
     let url = remote_url(guard.repo(), remote_name)?;
 
     let mut remote = transport::open(&url, spawn)?;
@@ -536,12 +538,6 @@ fn adopt_tracking_commits(
         stmt.execute(rusqlite::params![branch, h, tracking])?;
     }
     Ok(())
-}
-
-fn current_branch(root: &Path) -> String {
-    std::fs::read_to_string(root.join(".velo/HEAD"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "main".into())
 }
 
 pub(crate) fn default_dir(url: &str) -> String {

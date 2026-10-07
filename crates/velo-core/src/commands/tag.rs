@@ -65,23 +65,18 @@ pub fn create(
     snapshot: Option<&SnapshotId>,
     force: bool,
 ) -> Result<Created> {
-    let root = guard.root();
     let conn = guard.conn();
 
     let target = match snapshot {
         Some(id) => id.clone().into_string(),
-        None => {
-            let position = std::fs::read_to_string(root.join(".velo/PARENT"))
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            if position.is_empty() {
+        None => match guard.repo().position() {
+            Some(position) => position.into_string(),
+            None => {
                 return Err(VeloError::invalid(
                     "No snapshot to tag. Save something first.",
-                ));
+                ))
             }
-            position
-        }
+        },
     };
 
     let existing: Option<SnapshotId> = conn

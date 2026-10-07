@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::commands::{get_dirty_files, get_tracked_files, remove_empty_parents};
 use crate::error::{RefKind, Result, VeloError};
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
@@ -76,6 +77,7 @@ pub struct Options<'a> {
 
 /// Put the working tree back to how it was at `snapshot`.
 pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "restore")?;
     let Options {
         force,
         paths,

@@ -8,6 +8,7 @@
 use rusqlite::params;
 use velo_merge::{build_resolved_content, compute_conflict_hunks, ConflictHunk, Decision};
 
+use crate::commands::require_working_tree;
 use crate::db;
 use crate::error::{RefKind, Result, VeloError};
 use crate::{Repo, WriteGuard};
@@ -186,6 +187,7 @@ pub fn clear_decision(guard: &WriteGuard, path: &str, hunk_id: usize) -> Result<
 ///
 /// Undecided hunks fall back to "ours", matching the merge engine's default.
 pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
+    require_working_tree(guard.repo(), "resolve")?;
     let anc: Vec<&str> = session.ancestor.lines().collect();
     let our: Vec<&str> = session.ours.lines().collect();
     let thr: Vec<&str> = session.theirs.lines().collect();
@@ -206,6 +208,7 @@ pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
 
 /// Resolve a whole file by taking one side, with no per-hunk interaction.
 pub fn take_side(guard: &WriteGuard, file: &ConflictFile, side: TakeOption) -> Result<()> {
+    require_working_tree(guard.repo(), "resolve")?;
     let mut session = open_session(guard.repo(), file.clone())?;
     let decision = side.decision();
     for h in &mut session.hunks {

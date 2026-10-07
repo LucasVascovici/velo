@@ -220,7 +220,7 @@ pub fn apply(
     }
 
     let published = compact::published(conn)?;
-    let checked_out = compact::checked_out(guard.root());
+    let checked_out = compact::checked_out(guard.repo());
 
     // Classify every chain member. `hard` ones cannot be rewritten at all.
     let mut protected: Vec<(SnapshotId, Protected)> = Vec::new();

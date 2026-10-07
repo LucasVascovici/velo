@@ -10,6 +10,7 @@ use std::path::Path;
 
 use similar::{ChangeTag, TextDiff};
 
+use crate::commands::require_working_tree;
 use crate::commands::{get_dirty_files, is_binary, FileStatus};
 use crate::db;
 use crate::error::Result;
@@ -132,6 +133,7 @@ pub fn tracks_path(repo: &Repo, snapshot: &SnapshotId, path: &Path) -> bool {
 
 /// Compare the working tree against the last snapshot, optionally for one file.
 pub fn run(repo: &Repo, target_file: &Option<String>) -> Result<Diff> {
+    require_working_tree(repo, "diff")?;
     let dirty = get_dirty_files(repo);
 
     let selected: Vec<String> = match target_file {

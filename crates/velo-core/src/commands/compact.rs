@@ -26,7 +26,6 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::Path;
 
 use rusqlite::params;
 
@@ -155,11 +154,8 @@ pub(crate) fn protection_in(
     None
 }
 
-pub(crate) fn checked_out(root: &Path) -> String {
-    std::fs::read_to_string(root.join(".velo/PARENT"))
-        .unwrap_or_default()
-        .trim()
-        .to_string()
+pub(crate) fn checked_out(repo: &crate::Repo) -> String {
+    repo.position().map(|p| p.into_string()).unwrap_or_default()
 }
 
 /// Eligibility check shared with retention: `None` when `id` may be squashed
@@ -170,9 +166,13 @@ pub(crate) fn checked_out(root: &Path) -> String {
 /// rewrite depends on the rewrite, so callers with a candidate set check that
 /// separately (see `outside_dependant`).
 #[allow(dead_code)] // Retention (14.5-b) is its caller; compact::run uses protection_in.
-pub(crate) fn protection(conn: &rusqlite::Connection, root: &Path, id: &str) -> Option<Protected> {
+pub(crate) fn protection(
+    conn: &rusqlite::Connection,
+    repo: &crate::Repo,
+    id: &str,
+) -> Option<Protected> {
     let published = published(conn).ok()?;
-    protection_in(conn, &checked_out(root), &published, id)
+    protection_in(conn, &checked_out(repo), &published, id)
 }
 
 /// A snapshot outside `rewrite` that has one inside it as a parent or merge
@@ -413,7 +413,7 @@ pub fn run(
     let start = spans[0].0;
     let rewrite: HashSet<String> = chain[start..].iter().map(|m| m.hash.clone()).collect();
     let published = published(conn)?;
-    let checked_out = checked_out(root);
+    let checked_out = checked_out(guard.repo());
     let refuse = |id: &str, why: Protected| {
         Error::invalid(format!(
             "Cannot compact: snapshot {} is {}.",
@@ -590,7 +590,7 @@ pub fn run(
 
     // The tree is identical, so pointing PARENT at the new id keeps the working
     // tree consistent with it.
-    if let Some(new) = mapping.get(&checked_out) {
+    if let (Some(new), true) = (mapping.get(&checked_out), guard.repo().has_working_tree()) {
         crate::storage::write_atomic(&root.join(".velo/PARENT"), new.as_bytes())?;
     }
 

@@ -8,6 +8,7 @@ use std::fs;
 use rusqlite::OptionalExtension;
 
 use crate::commands::get_dirty_files;
+use crate::commands::require_working_tree;
 use crate::error::{InProgress, Result, VeloError};
 use crate::SnapshotId;
 use crate::WriteGuard;
@@ -23,6 +24,7 @@ pub struct Outcome {
 
 /// Restore the most recently undone snapshot on the current branch.
 pub fn run(guard: &WriteGuard) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "redo")?;
     let root = guard.root();
     // Checked before dirtiness: a merge leaves the tree dirty by design, so
     // testing dirtiness first would blame the wrong thing.
