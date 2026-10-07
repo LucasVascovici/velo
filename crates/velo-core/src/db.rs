@@ -132,6 +132,16 @@ const SCHEMA: &str = "
         to_path   TEXT PRIMARY KEY
     );
 
+    -- Ids that compaction removed or re-minted, mapped to what replaced them
+    -- (docs/FORMAT.md 11.3).  Local only: not part of identity, not in bundles,
+    -- and never collected by `gc`, since the whole point is to outlive the rows
+    -- it describes.
+    CREATE TABLE IF NOT EXISTS compactions (
+        old_hash        TEXT PRIMARY KEY,
+        new_hash        TEXT NOT NULL,
+        compacted_at_ms INTEGER NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
     CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
     CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at_ms);

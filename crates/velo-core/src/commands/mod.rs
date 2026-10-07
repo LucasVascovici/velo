@@ -3,6 +3,7 @@ pub mod blame;
 pub mod branches;
 pub mod bundle;
 pub mod cherry_pick;
+pub mod compact;
 pub mod diff;
 pub mod export;
 pub mod fsck;
@@ -317,12 +318,82 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<SnapshotId> {
         }
     }
 
+    // An id compaction removed is not "no such thing": the caller held a real id
+    // and is owed the one that replaced it.
+    if let Some(into) = compacted_into(conn, input) {
+        return Err(VeloError::Compacted {
+            id: input.to_string(),
+            into,
+        });
+    }
+
     // `NotFound`, not `InvalidInput`: the spec was well-formed, it simply does not
     // name anything. A consumer needs to tell "no such ref" (often expected — a
     // branch with no snapshots yet) from "you asked me something malformed", and
     // `RefKind::Any` exists for exactly this case: a ref that could have been a
     // snapshot, a tag or a branch.
     Err(VeloError::not_found(RefKind::Any, input))
+}
+
+/// Where a compacted id lives now, following the record to the end of its chain.
+///
+/// `id_or_prefix` is an exact id, or a unique prefix of one. A prefix is only
+/// honoured when it matches no live snapshot, so a caller can use this on a
+/// not-found path without it ever shadowing a snapshot that exists. The walk is
+/// bounded by [`MAX_ANCESTRY_DEPTH`], because a hand-edited table could loop.
+pub(crate) fn compacted_into(
+    conn: &rusqlite::Connection,
+    id_or_prefix: &str,
+) -> Option<SnapshotId> {
+    let lookup = |old: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT new_hash FROM compactions WHERE old_hash = ?",
+            [old],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    };
+
+    let mut current = match lookup(id_or_prefix) {
+        Some(next) => next,
+        None => {
+            // Hex only: the prefix goes into a LIKE, where `%` and `_` would
+            // otherwise match everything.
+            if id_or_prefix.is_empty() || !id_or_prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            let live: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash LIKE ? || '%')",
+                    [id_or_prefix],
+                    |r| r.get(0),
+                )
+                .unwrap_or(true);
+            if live {
+                return None;
+            }
+            let mut stmt = conn
+                .prepare("SELECT new_hash FROM compactions WHERE old_hash LIKE ? || '%' LIMIT 2")
+                .ok()?;
+            let found: Vec<String> = stmt
+                .query_map([id_or_prefix], |r| r.get(0))
+                .ok()?
+                .filter_map(|r| r.ok())
+                .collect();
+            if found.len() != 1 {
+                return None;
+            }
+            found.into_iter().next()?
+        }
+    };
+
+    for _ in 0..MAX_ANCESTRY_DEPTH {
+        match lookup(&current) {
+            Some(next) => current = next,
+            None => break,
+        }
+    }
+    Some(SnapshotId::from_stored(current))
 }
 
 /// How far `local` is ahead of / behind `remote`, counted in snapshots.
