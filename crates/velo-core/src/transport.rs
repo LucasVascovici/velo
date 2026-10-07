@@ -1,6 +1,8 @@
 //! Transport abstraction for sync (Phase 2 filesystem + Phase 3 network).
 //!
-//! A [`Remote`] is a source/sink of history. Two implementations:
+//! A [`Remote`] is a source/sink of history. Three implementations:
+//!   * `HttpRemote` (feature `http`) — a repository served over `http(s)://`
+//!     by the handlers in [`crate::serve::http`].
 //!   * [`LocalRemote`] — a repo reachable by path; read/write its DB directly.
 //!   * [`StreamRemote`] — a repo reachable by spawning a subprocess that runs
 //!     `velo serve-upload`/`serve-receive` and speaking a small pack protocol
@@ -25,6 +27,24 @@
 //! that is a wire-format break — `serve-upload` / `serve-receive` run on the far
 //! host, which may be an older build — so it would need a negotiated protocol
 //! version. Deliberately not done here.
+//!
+//! ## HTTP
+//! The same encodings carried over three endpoints under `<base>/velo/v1/`
+//! (the base URL may have a path prefix; slashes are joined, never doubled):
+//!
+//! * `GET  refs` — responds with a refs block.
+//! * `POST upload` — body: the client's "have" hashes as length-prefixed
+//!   strings (possibly none); responds with a refs block followed by the pack.
+//! * `POST receive` — body: branch, new_tip (length-prefixed) then the pack;
+//!   responds with the status string, length-prefixed.
+//!
+//! Status semantics: any 2xx is success. A push the server refuses (not a
+//! fast-forward) is still a `200` whose status string is `REJECT <reason>`,
+//! exactly as over ssh, so rejection is never confused with a failure. Any
+//! other status code is a failure and the client reports it as
+//! `remote returned HTTP <code>: <body>`. Fast-forward-only semantics are
+//! unchanged. There is no authentication in the protocol; a hosting service
+//! should put a reverse proxy in front.
 
 use std::collections::HashSet;
 use std::io::{Read, Write};
@@ -126,8 +146,17 @@ impl Spawn {
 }
 
 /// Dispatch a URL to a transport. `ssh://` and `child:` stream over a
-/// subprocess; anything else is treated as a local filesystem path.
+/// subprocess; `http://` and `https://` go over HTTP (feature `http`); anything
+/// else is treated as a local filesystem path.
 pub fn open(url: &str, spawn: &Spawn) -> Result<Box<dyn Remote>> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        #[cfg(feature = "http")]
+        return Ok(Box::new(HttpRemote::new(url)));
+        #[cfg(not(feature = "http"))]
+        return Err(VeloError::unsupported(
+            "HTTP remotes are not available: velo-core was built without the `http` feature.",
+        ));
+    }
     if url.starts_with("ssh://") || url.starts_with("child:") {
         Ok(Box::new(StreamRemote {
             url: url.to_string(),
@@ -291,6 +320,165 @@ pub(crate) fn reaches(
         }
     }
     false
+}
+
+// ─── HTTP transport ────────────────────────────────────────────────────────────
+
+/// Join an endpoint onto a base URL without doubling or dropping a slash.
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
+fn join_url(base: &str, endpoint: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        endpoint.trim_start_matches('/')
+    )
+}
+
+/// A repository served over HTTP(S) by [`crate::serve::http`].
+#[cfg(feature = "http")]
+pub struct HttpRemote {
+    base: String,
+}
+
+#[cfg(feature = "http")]
+impl HttpRemote {
+    pub fn new(base: impl Into<String>) -> Self {
+        HttpRemote { base: base.into() }
+    }
+
+    fn agent() -> ureq::Agent {
+        // Statuses are inspected by hand: with the default, ureq turns a 4xx into
+        // an error and throws the body away, and the body is the explanation.
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into()
+    }
+
+    /// Turn a response into its body, or into the error a non-2xx status means.
+    fn checked(resp: ureq::http::Response<ureq::Body>) -> Result<ureq::Body> {
+        let code = resp.status();
+        let mut body = resp.into_body();
+        if code.is_success() {
+            return Ok(body);
+        }
+        let text = body.read_to_string().unwrap_or_default();
+        Err(VeloError::invalid(format!(
+            "remote returned HTTP {}: {}",
+            code.as_u16(),
+            text.trim()
+        )))
+    }
+
+    fn net(e: ureq::Error) -> VeloError {
+        match e {
+            ureq::Error::Io(e) => VeloError::Io(e),
+            other => VeloError::Io(std::io::Error::other(other.to_string())),
+        }
+    }
+}
+
+/// A body reader that stops with an error once the operation is cancelled, so a
+/// cancelled push halts between chunks instead of after the whole upload.
+#[cfg(feature = "http")]
+struct CancelReader<'a> {
+    data: &'a [u8],
+    progress: &'a PhaseGuard<'a>,
+}
+
+#[cfg(feature = "http")]
+impl Read for CancelReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.progress.is_cancelled() {
+            return Err(std::io::Error::other("cancelled"));
+        }
+        let n = self.data.len().min(buf.len()).min(CHUNK);
+        buf[..n].copy_from_slice(&self.data[..n]);
+        self.data = &self.data[n..];
+        self.progress.advance(n as u64);
+        Ok(n)
+    }
+}
+
+#[cfg(feature = "http")]
+impl Remote for HttpRemote {
+    fn fetch(
+        &mut self,
+        have: &HashSet<String>,
+        progress: &PhaseGuard,
+    ) -> Result<(Vec<RemoteRef>, Bundle)> {
+        if progress.is_cancelled() {
+            return Err(VeloError::Cancelled);
+        }
+        let mut body = Vec::new();
+        for h in have {
+            write_string(&mut body, h)?;
+        }
+        let resp = Self::agent()
+            .post(&join_url(&self.base, "velo/v1/upload"))
+            .header("Content-Type", "application/octet-stream")
+            .send(&body[..])
+            .map_err(Self::net)?;
+        let mut reader = Self::checked(resp)?.into_reader();
+
+        let mut bytes = Vec::new();
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            if progress.is_cancelled() {
+                return Err(VeloError::Cancelled);
+            }
+            let n = reader.read(&mut buf).map_err(VeloError::Io)?;
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buf[..n]);
+            progress.advance(n as u64);
+        }
+        let mut cur = std::io::Cursor::new(&bytes[..]);
+        let refs = read_refs(&mut cur)?;
+        let at = cur.position() as usize;
+        Ok((refs, bundle::decode(&bytes[at..])?))
+    }
+
+    fn push(
+        &mut self,
+        branch: &str,
+        new_tip: &str,
+        build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
+        progress: &PhaseGuard,
+    ) -> Result<PushOutcome> {
+        let agent = Self::agent();
+        let resp = agent
+            .get(&join_url(&self.base, "velo/v1/refs"))
+            .call()
+            .map_err(Self::net)?;
+        let mut reader = Self::checked(resp)?.into_reader();
+        let refs = read_refs(&mut reader)?;
+        let pack = build(&refs)?;
+
+        let mut payload = Vec::new();
+        write_string(&mut payload, branch)?;
+        write_string(&mut payload, new_tip)?;
+        payload.extend_from_slice(&bundle::encode(&pack));
+
+        let mut source = CancelReader {
+            data: &payload,
+            progress,
+        };
+        let sent = agent
+            .post(&join_url(&self.base, "velo/v1/receive"))
+            .header("Content-Type", "application/octet-stream")
+            .header("Content-Length", payload.len().to_string())
+            .send(ureq::SendBody::from_reader(&mut source));
+        let resp = match sent {
+            Ok(r) => r,
+            Err(_) if progress.is_cancelled() => return Err(VeloError::Cancelled),
+            Err(e) => return Err(Self::net(e)),
+        };
+        let mut reader = Self::checked(resp)?.into_reader();
+        let status = read_string(&mut reader)?;
+        parse_status(&status)
+    }
 }
 
 // ─── Streaming (subprocess) transport ──────────────────────────────────────────
@@ -526,7 +714,7 @@ pub(crate) fn write_refs<W: Write>(w: &mut W, refs: &[(String, String)]) -> Resu
     Ok(())
 }
 
-fn read_refs<R: Read>(r: &mut R) -> Result<Vec<RemoteRef>> {
+pub(crate) fn read_refs<R: Read>(r: &mut R) -> Result<Vec<RemoteRef>> {
     let mut lenb = [0u8; 4];
     if fill(r, &mut lenb)? != 4 {
         return Err(proto_err());
@@ -555,6 +743,37 @@ mod tests {
         assert_eq!(split_port("user@host:22"), Some(("user@host", 22)));
         assert_eq!(split_port("host"), None);
         assert_eq!(split_port("user@host"), None);
+    }
+
+    #[test]
+    fn join_url_never_doubles_or_drops_a_slash() {
+        let want = "http://h/velo/v1/refs";
+        assert_eq!(join_url("http://h", "velo/v1/refs"), want);
+        assert_eq!(join_url("http://h/", "velo/v1/refs"), want);
+        assert_eq!(join_url("http://h/", "/velo/v1/refs"), want);
+        assert_eq!(
+            join_url("https://h/repos/proj", "velo/v1/refs"),
+            "https://h/repos/proj/velo/v1/refs"
+        );
+        assert_eq!(
+            join_url("https://h/repos/proj/", "velo/v1/refs"),
+            "https://h/repos/proj/velo/v1/refs"
+        );
+    }
+
+    #[test]
+    fn default_dir_strips_http_schemes() {
+        use crate::commands::sync::default_dir;
+        assert_eq!(default_dir("http://h/x/proj"), "proj");
+        assert_eq!(default_dir("https://h/repos/proj/"), "proj");
+    }
+
+    #[cfg(not(feature = "http"))]
+    #[test]
+    fn http_urls_are_unsupported_without_the_feature() {
+        let err = open("http://x", &spawn_cfg()).err().expect("must fail");
+        assert!(matches!(err, VeloError::Unsupported { .. }), "{err:?}");
+        assert!(open("https://x/y", &spawn_cfg()).is_err());
     }
 
     fn spawn_cfg() -> Spawn {

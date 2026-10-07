@@ -543,9 +543,11 @@ fn current_branch(root: &Path) -> String {
         .unwrap_or_else(|_| "main".into())
 }
 
-fn default_dir(url: &str) -> String {
+pub(crate) fn default_dir(url: &str) -> String {
     let trimmed = url
         .trim_start_matches("ssh://")
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
         .trim_start_matches("child:")
         .trim_end_matches(['/', '\\']);
     Path::new(trimmed)
