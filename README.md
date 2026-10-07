@@ -645,6 +645,30 @@ ids are preserved in the `Velo-Snapshot` trailer, so the history can be brought 
 with identical ids. Stashes, deleted-branch shelves and remote-tracking branches are
 not exported.
 
+### ...and coming back
+
+`velo import-git` reads a `git fast-export` stream, from stdin or `--input FILE`:
+
+```bash
+git fast-export --all --reencode=yes --signed-tags=strip --tag-of-filtered-object=drop -M | velo import-git
+```
+
+A round trip through git preserves ids. Export, let git hold the history, export it
+from git and import into a fresh repository, and every snapshot comes back with the
+id it had, with its metadata, author, rename edges, branch and millisecond timestamp
+restored from the `Velo-*` trailers:
+
+```bash
+velo export-git | (mkdir ../git && cd ../git && git init -q && git fast-import)
+(cd ../git && git fast-export --all --reencode=yes --signed-tags=strip -M) | (mkdir ../back && cd ../back && velo init && velo import-git)
+```
+
+A plain git repository imports too, with its authors, committer timestamps (whole
+seconds), branches, tags and merges; a rename git detects with `-M` becomes a rename
+edge. Annotated tags become lightweight tags (velo tags carry no message), submodules
+are skipped and counted, and an octopus merge is refused because a snapshot has at
+most two parents. Importing does not touch the working tree.
+
 ---
 
 ## Architecture

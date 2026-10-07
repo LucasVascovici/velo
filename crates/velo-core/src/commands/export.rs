@@ -388,7 +388,6 @@ pub(crate) fn quote(text: &str) -> String {
 
 /// Read one [`quote`]d string from the start of `input`, returning it and the
 /// text after it. `None` when `input` does not start with a well-formed one.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn unquote(input: &str) -> Option<(String, &str)> {
     let mut chars = input.strip_prefix('"')?.char_indices();
     let mut out = String::new();

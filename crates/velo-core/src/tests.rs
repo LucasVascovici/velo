@@ -11152,6 +11152,410 @@ line three CHANGED
         }
     }
 
+    /// `velo import-git`: reading a git fast-export stream (14.10-b).
+    mod import_git {
+        use super::*;
+        use crate::commands::{export, import};
+        use crate::tree::{SaveTree, TreeEntry};
+        use crate::Author;
+
+        fn data(text: &str) -> String {
+            format!("data {}\n{}\n", text.len(), text)
+        }
+
+        fn blob(mark: u32, text: &str) -> String {
+            format!("blob\nmark :{mark}\n{}", data(text))
+        }
+
+        fn commit(refname: &str, mark: u32, who: &str, secs: i64, msg: &str, rest: &str) -> String {
+            format!(
+                "commit {refname}\nmark :{mark}\nauthor {who} <{who}@x.org> {secs} +0000\ncommitter {who} <{who}@x.org> {secs} +0000\n{}{rest}\n",
+                data(msg)
+            )
+        }
+
+        fn run(repo: &Repo, stream: &str) -> crate::Result<import::Imported> {
+            let g = repo.write().unwrap();
+            import::git_fast_export(&g, &mut stream.as_bytes(), Default::default())
+        }
+
+        fn scalar(repo: &Repo, sql: &str, arg: &str) -> String {
+            repo.conn()
+                .query_row(sql, [arg], |r| r.get::<_, String>(0))
+                .unwrap()
+        }
+
+        fn tip(repo: &Repo, name: &str) -> SnapshotId {
+            repo.branch_tip(&branch_name(name)).unwrap().unwrap()
+        }
+
+        fn paths(repo: &Repo, id: &SnapshotId) -> Vec<String> {
+            repo.tree_at(id)
+                .unwrap()
+                .into_iter()
+                .map(|f| f.path)
+                .collect()
+        }
+
+        #[test]
+        fn a_hand_written_stream_imports_trees_parents_renames_and_tags() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let mut s = String::from("feature done\nprogress hello\n");
+            s += &blob(1, "hello\n");
+            s += &blob(2, "world\n");
+            s += &commit(
+                "refs/heads/main",
+                3,
+                "ada",
+                1_000,
+                "one",
+                "M 100644 :1 a.txt\n",
+            );
+            s += &commit(
+                "refs/heads/side",
+                4,
+                "bob",
+                2_000,
+                "side",
+                "from :3\nM 100644 :2 \"b \\303\\251.txt\"\nR a.txt moved.txt\n",
+            );
+            s += &commit(
+                "refs/heads/main",
+                5,
+                "ada",
+                3_000,
+                "merge",
+                "from :3\nmerge :4\nM 100755 :2 run.sh\n",
+            );
+            s += "tag v1\nfrom :3\ntagger ada <ada@x.org> 1000 +0000\n";
+            s += &data("release one");
+            s += "\nreset refs/heads/feature\nfrom :4\n\ndone\n";
+
+            let n = run(&repo, &s).unwrap();
+            assert_eq!(
+                n,
+                import::Imported {
+                    commits: 3,
+                    branches: 3,
+                    tags: 1,
+                    skipped_submodules: 0,
+                    mismatched_ids: 0
+                }
+            );
+
+            let main = tip(&repo, "main");
+            let side = tip(&repo, "side");
+            assert_eq!(tip(&repo, "feature"), side);
+            let first = scalar(
+                &repo,
+                "SELECT parent_hash FROM snapshots WHERE hash = ?",
+                side.as_str(),
+            );
+            assert_eq!(
+                scalar(
+                    &repo,
+                    "SELECT parent_hash FROM snapshots WHERE hash = ?",
+                    main.as_str()
+                ),
+                first
+            );
+            assert_eq!(
+                scalar(
+                    &repo,
+                    "SELECT merge_parent FROM snapshots WHERE hash = ?",
+                    main.as_str()
+                ),
+                side.as_str()
+            );
+            assert_eq!(paths(&repo, &main), vec!["a.txt", "run.sh"]);
+            assert_eq!(paths(&repo, &side), vec!["b é.txt", "moved.txt"]);
+            assert_eq!(
+                repo.read_file_at(&main, "run.sh").unwrap(),
+                b"world\n".to_vec()
+            );
+            assert_eq!(
+                scalar(
+                    &repo,
+                    "SELECT from_path || '>' || to_path FROM renames WHERE snapshot_hash = ?",
+                    side.as_str()
+                ),
+                "a.txt>moved.txt"
+            );
+            assert_eq!(
+                scalar(&repo, "SELECT snapshot_hash FROM tags WHERE name = ?", "v1"),
+                first
+            );
+            assert_eq!(
+                scalar(
+                    &repo,
+                    "SELECT CAST(created_at_ms AS TEXT) FROM snapshots WHERE hash = ?",
+                    side.as_str()
+                ),
+                "2000000"
+            );
+            let meta = repo.snapshot_meta(&side).unwrap();
+            assert_eq!(meta.author().unwrap().name(), "bob");
+            assert_eq!(meta.author().unwrap().email(), Some("bob@x.org"));
+            assert_eq!(
+                scalar(
+                    &repo,
+                    "SELECT message FROM snapshots WHERE hash = ?",
+                    side.as_str()
+                ),
+                "side"
+            );
+        }
+
+        #[test]
+        fn an_exported_history_comes_back_with_identical_ids() {
+            let (_a, root_a) = setup();
+            let src = Repo::open_and_migrate(&root_a).unwrap();
+            let main = branch_name("main");
+            let odd = branch_name("my feature");
+            {
+                let g = src.write().unwrap();
+                let author = Author::with_email("Ada", "ada@x.org").unwrap();
+                let mut meta = SnapshotMeta::new();
+                meta.set("app", "ticket", "T-\"1\"\nx").unwrap();
+                let a = g
+                    .save_tree(SaveTree {
+                        branch: &main,
+                        parent: None,
+                        merge_parent: None,
+                        message: "first\n\nwith body\n",
+                        entries: vec![
+                            TreeEntry::file("old name.txt", b"content\n".to_vec()),
+                            TreeEntry::executable("run.sh", b"#!/bin/sh\n".to_vec()),
+                        ],
+                        meta,
+                        author: Some(&author),
+                        renames: &[],
+                        timestamp_ms: Some(1_234_567),
+                    })
+                    .unwrap();
+                let b = g
+                    .save_tree(SaveTree {
+                        branch: &main,
+                        parent: Some(&a),
+                        merge_parent: None,
+                        message: "rename",
+                        entries: vec![
+                            TreeEntry::file("new.txt", b"content\n".to_vec()),
+                            TreeEntry::executable("run.sh", b"#!/bin/sh\n".to_vec()),
+                        ],
+                        meta: SnapshotMeta::new(),
+                        author: None,
+                        renames: &[(PathBuf::from("old name.txt"), PathBuf::from("new.txt"))],
+                        timestamp_ms: Some(2_000_001),
+                    })
+                    .unwrap();
+                let c = g
+                    .save_tree(SaveTree {
+                        branch: &odd,
+                        parent: Some(&a),
+                        merge_parent: None,
+                        message: "other",
+                        entries: vec![TreeEntry::file("other.txt", b"o\n".to_vec())],
+                        meta: SnapshotMeta::new(),
+                        author: None,
+                        renames: &[],
+                        timestamp_ms: Some(3_000_007),
+                    })
+                    .unwrap();
+                let m = g
+                    .save_tree(SaveTree {
+                        branch: &main,
+                        parent: Some(&b),
+                        merge_parent: Some(&c),
+                        message: "",
+                        entries: vec![TreeEntry::file("new.txt", b"merged\n".to_vec())],
+                        meta: SnapshotMeta::new(),
+                        author: None,
+                        renames: &[],
+                        timestamp_ms: Some(4_000_000),
+                    })
+                    .unwrap();
+                crate::commands::tag::create(&g, &"v1".parse().unwrap(), Some(&m), false).unwrap();
+            }
+            let mut stream = Vec::new();
+            export::git_fast_import(&src, &mut stream, Default::default()).unwrap();
+
+            let (_b, root_b) = setup();
+            let dst = Repo::open_and_migrate(&root_b).unwrap();
+            let n = {
+                let g = dst.write().unwrap();
+                import::git_fast_export(&g, &mut stream.as_slice(), Default::default()).unwrap()
+            };
+            assert_eq!(n.commits, 4);
+            assert_eq!(n.mismatched_ids, 0, "{n:?}");
+            assert_eq!(n.branches, 2);
+
+            let ids = |r: &Repo| -> Vec<String> {
+                let mut stmt = r
+                    .conn()
+                    .prepare("SELECT hash FROM snapshots ORDER BY hash")
+                    .unwrap();
+                stmt.query_map([], |row| row.get(0))
+                    .unwrap()
+                    .flatten()
+                    .collect()
+            };
+            assert_eq!(ids(&src), ids(&dst));
+            assert_eq!(tip(&src, "main"), tip(&dst, "main"));
+            assert_eq!(tip(&src, "my feature"), tip(&dst, "my feature"));
+            let renames = |r: &Repo| -> Vec<String> {
+                let mut stmt = r
+                    .conn()
+                    .prepare("SELECT snapshot_hash || from_path || to_path FROM renames")
+                    .unwrap();
+                stmt.query_map([], |row| row.get(0))
+                    .unwrap()
+                    .flatten()
+                    .collect()
+            };
+            assert_eq!(renames(&src), renames(&dst));
+            assert_eq!(renames(&dst).len(), 1);
+            let tags = |r: &Repo| scalar(r, "SELECT snapshot_hash FROM tags WHERE name = ?", "v1");
+            assert_eq!(tags(&src), tags(&dst));
+        }
+
+        #[test]
+        fn delimited_data_is_read_up_to_the_delimiter() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let s = "blob\nmark :1\ndata <<EOT\nline one\ndata <<NOT\nEOT\n\
+                     commit refs/heads/main\nmark :2\ncommitter c <c@x.org> 5 +0000\ndata <<END\nmessage\nEND\n\
+                     M 100644 inline x.txt\ndata <<EOT\ninline body\nEOT\nM 100644 :1 y.txt\n\ndone\n";
+            let n = run(&repo, s).unwrap();
+            assert_eq!(n.commits, 1);
+            let t = tip(&repo, "main");
+            assert_eq!(
+                repo.read_file_at(&t, "y.txt").unwrap(),
+                b"line one\ndata <<NOT\n".to_vec()
+            );
+            assert_eq!(
+                repo.read_file_at(&t, "x.txt").unwrap(),
+                b"inline body\n".to_vec()
+            );
+            assert_eq!(
+                scalar(
+                    &repo,
+                    "SELECT message FROM snapshots WHERE hash = ?",
+                    t.as_str()
+                ),
+                "message\n"
+            );
+        }
+
+        #[test]
+        fn malformed_input_is_invalid_input_naming_the_line() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let cases = [
+                ("blob\nmark :1\nbogus\n", "line 3"),
+                ("nonsense\n", "line 1"),
+                ("blob\nmark :1\ndata 99\nshort", "line"),
+                ("blob\nmark :1\ndata x\n", "line 3"),
+                (
+                    "commit refs/heads/m\ncommitter a <a@b> 1 +0000\ndata 1\nm\nM 100644 :9 f\n",
+                    "line 5",
+                ),
+                (
+                    "commit refs/heads/m\ncommitter a <a@b> 1 +0000\ndata 1\nm\nM 100644 :9\n",
+                    "line 5",
+                ),
+                (
+                    "commit refs/heads/m\ncommitter nonsense\ndata 1\nm\n",
+                    "line",
+                ),
+                (
+                    "commit refs/heads/m\ncommitter a <a@b> 1 +0000\ndata 1\nm\nfrom :4\n",
+                    "line 5",
+                ),
+            ];
+            for (input, line) in cases {
+                let err = run(&repo, input).unwrap_err();
+                assert!(
+                    matches!(err, crate::error::VeloError::InvalidInput { .. }),
+                    "{input:?}: {err:?}"
+                );
+                assert!(err.to_string().contains(line), "{input:?}: {err}");
+            }
+        }
+
+        #[test]
+        fn an_octopus_merge_is_unsupported() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let mut s = String::new();
+            for (m, name) in [(1, "a"), (2, "b"), (3, "c")] {
+                s += &commit(&format!("refs/heads/{name}"), m, "x", 10, name, "");
+            }
+            s += &commit(
+                "refs/heads/main",
+                4,
+                "x",
+                20,
+                "octopus",
+                "from :1\nmerge :2\nmerge :3\n",
+            );
+            let err = run(&repo, &s).unwrap_err();
+            assert!(
+                matches!(err, crate::error::VeloError::Unsupported { .. }),
+                "{err:?}"
+            );
+        }
+
+        #[test]
+        fn a_submodule_is_skipped_and_counted() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let s = blob(1, "x\n")
+                + &commit(
+                    "refs/heads/main",
+                    2,
+                    "x",
+                    10,
+                    "with submodule",
+                    "M 100644 :1 a.txt\nM 160000 0123456789012345678901234567890123456789 vendor/lib\n",
+                );
+            let n = run(&repo, &s).unwrap();
+            assert_eq!(n.skipped_submodules, 1);
+            assert_eq!(n.commits, 1);
+            assert_eq!(paths(&repo, &tip(&repo, "main")), vec!["a.txt"]);
+        }
+
+        #[test]
+        fn a_commit_outside_refs_heads_lands_on_the_fallback_branch() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let s = commit("refs/velo/export", 1, "x", 10, "m", "");
+            run(&repo, &s).unwrap();
+            assert!(repo.branch_tip(&branch_name("imported")).unwrap().is_some());
+        }
+
+        #[test]
+        fn a_cancelled_import_keeps_what_was_saved() {
+            let (_tmp, root) = setup();
+            let repo = Repo::open_and_migrate(&root).unwrap();
+            let cancel = crate::progress::Cancel::new();
+            cancel.cancel();
+            let s = commit("refs/heads/main", 1, "x", 10, "m", "");
+            let g = repo.write().unwrap();
+            let err = import::git_fast_export(
+                &g,
+                &mut s.as_bytes(),
+                import::Options {
+                    cancel: Some(&cancel),
+                    ..Default::default()
+                },
+            )
+            .unwrap_err();
+            assert!(matches!(err, crate::error::VeloError::Cancelled), "{err:?}");
+        }
+    }
+
     mod export_git {
         use super::*;
         use crate::commands::export;
