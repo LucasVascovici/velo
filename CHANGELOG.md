@@ -19,6 +19,21 @@ or deleted.
 
 ### Added
 
+- **The Node binding covers history, blame, merge and branches.** `history`
+  (from, branch, all, paths, limit, meta), `findSnapshots`, `blame` (with
+  `lineCount` and a 1-based inclusive window), `mergeBase`, `mergePlan`,
+  `mergeCommit`, `branches`, `createBranch` and `setBranchTip`. A conflicted
+  `mergeCommit` with no resolutions rejects with `code: 'Conflicts'` and
+  `err.paths`. Every method is async.
+
+- **`velo-wasm`, a wasm-bindgen package over single-file repositories**
+  (`bindings/wasm`, its own workspace), with `Repo` creation, snapshot,
+  history, blame and merge, six `wasm_bindgen_tests` and a CI job. The wasm
+  code has not been compiled or run yet; only the host build is checked.
+
+- **The README presents Velo as a timeline engine**, with runnable cookbooks
+  for agent checkpointing, a config registry and a document editor.
+
 - **Velo has a rename concept.** It had none anywhere, and a snapshot is a whole
   tree — so a move arrived as a delete plus an add and was gone by construction.
   Renames are now **recorded, not detected**: `velo mv` writes the edge, and
