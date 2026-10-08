@@ -56,12 +56,18 @@ with tempfile.TemporaryDirectory() as tmp:
 
     blame = repo.blame("essay.txt", at=merged)
     who = {}
+    origins = {}
     for line in blame.lines:
         who[line.text.rstrip()] = (line.origin.author.name, line.origin.branch)
+        origins[line.text.rstrip()] = line.origin
         print(f"{line.line_no}: {line.origin.author.name:<6} "
               f"{line.origin.branch:<12} {line.text.rstrip()}")
-    assert who["Intro sentence."][0] == "ada"
-    assert who["Closing sentence."][0] == "ada"
+    assert who["Intro sentence."] == ("ada", "main")
+    assert who["Closing sentence."] == ("ada", "main")
+    assert who["A sharper middle."] == ("grace", "draft-grace")
+    # Across the rename, on the merged result itself.
+    assert origins["Intro sentence."].id == base
+    assert origins["Intro sentence."].path == "draft.txt"
 
     # Across the rename: the first line of essay.txt traces to draft.txt.
     old = repo.blame("essay.txt", at=renamed, lines=(1, 1))
