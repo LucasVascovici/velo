@@ -61,6 +61,16 @@ or deleted.
   chosen per path on the handle (`Repo::merging`) and used by plan, merge,
   cherry-pick and rebase.
 
+- **Key-aware merge drivers** (14.4): `JsonDriver`, `YamlDriver` and `TomlDriver`
+  in `velo-merge`, each behind its own feature (`json`, `yaml`, `toml`, none on
+  by default, forwarded by `velo-core`) and registered by `velo-cli` for
+  `*.json`, `*.yaml`, `*.yml` and `*.toml`. Keys merge independently, arrays and
+  scalars are atomic, and a side that fails to parse falls back to diff3
+  exactly. Re-serialising can change formatting, and YAML comments are dropped.
+
+- **Diff and blame follow the path's driver**, so they answer at the driver's
+  granularity rather than always by line.
+
 - **Chunked objects** below object identity, with `gc` collecting unreferenced
   chunks and `fsck` reporting `MissingChunk`, `CorruptChunk` and
   `Cruft::UnreferencedChunks`.
