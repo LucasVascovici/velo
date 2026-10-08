@@ -1376,6 +1376,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "velo-ffi"
+version = "4.0.0"
+dependencies = [
+ "rusqlite",
+ "serde_json",
+ "tempfile",
+ "velo-core",
+]
+
+[[package]]
 name = "velo-merge"
 version = "4.0.0"
 dependencies = [

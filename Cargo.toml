@@ -6,6 +6,7 @@ members = [
     "crates/velo-tui",
     "crates/velo-cli",
     "crates/velo-testkit",
+    "crates/velo-ffi",
     "examples/prompt-registry",
 ]
 
