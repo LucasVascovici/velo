@@ -92,9 +92,16 @@ skipped) or the notification says the run stopped:
    the interrupted agent: `git stash push -u -m "partial <task> from interrupted run"`.
 2. `git fetch origin && git log --oneline <last known head>..origin/<branch>`
    to see what landed.
-3. Resume with `Workflow({ scriptPath, resumeFromRunId, args: <same args> })` —
-   finished agents replay from cache. If the user hit a quota limit, tell them
-   when it resets and resume only after that.
+3. Read the run's `journal.jsonl` for review verdicts: every task with an
+   `approve` goes into `done` in the saved plan; a task that landed but was
+   never reviewed goes into `reviewOnly` with its SHAs.
+4. **Relaunch, do not resume**, with the updated `doneEarlier` and
+   `reviewOnly`. `resumeFromRunId` only replays the longest unchanged
+   *prefix* of agent calls, and with parallel lanes the call order differs
+   from run to run — so most finished agents run again. (Resume is fine only
+   when the script changed after the last agent call, e.g. a report fix.)
+   If the user hit a quota limit, tell them when it resets and relaunch only
+   after that.
 
 ## 6. Report
 

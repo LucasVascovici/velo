@@ -27,6 +27,12 @@ command as few times as the work allows.
   `CARGO_TARGET_DIR=<TARGET_DIR>` — that directory is reused across tasks in
   your lane, so builds are incremental instead of cold.
 
+**Already done?** A rerun after an interruption can hand you a task that is
+already on the branch. Check first (`git log --oneline origin/BRANCH` for a
+commit matching the task). If it is there and complete, change nothing:
+report `status: "done"` with **those commits** (`pushed: true`) and say so in
+`notes`. Never report an empty commit list for finished work.
+
 If your prompt lists commits that landed after the brief was written, read
 them (`git show --stat`) before coding. Where the brief and the code
 disagree, follow the code and keep the brief's intent; say so in `notes`.
