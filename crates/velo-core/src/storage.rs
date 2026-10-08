@@ -26,6 +26,11 @@ pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
 
 fn temp_sibling(target: &Path) -> PathBuf {
     let n = TMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    // `std::process::id()` panics on wasm32-unknown-unknown; one process owns
+    // the store there, so a constant pid cannot collide.
+    #[cfg(target_family = "wasm")]
+    let pid = 0u32;
+    #[cfg(not(target_family = "wasm"))]
     let pid = std::process::id();
     let mut name = target
         .file_name()
@@ -912,11 +917,7 @@ fn hash_small(path: &Path) -> Result<String> {
 /// `\r\n` line endings would hash differently here than everywhere else — making
 /// it appear permanently "modified" on Windows and breaking content-addressing.
 fn hash_mmap(path: &Path) -> Result<String> {
-    let file = fs::File::open(path).map_err(VeloError::Io)?;
-    // Safety: the file is read-only and we don't modify it during the map's
-    // lifetime.  This is the standard pattern for read-only mmaps.
-    let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(VeloError::Io)?;
-    let data = normalise_crlf(mmap.to_vec());
+    let data = normalise_crlf(read_mmap(path)?);
 
     const PARALLEL_THRESHOLD: usize = 1024 * 1024; // 1 MB
     let hash = if data.len() >= PARALLEL_THRESHOLD {
@@ -932,10 +933,19 @@ fn hash_mmap(path: &Path) -> Result<String> {
     Ok(hash)
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn read_mmap(path: &Path) -> Result<Vec<u8>> {
     let file = fs::File::open(path).map_err(VeloError::Io)?;
+    // Safety: the file is read-only and we don't modify it during the map's
+    // lifetime.  This is the standard pattern for read-only mmaps.
     let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(VeloError::Io)?;
     Ok(mmap.to_vec())
+}
+
+/// There is no mmap on wasm; a plain read gives the same bytes.
+#[cfg(target_family = "wasm")]
+fn read_mmap(path: &Path) -> Result<Vec<u8>> {
+    fs::read(path).map_err(VeloError::Io)
 }
 
 /// Mode-aware content hash for dirty checks: a symlink hashes to its target,

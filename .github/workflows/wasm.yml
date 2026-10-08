@@ -1,0 +1,26 @@
+name: WASM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build velo-core · wasm32-unknown-unknown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # zstd-sys and the bundled SQLite compile C for wasm, which needs clang.
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Build
+        run: cargo build -p velo-core --target wasm32-unknown-unknown --locked
