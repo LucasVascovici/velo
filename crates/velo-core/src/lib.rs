@@ -35,7 +35,7 @@
 //! | :--- | :--- |
 //! | **Writes your files** — never call these from an app with its own storage | [`commands::restore`], [`commands::switch`], [`commands::merge::run`], [`commands::rebase`], [`commands::cherry_pick`], [`commands::stash`], [`commands::undo`], [`commands::redo`], [`commands::resolve`], [`commands::apply`], [`commands::sync`] (clone/pull), [`commands::init`] |
 //! | **Reads your files** — answers depend on what is on disk right now | [`commands::save`], [`commands::status`], [`commands::diff`], [`commands::grep`], [`commands::squash`] |
-//! | **Store only** — safe with no working tree at all | [`tree`] (the whole module), [`commands::history`], [`commands::show`], [`commands::blame`], [`commands::branches`], [`commands::tag`], [`commands::fsck`], [`commands::remote`], [`commands::gc`], [`commands::merge::plan`], [`commands::merge::merge_base`], [`Repo::snapshot`], [`Repo::snapshot_meta`], [`Repo::branch_tip`], [`Repo::head_token`] |
+//! | **Store only** — safe with no working tree at all | [`tree`] (the whole module), [`commands::history`], [`commands::show`], [`commands::blame`], [`commands::branches`], [`commands::tag`], [`commands::fsck`], [`commands::remote`], [`commands::gc`], [`commands::compact`], [`commands::retention`],[`commands::export`], [`commands::import`], [`commands::merge::plan`], [`commands::merge::commit`], [`commands::merge::merge_base`], [`Repo::snapshot`], [`Repo::snapshot_meta`], [`Repo::find_snapshots`], [`Repo::branch_tip`], [`Repo::head_token`] |
 //!
 //! [`commands::bundle`] is its own case: it reads and writes one file at a path
 //! you name, and touches nothing else.
@@ -44,6 +44,12 @@
 //! builds a snapshot from bytes you hold, and [`Repo::tree_at`] /
 //! [`Repo::read_file_at`] / [`Repo::read_object`] read one back, none of them
 //! going near the filesystem.
+//!
+//! # WebAssembly
+//!
+//! The crate builds for `wasm32-unknown-unknown`, with single-file repositories
+//! only: there is no working tree to scan, [`lock::RepoLock`] is a no-op, and
+//! large-file reads use `fs::read` instead of mmap. See `DEVELOPING.md`.
 //!
 //! # Entry point
 //!
@@ -85,7 +91,9 @@
 
 pub mod commands;
 pub mod db;
+pub mod drivers;
 pub mod error;
+pub mod events;
 pub mod ids;
 pub mod lock;
 pub mod meta;
@@ -102,11 +110,15 @@ mod tests;
 
 // ─── Public surface ───────────────────────────────────────────────────────────
 
+pub use commands::init::InitOptions;
+pub use drivers::Drivers;
 pub use error::{Error, Result};
+pub use events::{Event, Listener};
 pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
 pub use meta::{Author, SnapshotMeta};
 pub use repo::{Repo, WriteGuard};
 pub use scope::Scope;
+pub use storage::ObjectLocation;
 
 /// Re-exported so callers can match on merge outcomes without adding a second
 /// dependency.
@@ -117,4 +129,4 @@ pub use velo_merge as merge;
 /// Recorded in SQLite's `PRAGMA user_version`. Opening a repository with a
 /// higher value fails with [`Error::SchemaTooNew`] rather than risking a
 /// half-migration — see `docs/FORMAT.md`.
-pub const FORMAT_VERSION: u32 = 2;
+pub const FORMAT_VERSION: u32 = 3;

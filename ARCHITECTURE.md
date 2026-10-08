@@ -1630,6 +1630,287 @@ typed-ids pass, and now also reports the moves a snapshot recorded.
 | Directory moves as one edge | A directory move is several file moves. One edge would name a path no `file_map` row has, so `velo mv` refuses rather than half-recording |
 | Following both parents in `paths::aliases` | Two chains can give one name two histories with nothing to choose between them. The chain leading to where the caller is looking is the answer that matches what they see |
 
+---
+
+# Phase 14 — From library to timeline engine 🔴/🟡/🟢
+
+Phases 1 to 13 made velo embeddable and made its answers correct for the two
+consumers that exist. This phase is the first one driven by the consumers that
+*don't* exist yet: which systems velo would improve, and what they would need
+before they could pick it up.
+
+**Publishing is not part of this phase.** Phase 12 stays as it is — packaged,
+CI-checked, not uploaded — until velo is in a state its author considers
+production. Several items below are breaking (14.1 is a format decision, 14.4
+changes `velo-merge`'s surface), which is one more reason to land them while
+nothing is frozen.
+
+## What velo is, stated as an engine
+
+The combination is what nothing else offers in one embeddable crate:
+
+- **Verifiable whole-tree snapshots** — content-addressed, `fsck` recomputes
+  every id.
+- **Tamper-evident provenance** — hashed, namespaced metadata; authorship;
+  parent-aware, rename-aware blame with author and branch per line.
+- **No working tree required** — `save_tree` / `tree_at`, caller-supplied
+  timestamps, `Repo::scoped`.
+- **Explicit divergence** — branches, a pure merge engine, resumable
+  resolutions, undo/redo, sync that refuses rather than guesses.
+- **Trivial to deploy** — one SQLite file, synchronous core, typed errors,
+  per-call progress and cancellation.
+
+Anything that has to answer *"what did this look like at T, who changed it, why,
+and can I prove it?"* — while letting people or programs work on alternatives in
+parallel — is a candidate.
+
+## Where it fits, and where it doesn't
+
+| System | Why velo | Fit today |
+| :--- | :--- | :--- |
+| **AI agent workspaces / checkpointing** | Snapshot per tool call, branch per attempt, undo/redo, merge the winner; blame answers "which run wrote this line"; metadata (`eval_run`, `model`, `tool_call_id`) is trustworthy after the fact | **Excellent** — the wedge |
+| **Prompt, config and policy registries** | Publish / tag / rollback, audit trail, reviewable diffs | **Excellent** — `prompt-registry` is the proof |
+| **Document and knowledge editors** | Drafts as branches, per-line provenance, rename-aware history | Very good for text — Velum is the proof; weak for structured formats (14.4) |
+| **Regulated audit trails** (GxP, finance, public sector) | Recomputable content addressing is what an auditor wants | Good, blocked on signing (14.1) |
+| **Local-first / offline field apps** | Bundles need no server; merges are explicit, not last-write-wins | Medium — sync story (14.9) |
+| **Headless CMS / low-code** | Draft → preview branch → publish → revert | Medium — content is JSON/YAML (14.4) |
+| **Reproducible research, assessment** | "What exactly was run / submitted", provably | Medium — large files (14.7) |
+
+**Not a fit, and the docs should say so:** real-time co-editing (CRDT
+territory), high-frequency event sourcing, large binary assets (game art, CAD,
+datasets), use as a database.
+
+**The wedge is the first two rows.** They lean on exactly what velo already does
+best — no working tree, hashed provenance, branch-per-attempt, blame by author —
+and the people building them work in Python and TypeScript and reach tools
+through MCP. That decides the order below.
+
+## Ordering
+
+Same rule as Phases 0 and 5: **irreversible decisions first, then missing
+capability, then ecosystem.** 14.1 has no code, like Phase 0, and gates 14.5 and
+14.7.
+
+| # | Item | Marker | Gated on |
+| :--- | :--- | :--- | :--- |
+| 14.1 | Format decisions: signatures, chunked objects, compaction | ✅ **DONE** | — |
+| 14.2 | Language bindings: C ABI, Python, Node | ✅ **DONE** | — |
+| 14.3 | `velo-mcp` | ✅ **DONE** | — |
+| 14.4 | Pluggable merge and diff drivers | ✅ **DONE** | — |
+| 14.5 | Retention and compaction | ✅ **DONE** | 14.1 |
+| 14.6 | Querying metadata | ✅ **DONE** | — |
+| 14.7 | Chunked object storage | ✅ **DONE** | 14.1 |
+| 14.8 | Change events | ✅ **DONE** | — |
+| 14.9 | Sync beyond ssh | ✅ **DONE** | — |
+| 14.10 | git export, then import | ✅ **DONE** | — |
+| 14.11 | WASM | ✅ **DONE** | 14.7's storage seam |
+| 14.12 | Positioning and docs | ✅ **DONE** | ships alongside 14.2 / 14.3 |
+
+## 14.1 Format decisions to make now ✅ **DONE**
+
+Decisions only, recorded in `FORMAT.md` before any code — for the reason Phase 0
+existed: each is cheap to decide today and a format break to retrofit.
+
+- **Signatures.** `FORMAT.md` calls signing "a v3 discussion"; regulated
+  consumers make it this one. To decide: what is signed (the snapshot id is the
+  natural target — it already commits to tree, parents, metadata and author);
+  whether signatures are **outside identity**, as rename edges are, so that
+  adding a countersignature does not mint a new snapshot; the algorithm
+  (ed25519); and how signatures travel in bundles. The rename-edge lesson
+  applies: something outside identity that is *dropped* in transit is silent, so
+  the bundle version must change and older readers must refuse.
+- **Chunked objects.** Whole-file Zstd is the right default, but an agent that
+  checkpoints a 2 MB file two hundred times stores 400 MB of near-duplicates.
+  To decide: whether chunking happens **below object identity** — an object's
+  hash stays the hash of its full content and chunks are a storage detail — so
+  that no tree, snapshot id or bundle reader changes. If it can be done that
+  way, "objects are format-stable" survives and 14.7 is a storage change, not a
+  format change.
+- **What compaction leaves behind.** 14.5 rewrites history ranges, which mints
+  new ids. To decide: whether a compacted range leaves a record (old id → new
+  id) so a consumer holding an old id gets `Compacted { into }` rather than
+  `NotFound`, and whether tagged and signed snapshots are ever eligible.
+
+## 14.2 Language bindings ✅ **DONE**
+
+Rust-only caps adoption at a fraction of the systems listed above. Three crates,
+outside `velo-core`, each thin:
+
+- **`velo-ffi`** — a C ABI over the embedder half of the API (`Repo`,
+  `save_tree`, `tree_at`, history, blame, merge plan, metadata). Opaque handles,
+  explicit free functions, errors as a code plus a message.
+- **`velo-py`** — PyO3 + maturin directly over `velo-core` rather than over the
+  C ABI. `Repo` is `unsendable` on the Python side, which is the anti-goal on
+  `Sync` enforced by the binding rather than documented. Each `Error` variant
+  maps to an exception subclass, so the typed-error work of 1.2 is not
+  flattened back into strings at the boundary.
+- **`velo-node`** — napi-rs, same shape, with blocking calls run on the libuv
+  pool so the core stays synchronous.
+
+The bindings expose the embedder API, not the CLI's commands — a binding that
+needs a working tree is wrapping the wrong half (see 8.6).
+
+## 14.3 `velo-mcp` ✅ **DONE**
+
+An MCP server over the same surface: `save`, `restore`, `diff`, `branch`,
+`merge` (plan + apply), `blame`, `history`, `metadata`. Cheap, and it makes velo
+the checkpoint layer for any agent without that agent's author writing
+integration code. It is also the most direct demonstration of the wedge.
+
+Tool calls are the place to apply the project's safety stance: no `--force`
+equivalent, merges as a plan the agent must apply explicitly, and every write
+tool records the calling run in metadata so blame can name it.
+
+## 14.4 Pluggable merge and diff drivers ✅ **DONE**
+
+`velo-merge` is line-based `&str → String`. Configuration, CMS content and
+low-code definitions are JSON, YAML and TOML, where a line merge produces
+syntactically valid conflicts in the wrong places and invalid documents in the
+right ones.
+
+- A `MergeDriver` trait in `velo-merge` — ancestor, ours, theirs in; merged or
+  conflicts out — with the current diff3 as the default implementation.
+- Built-in key-aware drivers for JSON, YAML and TOML, behind features.
+- Drivers chosen by path pattern **on the handle**, as `Scope` is, because which
+  files are JSON is a property of the repository, not of one merge.
+- Diff and blame follow the same driver, so blame can answer at key or paragraph
+  granularity rather than line.
+
+## 14.5 Retention and compaction ✅ **DONE**
+
+Checkpointing every agent step produces thousands of snapshots that matter for
+an hour. A retention policy ("keep everything for a day, hourly for a month,
+then daily") and an off-branch range squash, both producing the record decided
+in 14.1. `gc` already reclaims what becomes unreachable; this decides what
+becomes unreachable.
+
+## 14.6 Querying metadata ✅ **DONE**
+
+"Every snapshot where `ci/status = pass`", "everything from `eval_run = 42`".
+Today a consumer walks history and calls `snapshot_meta` per entry. An index on
+`snapshot_meta (namespace, key, value)` and a query on the handle returning
+`history::Entry`s, composing with the existing ancestry and path scopes.
+
+## 14.7 Chunked object storage ✅ **DONE**
+
+The implementation of 14.1's decision: content-defined chunking for objects
+above a size threshold, stored and deduplicated by chunk, reassembled behind
+`read_object`. This is the point at which a storage seam stops being
+speculative — see *Anti-goal tensions* below.
+
+## 14.8 Change events ✅ **DONE**
+
+`head_token` answers "did anything change?" by polling. GUIs and webhooks want
+"what changed": a per-handle subscription delivering `Saved`, `RefMoved`,
+`Merged` as they are committed. Same-process only — cross-process notification
+stays a poll on `head_token`, which is honest about what SQLite can tell us.
+
+## 14.9 Sync beyond ssh ✅ **DONE**
+
+ssh and `child:` serve developers; a SaaS hosting velo repositories needs an
+HTTP transport for `velo serve`, and possibly an object-store remote (S3, R2)
+for history that lives next to the rest of a product's data. Fast-forward-only
+semantics carry over unchanged.
+
+## 14.10 git export, then import ✅ **DONE**
+
+Phase 9 deferred the importer because nothing needed it. For adoption the
+**exporter** matters more: it answers "can I leave if this doesn't work out?",
+which is the question an evaluator asks before trusting a history format.
+Metadata and rename edges have no git home and would go into trailers.
+
+## 14.11 WASM ✅ **DONE**
+
+*Landed: the storage seam, a second backend (objects in SQLite, single-file repositories) and `bindings/wasm` (`velo-wasm`), a wasm-bindgen package over single-file repositories. The wasm code is not yet compiled or run on the author's machine; an IndexedDB or OPFS backend is not landed.*
+
+Browser-based local-first apps. SQLite in WASM is workable, but objects on disk
+are not — this needs the storage seam 14.7 introduces, with an IndexedDB or OPFS
+backend.
+
+## 14.12 Positioning and docs ✅ **DONE**
+
+The README still opens as a Git replacement. An embedder evaluating a timeline
+engine should meet the engine first — the guarantees, the embedder API, the
+fit table above — with the CLI presented as one consumer of it. A cookbook per
+wedge use case (agent checkpointing, a config registry, a document editor),
+each runnable against the bindings.
+
+The "vibe-coded for fun, not production-grade" note stays until velo is in the
+production state that also gates publishing. Removing it is part of that
+milestone, not of this phase.
+
+## What landed
+
+All twelve items.
+
+14.1 was decisions only: signatures, chunked objects and compaction records are
+written down in `FORMAT.md` §10 and §11 before the code that needed them.
+Chunking went in exactly as decided, **below object identity** (14.7): a hash is
+still the hash of the full content, chunks are a storage detail, and `gc` and
+`fsck` know about them. No tree, snapshot id or bundle reader changed.
+
+The storage seam arrived with the first thing that needed it, as the anti-goal
+required — one `ObjectStore` behind every object access — and the second
+backend (objects in SQLite, chosen at `init`, up to a single-file repository)
+turned the speculative trait into a real one.
+
+Compaction (14.5) leaves the old-id to new-id record the format decision asked
+for, so a held id gets `Error::Compacted` rather than `NotFound`; retention is a
+policy over that one primitive. Metadata queries (14.6), change events (14.8,
+same process only, after commit), HTTP sync (14.9, with `velo serve-http` as a
+reference server and no auth) and git export and import (14.10, lossless
+through Velo trailers) are as briefed.
+
+Merge drivers (14.4) are a trait chosen per path on the handle, with diff3 as
+the default and key-aware `JsonDriver`, `YamlDriver` and `TomlDriver` behind
+features: keys merge independently, arrays and scalars are atomic, and a side
+that does not parse falls back to diff3 exactly. Re-serialising can change
+formatting, and YAML comments are dropped. Diff and blame follow the path's
+driver.
+
+The bindings (14.2) are thin over `velo-core`: a C ABI, PyO3 and a napi-rs Node
+package, the Node one covering history, blame, merge base, plan and commit, and
+branches, with a conflicted `mergeCommit` rejecting with `code: 'Conflicts'` and
+the paths. WASM (14.11) is a wasm-bindgen package over single-file repositories,
+written but not yet compiled here. The README now leads with the timeline engine
+and has runnable cookbooks for agent checkpointing, a config registry and a
+document editor (14.12).
+
+`velo-mcp` (14.3) is a synchronous stdio server over a repository with a
+working tree, built on two store-only prerequisites: `merge::commit` and
+`save::Options.meta`. Every write tool records the calling run in the `mcp`
+namespace, so blame names the run that wrote each line. The safety stance is
+the tool surface itself: there is no force option, a dirty tree is an error
+result, and a merge is always a plan the agent must apply explicitly, with a
+resolution for every conflict.
+
+## Anti-goal tensions
+
+Two items lean against existing anti-goals. Recorded so they are decided
+explicitly rather than drifted into:
+
+- **⛔ "Don't abstract storage behind a trait yet."** The condition it names —
+  "when a second backend actually exists" — is what 14.7 and 14.11 create.
+  The seam goes in with the first of them, sized to what that backend needs,
+  and no earlier.
+- **`FORMAT.md` non-goals: "no delta/packfile encoding", "no signing".** 14.1
+  revisits both. Chunking below object identity keeps the spirit — objects stay
+  whole-content addressed — while removing the cost; signing was always
+  deferred, not rejected.
+
+The async anti-goal is untouched: bindings put blocking calls on a pool, the
+core stays synchronous.
+
+## Deliberately not doing
+
+| Not doing | Why |
+| :--- | :--- |
+| Publishing to crates.io | Gated on velo being production-ready, not on this phase. Phase 12 keeps the packaging checked in CI meanwhile |
+| CRDTs / real-time co-editing | A different model with different guarantees; velo's value is explicit divergence, not its absence |
+| Similarity-based rename detection | Unchanged from 13 — a heuristic where an exact answer is available |
+| An async core for the bindings | Pools at the binding layer cost nothing; async in core costs everything (see Anti-goals) |
+| Bindings over the CLI commands | The working-tree half is the CLI's; bindings expose the embedder half |
+
 
 ## Anti-goals
 
@@ -1686,6 +1967,7 @@ regresses within a month.
 | **11** | Finish the passes that stopped early: `blame` types + author, `gc` options, sync cancellation | ✅ |
 | **12** | crates.io, after 10 and 11 — packaged and CI-checked, upload still manual | 🟡 |
 | **13** | Provenance: rename edges recorded and followed, blame asks which parent explains a line, `blame::Options` | ✅ |
+| **14** | Timeline engine: format decisions (signing, chunking, compaction), Python/Node/C bindings, MCP server, merge drivers, retention, metadata queries, events, sync, git export, WASM — publishing excluded until production-ready | 🔴/🟡/🟢 |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected
 (no `anyhow`; coupling is 3 files not pervasive; merge engine already pure;

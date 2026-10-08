@@ -49,7 +49,6 @@ use rusqlite::params;
 use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
 use crate::progress::Phase;
-use crate::storage;
 use crate::Repo;
 use crate::SnapshotId;
 use crate::SnapshotMeta;
@@ -151,7 +150,6 @@ impl Applied {
 ///
 /// `target` limits it to one snapshot's ancestry; `None` bundles everything.
 pub fn create(repo: &Repo, file: &Path, target: Option<&SnapshotId>) -> Result<Created> {
-    let root = repo.root();
     let conn = repo.conn();
 
     // Which snapshots to include.
@@ -180,7 +178,7 @@ pub fn create(repo: &Repo, file: &Path, target: Option<&SnapshotId>) -> Result<C
         // Reading and compressing every object is the slow part of bundling; the
         // encode that follows is in-memory.
         let _packing = repo.phase(Phase::Packing, Some(snap_set.len() as u64));
-        build_pack(conn, &root.join(".velo/objects"), &snap_set)?
+        build_pack(conn, &repo.objects(), &snap_set)?
     };
     let encoded = encode(&bundle);
     fs::write(file, &encoded)?;
@@ -198,10 +196,10 @@ pub fn create(repo: &Repo, file: &Path, target: Option<&SnapshotId>) -> Result<C
 /// included). Used by `bundle create`, where the output must stand alone.
 pub(crate) fn build_pack(
     conn: &rusqlite::Connection,
-    objects_dir: &Path,
+    store: &crate::storage::ObjectStore,
     snap_set: &HashSet<String>,
 ) -> Result<Bundle> {
-    build_pack_excluding(conn, objects_dir, snap_set, &HashSet::new())
+    build_pack_excluding(conn, store, snap_set, &HashSet::new())
 }
 
 /// Build a pack for `snap_set`, omitting objects the peer demonstrably already
@@ -216,7 +214,7 @@ pub(crate) fn build_pack(
 /// deliberately passes an empty `peer_has` so bundles stay self-contained.
 pub(crate) fn build_pack_excluding(
     conn: &rusqlite::Connection,
-    objects_dir: &Path,
+    store: &crate::storage::ObjectStore,
     snap_set: &HashSet<String>,
     peer_has: &HashSet<String>,
 ) -> Result<Bundle> {
@@ -304,9 +302,7 @@ pub(crate) fn build_pack_excluding(
 
     let mut objects = Vec::with_capacity(object_hashes.len());
     for h in &object_hashes {
-        let bytes = fs::read(objects_dir.join(h)).map_err(|_| {
-            VeloError::corrupt(format!("object {} is missing — run 'velo fsck'", h))
-        })?;
+        let bytes = store.compressed(h)?;
         objects.push((h.clone(), bytes));
     }
 
@@ -348,14 +344,13 @@ pub(crate) fn build_pack_excluding(
 /// Import a bundle into this repository. Idempotent.
 /// Import a bundle written by [`create`].
 pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
-    let root = guard.root();
     let raw = fs::read(file).map_err(|e| {
         VeloError::invalid(format!("Cannot read bundle '{}': {}", file.display(), e))
     })?;
     let bundle = decode(&raw)?;
 
-    let objects_dir = root.join(".velo/objects");
-    let (new_snaps, new_objects) = import_pack(guard, &objects_dir, &bundle)?;
+    let (new_snaps, new_objects) = import_pack(guard, &bundle)?;
+    guard.repo().emit_imported(new_snaps);
 
     Ok(Applied {
         snapshots: new_snaps,
@@ -368,30 +363,16 @@ pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
 /// each snapshot's id against its content. Idempotent. Returns
 /// `(new_snapshots, new_objects)`. Shared by `bundle apply`, `fetch`, `push`,
 /// and `clone`.
-pub(crate) fn import_pack(
-    guard: &WriteGuard,
-    objects_dir: &Path,
-    bundle: &Bundle,
-) -> Result<(usize, usize)> {
+pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize, usize)> {
     // ── Write + verify objects (dedup by name) ────────────────────────────────
+    let objects = guard.repo().objects();
     let mut new_objects = 0usize;
     let progress = guard.phase(Phase::Importing, Some(bundle.objects.len() as u64));
     for (hash, compressed) in &bundle.objects {
         progress.tick();
-        // Verify *received* data: it must decompress and re-hash to its own name.
-        let decompressed = zstd::decode_all(&compressed[..]).map_err(|_| {
-            VeloError::corrupt(format!("object {} could not be decompressed", hash))
-        })?;
-        let actual = blake3::hash(&decompressed).to_hex().to_string();
-        if &actual != hash {
-            return Err(VeloError::corrupt(format!(
-                "object {} is corrupt (content hashes to {})",
-                hash, actual
-            )));
-        }
-        let obj_path = objects_dir.join(hash);
-        if !obj_path.exists() {
-            storage::write_atomic(&obj_path, compressed)?;
+        // Verified on the way in: the frame must decompress and re-hash to its
+        // own name before it is stored.
+        if objects.import_compressed(hash, compressed)? {
             new_objects += 1;
         }
     }

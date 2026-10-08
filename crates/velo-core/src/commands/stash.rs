@@ -17,9 +17,9 @@ use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 use std::fs;
 
-use rayon::prelude::*;
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::commands::SnapshotIdentity;
 use crate::commands::{get_dirty_files, get_tracked_files, FileStatus};
 use crate::db;
@@ -88,6 +88,7 @@ pub struct Popped {
 /// Shelve the current dirty state, returning the working tree to its last
 /// snapshot.
 pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
+    require_working_tree(guard.repo(), "stash")?;
     let root = guard.root();
     let dirty = get_dirty_files(guard.repo());
     if dirty.is_empty() {
@@ -115,27 +116,15 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     }
 
     // Hash and compress every dirty file that still exists, in parallel.
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
     let to_hash: Vec<String> = dirty
         .iter()
         .filter(|(_, status)| **status != FileStatus::Deleted)
         .map(|(path, _)| path.clone())
         .collect();
     let progress = guard.phase(Phase::Hashing, Some(to_hash.len() as u64));
-    let hashed: Vec<(String, String, i64)> = to_hash
-        .into_par_iter()
-        .inspect(|_| progress.tick())
-        .map(|rel| {
-            let full = root.join(db::db_to_path(&rel));
-            let mode = storage::capture_mode(&full);
-            let hash = if mode == storage::MODE_SYMLINK {
-                storage::store_raw(&objects_dir, &storage::read_symlink_target(&full)?)?
-            } else {
-                storage::hash_and_compress(&full, &objects_dir)?
-            };
-            Ok((rel, hash, mode))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let hashed: Vec<(String, String, i64)> =
+        objects.put_paths(root, to_hash, &progress, || Ok(()))?;
 
     // The shelf's tree: unchanged files carried from the parent, plus the freshly
     // hashed dirty ones. Deleted files are simply absent, which is what records
@@ -187,6 +176,8 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
         params![shelf_name, snapshot, branch.trim(), parent_hash],
     )?;
     tx.commit()?;
+    // Deliberately no event: the shelf's snapshot lives on the internal
+    // '_stash' branch, which is bookkeeping rather than history.
 
     // Clear the brand-new files just shelved. `restore` deliberately leaves
     // untracked files alone — they exist in no snapshot, so removing them would
@@ -255,6 +246,7 @@ pub fn list(repo: &Repo) -> Result<Vec<Shelf>> {
 
 /// Apply a shelf to the working tree and forget it.
 pub fn pop(guard: &WriteGuard, name: Option<String>) -> Result<Popped> {
+    require_working_tree(guard.repo(), "stash")?;
     let root = guard.root();
     let conn = guard.conn();
     let shelf = find_shelf(conn, name)?;
@@ -307,7 +299,7 @@ pub fn drop_shelf(guard: &WriteGuard, name: Option<String>) -> Result<String> {
 fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
     let root = guard.root();
     let conn = guard.conn();
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
 
     // The mode is read alongside the hash so exec bits and symlinks survive a
     // round trip: this used to `fs::write` the bytes and drop the mode entirely.
@@ -319,24 +311,25 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
     drop(stmt);
 
     let progress = guard.phase(Phase::Writing, Some(files.len() as u64));
-    let errors: Vec<String> = files
-        .par_iter()
-        .inspect(|_| progress.tick())
-        .filter_map(|(rel, hash, mode)| {
+    let errors: Vec<String> = objects.par_with_content(
+        &files,
+        |(_, hash, _)| hash.as_str(),
+        |(rel, _, mode), content| {
+            progress.tick();
             let full = root.join(db::db_to_path(rel));
             if let Some(parent) = full.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
                     return Some(format!("{}: {}", rel, e));
                 }
             }
-            match storage::read_object(&objects_dir, hash) {
+            match content {
                 Ok(data) => storage::apply_file(&full, *mode, &data)
                     .err()
                     .map(|e| format!("{}: {}", rel, e)),
                 Err(e) => Some(format!("{}: {}", rel, e)),
             }
-        })
-        .collect();
+        },
+    );
     if !errors.is_empty() {
         return Err(VeloError::invalid(format!(
             "{} file(s) could not be restored from the shelf: {}",

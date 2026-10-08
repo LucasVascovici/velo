@@ -2,3 +2,7 @@
 /.velo
 **/*.rs.bk
 *.py
+/.claude/worktrees/
+/.claude/settings.local.json
+/target-lane*
+/.claude/plans/

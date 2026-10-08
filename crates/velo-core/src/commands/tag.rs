@@ -6,6 +6,7 @@
 use rusqlite::params;
 
 use crate::error::{RefKind, Result, VeloError};
+use crate::events::{Event, Ref};
 use crate::{Repo, SnapshotId, TagName, WriteGuard};
 
 /// A tag and what it points at.
@@ -64,23 +65,18 @@ pub fn create(
     snapshot: Option<&SnapshotId>,
     force: bool,
 ) -> Result<Created> {
-    let root = guard.root();
     let conn = guard.conn();
 
     let target = match snapshot {
         Some(id) => id.clone().into_string(),
-        None => {
-            let position = std::fs::read_to_string(root.join(".velo/PARENT"))
-                .unwrap_or_default()
-                .trim()
-                .to_string();
-            if position.is_empty() {
+        None => match guard.repo().position() {
+            Some(position) => position.into_string(),
+            None => {
                 return Err(VeloError::invalid(
                     "No snapshot to tag. Save something first.",
-                ));
+                ))
             }
-            position
-        }
+        },
     };
 
     let existing: Option<SnapshotId> = conn
@@ -104,6 +100,12 @@ pub fn create(
         params![name, target],
     )?;
 
+    guard.repo().emit(Event::RefMoved {
+        reference: Ref::Tag(name.clone()),
+        from: existing.clone(),
+        to: Some(SnapshotId::from_stored(target.as_str())),
+    });
+
     Ok(Created {
         name: name.clone(),
         snapshot: SnapshotId::from_stored(target),
@@ -114,9 +116,21 @@ pub fn create(
 /// Delete the tag called `name`.
 pub fn delete(guard: &WriteGuard, name: &TagName) -> Result<()> {
     let conn = guard.conn();
+    let from: Option<SnapshotId> = conn
+        .query_row(
+            "SELECT snapshot_hash FROM tags WHERE name = ?",
+            [name],
+            |r| r.get(0),
+        )
+        .ok();
     let rows = conn.execute("DELETE FROM tags WHERE name = ?", [name])?;
     if rows == 0 {
         return Err(VeloError::not_found(RefKind::Tag, name.as_str()));
     }
+    guard.repo().emit(Event::RefMoved {
+        reference: Ref::Tag(name.clone()),
+        from,
+        to: None,
+    });
     Ok(())
 }

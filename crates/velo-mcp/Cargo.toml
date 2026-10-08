@@ -1,0 +1,27 @@
+[package]
+name = "velo-mcp"
+description = "A stdio Model Context Protocol server that makes velo the checkpoint layer for any agent."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+# Shipped as a binary built from source, like velo-ffi.
+publish = false
+
+[lib]
+
+[[bin]]
+name = "velo-mcp"
+path = "src/main.rs"
+
+[dependencies]
+velo-core.workspace = true
+clap.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

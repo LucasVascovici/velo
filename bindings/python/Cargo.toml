@@ -1,0 +1,18 @@
+[package]
+name = "velo-py"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Python binding for velo-core"
+
+# An empty table makes this its own workspace root, so PyO3's Python toolchain
+# stays out of the main `cargo test --workspace`.
+[workspace]
+
+[lib]
+name = "_velo"
+crate-type = ["cdylib"]
+
+[dependencies]
+velo-core = { path = "../../crates/velo-core" }
+pyo3 = { version = "0.29", features = ["abi3-py39"] }

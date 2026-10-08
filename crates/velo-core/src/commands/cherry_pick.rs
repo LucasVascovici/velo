@@ -9,6 +9,7 @@
 
 use std::fs;
 
+use crate::commands::require_working_tree;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, RefKind, Result, VeloError};
 use crate::storage;
@@ -43,6 +44,7 @@ impl Outcome {
 /// Apply `target`'s changes to the working tree, committing when clean.
 /// Apply the changes one snapshot introduced, on top of the current position.
 pub fn run(guard: &WriteGuard, target: &SnapshotId, author: Option<&Author>) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "cherry-pick")?;
     let root = guard.root();
     // Checked before the dirty-tree test: a paused merge or cherry-pick leaves
     // the tree dirty by design, so testing dirtiness first blames the wrong thing.

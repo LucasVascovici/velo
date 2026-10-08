@@ -21,7 +21,8 @@ use crate::{db, BranchName, SnapshotId, FORMAT_VERSION};
 /// `Send` but **not** `Sync` — `rusqlite::Connection` cannot be shared between
 /// threads. Use one `Repo` per thread, or `Arc<Mutex<Repo>>`.
 pub struct Repo {
-    root: PathBuf,
+    /// Whether this is a directory repository or a single SQLite file.
+    layout: Layout,
     conn: rusqlite::Connection,
     /// Where long operations report progress. `Silent` unless a caller supplies
     /// one via [`Repo::observing`].
@@ -29,13 +30,83 @@ pub struct Repo {
     /// Which paths count as the working tree. Everything, unless narrowed via
     /// [`Repo::scoped`].
     scope: crate::Scope,
+    /// Which merge driver handles which path. Line-based diff3 for everything,
+    /// unless set via [`Repo::merging`].
+    drivers: crate::Drivers,
+    /// Who hears about commits made through this handle. See [`crate::events`].
+    listeners: Vec<Box<dyn crate::events::Listener>>,
+    /// Where objects live, read once when the handle opens.
+    object_location: crate::ObjectLocation,
+}
+
+/// How a repository sits on disk.
+#[derive(Clone, Debug)]
+enum Layout {
+    /// The usual layout: `root/.velo/` beside a working tree.
+    Directory { root: PathBuf },
+    /// One SQLite file holding everything: no `.velo`, no working tree.
+    SingleFile { db: PathBuf },
+}
+
+/// The `settings` value that marks a database as a single-file repository.
+const SINGLE_FILE: &str = "single-file";
+
+/// Read one row of the `settings` table; `None` when the table or row is absent.
+fn read_setting(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>> {
+    use rusqlite::OptionalExtension;
+    let has_table: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'settings')",
+        [],
+        |r| r.get(0),
+    )?;
+    if !has_table {
+        return Ok(None);
+    }
+    Ok(conn
+        .query_row("SELECT value FROM settings WHERE key = ?", [key], |r| {
+            r.get(0)
+        })
+        .optional()?)
+}
+
+/// Refuse a database whose format this build cannot open as it is.
+fn check_format(conn: &rusqlite::Connection) -> Result<()> {
+    match db::format_version(conn)? {
+        v if v > FORMAT_VERSION => Err(Error::SchemaTooNew {
+            found: v,
+            supported: FORMAT_VERSION,
+        }),
+        v if db::is_pre_v2(v) => Err(Error::FormatTooOld {
+            found: v,
+            supported: FORMAT_VERSION,
+        }),
+        v if v < FORMAT_VERSION => Err(Error::MigrationRequired {
+            found: v,
+            supported: FORMAT_VERSION,
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Refuse a database that is not a single-file repository, so a directory
+/// repository's `velo.db` is never opened without its object files and refs.
+fn check_single_file(conn: &rusqlite::Connection) -> Result<()> {
+    if read_setting(conn, "layout")?.as_deref() == Some(SINGLE_FILE) {
+        Ok(())
+    } else {
+        Err(Error::invalid(
+            "This database is not a single-file repository; open the directory instead.",
+        ))
+    }
 }
 
 impl std::fmt::Debug for Repo {
     /// Hand-written because `dyn Observer` isn't `Debug` — and requiring it of
     /// every consumer's progress bar would be a poor trade.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Repo").field("root", &self.root).finish()
+        f.debug_struct("Repo")
+            .field("layout", &self.layout)
+            .finish()
     }
 }
 
@@ -45,8 +116,20 @@ impl Repo {
     /// Fails with [`Error::AlreadyInitialized`] if one exists there, or
     /// [`Error::NestedRepo`] if an enclosing repository is found.
     pub fn init(root: &Path) -> Result<Self> {
-        crate::commands::init::run(root)?;
+        Self::init_with(root, crate::InitOptions::default())
+    }
+
+    /// Create a repository at `root` with explicit [`InitOptions`], such as
+    /// keeping objects in the database. The choice is recorded and cannot be
+    /// changed afterwards.
+    pub fn init_with(root: &Path, options: crate::InitOptions) -> Result<Self> {
+        crate::commands::init::run_with(root, options)?;
         Self::open(root)
+    }
+
+    /// Where this repository keeps its objects.
+    pub fn object_location(&self) -> crate::ObjectLocation {
+        self.object_location
     }
 
     /// Open the repository rooted exactly at `root` (i.e. `root/.velo` must
@@ -61,32 +144,18 @@ impl Repo {
             });
         }
         let conn = db::connect(&root.join(".velo/velo.db"))?;
-        match db::format_version(&conn)? {
-            v if v > FORMAT_VERSION => {
-                return Err(Error::SchemaTooNew {
-                    found: v,
-                    supported: FORMAT_VERSION,
-                })
-            }
-            v if db::is_pre_v2(v) => {
-                return Err(Error::FormatTooOld {
-                    found: v,
-                    supported: FORMAT_VERSION,
-                })
-            }
-            v if v < FORMAT_VERSION => {
-                return Err(Error::MigrationRequired {
-                    found: v,
-                    supported: FORMAT_VERSION,
-                })
-            }
-            _ => {}
-        }
+        check_format(&conn)?;
+        let object_location = crate::ObjectLocation::read(&conn)?;
         Ok(Repo {
-            root: root.to_path_buf(),
+            layout: Layout::Directory {
+                root: root.to_path_buf(),
+            },
             conn,
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
+            drivers: crate::Drivers::new(),
+            listeners: Vec::new(),
+            object_location,
         })
     }
 
@@ -119,12 +188,162 @@ impl Repo {
             });
         }
         db::migrate(&conn)?;
+        // v2 -> v3 adds the chunk directory; nothing else on disk changes. A
+        // database-located repository has no object files, so no directory.
+        if crate::ObjectLocation::read(&conn)? == crate::ObjectLocation::Files {
+            std::fs::create_dir_all(root.join(".velo/chunks"))?;
+        }
+        let object_location = crate::ObjectLocation::read(&conn)?;
         Ok(Repo {
-            root: root.to_path_buf(),
+            layout: Layout::Directory {
+                root: root.to_path_buf(),
+            },
             conn,
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
+            drivers: crate::Drivers::new(),
+            listeners: Vec::new(),
+            object_location,
         })
+    }
+
+    /// Create a single-file repository: everything lives in the SQLite file at
+    /// `path`, with objects in its `objects` table.
+    ///
+    /// There is no `.velo` directory and no working tree, so only the store-only
+    /// API works; commands that read or write files return
+    /// [`Error::Unsupported`]. This is the shape a browser build opens through
+    /// the SQLite VFS, and a portable single-file store natively.
+    ///
+    /// Fails with [`Error::AlreadyInitialized`] if `path` exists.
+    pub fn create_file(path: &Path) -> Result<Self> {
+        // `path.exists()` alone is always false on wasm32; see `db::connect_existing`.
+        if path.exists() || db::connect_existing(path)?.is_some() {
+            return Err(Error::AlreadyInitialized {
+                at: path.to_path_buf(),
+            });
+        }
+        db::init_db_at_path(path)?;
+        {
+            let conn = db::connect(path)?;
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('objects', 'database')",
+                [],
+            )?;
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('layout', ?)",
+                [SINGLE_FILE],
+            )?;
+            crate::commands::register_branch(&conn, "main", "")?;
+        }
+        Self::open_file(path)
+    }
+
+    /// Open the single-file repository at `path`.
+    ///
+    /// Refuses an older format with [`Error::MigrationRequired`], as
+    /// [`Repo::open`] does, and a database that is not a single-file repository
+    /// (such as a directory repository's `velo.db`) with [`Error::InvalidInput`].
+    pub fn open_file(path: &Path) -> Result<Self> {
+        let conn = Self::connect_file(path)?;
+        check_format(&conn)?;
+        check_single_file(&conn)?;
+        Self::from_file(path, conn)
+    }
+
+    /// Open a single-file repository, applying any pending migration first.
+    pub fn open_file_and_migrate(path: &Path) -> Result<Self> {
+        let conn = Self::connect_file(path)?;
+        let found = db::format_version(&conn)?;
+        if found > FORMAT_VERSION {
+            return Err(Error::SchemaTooNew {
+                found,
+                supported: FORMAT_VERSION,
+            });
+        }
+        if db::is_pre_v2(found) {
+            return Err(Error::FormatTooOld {
+                found,
+                supported: FORMAT_VERSION,
+            });
+        }
+        // Checked before migrating: never rewrite a database that is not ours.
+        check_single_file(&conn)?;
+        db::migrate(&conn)?;
+        Self::from_file(path, conn)
+    }
+
+    fn connect_file(path: &Path) -> Result<rusqlite::Connection> {
+        // A directory is never a single-file repository; on wasm32 `is_dir` is
+        // always false, and SQLite answers whether the file exists.
+        if path.is_dir() {
+            return Err(Error::NotARepo {
+                searched_from: path.to_path_buf(),
+            });
+        }
+        db::connect_existing(path)?.ok_or_else(|| Error::NotARepo {
+            searched_from: path.to_path_buf(),
+        })
+    }
+
+    fn from_file(path: &Path, conn: rusqlite::Connection) -> Result<Self> {
+        let object_location = crate::ObjectLocation::read(&conn)?;
+        Ok(Repo {
+            layout: Layout::SingleFile {
+                db: path.to_path_buf(),
+            },
+            conn,
+            observer: Box::new(Silent),
+            scope: crate::Scope::new(),
+            drivers: crate::Drivers::new(),
+            listeners: Vec::new(),
+            object_location,
+        })
+    }
+
+    /// Whether this repository has a working tree. `false` for a single-file
+    /// repository, whose only store is the database.
+    pub fn has_working_tree(&self) -> bool {
+        matches!(self.layout, Layout::Directory { .. })
+    }
+
+    /// The branch `HEAD` names: `.velo/HEAD`, or `main` in a single-file
+    /// repository. Store-only code must not read `.velo/HEAD` directly: in a
+    /// shared directory it could belong to an unrelated repository.
+    pub(crate) fn head_branch(&self) -> BranchName {
+        match &self.layout {
+            Layout::Directory { root } => BranchName::from_stored(
+                std::fs::read_to_string(root.join(".velo/HEAD"))
+                    .unwrap_or_else(|_| "main".into())
+                    .trim(),
+            ),
+            Layout::SingleFile { .. } => BranchName::from_stored("main"),
+        }
+    }
+
+    /// The checked-out snapshot (`.velo/PARENT`), or `None` when nothing is
+    /// checked out or the repository has no working tree.
+    pub(crate) fn position(&self) -> Option<SnapshotId> {
+        match &self.layout {
+            Layout::Directory { root } => {
+                let raw = std::fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+                let raw = raw.trim();
+                (!raw.is_empty()).then(|| SnapshotId::from_stored(raw))
+            }
+            Layout::SingleFile { .. } => None,
+        }
+    }
+
+    /// The lock file this repository's writers contend on.
+    fn lock_path(&self) -> PathBuf {
+        match &self.layout {
+            Layout::Directory { root } => root.join(".velo/lock"),
+            Layout::SingleFile { db } => {
+                let mut name = db.as_os_str().to_owned();
+                name.push(".lock");
+                PathBuf::from(name)
+            }
+        }
     }
 
     /// Search `start` and its ancestors for a repository and open it.
@@ -156,6 +375,83 @@ impl Repo {
     pub fn observing(mut self, observer: impl Observer + 'static) -> Self {
         self.observer = Box::new(observer);
         self
+    }
+
+    /// Subscribe to the changes committed through this handle.
+    ///
+    /// Consumes the handle like [`Repo::observing`]; call it again to add more
+    /// listeners, which are notified in registration order. Same-handle only —
+    /// see [`crate::events`].
+    pub fn listening(mut self, listener: impl crate::events::Listener + 'static) -> Self {
+        self.listeners.push(Box::new(listener));
+        self
+    }
+
+    /// Tell every listener about a change that has already committed.
+    pub(crate) fn emit(&self, event: crate::events::Event) {
+        for listener in &self.listeners {
+            listener.notify(&event);
+        }
+    }
+
+    /// Announce a committed snapshot: `Saved`, then `Merged` when it has a
+    /// second parent.
+    pub(crate) fn emit_saved(
+        &self,
+        snapshot: &SnapshotId,
+        branch: &BranchName,
+        parent: Option<&SnapshotId>,
+        merge_parent: Option<&SnapshotId>,
+    ) {
+        if self.listeners.is_empty() {
+            return;
+        }
+        use crate::events::Event;
+        self.emit(Event::Saved {
+            snapshot: snapshot.clone(),
+            branch: branch.clone(),
+            parent: parent.cloned(),
+            merge_parent: merge_parent.cloned(),
+        });
+        if let (Some(ours), Some(theirs)) = (parent, merge_parent) {
+            self.emit(Event::Merged {
+                snapshot: snapshot.clone(),
+                into: branch.clone(),
+                ours: ours.clone(),
+                theirs: theirs.clone(),
+            });
+        }
+    }
+
+    /// Emit `Saved` for rows known only by their stored strings (the commands
+    /// that predate typed ids). Empty strings mean "no parent".
+    pub(crate) fn emit_saved_raw(
+        &self,
+        snapshot: &str,
+        branch: &str,
+        parent: &str,
+        merge_parent: &str,
+    ) {
+        if self.listeners.is_empty() {
+            return;
+        }
+        let opt = |s: &str| {
+            let s = s.trim();
+            (!s.is_empty()).then(|| SnapshotId::from_stored(s))
+        };
+        self.emit_saved(
+            &SnapshotId::from_stored(snapshot),
+            &BranchName::from_stored(branch.trim()),
+            opt(parent).as_ref(),
+            opt(merge_parent).as_ref(),
+        );
+    }
+
+    /// Announce history that arrived from elsewhere, if any did.
+    pub(crate) fn emit_imported(&self, snapshots: usize) {
+        if snapshots > 0 {
+            self.emit(crate::events::Event::Imported { snapshots });
+        }
     }
 
     /// Open a phase of work. The returned guard closes it when dropped.
@@ -193,14 +489,61 @@ impl Repo {
         self
     }
 
+    /// Choose merge drivers by path pattern.
+    ///
+    /// Like a [`Scope`](crate::Scope), this lives on the handle rather than on
+    /// one merge: which files are JSON is a property of the repository, not of
+    /// one merge. Plan, merge, cherry-pick and rebase all consult it, so they
+    /// cannot disagree about how a file is merged.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// use velo_core::{Drivers, Repo};
+    /// use velo_merge::LineDriver;
+    ///
+    /// let repo = Repo::discover(std::path::Path::new("."))?
+    ///     .merging(Drivers::new().with("*.cfg", LineDriver)?);
+    /// # let _ = repo;
+    /// # Ok(()) }
+    /// ```
+    pub fn merging(mut self, drivers: crate::Drivers) -> Self {
+        self.drivers = drivers;
+        self
+    }
+
+    /// The handle's merge drivers.
+    pub(crate) fn drivers(&self) -> &crate::Drivers {
+        &self.drivers
+    }
+
     /// The handle's scope, for the directory walk.
     pub(crate) fn scope(&self) -> &crate::Scope {
         &self.scope
     }
 
     /// The repository root (the directory *containing* `.velo`).
+    ///
+    /// For a single-file repository this is the database file's parent
+    /// directory. There is **no working tree** there: it is only where the file
+    /// happens to sit, and nothing velo does will read or write it.
     pub fn root(&self) -> &Path {
-        &self.root
+        match &self.layout {
+            Layout::Directory { root } => root,
+            Layout::SingleFile { db } => match db.parent() {
+                Some(p) if !p.as_os_str().is_empty() => p,
+                _ => Path::new("."),
+            },
+        }
+    }
+
+    /// The object store: the one way commands reach stored file content.
+    pub(crate) fn objects(&self) -> crate::storage::ObjectStore<'_> {
+        match self.object_location {
+            crate::ObjectLocation::Files => {
+                crate::storage::ObjectStore::at(self.root().join(".velo/objects"))
+            }
+            crate::ObjectLocation::Database => crate::storage::ObjectStore::Database(&self.conn),
+        }
     }
 
     /// The long-lived connection, for command implementations inside this crate.
@@ -242,6 +585,41 @@ impl Repo {
     /// the parent is wanted too, since computing that is not free.
     pub fn snapshot(&self, id: &SnapshotId) -> Result<crate::commands::history::Entry> {
         crate::commands::history::snapshot(self, id)
+    }
+
+    /// Every snapshot whose metadata satisfies all of `filters`, across all
+    /// branches, newest first.
+    ///
+    /// One indexed query instead of walking history and calling
+    /// [`Repo::snapshot_meta`] per entry. Soft-deleted and stash branches are
+    /// excluded, exactly as `history::Options { all: true }` excludes them. To
+    /// scope to one branch or ancestry, or to combine with a path filter, use
+    /// [`commands::history::run`](crate::commands::history::run) with
+    /// `Options::meta`.
+    ///
+    /// Store only: needs no working tree.
+    ///
+    /// # Errors
+    /// [`Error::InvalidInput`] when `filters` is empty — "everything" is not a
+    /// query, and an accidental empty slice should not return a whole history.
+    pub fn find_snapshots(
+        &self,
+        filters: &[crate::commands::history::MetaFilter<'_>],
+    ) -> Result<Vec<crate::commands::history::Entry>> {
+        if filters.is_empty() {
+            return Err(Error::invalid(
+                "find_snapshots needs at least one metadata filter.",
+            ));
+        }
+        let history = crate::commands::history::run(
+            self,
+            crate::commands::history::Options {
+                all: true,
+                meta: filters,
+                ..Default::default()
+            },
+        )?;
+        Ok(history.entries)
     }
 
     /// A value that changes whenever the repository's history does.
@@ -307,7 +685,7 @@ impl Repo {
     /// shows a modal will wedge every other process.
     pub fn write(&self) -> Result<WriteGuard<'_>> {
         Ok(WriteGuard {
-            _lock: RepoLock::acquire(&self.root)?,
+            _lock: RepoLock::acquire_at(&self.lock_path())?,
             repo: self,
         })
     }
@@ -315,7 +693,7 @@ impl Repo {
     /// Like [`Repo::write`] but returns `Ok(None)` instead of erroring when the
     /// lock is already held.
     pub fn try_write(&self) -> Result<Option<WriteGuard<'_>>> {
-        match RepoLock::try_acquire(&self.root)? {
+        match RepoLock::try_acquire_at(&self.lock_path())? {
             Some(lock) => Ok(Some(WriteGuard {
                 _lock: lock,
                 repo: self,
@@ -326,6 +704,19 @@ impl Repo {
 
     /// Retry acquiring the write lock until `timeout` elapses.
     pub fn write_timeout(&self, timeout: Duration) -> Result<WriteGuard<'_>> {
+        // `Instant::now()` panics on wasm32-unknown-unknown, and the wasm
+        // `RepoLock` always succeeds, so there is nothing to wait for: take it once.
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = timeout;
+            self.write()
+        }
+        #[cfg(not(target_family = "wasm"))]
+        self.write_timeout_native(timeout)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn write_timeout_native(&self, timeout: Duration) -> Result<WriteGuard<'_>> {
         let deadline = Instant::now() + timeout;
         let mut backoff = Duration::from_millis(5);
         loop {

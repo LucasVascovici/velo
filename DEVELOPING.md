@@ -103,6 +103,19 @@ keeps the useful failure visible.
 
 ---
 
+## WASM
+
+`velo-core` builds for `wasm32-unknown-unknown`, checked by `.github/workflows/wasm.yml`:
+
+```bash
+rustup target add wasm32-unknown-unknown
+cargo build -p velo-core --target wasm32-unknown-unknown --locked
+```
+
+`clang` must be on `PATH`: `zstd-sys` and the bundled SQLite compile C for wasm. Only
+single-file repositories are supported there; `RepoLock` is a no-op and mmap reads fall
+back to `fs::read`.
+
 ## Push & pull-request flow
 
 1. Work on a branch (not `main`).

@@ -12,6 +12,16 @@
 //! ```
 
 use similar::{DiffOp, TextDiff};
+use std::ops::Range;
+
+#[cfg(any(feature = "json", feature = "yaml", feature = "toml"))]
+mod structured;
+#[cfg(feature = "json")]
+pub use structured::JsonDriver;
+#[cfg(feature = "toml")]
+pub use structured::TomlDriver;
+#[cfg(feature = "yaml")]
+pub use structured::YamlDriver;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -75,6 +85,118 @@ pub fn diff3(ancestor: &str, ours: &str, theirs: &str) -> MergeResult {
         MergeResult::Conflicted(hunks)
     }
 }
+
+// ─── Merge drivers ────────────────────────────────────────────────────────────
+
+/// A three-way merge strategy for one kind of file.
+///
+/// Line-based diff3 is right for prose and source and wrong for structured
+/// documents, where a line merge yields syntactically valid conflicts in the
+/// wrong places and invalid documents in the right ones. A driver lets a
+/// caller merge a kind of file by its own rules while everything else keeps
+/// using [`LineDriver`].
+pub trait MergeDriver: Send + Sync {
+    /// Short stable name, e.g. `line`, `json`.
+    fn name(&self) -> &str;
+    /// Merge `ours` and `theirs` against `ancestor`.
+    fn merge(&self, ancestor: &str, ours: &str, theirs: &str) -> MergeResult;
+    /// The units diff and blame compare for this kind of file.
+    ///
+    /// Half-open, 0-based **line** ranges that cover every line of `text`
+    /// exactly once, in order. The default is one unit per line; a driver
+    /// overrides it so blame can answer per paragraph or per key rather than
+    /// per line.
+    fn units(&self, text: &str) -> Vec<Range<usize>> {
+        (0..text.lines().count()).map(|i| i..i + 1).collect()
+    }
+}
+
+/// The text of each unit: its lines joined with a line feed, with no trailing newline.
+pub fn unit_texts(text: &str, units: &[Range<usize>]) -> Vec<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    units
+        .iter()
+        .map(|u| lines[u.start.min(lines.len())..u.end.min(lines.len())].join("\n"))
+        .collect()
+}
+
+/// Turn the sorted line indices at which units begin into ranges over `len`
+/// lines. Line 0 always begins a unit, so every line is covered once.
+#[cfg(any(feature = "json", feature = "yaml", feature = "toml"))]
+pub(crate) fn ranges_from_starts(len: usize, starts: &[usize]) -> Vec<Range<usize>> {
+    let mut starts: Vec<usize> = starts.iter().copied().filter(|&s| s < len).collect();
+    if len > 0 {
+        starts.push(0);
+    }
+    starts.sort_unstable();
+    starts.dedup();
+    let mut out = Vec::new();
+    for (i, &s) in starts.iter().enumerate() {
+        out.push(s..starts.get(i + 1).copied().unwrap_or(len));
+    }
+    out
+}
+
+/// The default: line-based diff3, exactly [`diff3`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct LineDriver;
+
+impl MergeDriver for LineDriver {
+    fn name(&self) -> &str {
+        "line"
+    }
+    fn merge(&self, ancestor: &str, ours: &str, theirs: &str) -> MergeResult {
+        diff3(ancestor, ours, theirs)
+    }
+}
+
+/// Line-based diff3 for prose, with paragraphs as the unit of blame and diff.
+///
+/// Merges exactly like [`LineDriver`]. A unit is a maximal run of non-blank
+/// lines, and each run of blank lines is a unit of its own, so a paragraph
+/// edit never shifts the attribution of its neighbours.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ParagraphDriver;
+
+impl MergeDriver for ParagraphDriver {
+    fn name(&self) -> &str {
+        "paragraph"
+    }
+    fn merge(&self, ancestor: &str, ours: &str, theirs: &str) -> MergeResult {
+        diff3(ancestor, ours, theirs)
+    }
+    fn units(&self, text: &str) -> Vec<Range<usize>> {
+        let blank: Vec<bool> = text.lines().map(|l| l.trim().is_empty()).collect();
+        let starts: Vec<usize> = (0..blank.len())
+            .filter(|&i| i == 0 || blank[i] != blank[i - 1])
+            .collect();
+        let mut out = Vec::new();
+        for (k, &s) in starts.iter().enumerate() {
+            out.push(s..starts.get(k + 1).copied().unwrap_or(blank.len()));
+        }
+        out
+    }
+}
+
+/// One hunk covering the whole file, for a driver that finds a conflict diff3
+/// has no line region for.
+///
+/// A resolver session needs something to decide; this gives it "ours or theirs
+/// for the whole file". [`build_resolved_content`] honours such a hunk even
+/// though diff3 would have merged the file cleanly.
+pub fn whole_file_conflict(ancestor: &str, ours: &str, theirs: &str) -> Vec<ConflictHunk> {
+    vec![ConflictHunk {
+        id: 0,
+        ancestor_start: 0,
+        ancestor_end: ancestor.lines().count(),
+        context_before: Vec::new(),
+        ours: ours.lines().map(str::to_string).collect(),
+        theirs: theirs.lines().map(str::to_string).collect(),
+        context_after: Vec::new(),
+        decision: None,
+    }]
+}
+
 // ─── 3-way merge (diff3) ───────────────────────────────────────────────────────
 
 /// One segment of a 3-way merge, aligned against the common ancestor.
@@ -278,6 +400,24 @@ pub fn build_resolved_content(
         .iter()
         .map(|h| ((h.ancestor_start, h.ancestor_end), h))
         .collect();
+
+    // A driver can raise a conflict diff3 has no region for, as one hunk over
+    // the whole file. If diff3 produced no conflict with that range, the hunk
+    // stands for the entire file and its decision is the result.
+    let whole = anc.len();
+    if let Some(h) = decisions.get(&(0, whole)) {
+        let matched = segments.iter().any(
+            |s| matches!(s, Segment::Conflict { anc_start: 0, anc_end, .. } if *anc_end == whole),
+        );
+        if !matched {
+            let joined = hunk_lines(h).join("\n");
+            return if trailing_newline && !joined.ends_with('\n') {
+                format!("{}\n", joined)
+            } else {
+                joined
+            };
+        }
+    }
 
     let mut output: Vec<String> = Vec::new();
     for seg in segments {

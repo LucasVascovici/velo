@@ -1,7 +1,17 @@
 # velo-core
 
-The embeddable core of [Velo](https://github.com/LucasVascovici/velo): a
-content-addressed repository with history, branching, three-way merge and sync.
+The engine of [Velo](https://github.com/LucasVascovici/velo), a timeline engine
+you can embed: a content-addressed repository with history, branching,
+three-way merge and sync.
+
+- **Verifiable whole-tree snapshots** — content-addressed, `fsck` recomputes every id.
+- **Tamper-evident provenance** — hashed, namespaced metadata; authorship; parent-aware, rename-aware blame with author and branch per line.
+- **No working tree required** — `save_tree` / `tree_at`, caller-supplied timestamps, `Repo::scoped`.
+- **Explicit divergence** — branches, a pure merge engine, resumable resolutions, undo/redo, sync that refuses rather than guesses.
+- **Trivial to deploy** — one SQLite file, synchronous core, typed errors, per-call progress and cancellation.
+
+Anything that has to answer *"what did this look like at T, who changed it, why,
+and can I prove it?"* is a candidate.
 
 This crate is the library half. It has no terminal output at all — the boundary
 is enforced by `#![deny(clippy::print_stdout, clippy::print_stderr)]` — so every
@@ -37,6 +47,18 @@ let saved = commands::save::run(&guard, Some("a message"), Default::default())?;
   a `Cancel` on the call, not on the handle — no globals.
 - **No working tree required.** `save_tree` records a snapshot from an in-memory
   file set, which is how a document editor or a registry uses this crate.
+
+## From other languages
+
+All of these are layers over this crate, in the
+[repository](https://github.com/LucasVascovici/velo). They are built from
+source; nothing is published yet.
+
+- [`bindings/python`](https://github.com/LucasVascovici/velo/tree/main/bindings/python) — PyO3, built with maturin.
+- [`bindings/node`](https://github.com/LucasVascovici/velo/tree/main/bindings/node) — napi-rs.
+- [`bindings/wasm`](https://github.com/LucasVascovici/velo/tree/main/bindings/wasm) — wasm-bindgen over single-file repositories.
+- [`crates/velo-ffi`](https://github.com/LucasVascovici/velo/tree/main/crates/velo-ffi) — a C ABI with `include/velo.h`.
+- [`crates/velo-mcp`](https://github.com/LucasVascovici/velo/tree/main/crates/velo-mcp) — a stdio MCP server for agent checkpointing.
 
 ## Features
 

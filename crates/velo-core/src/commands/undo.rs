@@ -9,7 +9,9 @@ use std::fs;
 use rusqlite::OptionalExtension;
 
 use crate::commands::get_dirty_files;
+use crate::commands::require_working_tree;
 use crate::error::{InProgress, Result, VeloError};
+use crate::events::{Event, Ref};
 use crate::SnapshotId;
 use crate::WriteGuard;
 
@@ -34,6 +36,7 @@ impl Outcome {
 
 /// Shelve the newest snapshot on the current branch.
 pub fn run(guard: &WriteGuard) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "undo")?;
     let root = guard.root();
     // A merge or rebase leaves MERGE_HEAD / REBASE_STATE and conflict rows
     // behind; removing the tip underneath them produces an inconsistent
@@ -78,10 +81,10 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     // deliberately left in place so redo can restore the tree.
     let tx = guard.transaction()?;
     tx.execute(
-        "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, merge_parent, created_at_ms)
-         SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms
+        "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, merge_parent, created_at_ms, deleted_at_ms)
+         SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms, ?
          FROM snapshots WHERE hash = ?",
-        [&snapshot],
+        rusqlite::params![crate::commands::snapshot_timestamp_ms(), snapshot],
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO trash_tags (name, snapshot_hash)
@@ -93,6 +96,11 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     tx.commit()?;
 
     let now_at = parent_hash.trim().to_string();
+    guard.repo().emit(Event::RefMoved {
+        reference: Ref::Branch(crate::BranchName::from_stored(branch.trim())),
+        from: Some(SnapshotId::from_stored(snapshot.as_str())),
+        to: (!now_at.is_empty()).then(|| SnapshotId::from_stored(now_at.as_str())),
+    });
     if now_at.is_empty() {
         // The root snapshot went, so there is nothing to restore to: clear the
         // position and remove the files it tracked.

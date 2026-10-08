@@ -148,7 +148,7 @@ jobs:
           restore-keys: package-cargo-
 
       - name: Package every published crate
-        run: cargo package --workspace --locked --exclude prompt-registry
+        run: cargo package --workspace --locked --exclude prompt-registry --exclude velo-ffi --exclude velo-mcp
 
   # ── Formatting (advisory) ──────────────────────────────────────────────────
   # Style only — never blocks a legitimate fix from landing.  Fix with:

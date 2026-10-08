@@ -6,6 +6,7 @@
 
 use std::fs;
 
+use crate::commands::require_working_tree;
 use crate::commands::{get_dirty_files, FileStatus};
 use crate::error::{Result, VeloError};
 use crate::SnapshotId;
@@ -34,6 +35,7 @@ pub enum Outcome {
 ///
 /// `force` discards unsaved changes to tracked files.
 pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "switch")?;
     let root = guard.root();
     if branch_name.starts_with("_deleted_") {
         return Err(VeloError::invalid(format!(

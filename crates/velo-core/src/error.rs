@@ -159,6 +159,14 @@ pub enum Error {
         matches: usize,
     },
 
+    /// The snapshot no longer exists because compaction squashed or re-minted
+    /// it. `into` is the live id that replaced it, so a holder of the old id can
+    /// carry on rather than treat it as missing.
+    Compacted {
+        id: String,
+        into: crate::SnapshotId,
+    },
+
     // ── Integrity ────────────────────────────────────────────────────────────
     /// Stored data failed verification.
     Corrupt {
@@ -256,6 +264,9 @@ impl fmt::Display for Error {
                 "prefix '{}' matches {} snapshots; use more characters",
                 prefix, matches
             ),
+            Error::Compacted { id, into } => {
+                write!(f, "snapshot {} was compacted into {}", id, into)
+            }
             Error::Corrupt { detail } => write!(f, "corrupt repository: {}", detail),
             Error::MissingObject { hash } => {
                 write!(f, "object {} is missing from the object store", hash)

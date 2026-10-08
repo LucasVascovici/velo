@@ -3,11 +3,14 @@ pub mod blame;
 pub mod branches;
 pub mod bundle;
 pub mod cherry_pick;
+pub mod compact;
 pub mod diff;
+pub mod export;
 pub mod fsck;
 pub mod gc;
 pub mod grep;
 pub mod history;
+pub mod import;
 pub mod init;
 pub mod merge;
 pub mod mv;
@@ -17,6 +20,7 @@ pub mod redo;
 pub mod remote;
 pub mod resolve;
 pub mod restore;
+pub mod retention;
 pub mod save;
 pub mod show;
 pub mod squash;
@@ -42,6 +46,18 @@ use chrono::{DateTime, Utc};
 
 use crate::error::{RefKind, Result, VeloError};
 use crate::{Repo, SnapshotId, SnapshotMeta};
+
+/// Refuse a command that reads or writes the working tree when the repository
+/// is a single file and has none.
+pub(crate) fn require_working_tree(repo: &Repo, command: &str) -> Result<()> {
+    if repo.has_working_tree() {
+        return Ok(());
+    }
+    Err(VeloError::unsupported(format!(
+        "{} needs a working tree; this repository is a single file",
+        command
+    )))
+}
 
 /// Hex characters of a snapshot id shown in output.
 ///
@@ -315,12 +331,82 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<SnapshotId> {
         }
     }
 
+    // An id compaction removed is not "no such thing": the caller held a real id
+    // and is owed the one that replaced it.
+    if let Some(into) = compacted_into(conn, input) {
+        return Err(VeloError::Compacted {
+            id: input.to_string(),
+            into,
+        });
+    }
+
     // `NotFound`, not `InvalidInput`: the spec was well-formed, it simply does not
     // name anything. A consumer needs to tell "no such ref" (often expected — a
     // branch with no snapshots yet) from "you asked me something malformed", and
     // `RefKind::Any` exists for exactly this case: a ref that could have been a
     // snapshot, a tag or a branch.
     Err(VeloError::not_found(RefKind::Any, input))
+}
+
+/// Where a compacted id lives now, following the record to the end of its chain.
+///
+/// `id_or_prefix` is an exact id, or a unique prefix of one. A prefix is only
+/// honoured when it matches no live snapshot, so a caller can use this on a
+/// not-found path without it ever shadowing a snapshot that exists. The walk is
+/// bounded by [`MAX_ANCESTRY_DEPTH`], because a hand-edited table could loop.
+pub(crate) fn compacted_into(
+    conn: &rusqlite::Connection,
+    id_or_prefix: &str,
+) -> Option<SnapshotId> {
+    let lookup = |old: &str| -> Option<String> {
+        conn.query_row(
+            "SELECT new_hash FROM compactions WHERE old_hash = ?",
+            [old],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    };
+
+    let mut current = match lookup(id_or_prefix) {
+        Some(next) => next,
+        None => {
+            // Hex only: the prefix goes into a LIKE, where `%` and `_` would
+            // otherwise match everything.
+            if id_or_prefix.is_empty() || !id_or_prefix.chars().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            let live: bool = conn
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash LIKE ? || '%')",
+                    [id_or_prefix],
+                    |r| r.get(0),
+                )
+                .unwrap_or(true);
+            if live {
+                return None;
+            }
+            let mut stmt = conn
+                .prepare("SELECT new_hash FROM compactions WHERE old_hash LIKE ? || '%' LIMIT 2")
+                .ok()?;
+            let found: Vec<String> = stmt
+                .query_map([id_or_prefix], |r| r.get(0))
+                .ok()?
+                .filter_map(|r| r.ok())
+                .collect();
+            if found.len() != 1 {
+                return None;
+            }
+            found.into_iter().next()?
+        }
+    };
+
+    for _ in 0..MAX_ANCESTRY_DEPTH {
+        match lookup(&current) {
+            Some(next) => current = next,
+            None => break,
+        }
+    }
+    Some(SnapshotId::from_stored(current))
 }
 
 /// How far `local` is ahead of / behind `remote`, counted in snapshots.
@@ -745,10 +831,11 @@ pub(crate) enum Reconcile {
 /// can't be line-merged) become conflicts. A file's mode is part of its
 /// identity, so an executable-bit or file↔symlink change counts as a change.
 pub(crate) fn reconcile_file(
-    objects_dir: &Path,
+    objects: &crate::storage::ObjectStore,
     anc: FileRef,
     our: FileRef,
     thr: FileRef,
+    driver: &dyn velo_merge::MergeDriver,
 ) -> Result<Reconcile> {
     // Identical on both sides (content AND mode) — nothing to bring in.
     if thr == our {
@@ -801,25 +888,25 @@ pub(crate) fn reconcile_file(
     let anc_bytes = if anc.0.is_empty() {
         Vec::new()
     } else {
-        crate::storage::read_object(objects_dir, anc.0)?
+        objects.get(anc.0)?
     };
-    let our_bytes = crate::storage::read_object(objects_dir, our.0)?;
-    let thr_bytes = crate::storage::read_object(objects_dir, thr.0)?;
+    let our_bytes = objects.get(our.0)?;
+    let thr_bytes = objects.get(thr.0)?;
 
     if anc_bytes.contains(&0) || our_bytes.contains(&0) || thr_bytes.contains(&0) {
         return Ok(Reconcile::Conflict); // binary — cannot auto-merge
     }
 
-    match velo_merge::try_auto_merge(
+    match driver.merge(
         &String::from_utf8_lossy(&anc_bytes),
         &String::from_utf8_lossy(&our_bytes),
         &String::from_utf8_lossy(&thr_bytes),
     ) {
-        Some(merged) => Ok(Reconcile::AutoMerged {
+        velo_merge::MergeResult::Clean(merged) => Ok(Reconcile::AutoMerged {
             content: merged.into_bytes(),
             mode: thr.1,
         }),
-        None => Ok(Reconcile::Conflict),
+        _ => Ok(Reconcile::Conflict),
     }
 }
 

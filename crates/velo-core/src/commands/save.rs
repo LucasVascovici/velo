@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 use std::fs;
 
-use rayon::prelude::*;
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::commands::FileStatus;
 use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
@@ -77,6 +77,13 @@ pub struct Options<'a> {
     /// Who is saving. Recorded in the reserved metadata namespace, so it is part
     /// of the snapshot's identity — see [`Author`].
     pub author: Option<&'a Author>,
+    /// App-namespaced metadata to attach, hashed into the snapshot's id exactly
+    /// as [`WriteGuard::save_tree`] does. Empty by default.
+    ///
+    /// The author is applied on top, so it always wins the reserved keys. When
+    /// amending, the new snapshot carries this plus the author, as a fresh save
+    /// would: the replaced snapshot's metadata is **not** carried forward.
+    pub meta: SnapshotMeta,
     /// Where to report hashing progress, overriding the repository's observer.
     pub observer: Option<&'a dyn Observer>,
     /// Checked while hashing. A cancelled save records nothing.
@@ -89,10 +96,12 @@ pub struct Options<'a> {
 /// snapshot keeps its existing message — so fixing a forgotten file doesn't
 /// force you to retype it.
 pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "save")?;
     let Options {
         amend,
         paths,
         author,
+        meta,
         observer,
         cancel,
     } = options;
@@ -216,7 +225,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         .count();
 
     // ── Parallel hash + compress ───────────────────────────────────────────────
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
     let files_to_hash: Vec<String> = dirty
         .iter()
         .filter(|(_, s)| **s != FileStatus::Deleted)
@@ -230,24 +239,13 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         Phase::Hashing,
         Some(files_to_hash.len() as u64),
     );
-    let hash_results: Result<Vec<(String, String, i64)>> = files_to_hash
-        .into_par_iter()
-        .inspect(|_| progress.tick())
-        .map(|rel| {
-            // Checked per file. Hashing writes objects, which is harmless to
-            // abandon — an object nothing references is what `gc` collects — so
-            // stopping here leaves no snapshot and no dangling reference.
-            crate::progress::Cancel::check(cancel)?;
-            let full = root.join(&rel);
-            let mode = storage::capture_mode(&full);
-            let hash = if mode == storage::MODE_SYMLINK {
-                storage::store_raw(&objects_dir, &storage::read_symlink_target(&full)?)?
-            } else {
-                storage::hash_and_compress(&full, &objects_dir)?
-            };
-            Ok((rel, hash, mode))
-        })
-        .collect();
+    // Checked per file. Hashing writes objects, which is harmless to abandon:
+    // an object nothing references is what `gc` collects, so stopping here
+    // leaves no snapshot and no dangling reference.
+    let hash_results: Result<Vec<(String, String, i64)>> =
+        objects.put_paths(root, files_to_hash, &progress, || {
+            crate::progress::Cancel::check(cancel)
+        });
     // `mut` is only needed by the non-Unix sticky-exec-bit pass below; on Unix
     // nothing mutates this, so silence the lint there rather than diverge the
     // two platforms' code paths.
@@ -304,9 +302,9 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     tree.extend(hashed_files.iter().cloned());
 
     // ── Content-addressed snapshot id ─────────────────────────────────────────
-    // Authorship is the only metadata `velo save` records. A consumer that
-    // wants more builds the snapshot through `WriteGuard::save_tree`.
-    let mut snapshot_meta = SnapshotMeta::new();
+    // Caller metadata first, then authorship on top so the author always wins
+    // the reserved keys.
+    let mut snapshot_meta = meta;
     if let Some(author) = author {
         snapshot_meta.set_author(author);
     }
@@ -381,6 +379,12 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     )?;
     tx.execute("DELETE FROM trash WHERE branch = ?", [branch.trim()])?;
     tx.commit()?;
+    guard.repo().emit_saved_raw(
+        snapshot_hash,
+        branch.trim(),
+        effective_parent.as_str(),
+        merge_parent.as_str(),
+    );
 
     storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
 

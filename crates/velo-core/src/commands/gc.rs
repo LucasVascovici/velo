@@ -3,7 +3,6 @@
 //! Returns a tally of what was collected; wording lives in `velo-cli`.
 
 use std::collections::HashSet;
-use std::fs;
 
 use crate::error::Result;
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
@@ -24,7 +23,9 @@ pub struct Collected {
     pub stale_cache: usize,
     /// Objects nothing references any more.
     pub objects: usize,
-    /// Bytes those objects occupied on disk.
+    /// Chunks no surviving object's manifest names.
+    pub chunks: usize,
+    /// Bytes the objects and chunks occupied on disk.
     pub bytes_freed: u64,
     /// The retention window that was applied, in days.
     pub keep_days: u32,
@@ -39,6 +40,7 @@ impl Collected {
             && self.orphan_shelved_tags == 0
             && self.stale_cache == 0
             && self.objects == 0
+            && self.chunks == 0
     }
 }
 
@@ -86,17 +88,18 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         observer,
         cancel,
     } = options;
-    let root = guard.root();
     let conn = guard.conn();
     let mut collected = Collected {
         keep_days,
         ..Default::default()
     };
 
-    collected.expired_trash = conn.execute(
-        "DELETE FROM trash WHERE deleted_at_ms <= datetime('now', ?)",
-        [format!("-{} days", keep_days)],
-    )?;
+    // The cutoff is computed here and bound as an integer: `deleted_at_ms` is an
+    // INTEGER column, and comparing it with SQLite's TEXT `datetime()` always
+    // holds (an integer sorts below any text), which expired every row.
+    let cutoff_ms = crate::commands::snapshot_timestamp_ms() - i64::from(keep_days) * 86_400_000;
+    collected.expired_trash =
+        conn.execute("DELETE FROM trash WHERE deleted_at_ms <= ?", [cutoff_ms])?;
 
     collected.orphan_file_map = conn.execute(
         "DELETE FROM file_map
@@ -144,22 +147,45 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         Phase::Collecting,
         None,
     );
-    for entry in fs::read_dir(root.join(".velo/objects"))? {
-        let entry = entry?;
+    let objects = guard.repo().objects();
+    for (name, size) in objects.list()? {
         // Checked per object, so cancelling takes effect at the next one rather
         // than part-way through a delete.
         if cancel.is_some_and(Cancel::is_cancelled) {
             break;
         }
         progress.tick();
-        let name = entry.file_name().to_string_lossy().to_string();
         if referenced.contains(&name) {
             continue;
         }
-        let size = entry.metadata().map(|m| m.len()).unwrap_or(0);
-        fs::remove_file(entry.path())?;
+        objects.remove(&name)?;
         collected.objects += 1;
         collected.bytes_freed += size;
+    }
+
+    // Chunks live only for the manifests that name them. Which manifests
+    // survive is read from disk after the object pass, not from the database,
+    // so a cancelled or partial pass can never strand a chunk a remaining
+    // object needs. A chunk shared with a survivor is in the set and stays.
+    if !cancel.is_some_and(Cancel::is_cancelled) {
+        let mut needed: HashSet<String> = HashSet::new();
+        for (name, _) in objects.list()? {
+            if let Some(chunks) = objects.chunks_of(&name)? {
+                needed.extend(chunks);
+            }
+        }
+        for (name, size) in objects.list_chunks()? {
+            if cancel.is_some_and(Cancel::is_cancelled) {
+                break;
+            }
+            progress.tick();
+            if needed.contains(&name) {
+                continue;
+            }
+            objects.remove_chunk(&name)?;
+            collected.chunks += 1;
+            collected.bytes_freed += size;
+        }
     }
 
     // A cancelled pass reports `Cancelled` rather than a partial tally, as

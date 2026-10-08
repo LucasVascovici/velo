@@ -105,7 +105,7 @@ impl FileKind {
         }
     }
 
-    fn from_mode(mode: i64) -> FileKind {
+    pub(crate) fn from_mode(mode: i64) -> FileKind {
         match mode {
             storage::MODE_EXEC => FileKind::Executable,
             storage::MODE_SYMLINK => FileKind::Symlink,
@@ -338,7 +338,7 @@ impl WriteGuard<'_> {
             }
         }
 
-        let objects_dir = self.root().join(".velo/objects");
+        let objects = self.repo().objects();
         let mut tree: Vec<(String, String, i64)> = Vec::with_capacity(spec.entries.len());
         let mut seen = std::collections::HashSet::new();
 
@@ -367,7 +367,7 @@ impl WriteGuard<'_> {
                     } else {
                         storage::normalise_crlf(bytes)
                     };
-                    storage::store_raw(&objects_dir, &content)?
+                    objects.put(&content)?
                 }
                 Content::Stored(object) => {
                     // Already-stored content is already normalised, so it is
@@ -375,7 +375,7 @@ impl WriteGuard<'_> {
                     // snapshot that names a missing object would manufacture
                     // corruption through the public API, discoverable only later
                     // by `fsck`.
-                    if !objects_dir.join(object.as_str()).exists() {
+                    if !objects.contains(object.as_str()) {
                         return Err(VeloError::MissingObject {
                             hash: object.into_string(),
                         });
@@ -507,6 +507,13 @@ impl WriteGuard<'_> {
         crate::commands::register_branch(&tx, spec.branch, &snapshot)?;
         tx.commit()?;
 
+        // After the commit, and only for a row this call inserted: an idempotent
+        // re-save changed nothing, so there is nothing to announce.
+        if !already {
+            self.repo()
+                .emit_saved(&snapshot, spec.branch, spec.parent, spec.merge_parent);
+        }
+
         Ok(snapshot)
     }
 }
@@ -526,7 +533,7 @@ impl Repo {
             )
             .unwrap_or(false);
         if !known {
-            return Err(VeloError::not_found(RefKind::Snapshot, snapshot.as_str()));
+            return Err(self.missing_snapshot(snapshot));
         }
 
         let mut stmt = self.conn().prepare(
@@ -560,11 +567,43 @@ impl Repo {
             .ok();
         match object {
             Some(object) => self.read_object(&object),
-            None => Err(VeloError::invalid(format!(
-                "'{}' is not in snapshot {}.",
-                rel,
-                snapshot.short()
-            ))),
+            None => {
+                // A compacted snapshot has no rows left, so say where it went
+                // rather than blaming the path.
+                if let Some(into) = crate::commands::compacted_into(self.conn(), snapshot) {
+                    let live: bool = self
+                        .conn()
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+                            [snapshot],
+                            |r| r.get(0),
+                        )
+                        .unwrap_or(false);
+                    if !live {
+                        return Err(VeloError::Compacted {
+                            id: snapshot.to_string(),
+                            into,
+                        });
+                    }
+                }
+                Err(VeloError::invalid(format!(
+                    "'{}' is not in snapshot {}.",
+                    rel,
+                    snapshot.short()
+                )))
+            }
+        }
+    }
+
+    /// The error for a snapshot id with no row: `Compacted` when compaction
+    /// removed it, `NotFound` otherwise.
+    fn missing_snapshot(&self, snapshot: &SnapshotId) -> VeloError {
+        match crate::commands::compacted_into(self.conn(), snapshot) {
+            Some(into) => VeloError::Compacted {
+                id: snapshot.to_string(),
+                into,
+            },
+            None => VeloError::not_found(RefKind::Snapshot, snapshot.as_str()),
         }
     }
 
@@ -573,15 +612,36 @@ impl Repo {
     /// The hash is verified on the way out, so a corrupted store is an error
     /// rather than silently wrong content.
     pub fn read_object(&self, object: &ObjectHash) -> Result<Vec<u8>> {
-        storage::read_object(&self.root().join(".velo/objects"), object)
+        self.objects().get(object)
     }
 
     /// The metadata attached to `snapshot`.
     ///
     /// Empty when none was attached — which is not distinguishable from "the
     /// snapshot has no metadata", because to the id recipe those are the same
-    /// thing.
+    /// thing. A snapshot that compaction removed is the exception, and reports
+    /// [`Error::Compacted`](crate::Error::Compacted); any other unknown id stays
+    /// empty.
     pub fn snapshot_meta(&self, snapshot: &SnapshotId) -> Result<SnapshotMeta> {
-        Ok(crate::commands::load_snapshot_meta(self.conn(), snapshot)?)
+        let meta = crate::commands::load_snapshot_meta(self.conn(), snapshot)?;
+        if meta.iter().next().is_none() {
+            let live: bool = self
+                .conn()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+                    [snapshot],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if !live {
+                if let Some(into) = crate::commands::compacted_into(self.conn(), snapshot) {
+                    return Err(VeloError::Compacted {
+                        id: snapshot.to_string(),
+                        into,
+                    });
+                }
+            }
+        }
+        Ok(meta)
     }
 }
