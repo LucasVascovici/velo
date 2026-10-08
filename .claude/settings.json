@@ -20,14 +20,23 @@
       "Bash(git rebase --continue)",
       "Bash(git rebase --abort)",
       "Bash(git reset --hard origin/phase-*)",
+      "Bash(git push -u origin phase-*)",
       "Bash(git push origin HEAD:phase-*)",
-      "Bash(git push -u origin phase-*)"
+      "Bash(timeout * cargo *)",
+      "Bash(timeout * ./workflow_sim.sh*)",
+      "Bash(CARGO_TARGET_DIR=* cargo *)",
+      "Bash(CARGO_TARGET_DIR=* timeout * cargo *)",
+      "Bash(git stash push *)",
+      "Bash(git merge-base *)",
+      "Bash(git push origin *:phase-*)",
+      "Bash(sleep *)"
     ],
     "deny": [
       "Bash(git push --force*)",
       "Bash(git push -f*)",
       "Bash(git push origin HEAD:main)",
-      "Bash(git push origin main)"
+      "Bash(git push origin main)",
+      "Bash(git push origin *:main)"
     ]
   }
 }

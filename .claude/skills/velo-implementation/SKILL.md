@@ -6,19 +6,30 @@ user-invocable: false
 
 # Implementing a velo task
 
-Your prompt gives you `BRANCH` (the phase branch, e.g. `phase-14`) and `MODE`
-(`main` or `worktree`).
+Your prompt gives you `BRANCH` (the phase branch, e.g. `phase-14`), `MODE`
+(`main` or `worktree`), and in worktree mode `TARGET_DIR`.
+
+Tokens are the budget. Every command's output stays in your context for the
+rest of the task, so keep output short (filter it) and run each expensive
+command as few times as the work allows.
 
 ## 1. Setup
 
-- **MODE=main** — you are in the main checkout, already on `BRANCH`.
-  `git pull --rebase origin BRANCH` so you start on top of anything parallel
-  tasks pushed. Never touch files outside your task; never commit
-  `ARCHITECTURE.md` or `CHANGELOG.md`.
+- **MODE=main** — you are in the main checkout, on `BRANCH`.
+  1. `git status --porcelain`. If anything is listed, it is left over from an
+     interrupted agent, not yours: `git stash push -u -m "orphan before <task id>"`
+     and mention it in `notes`. Never build on it, never delete it.
+  2. `git pull --rebase origin BRANCH`.
+  Never commit `ARCHITECTURE.md` or `CHANGELOG.md`.
 - **MODE=worktree** — you are in a fresh git worktree on a throwaway branch.
-  `git fetch origin BRANCH && git reset --hard origin/BRANCH` before anything
-  else (safe: the worktree is new and empty of work). The `target/` dir is
-  cold here, so the first build is slow — that is expected.
+  `git fetch origin BRANCH && git reset --hard origin/BRANCH` first (safe: the
+  worktree is new). Prefix **every** cargo command with
+  `CARGO_TARGET_DIR=<TARGET_DIR>` — that directory is reused across tasks in
+  your lane, so builds are incremental instead of cold.
+
+If your prompt lists commits that landed after the brief was written, read
+them (`git show --stat`) before coding. Where the brief and the code
+disagree, follow the code and keep the brief's intent; say so in `notes`.
 
 ## 2. Implement
 
@@ -32,28 +43,49 @@ Your prompt gives you `BRANCH` (the phase branch, e.g. `phase-14`) and `MODE`
   in the same commit.
 - Mind `#[cfg(unix)]` / `#[cfg(not(unix))]` pairs — you are on Windows, so the
   Unix branch is not compiled locally; keep both sides symmetric by reading.
+- **Edit with the Edit tool.** If you script an edit in Python, open files with
+  `newline=''` on both read and write; a plain `open(..., 'w')` on Windows
+  rewrites every line ending and turns the diff into the whole file.
 
 ## 3. Tests
 
-Write tests that would fail without your change. Locations:
-`crates/velo-core/src/tests.rs` (core, in-process), `crates/velo-cli/tests/cli.rs`
-(CLI black-box), `crates/velo-merge/tests/` (merge engine), shared fixtures in
-`crates/velo-testkit`.
+Write tests that would fail without your change.
 
-## 4. Checks — all must pass before committing
+- **Core:** a new feature gets its own self-contained module in
+  `crates/velo-core/src/tests/<feature>.rs` (its own `setup()`, its own `use`
+  lines — see `tests/compaction.rs`), declared by appending
+  `#[cfg(test)]\nmod <feature>;` to the end of `crates/velo-core/src/tests.rs`.
+  Extend an existing module only when the brief says to. Do not read
+  `tests.rs` whole — it is 12,000 lines; grep it.
+- CLI black-box: `crates/velo-cli/tests/cli.rs`. Merge engine:
+  `crates/velo-merge/tests/`. Shared fixtures: `crates/velo-testkit`.
+
+## 4. Checks
+
+While developing, run only what you touched, with a timeout and filtered output:
+
+```bash
+timeout 600 cargo test -p velo-core <module_or_test_name> 2>&1 | grep -E "^test result|FAILED|panicked|^error" | head -20
+```
+
+When the work is done, run the full gate **once**, in this order, stopping at
+the first failure:
 
 ```bash
 cargo fmt --all
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace --locked
+cargo clippy --workspace --all-targets --all-features -- -D warnings 2>&1 | grep -E "^(warning|error)" -A5 | head -40
+timeout 900 cargo test --workspace --locked 2>&1 | grep -E "^test result|FAILED|panicked|^error" | head -30
 ```
 
-If you changed CLI behaviour, also run `./workflow_sim.sh` (Git Bash). If
-`--locked` fails because you added a dependency, run `cargo build` once to
-update `Cargo.lock` and commit it — but only if the brief allowed the dep.
+If you changed CLI behaviour, also run `timeout 900 ./workflow_sim.sh 2>&1 | tail -5`.
 
-Fix failures; do not weaken or delete existing tests to get green. If you
-cannot get green, stop: do not commit, report `failed`.
+- **Never** run cargo in the background or poll for it. Always use `timeout`;
+  a test that times out is a hang — find it with a targeted run, do not
+  rerun the suite hoping it passes.
+- If `--locked` fails because you added a dependency the brief allowed, run
+  `cargo build` once to update `Cargo.lock` and commit it.
+- Fix failures; never weaken or delete existing tests to get green. If you
+  cannot get green, stop: do not commit, report `failed`.
 
 ## 5. Commit
 
@@ -76,14 +108,21 @@ git pull --rebase origin BRANCH
 git push origin HEAD:BRANCH
 ```
 
-If the push is rejected, repeat both (up to 3 times). If the rebase conflicts
-in files you own, resolve, re-run the checks, continue. If it conflicts in
-files you do not own, `git rebase --abort` and report `failed` with the
-conflicting paths. Never force-push.
+- If the rebase conflicts in a **shared file** (`tests.rs`, `commands/mod.rs`,
+  `lib.rs`, `error.rs`, `Cargo.toml`, `Cargo.lock`, `velo-cli/src/main.rs`) and
+  both sides only *added* lines — a `mod` line, an enum variant, a dependency,
+  a match arm — keep both, then re-run the full gate before continuing. For
+  `Cargo.lock`, take theirs and run `cargo build` to regenerate.
+- A conflict that changes existing lines you do not own: `git rebase --abort`
+  and report `failed` with the paths.
+- If the push itself fails (network, server error), retry once. If it fails
+  again, **stop** — report `status: "done"`, `pushed: false`. A separate step
+  delivers it; do not loop. Never force-push.
 
 ## 7. Report
 
-Return the structured result: status, every commit SHA you pushed (`git rev-parse
-HEAD` after push), files changed, number of tests added, each check's result,
-a two-line summary, and notes/follow-ups (anything you deferred, any place the
-brief disagreed with the code).
+Return the structured result: status, `pushed`, every commit SHA you made
+(`git log --format='%H %s' origin/BRANCH..HEAD` before pushing, or the SHAs
+after), files changed, number of tests added, each check's result, a two-line
+summary, and notes/follow-ups (anything you deferred, any place the brief
+disagreed with the code).

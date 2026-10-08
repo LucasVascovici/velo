@@ -28,13 +28,20 @@ write is the only thing its implementer will know. Plan accordingly.
    (e.g. "add the type + storage", then "wire the command", then "CLI surface").
 5. `depends_on` lists task ids that must be **merged** first: code the task
    builds on, and every "Gated on" relation from the doc.
-6. `parallel_safe: true` only when the task's files are disjoint from every task
-   that could run at the same time **and** it touches none of the shared hot
-   spots: `Cargo.toml`, `Cargo.lock`, any `lib.rs`, `error.rs`, `commands/mod.rs`,
-   `velo-core/src/tests.rs`, `velo-cli/src/main.rs`. When unsure, `false` —
-   parallel tasks build in separate worktrees and a wrong guess costs a
-   conflicting rebase.
-7. Do **not** create tasks for `CHANGELOG.md` or for flipping markers in
+6. `parallel_safe: true` when the task's substantive edits are disjoint from
+   every task that could run at the same time. Touching a shared file
+   (`Cargo.toml`, `Cargo.lock`, any `lib.rs`, `error.rs`, `commands/mod.rs`,
+   `velo-core/src/tests.rs`, `velo-cli/src/main.rs`) is still fine **if the
+   task only adds to it** — a `mod` line, an enum variant, a dependency, a new
+   subcommand arm. Implementers resolve add-only conflicts. It is `false` when
+   the task changes existing code in a file another concurrent task also
+   changes (e.g. two tasks reworking `repo.rs`). Independent chains — sync,
+   git export/import, a separate crate — are the typical parallel lanes.
+7. `risk`: `high` for format or storage changes, public API reshaping, sync or
+   merge semantics, or more than ~300 changed lines; `low` for docs, examples,
+   CLI wiring, and small additive features. High-risk tasks get an Opus review,
+   low-risk ones a Sonnet review.
+8. Do **not** create tasks for `CHANGELOG.md` or for flipping markers in
    `ARCHITECTURE.md` — a finalize step does that once at the end.
 
 ## What a brief must contain
@@ -47,6 +54,12 @@ write is the only thing its implementer will know. Plan accordingly.
   `print_stderr` / `exit`; public enums are `#[non_exhaustive]`; format changes
   must update `docs/FORMAT.md`; `#[cfg(unix)]` branches need care.
 - What it must **not** do (scope that belongs to another task).
+- Where its core tests go: a new feature gets its own module,
+  `crates/velo-core/src/tests/<feature>.rs`. Name it.
+
+Keep each brief as short as completeness allows. Quote spec text only where
+it settles a decision, and do not repeat conventions the implementer's
+skill already carries (check suite, commit style, the rules above).
 
 Acceptance criteria are concrete and checkable by a reviewer reading the diff
 and running tests: "`blame::Options` has field X defaulting to Y", "test Z
