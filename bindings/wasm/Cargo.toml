@@ -1,0 +1,29 @@
+[package]
+name = "velo-wasm"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "WebAssembly binding for velo-core: single-file repositories in the browser or Node"
+
+# An empty table makes this its own workspace root, so wasm-bindgen and the
+# wasm toolchain stay out of the main `cargo test --workspace`.
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+velo-core = { path = "../../crates/velo-core" }
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde-wasm-bindgen = "0.6"
+
+# The OPFS VFS only exists on wasm; the host build (for `cargo check`) skips it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+sqlite-wasm-rs = { version = "0.5", default-features = false }
+sqlite-wasm-vfs = "0.2"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
