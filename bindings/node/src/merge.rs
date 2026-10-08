@@ -51,6 +51,7 @@ pub struct MergeCommitInput {
     /// UTF-8 content; pass a `Buffer` to write bytes that may spell either word.
     #[napi(ts_type = "Record<string, 'ours' | 'theirs' | null | Buffer | string>")]
     pub resolutions: Option<BTreeMap<String, Either3<Buffer, String, Null>>>,
+    #[napi(ts_type = "Record<string, Record<string, string>>")]
     pub meta: Option<Meta>,
     pub author: Option<AuthorInput>,
     pub timestamp_ms: Option<i64>,
