@@ -6,13 +6,15 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
-## 4.1.0
+## 5.0.0
 
 Phase 14: velo as a timeline engine. Language bindings (C, Python, Node, WASM),
 an MCP server, pluggable merge drivers, metadata queries, change events,
 chunked storage, compaction and retention, HTTP sync, git interchange and
 single-file repositories. A repository that stores a chunked object becomes
-format v3, which 4.0.0 refuses; see the format section below.
+format v3, which 4.0.0 refuses, and `velo-merge`'s public surface changed
+(`MergeDriver`); both are breaking, hence a major version. See the format
+section below.
 
 ### Added
 
