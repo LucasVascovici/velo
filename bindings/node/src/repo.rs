@@ -20,9 +20,9 @@ use velo_core::{
 
 use crate::errors::to_js;
 
-type CoreResult<T> = std::result::Result<T, CoreError>;
-type Shared = Arc<Mutex<CoreRepo>>;
-type Meta = BTreeMap<String, BTreeMap<String, String>>;
+pub(crate) type CoreResult<T> = std::result::Result<T, CoreError>;
+pub(crate) type Shared = Arc<Mutex<CoreRepo>>;
+pub(crate) type Meta = BTreeMap<String, BTreeMap<String, String>>;
 
 fn kind_name(kind: FileKind) -> &'static str {
     match kind {
@@ -44,11 +44,11 @@ fn parse_kind(kind: Option<&str>) -> CoreResult<FileKind> {
     }
 }
 
-fn snapshot_id(text: &str) -> CoreResult<SnapshotId> {
+pub(crate) fn snapshot_id(text: &str) -> CoreResult<SnapshotId> {
     text.parse()
 }
 
-fn branch_name(text: &str) -> CoreResult<BranchName> {
+pub(crate) fn branch_name(text: &str) -> CoreResult<BranchName> {
     text.parse()
 }
 
@@ -118,9 +118,9 @@ pub struct TreeFile {
 }
 
 /// A string or an explicit `null`, so absent ids read as `null`, not `undefined`.
-type Nullable = Either<String, Null>;
+pub(crate) type Nullable = Either<String, Null>;
 
-fn nullable(value: Option<String>) -> Nullable {
+pub(crate) fn nullable(value: Option<String>) -> Nullable {
     match value {
         Some(s) => Either::A(s),
         None => Either::B(Null),
@@ -154,6 +154,34 @@ pub struct SnapshotData {
     tag: Option<String>,
 }
 
+impl SnapshotData {
+    pub(crate) fn from_entry(e: velo_core::commands::history::Entry) -> Self {
+        SnapshotData {
+            id: e.hash.as_str().to_string(),
+            message: e.message,
+            created_at_ms: e.created_at.timestamp_millis(),
+            branch: e.branch.as_str().to_string(),
+            parent: e.parent.map(|p| p.as_str().to_string()),
+            merge_parent: e.merge_parent.map(|p| p.as_str().to_string()),
+            tag: e.tag.map(|t| t.as_str().to_string()),
+        }
+    }
+
+    /// Make the JS object; the `Date` has to be created on the JS thread.
+    pub(crate) fn into_info(self, env: &Env) -> Result<SnapshotInfo<'_>> {
+        Ok(SnapshotInfo {
+            id: self.id,
+            message: self.message,
+            created_at_ms: self.created_at_ms,
+            created_at: env.create_date(self.created_at_ms as f64)?,
+            branch: self.branch,
+            parent: nullable(self.parent),
+            merge_parent: nullable(self.merge_parent),
+            tag: nullable(self.tag),
+        })
+    }
+}
+
 /// Like `Job`, but resolving to an object that holds a `Date`.
 pub struct SnapshotJob {
     repo: Shared,
@@ -173,17 +201,7 @@ impl<'task> ScopedTask<'task> for SnapshotJob {
     }
 
     fn resolve(&mut self, env: &'task Env, output: Self::Output) -> Result<Self::JsValue> {
-        let d = output.map_err(|e| to_js(env, e))?;
-        Ok(SnapshotInfo {
-            id: d.id,
-            message: d.message,
-            created_at_ms: d.created_at_ms,
-            created_at: env.create_date(d.created_at_ms as f64)?,
-            branch: d.branch,
-            parent: nullable(d.parent),
-            merge_parent: nullable(d.merge_parent),
-            tag: nullable(d.tag),
-        })
+        output.map_err(|e| to_js(env, e))?.into_info(env)
     }
 }
 
@@ -262,14 +280,33 @@ fn build_entry(raw: RawEntry) -> CoreResult<CoreEntry> {
     })
 }
 
+pub(crate) fn build_meta(meta: Option<Meta>) -> CoreResult<SnapshotMeta> {
+    let mut snapshot_meta = SnapshotMeta::new();
+    for (namespace, keys) in meta.unwrap_or_default() {
+        for (key, value) in keys {
+            snapshot_meta.set(&namespace, key, value)?;
+        }
+    }
+    Ok(snapshot_meta)
+}
+
+pub(crate) fn build_author(author: Option<AuthorInput>) -> CoreResult<Option<CoreAuthor>> {
+    author
+        .map(|a| match a.email {
+            Some(email) => CoreAuthor::with_email(a.name, email),
+            None => CoreAuthor::new(a.name),
+        })
+        .transpose()
+}
+
 /// An open velo repository.
 #[napi]
 pub struct Repo {
-    inner: Shared,
+    pub(crate) inner: Shared,
 }
 
 impl Repo {
-    fn job<T: ToNapiValue + TypeName + Send + 'static>(
+    pub(crate) fn job<T: ToNapiValue + TypeName + Send + 'static>(
         &self,
         run: impl FnOnce(&CoreRepo) -> CoreResult<T> + Send + 'static,
     ) -> AsyncTask<Job<T>> {
@@ -332,18 +369,8 @@ impl Repo {
                 .into_iter()
                 .map(build_entry)
                 .collect::<CoreResult<Vec<_>>>()?;
-            let mut snapshot_meta = SnapshotMeta::new();
-            for (namespace, keys) in meta.unwrap_or_default() {
-                for (key, value) in keys {
-                    snapshot_meta.set(&namespace, key, value)?;
-                }
-            }
-            let author = author
-                .map(|a| match a.email {
-                    Some(email) => CoreAuthor::with_email(a.name, email),
-                    None => CoreAuthor::new(a.name),
-                })
-                .transpose()?;
+            let snapshot_meta = build_meta(meta)?;
+            let author = build_author(author)?;
             let renames = renames
                 .unwrap_or_default()
                 .into_iter()

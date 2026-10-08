@@ -34,4 +34,17 @@ Notes:
   `object` (the hash of an object already in the store).
 - Ids are plain strings; a malformed one rejects with `InvalidInput`.
 - `npm test` uses a glob because newer Node versions reject a bare directory.
-- History, blame, merge and branches are not yet exposed.
+- `history({ from, branch, all, paths, limit, meta })` lists snapshots newest
+  first; `meta` items are `{ namespace, key, value? }` and omit `value` to mean
+  "has this key". With no working tree there is no position to walk back from,
+  so pass `from` or `branch`. `findSnapshots(meta)` matches every filter.
+- `blame(path, { at, startLine, endLine })` takes 1-based inclusive lines and
+  returns per-line `origin` (`id`, `createdAtMs`, `createdAt`, `message`,
+  `author`, `branch`, `path`), or `null` when history does not explain a line.
+- `mergeBase`, `mergePlan` and `mergeCommit` never touch a working tree.
+  `mergeCommit` resolutions map a path to `'ours'`, `'theirs'`, `null` (delete)
+  or content (`Buffer`, or a string other than those two words). An unresolved
+  conflict rejects with `code: 'Conflicts'` and `err.paths`.
+- `branches()`, `createBranch(name, at?)` and `setBranchTip(name, to)` manage
+  refs. Timestamps come as `createdAtMs` plus a `createdAt` `Date`.
+- Working-tree commands and events are not yet exposed.

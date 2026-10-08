@@ -4,4 +4,6 @@
 //! hands back a `Promise`; the event loop is never blocked.
 
 mod errors;
+mod history;
+mod merge;
 mod repo;
