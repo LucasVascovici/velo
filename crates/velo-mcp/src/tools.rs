@@ -8,7 +8,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{json, Map, Value};
-use velo_core::commands::{diff, history, resolve_snapshot_id, restore, save, status};
+use velo_core::commands::{
+    blame, branches, diff, history, merge, resolve_snapshot_id, restore, save, status, switch,
+};
 use velo_core::{Author, BranchName, Error, Repo, SnapshotId, SnapshotMeta};
 
 /// Namespaces an agent may not write: `velo` is reserved by the core, `mcp`
@@ -110,6 +112,43 @@ pub fn list() -> Value {
             "name": "velo_metadata",
             "description": "Show the author and all metadata recorded on a snapshot.",
             "inputSchema": obj(json!({"snapshot": {"type": "string"}}), json!(["snapshot"]))
+        },
+        {
+            "name": "velo_branch",
+            "description": "List, create or switch branches; use one branch per attempt. 'create' makes the branch (at 'at', default the current position) without switching. 'switch' moves to the branch and creates it if it does not exist, as the CLI does; it refuses on a dirty tree (DirtyWorkingTree) and has no force.",
+            "inputSchema": obj(json!({
+                "action": {"type": "string", "enum": ["list", "create", "switch"]},
+                "name": {"type": "string", "description": "Branch name; required for create and switch."},
+                "at": {"type": "string", "description": "Snapshot spec to create the branch at."}
+            }), json!(["action"]))
+        },
+        {
+            "name": "velo_merge_plan",
+            "description": "Plan merging 'source' into the current branch. Writes nothing. Conflicts carry the three texts (omitted for binary content). Then call velo_merge_apply, with resolutions for every conflict.",
+            "inputSchema": obj(json!({
+                "source": {"type": "string", "description": "Snapshot id, prefix, branch or tag to merge in."}
+            }), json!(["source"]))
+        },
+        {
+            "name": "velo_merge_apply",
+            "description": "Apply a merge of 'source' into the current branch and record it as a two-parent snapshot. Requires a clean working tree (DirtyWorkingTree otherwise). The plan is recomputed, so nothing can be stale; unresolved conflicts return Conflicts. Updates the working tree to the merge. Records this run in metadata.",
+            "inputSchema": obj(json!({
+                "source": {"type": "string"},
+                "message": {"type": "string", "description": "Merge snapshot message."},
+                "resolutions": {"type": "object", "description": "Per conflicted path: \"ours\", \"theirs\", \"delete\" or {\"content\": \"text\"}.",
+                               "additionalProperties": {}},
+                "tool_call_id": {"type": "string", "description": "Your id for this tool call, recorded as mcp/tool_call_id."}
+            }), json!(["source", "message"]))
+        },
+        {
+            "name": "velo_blame",
+            "description": "Attribute each line of a file to the snapshot that last changed it; origin.run names the agent run that saved it.",
+            "inputSchema": obj(json!({
+                "path": {"type": "string"},
+                "at": {"type": "string", "description": "Snapshot spec; default the current position."},
+                "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1, "description": "Inclusive."}
+            }), json!(["path"]))
         }
     ])
 }
@@ -126,6 +165,10 @@ pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolEr
         "velo_diff" => diff_tool(ctx, args),
         "velo_history" => history_tool(ctx, args),
         "velo_metadata" => metadata_tool(ctx, args),
+        "velo_branch" => branch_tool(ctx, args),
+        "velo_merge_plan" => merge_plan_tool(ctx, args),
+        "velo_merge_apply" => merge_apply_tool(ctx, args),
+        "velo_blame" => blame_tool(ctx, args),
         other => Err(bad(format!("unknown tool: {other}"))),
     }
 }
@@ -478,4 +521,287 @@ fn metadata_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         Value::Object(o)
     });
     Ok(json!({"snapshot": id.as_str(), "author": author, "meta": namespaces}))
+}
+
+// ── Branches, merging, blame ─────────────────────────────────────────────────
+
+fn branch_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let action = req_str(args, "action")?;
+    let name = opt_str(args, "name")?;
+    let need_name = || name.ok_or_else(|| bad(format!("'name' is required for '{action}'")));
+    match action {
+        "list" => {
+            let list: Vec<Value> = branches::list(ctx.repo)?
+                .iter()
+                .map(|b| {
+                    json!({"name": b.name.as_str(), "current": b.is_current,
+                           "tip": b.tip.as_ref().map(|t| json!({
+                               "snapshot": t.hash.as_str(), "message": t.message,
+                               "created_at": t.created_at.to_rfc3339()}))})
+                })
+                .collect();
+            Ok(json!({"branches": list}))
+        }
+        "create" => {
+            let name = need_name()?.parse::<BranchName>()?;
+            let at = opt_str(args, "at")?
+                .map(|s| snapshot_arg(ctx.repo, s))
+                .transpose()?;
+            let guard = ctx.repo.write()?;
+            let outcome = branches::create(&guard, &name, at.as_ref());
+            drop(guard);
+            outcome?;
+            Ok(json!({"created": name.as_str(), "at": at.as_ref().map(|a| a.as_str())}))
+        }
+        "switch" => {
+            let name = need_name()?;
+            let guard = ctx.repo.write()?;
+            // `force` is never true here, whatever the caller asks.
+            let outcome = switch::run(&guard, name, false);
+            drop(guard);
+            Ok(match outcome? {
+                switch::Outcome::AlreadyOn { branch } => {
+                    json!({"result": "already_on", "branch": branch})
+                }
+                switch::Outcome::Switched { branch, at } => {
+                    json!({"result": "switched", "branch": branch, "at": at})
+                }
+                switch::Outcome::StartedUnborn {
+                    branch,
+                    existing,
+                    inherits,
+                } => json!({"result": "started_unborn", "branch": branch,
+                            "existing": existing, "inherits": inherits}),
+            })
+        }
+        other => Err(bad(format!(
+            "unknown action '{other}'; use list, create or switch"
+        ))),
+    }
+}
+
+/// The current branch and its tip, which a merge needs as `ours`.
+fn current_tip(repo: &Repo) -> Result<(BranchName, SnapshotId), ToolError> {
+    let current = branches::list(repo)?
+        .into_iter()
+        .find(|b| b.is_current)
+        .ok_or_else(|| bad("no current branch"))?;
+    match current.tip {
+        Some(t) => Ok((current.name, t.hash)),
+        None => Err(bad(format!(
+            "branch '{}' has no snapshots yet; save before merging",
+            current.name
+        ))),
+    }
+}
+
+fn action_name(a: merge::FileAction) -> &'static str {
+    match a {
+        merge::FileAction::Deleted => "deleted",
+        merge::FileAction::Added => "added",
+        merge::FileAction::Updated => "updated",
+        merge::FileAction::AutoMerged => "auto_merged",
+        merge::FileAction::KeptOurs => "kept_ours",
+        merge::FileAction::Conflicted => "conflicted",
+    }
+}
+
+fn merge_plan_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let spec = req_str(args, "source")?;
+    let theirs = snapshot_arg(ctx.repo, spec)?;
+    let (_, ours) = current_tip(ctx.repo)?;
+    let plan = merge::plan(ctx.repo, &ours, &theirs)?;
+    let text = |h: &Option<velo_core::ObjectHash>| -> Result<Option<String>, ToolError> {
+        let Some(h) = h else { return Ok(None) };
+        // Binary content is omitted: it would be noise, and unusable as text.
+        Ok(String::from_utf8(ctx.repo.read_object(h)?).ok())
+    };
+    let mut files = Vec::new();
+    for f in &plan.files {
+        let mut o = Map::new();
+        o.insert("path".into(), json!(f.path));
+        o.insert("action".into(), json!(action_name(f.change.action())));
+        if let merge::PlannedChange::Conflict { base, ours, theirs } = &f.change {
+            let mut c = Map::new();
+            for (k, h) in [
+                ("base_text", base),
+                ("ours_text", ours),
+                ("theirs_text", theirs),
+            ] {
+                if let Some(t) = text(h)? {
+                    c.insert(k.into(), json!(t));
+                }
+            }
+            o.insert("conflict".into(), Value::Object(c));
+        }
+        files.push(Value::Object(o));
+    }
+    let clean = plan.is_clean();
+    let apply_hint = if clean {
+        format!(
+            "Call velo_merge_apply {{\"source\": \"{spec}\", \"message\": \"<message>\"}} on a clean working tree."
+        )
+    } else {
+        let paths: Vec<String> = plan
+            .conflicts()
+            .map(|f| format!("\"{}\": ...", f.path))
+            .collect();
+        format!(
+            "Call velo_merge_apply {{\"source\": \"{spec}\", \"message\": \"<message>\", \"resolutions\": {{{}}}}} on a clean working tree; each resolution is \"ours\", \"theirs\", \"delete\" or {{\"content\": \"<text>\"}}.",
+            paths.join(", ")
+        )
+    };
+    Ok(json!({
+        "base": plan.base.as_ref().map(|b| b.as_str()),
+        "ours": ours.as_str(),
+        "theirs": theirs.as_str(),
+        "clean": clean,
+        "files": files,
+        "apply_hint": apply_hint,
+    }))
+}
+
+fn resolutions_arg(args: &Value) -> Result<Vec<(String, merge::Resolution)>, ToolError> {
+    let obj = match args.get("resolutions") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err(bad("'resolutions' must be {path: resolution}")),
+    };
+    let mut out = Vec::new();
+    for (path, r) in obj {
+        let res = match r {
+            Value::String(s) => match s.as_str() {
+                "ours" => merge::Resolution::Ours,
+                "theirs" => merge::Resolution::Theirs,
+                "delete" => merge::Resolution::Delete,
+                other => {
+                    return Err(bad(format!(
+                        "resolution for '{path}' must be ours, theirs, delete or {{content}}, not '{other}'"
+                    )))
+                }
+            },
+            Value::Object(o) => match o.get("content") {
+                Some(Value::String(c)) => merge::Resolution::Content(c.clone().into_bytes()),
+                _ => {
+                    return Err(bad(format!(
+                        "resolution for '{path}' needs a string 'content'"
+                    )))
+                }
+            },
+            _ => return Err(bad(format!("invalid resolution for '{path}'"))),
+        };
+        out.push((path.clone(), res));
+    }
+    Ok(out)
+}
+
+fn merge_apply_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let spec = req_str(args, "source")?;
+    let message = req_str(args, "message")?;
+    let resolutions = resolutions_arg(args)?;
+    let meta = build_meta(ctx, "velo_merge_apply", args)?;
+    let author = author(ctx)?;
+    let theirs = snapshot_arg(ctx.repo, spec)?;
+    let guard = ctx.repo.write()?;
+    let result = (|| -> Result<Value, ToolError> {
+        let s = status::run(ctx.repo, &[])?;
+        if !s.is_clean() {
+            let paths = s
+                .new_files
+                .iter()
+                .chain(&s.modified)
+                .chain(&s.deleted)
+                .chain(&s.conflicts)
+                .map(PathBuf::from)
+                .collect();
+            return Err(Error::DirtyWorkingTree { paths }.into());
+        }
+        let (branch, ours) = current_tip(ctx.repo)?;
+        let plan = merge::plan(ctx.repo, &ours, &theirs)?;
+        let id = merge::commit(
+            &guard,
+            merge::MergeCommit {
+                branch: &branch,
+                ours: &ours,
+                theirs: &theirs,
+                resolutions: &resolutions,
+                message,
+                meta,
+                author: Some(&author),
+                timestamp_ms: None,
+            },
+        )?;
+        // The tree was clean and the new snapshot is a superset of the decided
+        // changes, so this only brings the tree and position to the merge.
+        restore::run(&guard, &id, restore::Options::default())?;
+        Ok(
+            json!({"snapshot": id.as_str(), "merged_from": theirs.as_str(),
+                  "files_changed": plan.files.len()}),
+        )
+    })();
+    drop(guard);
+    result
+}
+
+fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let path = req_str(args, "path")?;
+    let at = opt_str(args, "at")?
+        .map(|s| snapshot_arg(ctx.repo, s))
+        .transpose()?;
+    let line = |key: &str| -> Result<Option<usize>, ToolError> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => Ok(Some(
+                v.as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| bad(format!("'{key}' must be a positive integer")))?
+                    as usize,
+            )),
+        }
+    };
+    let (start, end) = (line("start_line")?, line("end_line")?);
+    let lines = if start.is_some() || end.is_some() {
+        // 1-based inclusive in, half-open out.
+        Some(start.unwrap_or(1)..end.map_or(usize::MAX, |e| e.saturating_add(1)))
+    } else {
+        None
+    };
+    let b = blame::run(
+        ctx.repo,
+        Path::new(path),
+        blame::Options {
+            at: at.as_ref(),
+            lines,
+            ..Default::default()
+        },
+    )?;
+    // One metadata read per distinct origin snapshot, not per line.
+    let mut runs: std::collections::HashMap<String, Option<String>> = Default::default();
+    let mut out = Vec::new();
+    for l in &b.lines {
+        let origin = match &l.origin {
+            None => Value::Null,
+            Some(o) => {
+                let key = o.hash.as_str().to_string();
+                if !runs.contains_key(&key) {
+                    let run = ctx
+                        .repo
+                        .snapshot_meta(&o.hash)?
+                        .get("mcp", "run")
+                        .map(String::from);
+                    runs.insert(key.clone(), run);
+                }
+                json!({
+                    "snapshot": o.hash.as_str(),
+                    "message": o.message,
+                    "author": o.author.as_ref().map(|a| a.name()),
+                    "branch": o.branch.as_str(),
+                    "created_at": o.created_at.to_rfc3339(),
+                    "run": runs[&key],
+                })
+            }
+        };
+        out.push(json!({"line_no": l.line_no, "text": l.text, "origin": origin}));
+    }
+    Ok(json!({"path": path, "snapshot": b.snapshot.as_str(), "lines": out}))
 }
