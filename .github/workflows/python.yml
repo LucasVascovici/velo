@@ -1,0 +1,49 @@
+name: Python binding
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  python:
+    name: Python · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install maturin and pytest
+        run: python -m pip install maturin pytest
+
+      - name: Build and test
+        shell: bash
+        working-directory: bindings/python
+        run: |
+          python -m venv .venv
+          if [ -d .venv/Scripts ]; then BIN=.venv/Scripts; else BIN=.venv/bin; fi
+          $BIN/python -m pip install maturin pytest
+          $BIN/maturin develop
+          $BIN/python -m pytest -q
+
+      - name: Clippy
+        run: cargo clippy --manifest-path bindings/python/Cargo.toml --all-targets -- -D warnings
+
+      - name: Format
+        run: cargo fmt --manifest-path bindings/python/Cargo.toml -- --check
