@@ -1694,7 +1694,7 @@ capability, then ecosystem.** 14.1 has no code, like Phase 0, and gates 14.5 and
 | # | Item | Marker | Gated on |
 | :--- | :--- | :--- | :--- |
 | 14.1 | Format decisions: signatures, chunked objects, compaction | ✅ **DONE** | — |
-| 14.2 | Language bindings: C ABI, Python, Node | 🔴 | — |
+| 14.2 | Language bindings: C ABI, Python, Node | ✅ **DONE** | — |
 | 14.3 | `velo-mcp` | 🔴 | — |
 | 14.4 | Pluggable merge and diff drivers | ✅ **DONE** | — |
 | 14.5 | Retention and compaction | ✅ **DONE** | 14.1 |
@@ -1703,8 +1703,8 @@ capability, then ecosystem.** 14.1 has no code, like Phase 0, and gates 14.5 and
 | 14.8 | Change events | ✅ **DONE** | — |
 | 14.9 | Sync beyond ssh | ✅ **DONE** | — |
 | 14.10 | git export, then import | ✅ **DONE** | — |
-| 14.11 | WASM | 🟢 | 14.7's storage seam |
-| 14.12 | Positioning and docs | 🟡 | ships alongside 14.2 / 14.3 |
+| 14.11 | WASM | ✅ **DONE** | 14.7's storage seam |
+| 14.12 | Positioning and docs | ✅ **DONE** | ships alongside 14.2 / 14.3 |
 
 ## 14.1 Format decisions to make now ✅ **DONE**
 
@@ -1731,7 +1731,7 @@ existed: each is cheap to decide today and a format break to retrofit.
   id) so a consumer holding an old id gets `Compacted { into }` rather than
   `NotFound`, and whether tagged and signed snapshots are ever eligible.
 
-## 14.2 Language bindings 🔴
+## 14.2 Language bindings ✅ **DONE**
 
 Rust-only caps adoption at a fraction of the systems listed above. Three crates,
 outside `velo-core`, each thin:
@@ -1821,15 +1821,15 @@ Phase 9 deferred the importer because nothing needed it. For adoption the
 which is the question an evaluator asks before trusting a history format.
 Metadata and rename edges have no git home and would go into trailers.
 
-## 14.11 WASM 🟢
+## 14.11 WASM ✅ **DONE**
 
-*Partly landed: the storage seam and a second backend — objects in SQLite, and single-file repositories with no `.velo` directory. The WASM build and an IndexedDB or OPFS backend are not.*
+*Landed: the storage seam, a second backend (objects in SQLite, single-file repositories) and `bindings/wasm` (`velo-wasm`), a wasm-bindgen package over single-file repositories. The wasm code is not yet compiled or run on the author's machine; an IndexedDB or OPFS backend is not landed.*
 
 Browser-based local-first apps. SQLite in WASM is workable, but objects on disk
 are not — this needs the storage seam 14.7 introduces, with an IndexedDB or OPFS
 backend.
 
-## 14.12 Positioning and docs 🟡
+## 14.12 Positioning and docs ✅ **DONE**
 
 The README still opens as a Git replacement. An embedder evaluating a timeline
 engine should meet the engine first — the guarantees, the embedder API, the
@@ -1843,7 +1843,7 @@ milestone, not of this phase.
 
 ## What landed
 
-Eight of the twelve items, and the seams under three more.
+Eleven of the twelve items; only `velo-mcp` (14.3) is outstanding.
 
 14.1 was decisions only: signatures, chunked objects and compaction records are
 written down in `FORMAT.md` §10 and §11 before the code that needed them.
@@ -1870,9 +1870,16 @@ that does not parse falls back to diff3 exactly. Re-serialising can change
 formatting, and YAML comments are dropped. Diff and blame follow the path's
 driver.
 
-Not landed: bindings (14.2), the `velo-mcp` crate (14.3, though `merge::commit`
-and `save::Options.meta` are its store-only prerequisites), WASM (14.11) and the
-positioning work (14.12).
+The bindings (14.2) are thin over `velo-core`: a C ABI, PyO3 and a napi-rs Node
+package, the Node one covering history, blame, merge base, plan and commit, and
+branches, with a conflicted `mergeCommit` rejecting with `code: 'Conflicts'` and
+the paths. WASM (14.11) is a wasm-bindgen package over single-file repositories,
+written but not yet compiled here. The README now leads with the timeline engine
+and has runnable cookbooks for agent checkpointing, a config registry and a
+document editor (14.12).
+
+Not landed: the `velo-mcp` crate (14.3, though `merge::commit` and
+`save::Options.meta` are its store-only prerequisites).
 
 ## Anti-goal tensions
 
