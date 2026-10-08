@@ -24,12 +24,74 @@ export declare class Repo {
   resolve(spec: string): Promise<string>
   branchTip(branch: string): Promise<string | null>
   headToken(): Promise<bigint>
+  /** Snapshots newest first, filtered by `options`. */
+  history(options?: HistoryOptions | undefined | null): Promise<Array<SnapshotInfo>>
+  /** Snapshots whose metadata satisfies every filter, newest first. */
+  findSnapshots(meta: Array<MetaFilterInput>): Promise<Array<SnapshotInfo>>
+  /** Attribute each line of `path` to the snapshot that last changed it. */
+  blame(path: string, options?: BlameOptions | undefined | null): Promise<BlameInfo>
+  /** The nearest snapshot that is an ancestor of both, or `null`. */
+  mergeBase(a: string, b: string): Promise<string | null>
+  /** What merging `theirs` into `ours` would do, without doing it. */
+  mergePlan(ours: string, theirs: string): Promise<MergePlanInfo>
+  /**
+   * Record the merge as a snapshot and resolve to its id. Rejects with code
+   * `'Conflicts'` and `paths` when a conflict has no resolution.
+   */
+  mergeCommit(input: MergeCommitInput): Promise<string>
+  /** Every branch, sorted by name. */
+  branches(): Promise<Array<BranchInfo>>
+  /** Create a branch, at snapshot `at` or unborn when absent. */
+  createBranch(name: string, at?: string | undefined | null): Promise<void>
+  /** Point an existing branch at snapshot `to`. */
+  setBranchTip(name: string, to: string): Promise<void>
+}
+
+/** The author of a snapshot. */
+export interface AuthorInfo {
+  name: string
+  email: string | null
 }
 
 /** Who made a snapshot. */
 export interface AuthorInput {
   name: string
   email?: string
+}
+
+export interface BlameInfo {
+  path: string
+  /** The snapshot the file was read at. */
+  snapshot: string
+  lines: Array<BlameLineInfo>
+}
+
+export interface BlameLineInfo {
+  /** 1-based line number as of the blamed snapshot. */
+  lineNo: number
+  text: string
+  /** How many file lines this unit spans; 1 unless a driver groups lines. */
+  lineCount: number
+  /** `null` when history does not explain the line. */
+  origin: LineOriginInfo | null
+}
+
+/** Which part of the file to blame. */
+export interface BlameOptions {
+  /** Blame the file as of this snapshot; the checked-out branch's tip when absent. */
+  at?: string
+  /** First line to attribute, 1-based and inclusive. */
+  startLine?: number
+  /** Last line to attribute, 1-based and inclusive. */
+  endLine?: number
+}
+
+/** A branch and where it points. */
+export interface BranchInfo {
+  name: string
+  isCurrent: boolean
+  /** The tip snapshot, or `null` for a branch with no snapshots yet. */
+  tip: string | null
 }
 
 /** One file of a tree to save. Exactly one of `data` and `object` is given. */
@@ -41,6 +103,84 @@ export interface EntryInput {
   object?: string
   /** `'regular'` (default), `'executable'` or `'symlink'`. */
   kind?: string
+}
+
+/** What `history` filters on. Every field is optional. */
+export interface HistoryOptions {
+  /**
+   * List the ancestry of this snapshot, following both parents of a merge.
+   * Without `from` or `branch`, velo walks back from the working tree's
+   * position, so a repository with no working tree must pass one of them.
+   */
+  from?: string
+  /** Only snapshots recorded on this branch. */
+  branch?: string
+  /** Every branch. Ignored when `branch` is set. */
+  all?: boolean
+  /** Only snapshots that changed one of these paths (or anything under one). */
+  paths?: Array<string>
+  /** The newest N matches. */
+  limit?: number
+  /** Only snapshots satisfying every one of these. */
+  meta?: Array<MetaFilterInput>
+}
+
+/** The snapshot a line came from. */
+export interface LineOriginInfo {
+  id: string
+  createdAtMs: number
+  createdAt: Date
+  message: string
+  author: AuthorInfo | null
+  branch: string
+  /** The file's path at that snapshot, which differs after a rename. */
+  path: string
+}
+
+/** A merge to record. */
+export interface MergeCommitInput {
+  branch: string
+  ours: string
+  theirs: string
+  message: string
+  /**
+   * Per conflicted path: `'ours'`, `'theirs'`, `null` to delete it, or the
+   * bytes to write. A string other than `'ours'`/`'theirs'` is written as
+   * UTF-8 content; pass a `Buffer` to write bytes that may spell either word.
+   */
+  resolutions?: Record<string, 'ours' | 'theirs' | null | Buffer | string>
+  meta?: Meta
+  author?: AuthorInput
+  timestampMs?: number
+}
+
+export interface MergePlanInfo {
+  /** The common ancestor, or `null` when the two have no shared history. */
+  base: string | null
+  files: Array<PlannedFileInfo>
+}
+
+/** One metadata condition. Without `value`, it matches any value of the key. */
+export interface MetaFilterInput {
+  namespace: string
+  key: string
+  value?: string
+}
+
+/** One path a merge would touch. */
+export interface PlannedFileInfo {
+  path: string
+  /** `'deleted'`, `'added'`, `'updated'`, `'autoMerged'`, `'keptOurs'` or `'conflicted'`. */
+  action: string
+  /** The object to take, for `'added'` and `'updated'`. */
+  object?: string
+  mode?: number
+  /** The merged bytes, for `'autoMerged'`. */
+  content?: Buffer
+  /** For `'conflicted'`: each side's object, absent where that side lacks the file. */
+  base?: string
+  ours?: string
+  theirs?: string
 }
 
 export interface SaveTreeInput {
