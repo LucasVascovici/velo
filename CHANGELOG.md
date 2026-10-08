@@ -60,6 +60,15 @@ or deleted.
 
 ### Added — Phase 14
 
+- **`velo-mcp`**, a synchronous stdio MCP server over a repository with a
+  working tree: `velo_save`, `velo_restore`, `velo_status`, `velo_diff`,
+  `velo_history`, `velo_metadata`, `velo_branch`, `velo_merge_plan`,
+  `velo_merge_apply` and `velo_blame`. Write tools record the run (`--run`, else
+  `$VELO_MCP_RUN`) in the `mcp` metadata namespace, so blame names the run that
+  wrote a line. There is no force option, and merging is always plan, then
+  apply; an unresolved conflict returns `Conflicts` with the paths and the next
+  step.
+
 - **Metadata queries.** An index on `snapshot_meta`, a history filter,
   `Repo::find_snapshots` and `velo history --where`, composing with the path
   and ancestry scopes.

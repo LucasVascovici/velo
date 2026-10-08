@@ -1695,7 +1695,7 @@ capability, then ecosystem.** 14.1 has no code, like Phase 0, and gates 14.5 and
 | :--- | :--- | :--- | :--- |
 | 14.1 | Format decisions: signatures, chunked objects, compaction | ✅ **DONE** | — |
 | 14.2 | Language bindings: C ABI, Python, Node | ✅ **DONE** | — |
-| 14.3 | `velo-mcp` | 🔴 | — |
+| 14.3 | `velo-mcp` | ✅ **DONE** | — |
 | 14.4 | Pluggable merge and diff drivers | ✅ **DONE** | — |
 | 14.5 | Retention and compaction | ✅ **DONE** | 14.1 |
 | 14.6 | Querying metadata | ✅ **DONE** | — |
@@ -1750,9 +1750,7 @@ outside `velo-core`, each thin:
 The bindings expose the embedder API, not the CLI's commands — a binding that
 needs a working tree is wrapping the wrong half (see 8.6).
 
-## 14.3 `velo-mcp` 🔴
-
-*Partly landed: the store-only half the server needs — `merge::commit` concludes a planned merge without a working tree, and `save::Options.meta` records the calling run. The `velo-mcp` crate itself is not written.*
+## 14.3 `velo-mcp` ✅ **DONE**
 
 An MCP server over the same surface: `save`, `restore`, `diff`, `branch`,
 `merge` (plan + apply), `blame`, `history`, `metadata`. Cheap, and it makes velo
@@ -1843,7 +1841,7 @@ milestone, not of this phase.
 
 ## What landed
 
-Eleven of the twelve items; only `velo-mcp` (14.3) is outstanding.
+All twelve items.
 
 14.1 was decisions only: signatures, chunked objects and compaction records are
 written down in `FORMAT.md` §10 and §11 before the code that needed them.
@@ -1878,8 +1876,13 @@ written but not yet compiled here. The README now leads with the timeline engine
 and has runnable cookbooks for agent checkpointing, a config registry and a
 document editor (14.12).
 
-Not landed: the `velo-mcp` crate (14.3, though `merge::commit` and
-`save::Options.meta` are its store-only prerequisites).
+`velo-mcp` (14.3) is a synchronous stdio server over a repository with a
+working tree, built on two store-only prerequisites: `merge::commit` and
+`save::Options.meta`. Every write tool records the calling run in the `mcp`
+namespace, so blame names the run that wrote each line. The safety stance is
+the tool surface itself: there is no force option, a dirty tree is an error
+result, and a merge is always a plan the agent must apply explicitly, with a
+resolution for every conflict.
 
 ## Anti-goal tensions
 

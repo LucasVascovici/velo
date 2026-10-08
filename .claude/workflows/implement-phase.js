@@ -392,7 +392,9 @@ let final = null
 if (halted) {
   log('Run was interrupted — finalize skipped; resume with the same args to continue')
 } else if (doneTasks.length) {
-  const items = [...new Set(doneTasks.map((t) => t.item))]
+  // Every item of the plan, not just this run's: an item finished by an earlier pass that never reached
+  // finalize (it was interrupted) must still be marked.
+  const items = [...new Set(plan.tasks.filter((t) => (results[t.id] && results[t.id].status === 'done') || DONE_EARLIER.has(t.id)).map((t) => t.item))]
   // Judge against the whole plan, so an item with tasks skipped in this run is not marked done.
   const fullyDone = items.filter((it) => plan.tasks.filter((t) => t.item === it).every((t) => (results[t.id] && results[t.id].status === 'done') || DONE_EARLIER.has(t.id)))
   final = await agent(`BRANCH=${BRANCH}
