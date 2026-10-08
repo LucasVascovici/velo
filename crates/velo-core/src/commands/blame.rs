@@ -30,6 +30,17 @@
 //! is now re-resolved per step from the recorded rename edges — see
 //! [`crate::commands::paths`] — so the walk follows the file rather than the
 //! name.
+//!
+//! # Units
+//!
+//! Attribution is per *unit*, not per line. The path's
+//! [`MergeDriver`](velo_merge::MergeDriver) — chosen once, from the starting
+//! path, and used for every snapshot in the walk — says what a unit is: a line
+//! by default, a paragraph for prose, a top-level key for JSON, YAML and TOML.
+//! Snapshots are diffed as sequences of unit texts, so editing one key credits
+//! only that key. One [`BlameLine`] comes back per unit of the starting text,
+//! with [`BlameLine::line_count`] saying how many file lines it spans; with the
+//! line driver that is always 1 and the result is exactly the per-line one.
 
 use chrono::{DateTime, Utc};
 use std::collections::{BinaryHeap, HashMap, HashSet};
@@ -38,12 +49,12 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 use similar::{ChangeTag, TextDiff};
+use velo_merge::{unit_texts, MergeDriver};
 
 use crate::db;
 use crate::error::{RefKind, Result, VeloError};
 use crate::meta::Author;
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
-use crate::storage;
 use crate::BranchName;
 use crate::Repo;
 use crate::SnapshotId;
@@ -81,9 +92,14 @@ pub struct LineOrigin {
 /// One line of the file with its attribution.
 #[derive(Clone, Debug)]
 pub struct BlameLine {
-    /// 1-based line number in the file as of the starting snapshot.
+    /// 1-based line number in the file as of the starting snapshot; for a unit
+    /// spanning several lines, its first line.
     pub line_no: usize,
+    /// The unit's text, lines joined with a line feed. A single line under the
+    /// default driver.
     pub text: String,
+    /// How many file lines the unit spans. 1 for the line driver.
+    pub line_count: usize,
     /// `None` when history didn't explain this line — a truncated or grafted
     /// ancestry, rather than a normal outcome.
     pub origin: Option<LineOrigin>,
@@ -128,7 +144,8 @@ pub struct Options<'a> {
     /// consumers that API exists for.
     pub at: Option<&'a SnapshotId>,
     /// Attribute only these lines, 1-based and half-open, in the file as of
-    /// [`at`](Options::at). `None` is the whole file.
+    /// [`at`](Options::at). `None` is the whole file. Always a window in file
+    /// lines: every unit that overlaps it is included, whole.
     ///
     /// Worth using whenever the answer is: the walk reads and diffs two whole
     /// file texts per snapshot and stops once every requested line is explained,
@@ -172,9 +189,8 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         observer,
         cancel,
     } = options;
-    let root = repo.root();
     let conn = repo.conn();
-    let objects_dir = root.join(".velo/objects");
+    let objects = repo.objects();
     let rel = db::normalise(&file.to_string_lossy());
 
     let start_hash = match at {
@@ -196,18 +212,32 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
             ))
         })?;
 
-    let tip_text = read_text(&objects_dir, &tip_object)?;
+    let tip_text = read_text(&objects, &tip_object)?;
+    let driver = repo.drivers().for_path(&rel);
+    let tip_units = driver.units(&tip_text);
+    let tip_unit_texts = unit_texts(&tip_text, &tip_units);
     let total_lines = tip_text.lines().count();
     // Half-open and clamped, so a viewport hanging off the end of a file that
-    // shrank asks for nothing rather than failing.
-    let window = match lines {
+    // shrank asks for nothing rather than failing. Given in file lines and
+    // turned into the (contiguous) run of units that overlap it.
+    let line_window = match lines {
         Some(r) => {
             r.start.saturating_sub(1).min(total_lines)..r.end.saturating_sub(1).min(total_lines)
         }
         None => 0..total_lines,
     };
+    let overlapping: Vec<usize> = tip_units
+        .iter()
+        .enumerate()
+        .filter(|(_, u)| u.start < line_window.end && u.end > line_window.start)
+        .map(|(i, _)| i)
+        .collect();
+    let window = match (overlapping.first(), overlapping.last()) {
+        (Some(&a), Some(&b)) => a..b + 1,
+        _ => 0..0,
+    };
 
-    // Indexed by line number in `tip_text`; only the requested window is
+    // Indexed by unit number in `tip_text`; only the requested window is
     // tracked, which is what lets a windowed blame stop early.
     let mut origins: HashMap<usize, LineOrigin> = HashMap::new();
     let mut remaining = window.len();
@@ -234,7 +264,7 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         let Some(visit) = queue.pop() else { break };
         progress.tick();
 
-        let our_text = read_tracked(conn, &objects_dir, &visit.hash, &visit.path)?;
+        let our_text = read_tracked(conn, &objects, &visit.hash, &visit.path)?;
 
         // The path each parent knew the file by. A rename recorded on this
         // snapshot means the parents held the old name; without this the parent
@@ -254,8 +284,8 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         // absorbed branch's work, which it did not.
         let mut introduced: Option<HashSet<usize>> = None;
         for (parent, parent_path) in &parents {
-            let parent_text = read_tracked(conn, &objects_dir, parent, parent_path)?;
-            let against: HashSet<usize> = introduced_lines(&parent_text, &our_text)
+            let parent_text = read_tracked(conn, &objects, parent, parent_path)?;
+            let against: HashSet<usize> = introduced_lines(driver, &parent_text, &our_text)
                 .into_iter()
                 .collect();
             introduced = Some(match introduced {
@@ -264,8 +294,8 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
             });
         }
         // No parents: the file starts here, so everything in it is its own.
-        let introduced =
-            introduced.unwrap_or_else(|| (0..our_text.lines().count()).collect::<HashSet<_>>());
+        let introduced = introduced
+            .unwrap_or_else(|| (0..driver.units(&our_text).len()).collect::<HashSet<_>>());
 
         if !introduced.is_empty() {
             let origin = LineOrigin {
@@ -285,7 +315,7 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
             // Translated into tip line numbers: the map must run our→tip, and
             // querying it the other way attributes lines to the wrong snapshot
             // as soon as an ancestor's offsets differ from the tip's.
-            let our_to_tip = equal_line_map(&tip_text, &our_text);
+            let our_to_tip = equal_line_map(driver, &tip_text, &our_text);
             for our_idx in introduced {
                 let Some(&tip_idx) = our_to_tip.get(&our_idx) else {
                     continue;
@@ -307,13 +337,12 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
     }
     drop(progress);
 
-    let lines = tip_text
-        .lines()
-        .enumerate()
-        .filter(|(i, _)| window.contains(i))
-        .map(|(i, text)| BlameLine {
-            line_no: i + 1,
-            text: text.to_string(),
+    let lines = window
+        .clone()
+        .map(|i| BlameLine {
+            line_no: tip_units[i].start + 1,
+            text: tip_unit_texts[i].clone(),
+            line_count: tip_units[i].len(),
             origin: origins.remove(&i),
         })
         .collect();
@@ -390,22 +419,13 @@ fn visit_of(conn: &rusqlite::Connection, hash: &str, path: &str) -> Option<Visit
 
 /// Where a blame starts when the caller did not say.
 fn default_start(repo: &Repo) -> Result<String> {
-    let root = repo.root();
-    let position = std::fs::read_to_string(root.join(".velo/PARENT"))
-        .unwrap_or_default()
-        .trim()
-        .to_string();
-    if !position.is_empty() {
-        return Ok(position);
+    if let Some(position) = repo.position() {
+        return Ok(position.into_string());
     }
     // No working-tree position — which is the normal state for a consumer built
     // on `save_tree`, not an error. The branch a tip is derived for is still
     // recorded, so there is a defensible answer.
-    let branch = BranchName::from_stored(
-        std::fs::read_to_string(root.join(".velo/HEAD"))
-            .unwrap_or_else(|_| "main".into())
-            .trim(),
-    );
+    let branch = repo.head_branch();
     match repo.branch_tip(&branch)? {
         Some(tip) => Ok(tip.into_string()),
         None => Err(VeloError::UnbornBranch {
@@ -417,7 +437,7 @@ fn default_start(repo: &Repo) -> Result<String> {
 /// Content of `path` at `snapshot`, or empty when it isn't tracked there.
 fn read_tracked(
     conn: &rusqlite::Connection,
-    objects_dir: &Path,
+    objects: &crate::storage::ObjectStore,
     snapshot: &str,
     path: &str,
 ) -> Result<String> {
@@ -429,21 +449,29 @@ fn read_tracked(
         )
         .ok();
     match object {
-        Some(h) => read_text(objects_dir, &h),
+        Some(h) => read_text(objects, &h),
         None => Ok(String::new()),
     }
 }
 
-fn read_text(objects_dir: &Path, object: &str) -> Result<String> {
-    let bytes = storage::read_object(objects_dir, object)
+fn read_text(objects: &crate::storage::ObjectStore, object: &str) -> Result<String> {
+    let bytes = objects
+        .get(object)
         .map_err(|_| VeloError::not_found(RefKind::Snapshot, object))?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// Map each `new` line index to the `old` line index it is unchanged from.
-fn equal_line_map(old: &str, new: &str) -> HashMap<usize, usize> {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
+/// The unit texts of `text` under `driver`, which is what gets diffed.
+fn unit_strings(driver: &dyn MergeDriver, text: &str) -> Vec<String> {
+    unit_texts(text, &driver.units(text))
+}
+
+/// Map each `new` unit index to the `old` unit index it is unchanged from.
+fn equal_line_map(driver: &dyn MergeDriver, old: &str, new: &str) -> HashMap<usize, usize> {
+    let old_units = unit_strings(driver, old);
+    let new_units = unit_strings(driver, new);
+    let old_lines: Vec<&str> = old_units.iter().map(String::as_str).collect();
+    let new_lines: Vec<&str> = new_units.iter().map(String::as_str).collect();
     let diff = TextDiff::from_slices(&old_lines, &new_lines);
     let mut map = HashMap::new();
     for op in diff.ops() {
@@ -461,10 +489,12 @@ fn equal_line_map(old: &str, new: &str) -> HashMap<usize, usize> {
     map
 }
 
-/// Indices of `new` lines that were not present in `old`.
-fn introduced_lines(old: &str, new: &str) -> Vec<usize> {
-    let old_lines: Vec<&str> = old.lines().collect();
-    let new_lines: Vec<&str> = new.lines().collect();
+/// Indices of `new` units that were not present in `old`.
+fn introduced_lines(driver: &dyn MergeDriver, old: &str, new: &str) -> Vec<usize> {
+    let old_units = unit_strings(driver, old);
+    let new_units = unit_strings(driver, new);
+    let old_lines: Vec<&str> = old_units.iter().map(String::as_str).collect();
+    let new_lines: Vec<&str> = new_units.iter().map(String::as_str).collect();
     TextDiff::from_slices(&old_lines, &new_lines)
         .iter_all_changes()
         .filter(|c| c.tag() == ChangeTag::Insert)
@@ -475,6 +505,7 @@ fn introduced_lines(old: &str, new: &str) -> Vec<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use velo_merge::LineDriver;
 
     /// `our` gains a line at the front, so its indices are offset from the tip's.
     /// Querying the map in the wrong direction silently mis-attributes lines.
@@ -482,7 +513,7 @@ mod tests {
     fn map_translates_ancestor_indices_to_tip_indices() {
         let tip = "Z\nA\nB\n";
         let our = "A\nB\n";
-        let map = equal_line_map(tip, our);
+        let map = equal_line_map(&LineDriver, tip, our);
         // our line 0 ("A") is tip line 1; our line 1 ("B") is tip line 2.
         assert_eq!(map.get(&0), Some(&1));
         assert_eq!(map.get(&1), Some(&2));
@@ -490,16 +521,16 @@ mod tests {
 
     #[test]
     fn introduced_lines_reports_only_additions() {
-        assert_eq!(introduced_lines("A\n", "A\nB\n"), vec![1]);
-        assert_eq!(introduced_lines("A\n", "Z\nA\n"), vec![0]);
-        assert!(introduced_lines("A\nB\n", "A\nB\n").is_empty());
+        assert_eq!(introduced_lines(&LineDriver, "A\n", "A\nB\n"), vec![1]);
+        assert_eq!(introduced_lines(&LineDriver, "A\n", "Z\nA\n"), vec![0]);
+        assert!(introduced_lines(&LineDriver, "A\nB\n", "A\nB\n").is_empty());
         // A deletion introduces nothing.
-        assert!(introduced_lines("A\nB\n", "A\n").is_empty());
+        assert!(introduced_lines(&LineDriver, "A\nB\n", "A\n").is_empty());
     }
 
     #[test]
     fn a_line_present_in_neither_is_not_mapped() {
-        let map = equal_line_map("A\n", "B\n");
+        let map = equal_line_map(&LineDriver, "A\n", "B\n");
         assert!(map.is_empty());
     }
 }

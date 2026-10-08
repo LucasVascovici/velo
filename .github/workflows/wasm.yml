@@ -1,0 +1,56 @@
+name: WASM
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build velo-core · wasm32-unknown-unknown
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      # zstd-sys and the bundled SQLite compile C for wasm, which needs clang.
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Build
+        run: cargo build -p velo-core --target wasm32-unknown-unknown --locked
+
+  bindings:
+    name: velo-wasm · wasm-pack test and build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Format
+        run: cargo fmt --manifest-path bindings/wasm/Cargo.toml --check
+      - name: Clippy
+        run: >
+          cargo clippy --manifest-path bindings/wasm/Cargo.toml
+          --target wasm32-unknown-unknown --all-targets -- -D warnings
+      - name: Test under Node
+        run: wasm-pack test --node bindings/wasm
+      - name: Build for the web
+        run: wasm-pack build bindings/wasm --target web

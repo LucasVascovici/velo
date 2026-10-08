@@ -5,14 +5,12 @@
 //! functions here. Non-interactive resolution (`--take ours|theirs`) needs no UI
 //! and is fully served by [`take_side`].
 
-use std::path::Path;
-
 use rusqlite::params;
 use velo_merge::{build_resolved_content, compute_conflict_hunks, ConflictHunk, Decision};
 
+use crate::commands::require_working_tree;
 use crate::db;
 use crate::error::{RefKind, Result, VeloError};
-use crate::storage;
 use crate::{Repo, WriteGuard};
 
 /// Which side to take when resolving without per-hunk decisions.
@@ -126,12 +124,17 @@ pub fn get_conflict(repo: &Repo, path: &str) -> Result<ConflictFile> {
 /// persisted by a previous session so resolution is resumable.
 pub fn open_session(repo: &Repo, file: ConflictFile) -> Result<ConflictSession> {
     let conn = repo.conn();
-    let objects_dir = repo.root().join(".velo/objects");
-    let ancestor = read_text(&objects_dir, &file.ancestor_hash)?;
-    let ours = read_text(&objects_dir, &file.our_hash)?;
-    let theirs = read_text(&objects_dir, &file.their_hash)?;
+    let objects = repo.objects();
+    let ancestor = read_text(&objects, &file.ancestor_hash)?;
+    let ours = read_text(&objects, &file.our_hash)?;
+    let theirs = read_text(&objects, &file.their_hash)?;
 
     let mut hunks = compute_conflict_hunks(&ancestor, &ours, &theirs);
+    if hunks.is_empty() {
+        // The conflict was raised by a merge driver for something diff3 sees as
+        // clean; give the session the whole file to decide.
+        hunks = velo_merge::whole_file_conflict(&ancestor, &ours, &theirs);
+    }
     for h in &mut hunks {
         if let Ok((kind, manual)) = conn.query_row(
             "SELECT decision, manual_content FROM hunk_decisions
@@ -184,6 +187,7 @@ pub fn clear_decision(guard: &WriteGuard, path: &str, hunk_id: usize) -> Result<
 ///
 /// Undecided hunks fall back to "ours", matching the merge engine's default.
 pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
+    require_working_tree(guard.repo(), "resolve")?;
     let anc: Vec<&str> = session.ancestor.lines().collect();
     let our: Vec<&str> = session.ours.lines().collect();
     let thr: Vec<&str> = session.theirs.lines().collect();
@@ -204,6 +208,7 @@ pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
 
 /// Resolve a whole file by taking one side, with no per-hunk interaction.
 pub fn take_side(guard: &WriteGuard, file: &ConflictFile, side: TakeOption) -> Result<()> {
+    require_working_tree(guard.repo(), "resolve")?;
     let mut session = open_session(guard.repo(), file.clone())?;
     let decision = side.decision();
     for h in &mut session.hunks {
@@ -254,10 +259,10 @@ pub(crate) fn decision_from_db(kind: &str, content: Option<&str>) -> Option<Deci
 
 /// Decompress an object as text. An empty hash means "absent", which is a valid
 /// side of a conflict (a file added or deleted on one side).
-pub(crate) fn read_text(objects_dir: &Path, hash: &str) -> Result<String> {
+pub(crate) fn read_text(objects: &crate::storage::ObjectStore, hash: &str) -> Result<String> {
     if hash.is_empty() {
         return Ok(String::new());
     }
-    let bytes = storage::read_object(objects_dir, hash)?;
+    let bytes = objects.get(hash)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }

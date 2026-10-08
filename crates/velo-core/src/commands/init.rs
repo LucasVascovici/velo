@@ -44,8 +44,35 @@ pub struct Initialised {
     pub wrote_veloignore: bool,
 }
 
+/// Choices made when a repository is created.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct InitOptions {
+    /// Where objects are kept. Recorded in the repository and fixed for its
+    /// lifetime.
+    pub objects: crate::ObjectLocation,
+}
+
+impl InitOptions {
+    /// The defaults: objects in files.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Choose where objects are kept.
+    pub fn objects(mut self, location: crate::ObjectLocation) -> Self {
+        self.objects = location;
+        self
+    }
+}
+
 /// Create a repository at `root`.
 pub fn run(root: &Path) -> Result<Initialised> {
+    run_with(root, InitOptions::default())
+}
+
+/// Create a repository at `root` with `options`.
+pub fn run_with(root: &Path, options: InitOptions) -> Result<Initialised> {
     let velo_dir = root.join(".velo");
 
     // ── Guard: already initialised ───────────────────────────────────────────
@@ -73,7 +100,11 @@ pub fn run(root: &Path) -> Result<Initialised> {
     }
 
     // ── Create directory structure ────────────────────────────────────────────
-    fs::create_dir_all(velo_dir.join("objects"))?;
+    fs::create_dir_all(&velo_dir)?;
+    if options.objects == crate::ObjectLocation::Files {
+        fs::create_dir_all(velo_dir.join("objects"))?;
+        fs::create_dir_all(velo_dir.join("chunks"))?;
+    }
     crate::db::init_db_at_path(&velo_dir.join("velo.db"))?;
     fs::write(velo_dir.join("HEAD"), "main")?;
     fs::write(velo_dir.join("PARENT"), "")?;
@@ -83,6 +114,12 @@ pub fn run(root: &Path) -> Result<Initialised> {
     {
         let conn = crate::db::get_conn_at_path(&velo_dir.join("velo.db"))?;
         crate::commands::register_branch(&conn, "main", "")?;
+        if options.objects != crate::ObjectLocation::Files {
+            conn.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES ('objects', ?)",
+                [options.objects.as_setting()],
+            )?;
+        }
     }
 
     // ── Write a default .veloignore if none exists ────────────────────────────

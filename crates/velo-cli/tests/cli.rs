@@ -672,3 +672,411 @@ fn history_file_filter_reports_when_nothing_matched() {
         "expected the no-match message:\n{out}"
     );
 }
+
+#[test]
+fn export_git_stream_is_accepted_by_git_fast_import() {
+    use std::process::Stdio;
+    if !Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("skipping: git is not installed");
+        return;
+    }
+    let tmp = repo();
+    // Names git's check-ref-format rejects must not sink the whole stream.
+    assert!(velo(tmp.path(), &["switch", "my feature"]).1);
+    write(
+        tmp.path(),
+        "extra.txt",
+        "x
+",
+    );
+    assert!(velo(tmp.path(), &["save", "on odd branch"]).1);
+    assert!(velo(tmp.path(), &["tag", "v1 final"]).1);
+    assert!(velo(tmp.path(), &["switch", "main", "--force"]).1);
+    let out = tmp.path().join("history.fi");
+
+    // The stream goes to stdout by default, and to a file with --output.
+    let exported = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(["export-git"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+    let (_, ok) = velo(
+        tmp.path(),
+        &["export-git", "--output", out.to_str().unwrap()],
+    );
+    assert!(ok);
+    assert_eq!(std::fs::read(&out).unwrap(), exported.stdout);
+    std::fs::remove_file(&out).unwrap();
+
+    let git_dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(git_dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-q", "-b", "main"]).status.success());
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(git_dir.path())
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&exported.stdout)
+            .unwrap();
+    }
+    assert!(child.wait().unwrap().success(), "git rejected the stream");
+
+    let count = git(&["rev-list", "--all", "--count"]);
+    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "3");
+    let message = git(&["log", "-1", "--format=%B", "main"]);
+    assert!(String::from_utf8_lossy(&message.stdout).contains("Velo-Snapshot:"));
+}
+
+/// Run `velo <args>` in `dir` as the author `name`.
+fn velo_as(dir: &Path, name: &str, args: &[&str]) -> (String, bool) {
+    let out = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(args)
+        .env("VELO_AUTHOR_NAME", name)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run velo binary");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (s, out.status.success())
+}
+
+#[test]
+fn history_where_filters_by_metadata() {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    assert!(velo(d, &["init"]).1);
+    write(d, "a.txt", "one\n");
+    assert!(velo_as(d, "ada", &["save", "by ada"]).1);
+    write(d, "a.txt", "two\n");
+    assert!(velo_as(d, "bob", &["save", "by bob"]).1);
+
+    let (out, ok) = velo(
+        d,
+        &["history", "--oneline", "--where", "velo:author.name=ada"],
+    );
+    assert!(ok, "{out}");
+    assert!(out.contains("by ada") && !out.contains("by bob"), "{out}");
+
+    // Without `=` the filter means "is set"; two filters AND together.
+    let (out, ok) = velo(d, &["history", "--oneline", "--where", "velo:author.name"]);
+    assert!(
+        ok && out.contains("by ada") && out.contains("by bob"),
+        "{out}"
+    );
+    let (out, ok) = velo(
+        d,
+        &[
+            "history",
+            "--oneline",
+            "--where",
+            "velo:author.name=ada",
+            "--where",
+            "velo:author.name=bob",
+        ],
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("No snapshots match the --where filter"),
+        "{out}"
+    );
+}
+
+#[test]
+fn history_where_rejects_a_malformed_filter() {
+    let tmp = repo();
+    for bad in ["nocolon", ":key=v", "ns:=v"] {
+        let (out, ok) = velo(tmp.path(), &["history", "--where", bad]);
+        assert!(!ok, "{bad} should be rejected:\n{out}");
+        assert!(out.contains("NAMESPACE:KEY"), "{bad}: {out}");
+    }
+}
+
+#[test]
+fn merge_combines_json_keys_added_on_both_branches() {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    assert!(velo(d, &["init"]).1);
+    write(d, "config.json", "{\n  \"a\": 1\n}\n");
+    assert!(velo(d, &["save", "base"]).1);
+    assert!(velo(d, &["switch", "feature"]).1);
+    write(d, "config.json", "{\n  \"a\": 1,\n  \"theirs\": 2\n}\n");
+    assert!(velo(d, &["save", "feature key"]).1);
+    assert!(velo(d, &["switch", "main"]).1);
+    write(d, "config.json", "{\n  \"a\": 1,\n  \"ours\": 3\n}\n");
+    assert!(velo(d, &["save", "main key"]).1);
+
+    let (out, ok) = velo(d, &["merge", "feature"]);
+    assert!(ok, "merge should succeed:\n{out}");
+    assert!(out.contains("Clean merge"), "{out}");
+    let merged = std::fs::read_to_string(d.join("config.json")).unwrap();
+    assert!(
+        merged.contains("\"ours\"") && merged.contains("\"theirs\""),
+        "{merged}"
+    );
+    assert!(!merged.contains("<<<<"), "{merged}");
+}
+
+// ─── HTTP transport ───────────────────────────────────────────────────────────
+
+/// A running `velo serve-http`, killed when dropped.
+struct HttpServer {
+    child: std::process::Child,
+    url: String,
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn serve_http(dir: &Path) -> HttpServer {
+    use std::io::{BufRead, BufReader};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args([
+            "serve-http",
+            dir.to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:0",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn velo serve-http");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let url = line
+        .trim()
+        .strip_prefix("listening on ")
+        .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
+        .to_string();
+    assert!(url.starts_with("http://127.0.0.1:") && url.ends_with('/'));
+    HttpServer { child, url }
+}
+
+/// Snapshot ids of the current branch, newest first.
+fn history_ids(dir: &Path) -> Vec<String> {
+    let (out, ok) = velo(dir, &["history", "--oneline", "--branch", "main"]);
+    assert!(ok, "{out}");
+    out.lines()
+        .filter(|l| l.starts_with("* ") || l.starts_with("  "))
+        .filter_map(|l| l.get(2..)?.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// An origin repo with two snapshots, served over http, plus a clone of it.
+fn http_fixture() -> (TempDir, std::path::PathBuf, HttpServer, std::path::PathBuf) {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velo(&origin, &["init"]).1);
+    write(&origin, "shared.txt", "base\n");
+    assert!(velo(&origin, &["save", "C0"]).1);
+    write(&origin, "shared.txt", "base\nmore\n");
+    assert!(velo(&origin, &["save", "C1"]).1);
+    let server = serve_http(&origin);
+    let (out, ok) = velo(root.path(), &["clone", &server.url, "clone"]);
+    assert!(ok, "clone over http failed:\n{out}");
+    let clone = root.path().join("clone");
+    (root, origin, server, clone)
+}
+
+#[test]
+fn http_clone_reproduces_history() {
+    let (_root, origin, _server, clone) = http_fixture();
+    let ids = history_ids(&origin);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(history_ids(&clone), ids);
+}
+
+#[test]
+fn http_push_fast_forwards_the_server() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&clone, "new.txt", "x\n");
+    assert!(velo(&clone, &["save", "C2"]).1);
+    let (out, ok) = velo(&clone, &["push"]);
+    assert!(ok && out.contains("Pushed"), "{out}");
+    assert_eq!(history_ids(&origin), history_ids(&clone));
+    assert_eq!(history_ids(&origin).len(), 3);
+}
+
+#[test]
+fn http_diverged_push_is_rejected_and_server_unchanged() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&origin, "o.txt", "o\n");
+    assert!(velo(&origin, &["save", "server side"]).1);
+    let before = history_ids(&origin);
+    write(&clone, "c.txt", "c\n");
+    assert!(velo(&clone, &["save", "client side"]).1);
+    let (out, ok) = velo(&clone, &["push"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("non-fast-forward"), "{out}");
+    assert_eq!(history_ids(&origin), before);
+}
+
+#[test]
+fn http_pull_fast_forwards_the_client() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&origin, "s.txt", "s\n");
+    assert!(velo(&origin, &["save", "C2"]).1);
+    let (out, ok) = velo(&clone, &["pull"]);
+    assert!(ok, "{out}");
+    assert_eq!(history_ids(&clone), history_ids(&origin));
+    assert!(clone.join("s.txt").exists());
+}
+
+#[test]
+fn http_unknown_path_is_404_and_wrong_method_405() {
+    use std::io::{Read, Write};
+    let (_root, _origin, server, _clone) = http_fixture();
+    let addr = server
+        .url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    let get = |req: &str| {
+        let mut s = std::net::TcpStream::connect(&addr).unwrap();
+        s.write_all(req.as_bytes()).unwrap();
+        let mut resp = String::new();
+        s.read_to_string(&mut resp).unwrap();
+        resp
+    };
+    let r = get("GET /nope HTTP/1.0\r\n\r\n");
+    assert!(
+        r.starts_with("HTTP/1.0 404") || r.starts_with("HTTP/1.1 404"),
+        "{r}"
+    );
+    let r = get("POST /velo/v1/refs HTTP/1.0\r\nContent-Length: 0\r\n\r\n");
+    assert!(r.contains(" 405 "), "{r}");
+    let r = get("GET /velo/v1/refs HTTP/1.0\r\n\r\n");
+    assert!(r.contains(" 200 "), "{r}");
+}
+
+/// The ids `velo history --all --oneline` lists, sorted.
+fn all_history_ids(dir: &Path) -> Vec<String> {
+    let (out, ok) = velo(dir, &["history", "--all", "--oneline"]);
+    assert!(ok, "{out}");
+    let mut ids: Vec<String> = out
+        .lines()
+        .filter(|l| l.starts_with("* ") || l.starts_with("  "))
+        .filter_map(|l| l.get(2..)?.split_whitespace().next())
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn export_git_then_import_git_round_trips_snapshot_ids() {
+    use std::io::Write;
+    use std::process::Stdio;
+    if !Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("skipping: git is not installed");
+        return;
+    }
+    let tmp = repo();
+    let d = tmp.path();
+    assert!(velo(d, &["switch", "side"]).1);
+    write(d, "extra.txt", "extra\n");
+    assert!(velo(d, &["save", "on side"]).1);
+    assert!(velo(d, &["tag", "v1"]).1);
+    assert!(velo(d, &["switch", "main", "--force"]).1);
+    let original = all_history_ids(d);
+    assert_eq!(original.len(), 3, "{original:?}");
+
+    let exported = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(["export-git"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+
+    let git_dir = TempDir::new().unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(git_dir.path())
+        .status()
+        .unwrap()
+        .success());
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(git_dir.path())
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&exported.stdout)
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "git rejected the stream");
+
+    let fe = Command::new("git")
+        .args([
+            "fast-export",
+            "--all",
+            "--reencode=yes",
+            "--signed-tags=strip",
+            "-M",
+        ])
+        .current_dir(git_dir.path())
+        .output()
+        .unwrap();
+    assert!(fe.status.success());
+
+    let fresh = TempDir::new().unwrap();
+    assert!(velo(fresh.path(), &["init"]).1);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(["import-git"])
+        .current_dir(fresh.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&fe.stdout).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{text}");
+    assert!(text.contains("Imported 3 commit(s)"), "{text}");
+
+    assert_eq!(all_history_ids(fresh.path()), original);
+
+    // --input reads a file, too.
+    let file = fresh.path().join("stream.fe");
+    std::fs::write(&file, &fe.stdout).unwrap();
+    let again = TempDir::new().unwrap();
+    assert!(velo(again.path(), &["init"]).1);
+    let (out, ok) = velo(
+        again.path(),
+        &["import-git", "--input", file.to_str().unwrap()],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(all_history_ids(again.path()), original);
+}

@@ -53,10 +53,18 @@ pub fn print(collected: &Collected) {
         ),
     );
 
+    // Said only when chunks were reclaimed, so repositories without chunked
+    // objects keep their familiar line.
+    let chunks = if collected.chunks > 0 {
+        format!(" and {} chunk(s)", collected.chunks)
+    } else {
+        String::new()
+    };
     println!(
-        "{} GC complete — removed {} object(s), freed {}.",
+        "{} GC complete — removed {} object(s){}, freed {}.",
         style("✔").green().bold(),
         collected.objects,
+        chunks,
         human_size(collected.bytes_freed)
     );
 }

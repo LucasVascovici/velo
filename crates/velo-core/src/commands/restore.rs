@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use rayon::prelude::*;
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::commands::{get_dirty_files, get_tracked_files, remove_empty_parents};
 use crate::error::{RefKind, Result, VeloError};
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
@@ -76,6 +77,7 @@ pub struct Options<'a> {
 
 /// Put the working tree back to how it was at `snapshot`.
 pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "restore")?;
     let Options {
         force,
         paths,
@@ -145,7 +147,13 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
             Phase::Writing,
             Some(snapshot_files.len() as u64),
         );
-        write_files(root, &snapshot_files, &progress, cancel)?;
+        write_files(
+            root,
+            &guard.repo().objects(),
+            &snapshot_files,
+            &progress,
+            cancel,
+        )?;
     }
 
     let written: Vec<String> = snapshot_files.iter().map(|(p, _, _)| p.clone()).collect();
@@ -241,15 +249,16 @@ fn remove_ghosts(
 /// Write every file in parallel, collecting the failures rather than the first.
 fn write_files(
     root: &Path,
+    objects: &crate::storage::ObjectStore,
     files: &[(String, String, i64)],
     progress: &PhaseGuard<'_>,
     cancel: Option<&Cancel>,
 ) -> Result<()> {
-    let objects_dir = root.join(".velo/objects");
-    let errors: Vec<String> = files
-        .par_iter()
-        .inspect(|_| progress.tick())
-        .filter_map(|(rel_path, hash, mode)| {
+    let errors: Vec<String> = objects.par_with_content(
+        files,
+        |(_, hash, _)| hash.as_str(),
+        |(rel_path, _, mode), content| {
+            progress.tick();
             // Checked per file, so cancelling takes effect at the next one and
             // never part-way through writing a file. Workers already in flight
             // finish what they are holding.
@@ -262,15 +271,15 @@ fn write_files(
                     return Some(format!("mkdir '{}': {}", rel_path, e));
                 }
             }
-            match storage::read_object(&objects_dir, hash) {
+            match content {
                 Ok(data) => match storage::apply_file(&full_path, *mode, &data) {
                     Ok(_) => None,
                     Err(e) => Some(format!("write '{}': {} (is the file locked?)", rel_path, e)),
                 },
                 Err(e) => Some(format!("read object for '{}': {}", rel_path, e)),
             }
-        })
-        .collect();
+        },
+    );
 
     // Reported before any write error: a cancelled restore skipped files rather
     // than failing on them, so "you asked me to stop" is the truthful answer.

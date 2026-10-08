@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::db;
 use crate::error::{Result, VeloError};
 use crate::WriteGuard;
@@ -40,6 +41,7 @@ pub struct Moved {
 /// different failure mode, and doing it silently as part of a move would destroy
 /// content that nothing has recorded yet.
 pub fn run(guard: &WriteGuard, from: &Path, to: &Path) -> Result<Moved> {
+    require_working_tree(guard.repo(), "mv")?;
     let root = guard.root();
     let from_rel = db::normalise(&from.to_string_lossy());
     let to_rel = db::normalise(&to.to_string_lossy());

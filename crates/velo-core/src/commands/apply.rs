@@ -16,6 +16,7 @@ use std::path::Path;
 
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::error::Result;
 use crate::progress::Phase;
 use crate::storage;
@@ -134,8 +135,9 @@ pub fn reconcile_tree(
     ours: &Tree,
     theirs: &Tree,
 ) -> Result<Applied> {
+    require_working_tree(guard.repo(), "apply")?;
     let root = guard.root();
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
 
     // Every path any of the three sides knows about. A path only the ancestor has
     // was deleted on both sides, which reconciles to "nothing" — including it
@@ -167,7 +169,13 @@ pub fn reconcile_tree(
 
         let full = root.join(crate::db::db_to_path(path));
 
-        let action = match crate::commands::reconcile_file(&objects_dir, anc, our, thr)? {
+        let action = match crate::commands::reconcile_file(
+            &guard.repo().objects(),
+            anc,
+            our,
+            thr,
+            guard.repo().drivers().for_path(path),
+        )? {
             crate::commands::Reconcile::Nothing => continue,
             crate::commands::Reconcile::Delete => {
                 if full.exists() {
@@ -176,7 +184,7 @@ pub fn reconcile_tree(
                 FileAction::Deleted
             }
             crate::commands::Reconcile::TakeTheirs { hash, mode, is_new } => {
-                write_file(&full, mode, &storage::read_object(&objects_dir, &hash)?)?;
+                write_file(&full, mode, &objects.get(&hash)?)?;
                 if is_new {
                     FileAction::Added
                 } else {

@@ -6,9 +6,8 @@
 
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
-use std::fs;
 
-use rusqlite::params;
+use rusqlite::{params, params_from_iter, types::Value};
 
 use crate::db;
 use crate::error::Result;
@@ -61,8 +60,43 @@ pub enum Scope {
     All,
 }
 
+/// A condition on a snapshot's metadata. Several filters combine with AND.
+///
+/// Any namespace may be queried, including the reserved `velo` namespace: reads
+/// are not restricted, only writes are. `MetaFilter::equals("velo",
+/// "author.name", "ada")` therefore finds an author's snapshots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum MetaFilter<'a> {
+    /// `namespace`/`key` is set to exactly `value`.
+    Equals {
+        namespace: &'a str,
+        key: &'a str,
+        value: &'a str,
+    },
+    /// `namespace`/`key` is set, to anything.
+    Has { namespace: &'a str, key: &'a str },
+}
+
+impl<'a> MetaFilter<'a> {
+    /// `namespace`/`key` is set to exactly `value`.
+    pub fn equals(namespace: &'a str, key: &'a str, value: &'a str) -> Self {
+        MetaFilter::Equals {
+            namespace,
+            key,
+            value,
+        }
+    }
+
+    /// `namespace`/`key` is set, to anything.
+    pub fn has(namespace: &'a str, key: &'a str) -> Self {
+        MetaFilter::Has { namespace, key }
+    }
+}
+
 /// Why a listing came back empty. Each case wants a different message.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum EmptyReason {
     /// The checked-out branch has no snapshots yet.
     UnbornBranch { branch: BranchName },
@@ -70,6 +104,8 @@ pub enum EmptyReason {
     NoSnapshots,
     /// A file filter excluded every snapshot.
     NoSnapshotsTouching { file: String },
+    /// A metadata filter excluded every snapshot.
+    NoSnapshotsMatching,
 }
 
 /// A history listing.
@@ -124,6 +160,13 @@ pub struct Options<'a> {
     /// than one path, and running the query per path — then merging and
     /// re-sorting — is both slower and easy to get wrong at the limit.
     pub paths: &'a [&'a Path],
+    /// Keep only snapshots whose metadata satisfies **every** one of these.
+    /// Empty, the default, matches everything.
+    ///
+    /// Applied in SQL, so `limit` counts matches: the newest 20 snapshots
+    /// matching, not whichever of the newest 20 happen to match. Composes with
+    /// every scope and with `paths`.
+    pub meta: &'a [MetaFilter<'a>],
     /// The newest N entries, or **all of them** when `None` — which is the
     /// default.
     ///
@@ -162,23 +205,26 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
         branch: filter_branch,
         from,
         paths: file_filter,
+        meta,
         limit,
     } = options;
     // SQLite reads a negative limit as "no limit". Stating it here means the
     // unlimited case is deliberate rather than a consequence of a wrapping cast.
     let limit = limit.map_or(-1_i64, |n| n as i64);
-    let root = repo.root();
     let conn = repo.conn();
 
-    let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let position = position.trim().to_string();
-    let current = (!position.is_empty()).then(|| SnapshotId::from_stored(position.clone()));
-
-    let branch = BranchName::from_stored(
-        fs::read_to_string(root.join(".velo/HEAD"))
-            .unwrap_or_else(|_| "main".into())
-            .trim(),
-    );
+    let current = repo.position();
+    let branch = repo.head_branch();
+    // With no working tree there is no checked-out position, so the default
+    // history walks back from the tip of the default branch instead.
+    let position = match (&current, repo.has_working_tree()) {
+        (Some(p), _) => p.as_str().to_string(),
+        (None, false) => repo
+            .branch_tip(&branch)?
+            .map(|t| t.into_string())
+            .unwrap_or_default(),
+        (None, true) => String::new(),
+    };
 
     let scope = match (from, all, filter_branch) {
         (Some(id), _, _) => Scope::Ancestry { of: id.clone() },
@@ -207,10 +253,10 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
     let query_limit = if file_filter.is_empty() { limit } else { -1 };
 
     let mut entries = match &scope {
-        Scope::Ancestry { of } => ancestry_of(conn, of.as_str(), query_limit)?,
-        Scope::CurrentBranch { .. } => ancestry_of(conn, &position, query_limit)?,
-        Scope::NamedBranch { name } => on_branch(conn, Some(name.as_str()), query_limit)?,
-        Scope::All => on_branch(conn, None, query_limit)?,
+        Scope::Ancestry { of } => ancestry_of(conn, of.as_str(), query_limit, meta)?,
+        Scope::CurrentBranch { .. } => ancestry_of(conn, &position, query_limit, meta)?,
+        Scope::NamedBranch { name } => on_branch(conn, Some(name.as_str()), query_limit, meta)?,
+        Scope::All => on_branch(conn, None, query_limit, meta)?,
     };
 
     let mut empty = None;
@@ -264,7 +310,11 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
         }
     }
     if entries.is_empty() && empty.is_none() {
-        empty = Some(EmptyReason::NoSnapshots);
+        empty = Some(if meta.is_empty() {
+            EmptyReason::NoSnapshots
+        } else {
+            EmptyReason::NoSnapshotsMatching
+        });
     }
 
     let refs = if entries.is_empty() {
@@ -292,9 +342,17 @@ pub(crate) fn snapshot(repo: &Repo, id: &SnapshotId) -> Result<Entry> {
     );
     repo.conn()
         .query_row(&sql, [id], row_to_entry)
-        .map_err(|_| {
-            crate::error::VeloError::not_found(crate::error::RefKind::Snapshot, id.as_str())
-        })
+        .map_err(
+            |_| match crate::commands::compacted_into(repo.conn(), id.as_str()) {
+                Some(into) => crate::error::VeloError::Compacted {
+                    id: id.to_string(),
+                    into,
+                },
+                None => {
+                    crate::error::VeloError::not_found(crate::error::RefKind::Snapshot, id.as_str())
+                }
+            },
+        )
 }
 
 // ─── Queries ──────────────────────────────────────────────────────────────────
@@ -329,7 +387,14 @@ fn row_to_entry(r: &rusqlite::Row) -> rusqlite::Result<Entry> {
 ///
 /// Ordered by time rather than by walk order, because with two parents there is
 /// no single chain to follow.
-fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: i64) -> Result<Vec<Entry>> {
+fn ancestry_of(
+    conn: &rusqlite::Connection,
+    tip: &str,
+    limit: i64,
+    meta: &[MetaFilter<'_>],
+) -> Result<Vec<Entry>> {
+    let mut args = vec![Value::from(tip.to_string()), Value::from(limit)];
+    let meta_sql = meta_clauses(meta, &mut args);
     let mut stmt = conn.prepare(&format!(
         "WITH RECURSIVE anc(hash, parent_hash, merge_parent, depth) AS (
              SELECT hash, parent_hash, merge_parent, 0
@@ -345,11 +410,12 @@ fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: i64) -> Result<Vec
          FROM snapshots s
          JOIN (SELECT DISTINCT hash FROM anc) r ON r.hash = s.hash
          LEFT JOIN tags t ON s.hash = t.snapshot_hash
+         WHERE 1 = 1{meta_sql}
          ORDER BY s.created_at_ms DESC, s.rowid DESC
          LIMIT ?2",
         crate::commands::MAX_ANCESTRY_DEPTH
     ))?;
-    let rows = stmt.query_map(params![tip, limit], row_to_entry)?;
+    let rows = stmt.query_map(params_from_iter(args), row_to_entry)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -357,14 +423,24 @@ fn ancestry_of(conn: &rusqlite::Connection, tip: &str, limit: i64) -> Result<Vec
 ///
 /// Internal branches — soft-deleted history and stash shelves — are always
 /// excluded; they aren't part of the user's history.
-fn on_branch(conn: &rusqlite::Connection, branch: Option<&str>, limit: i64) -> Result<Vec<Entry>> {
+fn on_branch(
+    conn: &rusqlite::Connection,
+    branch: Option<&str>,
+    limit: i64,
+    meta: &[MetaFilter<'_>],
+) -> Result<Vec<Entry>> {
+    let mut args = vec![
+        Value::from(branch.unwrap_or("").to_string()),
+        Value::from(limit),
+    ];
+    let meta_sql = meta_clauses(meta, &mut args);
     let sql = format!(
         "SELECT {COLUMNS}
          FROM snapshots s
          LEFT JOIN tags t ON s.hash = t.snapshot_hash
          WHERE {}
            AND s.branch NOT LIKE '_deleted_%'
-           AND s.branch NOT LIKE '_stash%'
+           AND s.branch NOT LIKE '_stash%'{meta_sql}
          ORDER BY s.created_at_ms DESC, s.rowid DESC LIMIT ?2",
         if branch.is_some() {
             "s.branch = ?1"
@@ -373,8 +449,40 @@ fn on_branch(conn: &rusqlite::Connection, branch: Option<&str>, limit: i64) -> R
         }
     );
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(params![branch.unwrap_or(""), limit], row_to_entry)?;
+    let rows = stmt.query_map(params_from_iter(args), row_to_entry)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// One `AND EXISTS (...)` clause per filter, with its values appended to `args`.
+///
+/// Numbered from `?3`, after the two parameters every query already has. Values
+/// are bound, never spliced into the SQL.
+fn meta_clauses(meta: &[MetaFilter<'_>], args: &mut Vec<Value>) -> String {
+    let mut sql = String::new();
+    for filter in meta {
+        let (namespace, key, value) = match *filter {
+            MetaFilter::Equals {
+                namespace,
+                key,
+                value,
+            } => (namespace, key, Some(value)),
+            MetaFilter::Has { namespace, key } => (namespace, key, None),
+        };
+        args.push(Value::from(namespace.to_string()));
+        args.push(Value::from(key.to_string()));
+        sql.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM snapshot_meta m WHERE m.snapshot_id = s.hash \
+             AND m.namespace = ?{} AND m.key = ?{}",
+            args.len() - 1,
+            args.len()
+        ));
+        if let Some(value) = value {
+            args.push(Value::from(value.to_string()));
+            sql.push_str(&format!(" AND m.value = ?{}", args.len()));
+        }
+        sql.push(')');
+    }
+    sql
 }
 
 /// Whether `snapshot` **changed** anything at or under `path`, against `parent`.

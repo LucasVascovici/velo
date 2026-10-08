@@ -1,0 +1,27 @@
+[package]
+name = "velo-ffi"
+description = "C ABI over the embeddable half of velo-core: opaque handles, explicit free functions, errors as a code plus a message."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+# Not published: it is consumed as a cdylib or staticlib built from source, and
+# the header travels with it. Keeping it out of crates.io also keeps it out of
+# the `cargo package` CI step.
+publish = false
+
+[lib]
+# `rlib` lets the integration tests link the crate like any other Rust library.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+velo-core.workspace = true
+serde_json.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+rusqlite.workspace = true

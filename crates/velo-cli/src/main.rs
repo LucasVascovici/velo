@@ -6,7 +6,7 @@ mod author;
 mod diffargs;
 mod render;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use velo_core::{commands, error, serve, BranchName, TagName};
 
@@ -272,6 +272,16 @@ NOTES
             help = "Filter to snapshots that modified PATH (repeatable)"
         )]
         file_filter: Vec<String>,
+
+        /// Show only snapshots whose metadata matches.
+        ///
+        /// Repeatable; every condition must hold.
+        #[arg(
+            long = "where",
+            value_name = "NS:KEY[=VALUE]",
+            help = "Filter by snapshot metadata, NS:KEY=VALUE or NS:KEY (repeatable)"
+        )]
+        meta_filter: Vec<String>,
     },
 
     /// Remove the most recent snapshot on the current branch.
@@ -670,6 +680,44 @@ NOTES
         to: String,
     },
 
+    /// Write the history as a `git fast-import` stream.
+    ///
+    /// The way out: history, file modes and tags go to a stream git can read,
+    /// with velo's metadata, rename edges and snapshot ids in `Velo-*`
+    /// commit trailers. Writes to stdout unless --output is given.
+    ///
+    /// Examples
+    ///   velo export-git | (mkdir ../out && cd ../out && git init -q && git fast-import)
+    ///   velo export-git --output history.fi --branch main
+    #[command(verbatim_doc_comment)]
+    ExportGit {
+        /// Write the stream to this file instead of stdout.
+        #[arg(long, short, value_name = "FILE")]
+        output: Option<PathBuf>,
+
+        /// Export only this branch (repeatable; default: every branch).
+        #[arg(long, value_name = "BRANCH")]
+        branch: Vec<String>,
+    },
+
+    /// Read a `git fast-export` stream into velo.
+    ///
+    /// The way back in. A history velo exported keeps its snapshot ids, metadata
+    /// and rename edges (they ride in `Velo-*` trailers); a plain git history
+    /// imports with its authors, timestamps, branches, tags and merges.
+    /// Annotated tags become lightweight tags, and submodules are skipped.
+    /// Reads stdin unless --input is given.
+    ///
+    /// Examples
+    ///   git fast-export --all --reencode=yes --signed-tags=strip --tag-of-filtered-object=drop -M | velo import-git
+    ///   velo import-git --input history.fe
+    #[command(verbatim_doc_comment)]
+    ImportGit {
+        /// Read the stream from this file instead of stdin.
+        #[arg(long, short, value_name = "FILE")]
+        input: Option<PathBuf>,
+    },
+
     /// Search tracked files for a pattern.
     ///
     /// Searches the working tree by default.  Use --snapshot to search
@@ -929,6 +977,24 @@ NOTES
     ServeReceive {
         #[arg(value_name = "PATH")]
         path: String,
+    },
+
+    /// Serve a repository over HTTP, for `velo clone/push/pull http://...`.
+    ///
+    /// A reference server: it handles one request at a time and has NO
+    /// authentication and no TLS. Anyone who can reach the port can read
+    /// the history and push to it. Put it behind a reverse proxy that
+    /// authenticates and terminates TLS for anything public.
+    ///
+    ///   velo serve-http /srv/project
+    ///   velo serve-http /srv/project --listen 0.0.0.0:8417
+    #[command(verbatim_doc_comment)]
+    ServeHttp {
+        #[arg(value_name = "PATH")]
+        path: String,
+        /// Address to listen on (port 0 picks a free one).
+        #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:8417")]
+        listen: String,
     },
 }
 
@@ -1397,6 +1463,7 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Show { .. }
             | Commands::Blame { .. }
             | Commands::Grep { .. }
+            | Commands::ExportGit { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
     )
@@ -1424,6 +1491,94 @@ fn parse_line_range(spec: &str) -> Result<std::ops::Range<usize>> {
     }
     // Inclusive on the command line, half-open in the API.
     Ok(start..end + 1)
+}
+
+/// Run the reference HTTP server until the process is killed.
+///
+/// Requests are served one at a time: the core handlers take the repository
+/// write lock themselves, and a reference server has no need for more. The only
+/// thing written to stdout is the single `listening on` line, so a caller can
+/// read it to learn the port chosen for `--listen ...:0`.
+fn serve_http(path: &str, listen: &str) -> Result<()> {
+    use std::io::Write;
+    use tiny_http::{Header, Method, Response, Server};
+
+    let root = Path::new(path);
+    // Fail at start-up, not on the first request, if this is not a repository.
+    serve::http::refs(root)?;
+
+    let io_err = |e: Box<dyn std::error::Error + Send + Sync>| {
+        VeloError::Io(std::io::Error::other(e.to_string()))
+    };
+    let server = Server::http(listen).map_err(io_err)?;
+    let addr = server
+        .server_addr()
+        .to_ip()
+        .ok_or_else(|| VeloError::Io(std::io::Error::other("server has no IP address")))?;
+    {
+        let mut out = std::io::stdout().lock();
+        writeln!(out, "listening on http://{addr}/").map_err(VeloError::Io)?;
+        out.flush().map_err(VeloError::Io)?;
+    }
+
+    let text = |s: &str| Header::from_bytes("Content-Type", s).expect("static header");
+    for mut req in server.incoming_requests() {
+        let method = req.method().clone();
+        let full = req.url().to_string();
+        let route = full.split('?').next().unwrap_or("").to_string();
+
+        let (want, endpoint) = if route.ends_with("/velo/v1/refs") {
+            (Method::Get, 0)
+        } else if route.ends_with("/velo/v1/upload") {
+            (Method::Post, 1)
+        } else if route.ends_with("/velo/v1/receive") {
+            (Method::Post, 2)
+        } else {
+            eprintln!("{method} {full} -> 404");
+            let _ = req.respond(
+                Response::from_string("not found\n")
+                    .with_status_code(404)
+                    .with_header(text("text/plain")),
+            );
+            continue;
+        };
+        if method != want {
+            eprintln!("{method} {full} -> 405");
+            let _ = req.respond(
+                Response::from_string("method not allowed\n")
+                    .with_status_code(405)
+                    .with_header(text("text/plain")),
+            );
+            continue;
+        }
+
+        let mut body = Vec::new();
+        let result = match req.as_reader().read_to_end(&mut body) {
+            Err(e) => Err(VeloError::Io(e)),
+            Ok(_) => match endpoint {
+                0 => serve::http::refs(root),
+                1 => serve::http::upload(root, &body),
+                _ => serve::http::receive(root, &body),
+            },
+        };
+        match result {
+            Ok(bytes) => {
+                eprintln!("{method} {full} -> 200 ({} bytes)", bytes.len());
+                let _ = req.respond(
+                    Response::from_data(bytes).with_header(text("application/octet-stream")),
+                );
+            }
+            Err(e) => {
+                eprintln!("{method} {full} -> 500: {e}");
+                let _ = req.respond(
+                    Response::from_string(e.to_string())
+                        .with_status_code(500)
+                        .with_header(text("text/plain")),
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -1454,6 +1609,7 @@ fn run(cli: Cli) -> Result<()> {
         }
         Commands::ServeUpload { path } => return serve::upload(path),
         Commands::ServeReceive { path } => return serve::receive(path),
+        Commands::ServeHttp { path, listen } => return serve_http(path, listen),
         _ => {}
     }
 
@@ -1465,7 +1621,15 @@ fn run(cli: Cli) -> Result<()> {
     // written by a newer Velo is refused instead of half-read.
     // Long operations report through this. Inert on a non-TTY, so piped output
     // stays clean.
-    let repo = velo_core::Repo::open_and_migrate(&root)?.observing(render::progress::Bar::new());
+    let repo = velo_core::Repo::open_and_migrate(&root)?
+        .observing(render::progress::Bar::new())
+        .merging(
+            velo_core::Drivers::new()
+                .with("*.json", velo_merge::JsonDriver)?
+                .with("*.yaml", velo_merge::YamlDriver)?
+                .with("*.yml", velo_merge::YamlDriver)?
+                .with("*.toml", velo_merge::TomlDriver)?,
+        );
 
     // Serialise mutating commands against other velo processes. Read-only
     // commands skip the lock so they never block on a long-running mutation.
@@ -1488,7 +1652,8 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Init
         | Commands::Clone { .. }
         | Commands::ServeUpload { .. }
-        | Commands::ServeReceive { .. } => unreachable!(),
+        | Commands::ServeReceive { .. }
+        | Commands::ServeHttp { .. } => unreachable!(),
 
         Commands::Save {
             message,
@@ -1541,6 +1706,7 @@ fn run(cli: Cli) -> Result<()> {
             oneline,
             graph,
             file_filter,
+            meta_filter,
         } => {
             // The flags choose a presentation; core just returns the entries.
             let view = if graph {
@@ -1557,6 +1723,10 @@ fn run(cli: Cli) -> Result<()> {
                 .map(|t| commands::resolve_snapshot_id(&repo, t.as_str()))
                 .transpose()?;
             let file_paths: Vec<&Path> = file_filter.iter().map(Path::new).collect();
+            let meta = meta_filter
+                .iter()
+                .map(|w| parse_where(w))
+                .collect::<Result<Vec<_>>>()?;
             let history = commands::history::run(
                 &repo,
                 commands::history::Options {
@@ -1564,6 +1734,7 @@ fn run(cli: Cli) -> Result<()> {
                     branch: branch.as_ref(),
                     from: from.as_ref(),
                     paths: &file_paths,
+                    meta: &meta,
                     limit: Some(limit),
                 },
             )?;
@@ -1691,6 +1862,58 @@ fn run(cli: Cli) -> Result<()> {
                     ..Default::default()
                 },
             )?);
+        }
+
+        Commands::ExportGit { output, branch } => {
+            let branches: Vec<BranchName> = branch
+                .iter()
+                .map(|b| b.parse::<BranchName>())
+                .collect::<std::result::Result<_, _>>()?;
+            let refs: Vec<&BranchName> = branches.iter().collect();
+            let options = commands::export::Options {
+                branches: &refs,
+                ..Default::default()
+            };
+            match output {
+                Some(path) => {
+                    let mut file = std::io::BufWriter::new(std::fs::File::create(path)?);
+                    commands::export::git_fast_import(&repo, &mut file, options)?;
+                }
+                None => {
+                    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+                    commands::export::git_fast_import(&repo, &mut out, options)?;
+                }
+            }
+        }
+
+        Commands::ImportGit { input } => {
+            let imported = match input {
+                Some(path) => {
+                    let mut file = std::io::BufReader::new(std::fs::File::open(path)?);
+                    commands::import::git_fast_export(write(), &mut file, Default::default())?
+                }
+                None => {
+                    let mut stdin = std::io::stdin().lock();
+                    commands::import::git_fast_export(write(), &mut stdin, Default::default())?
+                }
+            };
+            let mut line = format!(
+                "Imported {} commit(s), {} branch(es), {} tag(s).",
+                imported.commits, imported.branches, imported.tags
+            );
+            if imported.skipped_submodules > 0 {
+                line.push_str(&format!(
+                    " Skipped {} submodule(s).",
+                    imported.skipped_submodules
+                ));
+            }
+            if imported.mismatched_ids > 0 {
+                line.push_str(&format!(
+                    " {} snapshot id(s) differ from their Velo-Snapshot trailer.",
+                    imported.mismatched_ids
+                ));
+            }
+            println!("{line}");
         }
 
         Commands::Grep {
@@ -1831,4 +2054,30 @@ fn run(cli: Cli) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse `NS:KEY=VALUE` or `NS:KEY` into a metadata filter.
+///
+/// Split on the first `:` and then the first `=`, so a value may itself contain
+/// either character.
+fn parse_where(text: &str) -> Result<commands::history::MetaFilter<'_>> {
+    let shape = "Expected --where NAMESPACE:KEY=VALUE or NAMESPACE:KEY";
+    let Some((namespace, rest)) = text.split_once(':') else {
+        return Err(VeloError::invalid(format!(
+            "'{text}' is not a metadata filter. {shape}."
+        )));
+    };
+    let (key, value) = match rest.split_once('=') {
+        Some((key, value)) => (key, Some(value)),
+        None => (rest, None),
+    };
+    if namespace.is_empty() || key.is_empty() {
+        return Err(VeloError::invalid(format!(
+            "'{text}' has an empty namespace or key. {shape}."
+        )));
+    }
+    Ok(match value {
+        Some(value) => commands::history::MetaFilter::equals(namespace, key, value),
+        None => commands::history::MetaFilter::has(namespace, key),
+    })
 }

@@ -8,7 +8,8 @@ third-party tool — must conform to this document.
 
 | | |
 | :--- | :--- |
-| **Current implemented format** | **v2** (repository format version `2`) |
+| **Current implemented format** | **v3** (repository format version `3`) |
+| Status of v3 | **Implemented.** A layout-only change from v2 (chunked large objects, §2.4): no id, tree, object name or bundle byte changed. See [Migration v2 → v3](#migration-v2--v3). |
 | Status of v2 | **Implemented.** All four decisions landed in one commit, as required. |
 | Status of v1 | **Refused.** A pre-v2 repository cannot be opened; see [Migration](#migration-v1--v2). |
 
@@ -27,6 +28,9 @@ third-party tool — must conform to this document.
 .velo/
 ├── velo.db       SQLite (WAL): snapshots, trees, refs, remotes, stash, conflicts
 ├── objects/      content-addressed blobs, Zstd-compressed, named by BLAKE3 hex
+│                 (or a chunk manifest for large objects, §2.4); empty or absent
+│                 when objects live in the database (§2.5)
+├── chunks/       v3: deduplicated chunks of large objects, named by BLAKE3 hex
 ├── HEAD          current branch name (text, no trailing newline required)
 ├── PARENT        snapshot id the working tree is based on ("" if unborn)
 ├── lock          advisory lock file (fs2); held by mutating operations
@@ -37,15 +41,36 @@ third-party tool — must conform to this document.
 `HEAD` and `PARENT` are refs written **atomically** (temp file + rename). A reader
 must tolerate a missing or empty `PARENT` (a repository with no commits).
 
+### Single-file layout
+
+A repository may instead be **one SQLite file**, created by `Repo::create_file`. It has the same schema and the same format version as a directory repository, and its `settings` table holds `layout = single-file` and `objects = database`. Objects are rows of the `objects` table (section 2.5).
+
+- There is no `.velo` directory, no working tree, and no `HEAD` or `PARENT`: the default branch is `main` and nothing is checked out.
+- Writers lock `<file>.lock`, a sibling of the database, instead of `.velo/lock`.
+- Only store-only operations apply; commands that read or write files refuse with `Unsupported`.
+- A database without `layout = single-file`, such as a directory repository's `velo.db`, is not opened as a single-file repository.
+
 ---
 
 ## 2. Object store
 
-An object is the **Zstd-compressed** (level 1) content of a single file, stored at
-`.velo/objects/<hash>` where `<hash>` is the **full 64-hex BLAKE3** of the
-*uncompressed, normalised* bytes.
+An object is the content of a single file, stored at `.velo/objects/<hash>`
+where `<hash>` is the **full 64-hex BLAKE3** of the *uncompressed, normalised*
+bytes. The file is in one of two forms (a reader must accept both):
 
-Object naming is unchanged between v1 and v2.
+- **(a) a Zstd frame** (level 1) of the full content; or
+- **(b) a chunk manifest** (v3), used for large objects, laid out in §2.4.
+
+The two cannot be confused: a Zstd frame starts `28 B5 2F FD`, a manifest starts
+`VELOCHK1`.
+
+Object naming is unchanged between v1, v2 and v3: the name is always the hash
+of the full content, never of what is on disk.
+
+A v3 repository holds its objects in one of two **locations**, recorded in the
+`settings` table (§7.2) and fixed when the repository is created: files, as
+described above, or the database (§2.5). Everything else in this document is
+independent of the location.
 
 ### 2.1 Content normalisation
 
@@ -69,9 +94,64 @@ normalised to `/`. It is stored raw (no CRLF normalisation).
 
 ### 2.3 Integrity invariant
 
-For every object, `BLAKE3(zstd_decompress(file)) == file_name`. `velo fsck`
-verifies this, and any import (bundle or sync) must verify it **before** trusting
-received data.
+For every object, `BLAKE3(content) == file_name`, where `content` is the
+decompressed frame (form a) or the concatenation of the manifest's chunks (form
+b). `velo fsck` verifies this, and any import (bundle or sync) must verify it
+**before** trusting received data.
+
+For a chunked object, every chunk must additionally hash to its own name and
+have the length the manifest records, and the reassembled length must equal the
+manifest's total. A manifest that is truncated, has the wrong length for its
+count, or an unknown version is corrupt. A chunk the manifest names but that is
+absent is reported as a missing object carrying the chunk's hex name. `velo
+fsck` checks each chunk of every referenced manifest (present, decodable,
+hashing to its name) and names a missing or corrupt one precisely, then checks
+the reassembled content as for any object.
+
+### 2.4 Chunked objects (v3)
+
+Objects of 1 MiB or more are stored below object identity as content-defined
+chunks, so a near-duplicate large file costs only its changed chunks. Trees,
+snapshot ids and the bundle/pack wire format do not change: on the wire an
+object is always one Zstd frame of its full content.
+
+`.velo/objects/<hash>` is then a manifest:
+
+| Field | Size | Value |
+| :--- | :--- | :--- |
+| magic | 8 bytes | `VELOCHK1` |
+| manifest version | u32 LE | `1` |
+| total content length | u64 LE | length of the reassembled content |
+| chunk count | u32 LE | number of entries that follow |
+| per chunk | 32 bytes + u32 LE | the chunk's raw BLAKE3, then its length |
+
+Chunks live at `.velo/chunks/<hex>`. Each is a Zstd frame (level 1) of the
+chunk's bytes, named by the BLAKE3 of the uncompressed chunk. A writer stores
+every missing chunk **before** the manifest, so a manifest never names a chunk
+that was not written. The chunking algorithm and size threshold are not part of
+the format; this implementation uses FastCDC (16 KiB / 64 KiB / 256 KiB) for
+objects of 1 MiB or more.
+
+A chunk is live only while some object's manifest names it. Unreferenced chunks
+are collectable: `velo gc` removes every chunk that no surviving manifest lists
+(a chunk shared with a surviving object always stays), and `velo fsck` reports
+them as cruft, not corruption, which `--repair` removes.
+
+---
+
+### 2.5 Objects in the database (v3)
+
+When the `settings` row `objects` is `database`, objects are rows of the
+`objects` table (§7.2) instead of files: `hash` is the same 64-hex BLAKE3 of
+the full normalised content, and `data` is one Zstd frame (level 1) of it, i.e.
+exactly form (a) of §2. There is no chunking in this location: chunk
+deduplication is a disk-layout optimisation, and in the database the unit of
+storage is the SQLite page. `.velo/objects/` and `.velo/chunks/` are unused.
+
+The integrity invariant (§2.3) is unchanged: `data` must decode and hash to its
+row's `hash`. `velo gc` deletes rows no snapshot references, `velo fsck`
+verifies them, and bundles and sync carry the same frames either way, so a
+bundle from one location applies into the other with identical snapshot ids.
 
 ---
 
@@ -207,6 +287,7 @@ tie-break on a stable secondary key (`rowid`) when timestamps collide.
 | :--- | :--- |
 | **v1** | **No version marker.** Migrations sniff `pragma_table_info(...)` and add missing columns. There is no way to detect a repository written by a *newer* implementation. |
 | **v2** | `PRAGMA user_version` holds the repository format version, stamped when the database is created. |
+| **v3** | Same marker, stamped `3`. Adds the `.velo/chunks/` directory and the additive `settings` and `objects` tables (§7.2); a v3 repository may keep its objects in files or in the database. |
 
 The v1 `ALTER TABLE` sniffing migrations are gone. They existed only to bring a v1
 repository forward, and v2 refuses to open one, so keeping them would have meant
@@ -216,7 +297,7 @@ an earlier build of v2.
 
 **v2 rules — normative:**
 
-- `user_version = 2` for this specification.
+- `user_version = 3` for this specification.
 - An implementation **must refuse to open** a repository whose `user_version`
   exceeds the highest version it understands, with a distinct, catchable error
   (`SchemaTooNew { found, supported }`). Silently proceeding risks half-migration
@@ -250,10 +331,14 @@ Present in v1 and v2 (v2 additions marked):
 | `remote_refs` | last-known remote tips: `(remote, branch)` → `hash` |
 | `renames` | **v2** — rename edges: `(snapshot_hash, to_path)`(PK), `from_path` (§7.3) |
 | `pending_renames` | **v2** — working-tree moves awaiting a save: `to_path`(PK), `from_path`; **derived**, safe to delete |
+| `settings` | **v3, additive** — `key`(PK) → `value`. The one key today is `objects`: `database` when objects live in the `objects` table (§2.5). A missing row, or a missing table, means files, which is every repository created before the setting existed. Written once at creation |
+| `objects` | **v3, additive** — `hash`(PK), `data` BLOB: one Zstd frame of the full object content (§2.5). Empty unless `settings.objects` is `database` |
+| `compactions` | **v3, additive** — `old_hash`(PK) → `new_hash`, `compacted_at_ms`: one row per snapshot id that compaction removed or re-minted (§11.3); **local only**, never collected by `gc`, not in bundles |
 
 Indexes are performance-only and may be rebuilt: `idx_filemap_snap`,
 `idx_filemap_path`, `idx_snap_branch`, `idx_trash_branch`, `idx_stash_name`,
-`idx_renames_to`.
+`idx_renames_to`, `idx_meta_lookup` (`snapshot_meta (namespace, key, value)`,
+for metadata queries).
 
 **Reserved branch names.** `_stash` is internal. `remotes/<remote>/<branch>` is
 remote-tracking. `_deleted_<name>` is a soft-deleted branch. Consumers must not
@@ -353,6 +438,17 @@ Rules:
 - Packs used for sync share this encoding but may legitimately omit objects the
   peer already holds. Only `bundle create` guarantees self-containment.
 
+### 9.1 Packs over HTTP
+
+The HTTP transport carries packs with exactly this encoding; nothing about the
+bundle changes. Under `<base>/velo/v1/`: `GET refs` returns a refs block;
+`POST upload` takes the client's have-ids (length-prefixed strings) and returns
+a refs block followed by the pack; `POST receive` takes branch and new tip
+(length-prefixed) followed by the pack and returns a length-prefixed status
+(`OK <snapshots> <objects>` or `REJECT <reason>`). A refused push is a `200`
+carrying `REJECT`, as over ssh; other non-2xx codes are failures.
+Fast-forward-only semantics are unchanged.
+
 ---
 
 ## 10. Decisions
@@ -365,9 +461,13 @@ Locked for v2. Recorded with rationale so they are not silently revisited.
 | D2 | Snapshot id width | **Full 64-hex stored**; truncation is display-only | 64-bit truncation is ~50% collision risk near 5·10⁹ snapshots — thin for a store many apps write to. | Slightly larger DB and wire size. |
 | D3 | Timestamps | **Epoch milliseconds (int)**, `DateTime<Utc>` in APIs | Removes text formatting from the identity recipe; no locale/precision can shift an id. | Lexicographic timestamp ordering no longer holds. |
 | D4 | Schema versioning | **`PRAGMA user_version`**, refuse-if-newer, `open()` ≠ `open_and_migrate()` | The only thing preventing half-migration and corruption once independent apps share a repo. | Callers must handle a migration step explicitly. |
+| D5 | Signatures | **Ed25519 over the snapshot id**, stored **outside identity** (§11.1) | The id already commits to everything worth signing; outside identity, a countersignature never mints a snapshot. | A dropped signature cannot be detected from the id, so bundle version 4 must make older readers refuse. |
+| D6 | Chunked objects | **Chunking below object identity** (§11.2) | An object's hash stays the hash of its full content, so no tree, snapshot id or wire reader changes; "objects are format-stable" survives. | A new on-disk form, so repository format v3 (older builds refuse it). |
+| D7 | Compaction record | **Local `compactions` table, old id → new id** (§11.3) | A consumer holding an old id gets `Compacted { into }` rather than `NotFound`. | A table `gc` must never collect; not carried by sync. |
 
-All four **change snapshot ids** and therefore **land as one atomic format
-break**. Splitting them means four id-invalidating migrations.
+D1-D4 all **change snapshot ids** and therefore **land as one atomic format
+break**. Splitting them means four id-invalidating migrations. D5-D7 change no
+id: they are decided here, ahead of any code, and specified in §11.
 
 ---
 
@@ -410,12 +510,135 @@ peer, because ids differ. All participants must migrate together.
 
 ---
 
+## Migration v2 → v3
+
+Additive and in place. `open_and_migrate` creates `.velo/chunks/` and stamps
+`user_version = 3`; `open` on a v2 repository returns `MigrationRequired`.
+**No snapshot id, tree, row or object is rewritten**: existing objects stay
+valid as form (a) frames, and only objects stored from then on may be chunked.
+Peers need not migrate together, since the bundle and sync wire formats are
+unchanged. Older builds refuse a v3 repository with `SchemaTooNew`, per §7.1.
+
+A v3 repository may hold its objects in files or in the database (§2.5); the
+choice is recorded in `settings` when it is created. Migration creates the
+`settings` and `objects` tables (`CREATE TABLE IF NOT EXISTS`, so it is
+idempotent) but never writes a setting row: an existing repository has none and
+stays in the files location.
+
+---
+
+## 11. Decided, not yet implemented
+
+Apart from D6 (§11.2) and D7 (§11.3), both now implemented, nothing in this
+section is written or read by the current code. These are decisions
+taken before any code exists, because each is cheap now and a format break
+later. Later work implements them to the letter.
+
+### 11.1 Signatures (D5)
+
+- **What is signed:** the snapshot id. The signed message is the ASCII bytes
+  `velo-signature-v1\n` followed by the 64-char lowercase hex id. Nothing else
+  is needed: the id already commits to the tree, parents, message, timestamp,
+  metadata and author.
+- **Algorithm:** Ed25519 (RFC 8032, pure, no prehash). The public key (32 bytes)
+  and the signature (64 bytes) are stored as lowercase hex. An `algorithm`
+  column holds `ed25519`, so another algorithm can be added later without a
+  break. A reader must treat an unknown algorithm as *unverifiable*, never as
+  valid.
+- **Outside identity, like rename edges (§7.3).** A countersignature adds a row
+  and never mints a new snapshot. The consequence is the same as for rename
+  edges: a dropped signature cannot be detected from the id.
+- **Storage, when implemented:**
+
+  ```sql
+  signatures (
+      snapshot_hash TEXT NOT NULL,
+      algorithm     TEXT NOT NULL,
+      public_key    TEXT NOT NULL,
+      signature     TEXT NOT NULL,
+      PRIMARY KEY (snapshot_hash, public_key)
+  )
+  ```
+
+  The table is additive and changes no id.
+- **Transport:** bundle wire version 4 appends a `signatures` section after
+  `renames` (u32 count; per row: snapshot_hash, algorithm, public_key,
+  signature). Every writer that supports signatures writes version 4, so a
+  v3-only reader *refuses* the bundle instead of importing it and silently
+  dropping the signatures. Readers verify every signature before committing an
+  import, and one invalid signature rejects the whole import (`UntrustedData`).
+  Rows for snapshots the receiver does not hold are dropped, as for renames.
+  Sync packs share the encoding.
+- **Trust:** velo verifies signatures; which keys to trust is the caller's
+  policy. Velo stores no private keys, and signing takes the key per call.
+
+### 11.2 Chunked objects, below object identity (D6) — implemented in v3
+
+Implemented; the normative layout is §2 and §2.4, and the migration is
+[v2 → v3](#migration-v2--v3). The decision stands as recorded in D6: an
+object's name stays the BLAKE3 of its full content, chunking is a storage
+detail, and the bundle wire format does not change.
+
+### 11.3 What compaction leaves behind (D7) — implemented
+
+Implemented by `commands::compact` (store only). The `compactions` table is
+created by the schema script like any other, with no version bump: it is
+additive and an older v3 build simply never reads it. Compaction writes every
+removed and re-minted id in the same transaction as the rewrite, and refuses
+(`InvalidInput`) rather than rewriting anything the eligibility rules below
+protect; signed-snapshot protection arrives with signatures. No `Saved` events
+are emitted for re-mints; `RefMoved` is emitted for the branch and for each
+retargeted tag.
+
+Compaction squashes a range of snapshots into one. Every descendant on the
+rewritten chain gets a new parent and therefore a new id (it is *re-minted*).
+
+- **Record:**
+
+  ```sql
+  compactions (
+      old_hash        TEXT PRIMARY KEY,
+      new_hash        TEXT NOT NULL,
+      compacted_at_ms INTEGER NOT NULL
+  )
+  ```
+
+  One row per id that stopped existing. Squashed members map to the snapshot
+  they became; re-minted descendants map to their new id. Lookups follow
+  chains: if `new_hash` was itself compacted later, follow on to the live id.
+- **Lookup contract:** an exact id, or a unique prefix that matches no live
+  snapshot, that appears as `old_hash` fails with
+  `Error::Compacted { id, into }`, where `into` is the live id at the end of
+  the chain. It never fails with `NotFound`.
+- **Local only.** The record is not part of identity and is not carried in
+  bundles or sync. Compaction refuses to rewrite anything reachable from a
+  remote-tracking ref, so a rewritten id has never travelled by velo sync. A
+  bundle made earlier may still carry old ids; the receiver simply holds them as
+  live snapshots.
+- **Eligibility:**
+  - Never *squashed away*: tagged snapshots; merge snapshots (the second parent
+    must survive); a snapshot that is the parent or merge parent of a snapshot
+    outside the rewrite; anything reachable from a remote-tracking ref; the
+    snapshot `.velo/PARENT` names, unless it is the newest member of its range.
+  - Never squashed **or** re-minted: once signatures exist, signed snapshots,
+    because re-minting invalidates the signature.
+  - Tagged snapshots *may* be re-minted as descendants. The tag is retargeted to
+    the new id and the move is recorded.
+- **The squashed snapshot** takes the newest member's tree, message, timestamp
+  and metadata (including the author). Its parent is the oldest member's
+  parent. Rename edges are composed across the range.
+- `gc` never collects `compactions` rows.
+
+---
+
 ## Non-goals
 
 - **No separate hashed tree object** (à la Git's tree objects). Trees are rows in
   `file_map`. Revisit only if a real need for shared subtree identity appears.
-- **No delta/packfile encoding.** Objects are whole-file Zstd. Simplicity beats
-  storage efficiency at this scale.
-- **No signing.** Content addressing gives tamper-*evidence*, not
-  authentication. Signed snapshots would be a v3 discussion.
+- **No delta/packfile encoding.** Objects stay whole-content addressed: a name
+  is always the hash of the full content. Storage-level chunking *below*
+  identity is decided as D6 (§11.2); it is not delta encoding and changes no id.
+- **No signing yet.** Content addressing gives tamper-*evidence*, not
+  authentication. Signatures are decided as D5 (§11.1), outside identity, and
+  not yet implemented.
 - **No downgrade path.** Migrations are forward-only.

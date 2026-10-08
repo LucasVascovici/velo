@@ -8,6 +8,7 @@ use std::fs;
 
 use rusqlite::params;
 
+use crate::commands::require_working_tree;
 use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
 use crate::SnapshotMeta;
@@ -34,6 +35,7 @@ pub struct Outcome {
 
 /// Collapse the last `count` snapshots on the current branch into one.
 pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
+    require_working_tree(guard.repo(), "squash")?;
     let root = guard.root();
     if count < 2 {
         return Err(VeloError::invalid("squash requires at least 2 snapshots."));
@@ -187,6 +189,9 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
     }
 
     tx.commit()?;
+    guard
+        .repo()
+        .emit_saved_raw(new_hash, branch, new_parent, "");
 
     // Update PARENT to point at the new snapshot
     crate::storage::write_atomic(&root.join(".velo/PARENT"), new_hash.as_bytes())?;

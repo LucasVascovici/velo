@@ -17,6 +17,7 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::commands::require_working_tree;
 use crate::commands::{branch_tip, bundle, get_dirty_files, remote as remotemod};
 use crate::error::{Result, VeloError};
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard, Silent};
@@ -181,7 +182,8 @@ pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> 
     let guard = repo.write()?;
     let conn = guard.conn();
 
-    let (snaps, objs) = bundle::import_pack(&guard, &target.join(".velo/objects"), &pack)?;
+    let (snaps, objs) = bundle::import_pack(&guard, &pack)?;
+    guard.repo().emit_imported(snaps);
 
     conn.execute(
         "INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)",
@@ -262,7 +264,6 @@ pub fn fetch(
     spawn: &transport::Spawn,
     options: Options<'_>,
 ) -> Result<Fetched> {
-    let root = guard.root();
     let url = remote_url(guard.repo(), remote_name)?;
     let mut remote = transport::open(&url, spawn)?;
     let have = local_snapshots(guard.repo())?;
@@ -278,7 +279,8 @@ pub fn fetch(
         s.branch = format!("remotes/{}/{}", remote_name, s.branch);
     }
     let conn = guard.conn();
-    let (snaps, objs) = bundle::import_pack(guard, &root.join(".velo/objects"), &pack)?;
+    let (snaps, objs) = bundle::import_pack(guard, &pack)?;
+    guard.repo().emit_imported(snaps);
     for r in &refs {
         remotemod::set_remote_ref(conn, remote_name, &r.branch, &r.hash)?;
     }
@@ -307,11 +309,10 @@ pub fn push(
     spawn: &transport::Spawn,
     options: Options<'_>,
 ) -> Result<Pushed> {
-    let root = guard.root();
     let conn = guard.conn();
     let branch = branch
         .map(String::from)
-        .unwrap_or_else(|| current_branch(guard.root()));
+        .unwrap_or_else(|| guard.repo().head_branch().into_string());
     let local_tip = branch_tip(conn, &branch).ok_or_else(|| {
         VeloError::invalid(format!(
             "Local branch '{}' has no snapshots to push.",
@@ -320,7 +321,7 @@ pub fn push(
     })?;
 
     let url = remote_url(guard.repo(), remote_name)?;
-    let objects_dir = root.join(".velo/objects");
+    let objects = guard.repo().objects();
     let mut remote = transport::open(&url, spawn)?;
 
     // Build the pack once the remote has told us what it already has, so we
@@ -344,7 +345,7 @@ pub fn push(
             snap_set.remove(h);
         }
         let _packing = guard.phase(Phase::Packing, Some(snap_set.len() as u64));
-        let mut pack = bundle::build_pack_excluding(conn, &objects_dir, &snap_set, &peer_has)?;
+        let mut pack = bundle::build_pack_excluding(conn, &objects, &snap_set, &peer_has)?;
         // Send commits under their real branch name: a commit we obtained via
         // `fetch` carries our local `remotes/<remote>/<branch>` label, which is
         // bookkeeping local to us and meaningless to the receiver.
@@ -408,7 +409,7 @@ pub fn pull(
     spawn: &transport::Spawn,
     options: Options<'_>,
 ) -> Result<Pulled> {
-    let root = guard.root();
+    require_working_tree(guard.repo(), "pull")?;
     let dirty = get_dirty_files(guard.repo());
     if !dirty.is_empty() {
         let mut paths: Vec<std::path::PathBuf> =
@@ -416,7 +417,7 @@ pub fn pull(
         paths.sort();
         return Err(VeloError::DirtyWorkingTree { paths });
     }
-    let branch = current_branch(guard.root());
+    let branch = guard.repo().head_branch().into_string();
     let url = remote_url(guard.repo(), remote_name)?;
 
     let mut remote = transport::open(&url, spawn)?;
@@ -458,7 +459,8 @@ pub fn pull(
     };
 
     if is_ff {
-        bundle::import_pack(guard, &root.join(".velo/objects"), &pack)?;
+        let (snaps, _) = bundle::import_pack(guard, &pack)?;
+        guard.repo().emit_imported(snaps);
         // A previous `velo fetch` may already have imported these commits under
         // the remote-tracking branch. Since Velo derives branch tips from the
         // `branch` column, the label has to move with the branch — otherwise the
@@ -482,7 +484,8 @@ pub fn pull(
             s.branch = format!("remotes/{}/{}", remote_name, s.branch);
         }
         let conn = guard.conn();
-        bundle::import_pack(guard, &root.join(".velo/objects"), &pack)?;
+        let (snaps, _) = bundle::import_pack(guard, &pack)?;
+        guard.repo().emit_imported(snaps);
         remotemod::set_remote_ref(conn, remote_name, &branch, &remote_tip)?;
         Ok(Pulled::Diverged {
             branch,
@@ -537,15 +540,11 @@ fn adopt_tracking_commits(
     Ok(())
 }
 
-fn current_branch(root: &Path) -> String {
-    std::fs::read_to_string(root.join(".velo/HEAD"))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_else(|_| "main".into())
-}
-
-fn default_dir(url: &str) -> String {
+pub(crate) fn default_dir(url: &str) -> String {
     let trimmed = url
         .trim_start_matches("ssh://")
+        .trim_start_matches("https://")
+        .trim_start_matches("http://")
         .trim_start_matches("child:")
         .trim_end_matches(['/', '\\']);
     Path::new(trimmed)

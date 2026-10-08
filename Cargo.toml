@@ -6,6 +6,8 @@ members = [
     "crates/velo-tui",
     "crates/velo-cli",
     "crates/velo-testkit",
+    "crates/velo-ffi",
+    "crates/velo-mcp",
     "examples/prompt-registry",
 ]
 
@@ -13,7 +15,7 @@ members = [
 default-members = ["crates/velo-cli"]
 
 [workspace.package]
-version = "4.0.0"
+version = "5.0.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/LucasVascovici/velo"
@@ -25,16 +27,18 @@ rust-version = "1.88"
 
 # Single source of truth for dependency versions across the workspace.
 [workspace.dependencies]
-velo-core = { path = "crates/velo-core", version = "4.0.0" }
-velo-merge = { path = "crates/velo-merge", version = "4.0.0" }
-velo-tui = { path = "crates/velo-tui", version = "4.0.0" }
-velo-testkit = { path = "crates/velo-testkit", version = "4.0.0" }
+velo-core = { path = "crates/velo-core", version = "5.0.0" }
+velo-merge = { path = "crates/velo-merge", version = "5.0.0" }
+velo-tui = { path = "crates/velo-tui", version = "5.0.0" }
+velo-testkit = { path = "crates/velo-testkit", version = "5.0.0" }
 
 blake3 = { version = "1.8", features = ["rayon"] }
 chrono = "0.4"
 clap = { version = "4.6", features = ["derive"] }
 console = "0.16"
 fs2 = "0.4"
+fastcdc = "3"
+globset = "0.4"
 ignore = "0.4"
 memmap2 = "0.9"
 parking_lot = "0.12"
@@ -43,5 +47,11 @@ rayon = "1.11"
 regex = "1.12"
 rusqlite = { version = "0.39", features = ["bundled"] }
 similar = "3.1.1"
+serde_json = { version = "1", features = ["preserve_order"] }
+serde_yaml_ng = "0.10"
 tempfile = "3.27"
+base64 = "0.23"
+tiny_http = "0.12"
+toml = { version = "0.9", features = ["preserve_order"] }
+ureq = "3"
 zstd = "0.13"

@@ -132,12 +132,37 @@ const SCHEMA: &str = "
         to_path   TEXT PRIMARY KEY
     );
 
+    -- Ids that compaction removed or re-minted, mapped to what replaced them
+    -- (docs/FORMAT.md 11.3).  Local only: not part of identity, not in bundles,
+    -- and never collected by `gc`, since the whole point is to outlive the rows
+    -- it describes.
+    CREATE TABLE IF NOT EXISTS compactions (
+        old_hash        TEXT PRIMARY KEY,
+        new_hash        TEXT NOT NULL,
+        compacted_at_ms INTEGER NOT NULL
+    );
+
+    -- Repository settings. `objects` = 'database' puts object content in the
+    -- `objects` table below; no row means files under .velo/objects.
+    CREATE TABLE IF NOT EXISTS settings (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+    );
+
+    -- Object content when the repository's object location is the database:
+    -- one zstd frame of the full content per object (docs/FORMAT.md 7.2).
+    CREATE TABLE IF NOT EXISTS objects (
+        hash TEXT PRIMARY KEY,
+        data BLOB NOT NULL
+    );
+
     CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
     CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
     CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at_ms);
     CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at_ms);
     CREATE INDEX IF NOT EXISTS idx_stash_name    ON stash (name);
     CREATE INDEX IF NOT EXISTS idx_meta_snap     ON snapshot_meta (snapshot_id);
+    CREATE INDEX IF NOT EXISTS idx_meta_lookup   ON snapshot_meta (namespace, key, value);
     -- The backward walk asks 'which snapshot renamed something to this path',
     -- so `to_path` leads.  The primary key already covers the per-snapshot
     -- lookup that follows.
@@ -165,6 +190,27 @@ pub fn connect(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
     Ok(conn)
+}
+
+/// Open an **existing** database file, never creating one, and apply pragmas.
+///
+/// Returns `Ok(None)` when there is no such file. Existence is asked of SQLite,
+/// not `std::fs`: on wasm32 a single-file repository lives in a SQLite VFS
+/// (in memory, or the origin-private file system) that `std::fs` cannot see,
+/// and every `std::fs` query there fails.
+pub fn connect_existing(path: &Path) -> Result<Option<Connection>> {
+    use rusqlite::{ffi::ErrorCode, OpenFlags};
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_URI
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    match Connection::open_with_flags(path, flags) {
+        Ok(conn) => {
+            apply_pragmas(&conn)?;
+            Ok(Some(conn))
+        }
+        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::CannotOpen => Ok(None),
+        Err(e) => Err(e),
+    }
 }
 
 /// The repository format version recorded in `PRAGMA user_version`.

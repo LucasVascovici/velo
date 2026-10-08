@@ -6,6 +6,104 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 5.0.0
+
+Phase 14: velo as a timeline engine. Language bindings (C, Python, Node, WASM),
+an MCP server, pluggable merge drivers, metadata queries, change events,
+chunked storage, compaction and retention, HTTP sync, git interchange and
+single-file repositories. A repository that stores a chunked object becomes
+format v3, which 4.0.0 refuses, and `velo-merge`'s public surface changed
+(`MergeDriver`); both are breaking, hence a major version. See the format
+section below.
+
+### Added
+
+- **The Node binding covers history, blame, merge and branches.** `history`
+  (from, branch, all, paths, limit, meta), `findSnapshots`, `blame` (with
+  `lineCount` and a 1-based inclusive window), `mergeBase`, `mergePlan`,
+  `mergeCommit`, `branches`, `createBranch` and `setBranchTip`. A conflicted
+  `mergeCommit` with no resolutions rejects with `code: 'Conflicts'` and
+  `err.paths`. Every method is async.
+
+- **`velo-wasm`, a wasm-bindgen package over single-file repositories**
+  (`bindings/wasm`, its own workspace), with `Repo` creation, snapshot,
+  history, blame and merge, six `wasm_bindgen_tests` and a CI job. The wasm
+  code has not been compiled or run yet; only the host build is checked.
+
+- **The README presents Velo as a timeline engine**, with runnable cookbooks
+  for agent checkpointing, a config registry and a document editor.
+
+- **`velo-mcp`**, a synchronous stdio MCP server over a repository with a
+  working tree: `velo_save`, `velo_restore`, `velo_status`, `velo_diff`,
+  `velo_history`, `velo_metadata`, `velo_branch`, `velo_merge_plan`,
+  `velo_merge_apply` and `velo_blame`. Write tools record the run (`--run`, else
+  `$VELO_MCP_RUN`) in the `mcp` metadata namespace, so blame names the run that
+  wrote a line. There is no force option, and merging is always plan, then
+  apply; an unresolved conflict returns `Conflicts` with the paths and the next
+  step.
+
+- **Metadata queries.** An index on `snapshot_meta`, a history filter,
+  `Repo::find_snapshots` and `velo history --where`, composing with the path
+  and ancestry scopes.
+
+- **`merge::commit`**, with `merge::Resolution` and `merge::MergeCommit`:
+  concludes a planned merge without a working tree, from a recomputed plan plus
+  the caller's resolutions. `save::Options.meta` records metadata on a save.
+
+- **Change events.** The `events` module (`Event`, `Ref`, `Listener`, an
+  `mpsc::Sender` impl) and `Repo::listening`: `Saved`, `Merged`, `RefMoved` and
+  `Imported` are delivered after commit, per handle.
+
+- **`MergeDriver`** in `velo-merge`, with `LineDriver` and `whole_file_conflict`,
+  chosen per path on the handle (`Repo::merging`) and used by plan, merge,
+  cherry-pick and rebase.
+
+- **Key-aware merge drivers** (14.4): `JsonDriver`, `YamlDriver` and `TomlDriver`
+  in `velo-merge`, each behind its own feature (`json`, `yaml`, `toml`, none on
+  by default, forwarded by `velo-core`) and registered by `velo-cli` for
+  `*.json`, `*.yaml`, `*.yml` and `*.toml`. Keys merge independently, arrays and
+  scalars are atomic, and a side that fails to parse falls back to diff3
+  exactly. Re-serialising can change formatting, and YAML comments are dropped.
+
+- **Diff and blame follow the path's driver**, so they answer at the driver's
+  granularity rather than always by line.
+
+- **Chunked objects** below object identity, with `gc` collecting unreferenced
+  chunks and `fsck` reporting `MissingChunk`, `CorruptChunk` and
+  `Cruft::UnreferencedChunks`.
+
+- **Compaction**: `commands::compact` and a `compactions` table, so a compacted
+  id yields `Error::Compacted` / `compacted_into` instead of `NotFound`.
+  `commands::retention` applies a tiered keep policy over it.
+
+- **HTTP sync**: `serve::http` handlers, an `HttpRemote` client behind the
+  `http` feature, and `velo serve-http` (no authentication; see the README).
+
+- **git interchange**: `velo export-git` writes a fast-import stream with Velo
+  trailers; `velo import-git` reads a fast-export stream and restores ids
+  losslessly when the trailers are present. Octopus merges are `Unsupported`.
+
+- **A second object backend**: objects as zstd blobs in the SQLite database,
+  chosen by `Repo::init_with(InitOptions)` and recorded in a `settings` table,
+  and **single-file repositories** with no working tree. Working-tree commands,
+  including `diff::between` against the tree, return `Unsupported` there.
+
+### Changed
+
+- **`ObjectStore`** is now the one seam behind every object access;
+  `store_raw`, `hash_and_compress` and `read_object` keep their signatures.
+- **`gc`'s trash expiry** compared the wrong way round; the cutoff is now
+  computed in Rust and bound as an integer.
+- `FileKind::from_mode` is `pub(crate)`.
+
+### Changed — repository format
+
+- **Repository format v3**: large objects may be stored as chunks behind a
+  manifest, and objects may live in the database. Object hashes and bundles are
+  unchanged. `FORMAT.md` records signatures, chunked objects and compaction as
+  decisions (§10 D5 to D7, §11), documents the HTTP transport (§9.1) and updates
+  §2, §7.1 and §7.2.
+
 ## 4.0.0
 
 The v4.0.0 tag has been **moved** rather than superseded, twice. It was first
