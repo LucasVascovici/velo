@@ -862,7 +862,9 @@ fn parse_manifest(hash: &str, raw: &[u8]) -> Result<(u64, Vec<(String, usize)>)>
     Ok((
         total,
         entries
-            .chunks_exact(36)
+            .as_chunks::<36>()
+            .0
+            .iter()
             .map(|e| {
                 let hex = blake3::Hash::from_bytes(e[..32].try_into().unwrap())
                     .to_hex()

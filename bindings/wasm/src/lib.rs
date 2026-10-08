@@ -776,7 +776,6 @@ impl Repo {
             renames: &renames,
             timestamp_ms: i.timestamp_ms,
         })?;
-        drop(guard);
         Ok(id.as_str().to_string())
     }
 
@@ -889,7 +888,6 @@ impl Repo {
                 timestamp_ms: i.timestamp_ms,
             },
         )?;
-        drop(guard);
         Ok(id.as_str().to_string())
     }
 }
