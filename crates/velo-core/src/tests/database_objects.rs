@@ -590,3 +590,17 @@ fn a_single_file_repository_exchanges_bundles_with_a_directory_one() {
     assert_eq!(other.read_file_at(&m2, "a.txt").unwrap(), b"a\nb\n");
     assert!(commands::fsck::check(&other).unwrap().is_healthy());
 }
+
+/// Existence is asked of SQLite, not `std::fs` (which fails on wasm32), so the
+/// refusals must still hold natively: nothing there, or a directory, is not a
+/// single-file repository, and opening never creates one.
+#[test]
+fn opening_a_missing_or_directory_path_is_not_a_repo() {
+    let tmp = TempDir::new().unwrap();
+    let missing = tmp.path().join("missing.velo");
+    for open in [Repo::open_file, Repo::open_file_and_migrate] {
+        assert!(matches!(open(&missing), Err(Error::NotARepo { .. })));
+        assert!(matches!(open(tmp.path()), Err(Error::NotARepo { .. })));
+    }
+    assert!(!missing.exists(), "opening must not create the file");
+}
