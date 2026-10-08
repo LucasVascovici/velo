@@ -8,8 +8,9 @@
 <h1 align="center">⚡ Velo</h1>
 
 <p align="center">
-  <strong>A fast, safe, and intuitive version control system built in Rust.</strong><br/>
-  Git's power — without Git's sharp edges.
+  <strong>A timeline engine: verifiable whole-tree snapshots, provenance and
+  explicit divergence, in one SQLite file.</strong><br/>
+  An embeddable Rust library first, with bindings, an MCP server and a CLI on top.
 </p>
 
 <p align="center">
@@ -21,11 +22,215 @@
 
 ---
 
-Git is a masterpiece of engineering — but its interface was designed in 2005 for the Linux kernel, not for everyday developers in 2026. Velo keeps what works (content-addressed snapshots, cheap branching, cryptographic hashing, delta compression) and replaces what repeatedly trips people up.
+## What velo is
+
+Velo is a timeline engine. A program (or a person) records whole-tree snapshots,
+branches them, merges them and asks questions of the result.
+
+- **Verifiable whole-tree snapshots** — content-addressed, `fsck` recomputes every id.
+- **Tamper-evident provenance** — hashed, namespaced metadata; authorship; parent-aware, rename-aware blame with author and branch per line.
+- **No working tree required** — `save_tree` / `tree_at`, caller-supplied timestamps, `Repo::scoped`.
+- **Explicit divergence** — branches, a pure merge engine, resumable resolutions, undo/redo, sync that refuses rather than guesses.
+- **Trivial to deploy** — one SQLite file, synchronous core, typed errors, per-call progress and cancellation.
+
+Anything that has to answer *"what did this look like at T, who changed it, why,
+and can I prove it?"* — while letting people or programs work on alternatives in
+parallel — is a candidate.
 
 ---
 
-## Why Velo
+## Where it fits
+
+| Use | What velo gives it | Fit |
+| :--- | :--- | :--- |
+| AI agent workspaces / checkpointing | Snapshot per tool call, branch per attempt, undo/redo, merge the winner; blame answers "which run wrote this line"; metadata (`eval_run`, `model`, `tool_call_id`) is trustworthy after the fact | Excellent — the wedge |
+| Prompt, config and policy registries | Publish / tag / rollback, audit trail, reviewable diffs | Excellent — [`examples/prompt-registry`](examples/prompt-registry) is the proof |
+| Document and knowledge editors | Drafts as branches, per-line provenance, rename-aware history | Very good for text; structured formats via merge drivers |
+| Regulated audit trails | Recomputable content addressing | Good; signing is decided, not yet implemented |
+| Local-first / offline field apps | Bundles need no server; explicit merges; HTTP sync; WASM single-file repos | Medium |
+| Headless CMS / low-code | Draft → preview branch → publish → revert; JSON/YAML/TOML drivers | Medium |
+| Reproducible research, assessment | "What exactly was run / submitted", provably; chunked storage for large files | Medium |
+
+**Not a fit:** real-time co-editing (CRDT territory), high-frequency event
+sourcing, large binary assets (game art, CAD, datasets), and use as a database.
+
+---
+
+## Use it from your language
+
+The engine is `velo-core`, a synchronous Rust library with no terminal output.
+Every other surface below is a thin layer over it. **Everything is built from
+source; nothing is published** to crates.io, PyPI or npm yet.
+
+### Rust
+
+```rust
+use std::path::Path;
+use velo_core::commands::{blame, history};
+use velo_core::tree::{SaveTree, TreeEntry};
+use velo_core::{BranchName, Repo};
+
+let repo = Repo::init(Path::new("work"))?;
+let branch: BranchName = "main".parse()?;
+
+// No working tree is read or written: the snapshot is built from memory.
+let id = repo.write()?.save_tree(SaveTree {
+    branch: &branch,
+    parent: None,
+    merge_parent: None,
+    message: "first",
+    entries: vec![TreeEntry::file("notes.md", b"hello
+".to_vec())],
+    meta: Default::default(),
+    timestamp_ms: None,
+    author: None,
+    renames: &[],
+})?;
+
+let files = repo.tree_at(&id)?;
+let log = history::run(&repo, history::Options { from: Some(&id), ..Default::default() })?;
+let who = blame::run(&repo, Path::new("notes.md"), blame::Options {
+    at: Some(&id),
+    ..Default::default()
+})?;
+```
+
+See [`crates/velo-core`](crates/velo-core) and the runnable
+[`examples/prompt-registry`](examples/prompt-registry).
+
+### Python
+
+[`bindings/python`](bindings/python) is a PyO3 binding, built with maturin:
+
+```bash
+cd bindings/python
+python -m venv .venv && .venv/bin/python -m pip install maturin pytest   # Scripts/ on Windows
+.venv/bin/maturin develop
+```
+
+```python
+import velo
+repo = velo.Repo.init("work")
+a = repo.save_tree(branch="main", message="a", entries={"n.txt": "one
+"},
+                   author=velo.Author("ada"))
+c = repo.save_tree(branch="main", message="c", parent=a, entries={"n.txt": "two
+"})
+repo.history(from_=c, limit=5)
+repo.blame("n.txt", at=c).lines[0].origin.author.name
+```
+
+It also exposes `merge_plan`, `merge_commit`, `create_branch` and more; see its README.
+
+### Node.js
+
+[`bindings/node`](bindings/node) is a napi-rs binding (`@velo/core`); every method
+returns a `Promise`:
+
+```bash
+cd bindings/node && npm install && npm run build
+```
+
+```js
+const { Repo } = require('@velo/core')
+const repo = await Repo.init('work')
+const id = await repo.saveTree({
+  branch: 'main',
+  message: 'hi',
+  entries: [{ path: 'a.txt', data: 'hello
+' }],
+})
+await repo.history({ from: id, limit: 5 })
+await repo.blame('a.txt', { at: id })
+```
+
+### C
+
+[`crates/velo-ffi`](crates/velo-ffi) is a C ABI (opaque handles, JSON results);
+the declarations are in `crates/velo-ffi/include/velo.h`:
+
+```bash
+cargo build -p velo-ffi --release     # cdylib and staticlib in target/release/
+```
+
+```c
+VeloRepo *repo; VeloTree *tree; char *id;
+velo_repo_init("/tmp/r", &repo);
+velo_tree_new(&tree);
+velo_tree_add_file(tree, "a.txt", (const uint8_t *)"hi
+", 3, VELO_KIND_REGULAR);
+if (velo_save_tree(repo, tree, "{"branch":"main","message":"first"}", &id) != 0)
+    fprintf(stderr, "%s
+", velo_last_error_message());
+velo_string_free(id);
+velo_tree_free(tree);
+velo_repo_free(repo);
+```
+
+`velo_history`, `velo_blame`, `velo_merge_plan` and `velo_branches` are declared in the same header.
+
+### WebAssembly
+
+[`bindings/wasm`](bindings/wasm) (`velo-wasm`) exposes the embedder API over
+**single-file repositories** — the whole repository, objects included, is one
+SQLite database — for browsers and Node. Build it with
+[wasm-pack](https://rustwasm.github.io/wasm-pack/):
+
+```bash
+wasm-pack build bindings/wasm --target web      # or --target nodejs / bundler
+```
+
+```js
+import { Repo } from './pkg/velo_wasm.js';
+
+const repo = Repo.createInMemory('notes.db');
+const id = repo.saveTree({
+  branch: 'main',
+  message: 'first',
+  entries: [{ path: 'a.txt', data: 'hello
+' }],
+});
+repo.history({ from: id });
+repo.blame('a.txt', { at: id });
+```
+
+`Repo.openPersistent` stores the file in OPFS from a dedicated worker. See its
+README for the details and limits (no sync in the browser).
+
+### MCP server
+
+[`crates/velo-mcp`](crates/velo-mcp) is a stdio Model Context Protocol server
+that makes velo the checkpoint layer for an agent: `velo_save`, `velo_restore`,
+`velo_history`, `velo_branch`, `velo_merge_plan`, `velo_merge_apply`,
+`velo_blame` and more, with every write recorded against a run id.
+
+```bash
+cargo build -p velo-mcp --release     # target/release/velo-mcp
+```
+
+Client configuration (the surrounding file format depends on the client):
+
+```json
+{"command": "velo-mcp", "args": ["--repo", "/path/to/project"]}
+```
+
+### Further reading
+
+Worked walkthroughs live in [`docs/cookbook`](docs/cookbook):
+[agent checkpointing](docs/cookbook/agent-checkpointing.md),
+[config registry](docs/cookbook/config-registry.md) and
+[document editor](docs/cookbook/document-editor.md).
+
+---
+
+## The velo CLI
+
+The `velo` command is one consumer of the engine: a Git-shaped tool for people
+who want the same guarantees on a working directory.
+
+Git is a masterpiece of engineering — but its interface was designed in 2005 for the Linux kernel, not for everyday developers in 2026. Velo keeps what works (content-addressed snapshots, cheap branching, cryptographic hashing, delta compression) and replaces what repeatedly trips people up.
+
+### Why Velo
 
 | Pain point | Git | Velo |
 | :--- | :--- | :--- |
@@ -45,9 +250,9 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 ---
 
-## Velo vs Git — workflow comparison
+### Velo vs Git — workflow comparison
 
-### Daily workflow
+#### Daily workflow
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
@@ -68,7 +273,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Rebase branch | `git rebase <target>` | `velo rebase <target>` |
 | Amend the last commit | `git commit --amend --no-edit` | `velo save --amend` |
 
-### Branches
+#### Branches
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
@@ -82,7 +287,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Rebase branch | `git rebase <target>` | `velo rebase <target>` |
 | Squash commits | `git rebase -i HEAD~N` | `velo squash <n> "msg"` |
 
-### Conflict resolution
+#### Conflict resolution
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
@@ -93,7 +298,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Code validity during merge | ❌ Markers break syntax | ✅ File untouched; TUI shows both sides |
 | Abort after resolving | ❌ `--abort` fails if you started editing | ✅ `--abort` works until `velo save` |
 
-### Stash
+#### Stash
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
@@ -103,7 +308,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Drop a stash | `git stash drop stash@{2}` | `velo stash drop <name>` |
 | Inspect a stash | `git stash show stash@{2} -p` | `velo stash show <name>` |
 
-### Collaboration
+#### Collaboration
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
@@ -117,7 +322,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | Share history without a server | `git bundle create` | `velo bundle create <file>` |
 | Import a shared history file | `git bundle unbundle` | `velo bundle apply <file>` |
 
-### Tags & maintenance
+#### Tags & maintenance
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
@@ -130,7 +335,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 ---
 
-## Where Velo is intentionally different
+### Where Velo is intentionally different
 
 **No staging area.** `git add` is a source of confusion and lost work for new and experienced users alike. Velo removes it entirely. Every save snapshots exactly what is on disk.
 
@@ -148,7 +353,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 ---
 
-## Performance
+### Performance
 
 Benchmarked on a monorepo with 571 files across 6 language modules, 40 incremental saves, and 8 concurrent branches.
 
@@ -162,6 +367,419 @@ Benchmarked on a monorepo with 571 files across 6 language modules, 40 increment
 | `velo history --all` | ~35 ms | Indexed ancestry walk in SQLite WAL mode |
 
 The warm-cache path for `velo status` is essentially N × `stat()` — no file reads, no hashing. Only files whose `mtime` or `size` changed since the last run are rehashed.
+
+
+### Quick start
+
+```bash
+# Initialise a repository
+velo init
+
+# Save a snapshot
+echo "hello world" > app.py
+velo save "Initial commit"
+
+# See what changed
+velo status
+velo diff
+
+# View history and time-travel
+velo history
+velo restore <hash>
+
+# Work on a feature branch
+velo switch feature/login
+# ... edit files ...
+velo save "Add login page"
+
+# Merge back
+velo switch main
+velo merge feature/login
+velo save "Merge feature/login"
+
+# Share it
+velo remote add origin /shared/app     # or ssh://user@host/srv/app
+velo push
+velo pull
+```
+
+---
+
+### Command reference
+
+#### Core workflow
+
+| Command | Description |
+| :--- | :--- |
+| `velo init` | Initialise a new repository in the current directory |
+| `velo save "<message>"` | Snapshot all tracked files with a description |
+| `velo mv <from> <to>` | Move a file **and record that it moved**, so `blame` and `history --file` follow it across |
+| `velo save "<message>" -- <path>` | Snapshot only the listed paths; other changes remain unsaved |
+| `velo save --amend` | Fold changes into the last snapshot, keeping its message |
+| `velo save "<message>" --amend` | Replace the last snapshot and reword it (keeps same parent) |
+| `velo status` | Show new, modified, and deleted files vs the last snapshot |
+| `velo status -- <path>` | Restrict status output to specific paths |
+| `velo diff [<file>]` | Show line-level diff against the last snapshot (see below for comparing snapshots) |
+| `velo show <target>` | Inspect a past snapshot without restoring — hash, prefix, tag, or branch name |
+| `velo show <target> -- <path>` | Restrict the diff to a specific file or directory |
+| `velo blame <file>` | Annotate each line with the snapshot that last changed it |
+| `velo blame <file> --at <target>` | Blame at a specific past snapshot, tag, or branch |
+| `velo blame <file> --lines N-M` | Only these lines — and faster, since the walk stops sooner |
+| | Shows the author alongside each line, when the history records one |
+| `velo grep <pattern>` | Search tracked files for a regex pattern |
+| `velo grep <pattern> --snapshot <target>` | Search inside a stored snapshot |
+| `velo grep <pattern> -i` | Case-insensitive search |
+| `velo grep <pattern> -l` | Print only file names with matches |
+| `velo grep <pattern> -C <n>` | Show N lines of context around each match |
+
+#### History and time-travel
+
+| Command | Description |
+| :--- | :--- |
+| `velo history` | Linear history of the current branch (last 20 by default) |
+| `velo history --all` | History across all branches |
+| `velo history --graph` | ASCII branch graph with coloured lanes |
+| `velo history --graph --all` | Full topology graph across all branches |
+| `velo history --branch <n>` | History for a specific branch without switching |
+| `velo history --file <path>` | Only snapshots that **changed** this file or directory (repeatable) |
+| `velo history --from <target>` | What led to a snapshot, across branches — follows both parents through merges |
+| `velo history --oneline` | Compact one-line-per-snapshot format |
+| `velo history --limit <n>` | Limit the number of entries shown |
+| `velo restore <target>` | Restore the working tree to a hash, prefix, tag, or branch name |
+| `velo restore <target> --force` | Restore, discarding any unsaved changes |
+| `velo restore <target> -- <path>` | Restore only specific files (PARENT is not updated) |
+| `velo diff <a> <b>` | Diff between two snapshots; hash prefixes, tags, branches, and remote refs accepted |
+| `velo diff <a>..<b>` | Same, using range syntax |
+| `velo diff <a>` | Compare a snapshot against the current working tree |
+| `velo diff <a> <b> -- <path>` | Restrict the diff to specific paths |
+| `velo squash <n> "<msg>"` | Collapse the last N snapshots into one with a new message |
+| `velo undo` | Remove the most recent snapshot and rewind the working tree |
+| `velo redo` | Re-apply the most recently undone snapshot |
+
+#### Branches
+
+| Command | Description |
+| :--- | :--- |
+| `velo switch <name>` | Switch to a branch (creates it if it doesn't exist) |
+| `velo switch <name> --force` | Switch, discarding any unsaved changes |
+| `velo branches` | List all branches with their latest snapshot |
+| `velo branches --delete <name>` | Soft-delete a branch (history preserved, purged by `velo gc`) |
+
+#### Merging and conflict resolution
+
+| Command | Description |
+| :--- | :--- |
+| `velo merge <branch>` | 3-way merge `<branch>` into the current branch |
+| `velo merge --abort` | Restore the exact pre-merge state (works at any point before `velo save`) |
+| `velo resolve <file>` | Interactive hunk-by-hunk conflict resolver |
+| `velo resolve <file> --take ours` | Non-interactive: keep the current branch's version |
+| `velo resolve <file> --take theirs` | Non-interactive: take the incoming branch's version |
+| `velo resolve --all --take <ours\|theirs>` | Resolve all outstanding conflicts non-interactively |
+| `velo cherry-pick <target>` | Apply the diff from one snapshot onto the current branch |
+| `velo rebase <target>` | Replay current branch commits on top of another branch |
+| `velo rebase --abort` | Abort the rebase and restore the original branch state |
+| `velo rebase --continue` | Continue after resolving a rebase conflict |
+
+#### Stash
+
+| Command | Description |
+| :--- | :--- |
+| `velo stash push <name>` | Shelve dirty working-tree state under a name |
+| `velo stash list` | List all stash shelves |
+| `velo stash pop <name>` | Restore a shelf and delete it |
+| `velo stash drop <name>` | Delete a shelf without restoring |
+| `velo stash show <name>` | Inspect a shelf's contents |
+
+#### Tags
+
+| Command | Description |
+| :--- | :--- |
+| `velo tag <name>` | Tag the current snapshot |
+| `velo tag <name> <target>` | Tag a specific snapshot by hash, prefix, or branch name |
+| `velo tag <name> --force` | Overwrite an existing tag |
+| `velo tag` | List all tags |
+| `velo tag --delete <name>` | Delete a tag |
+
+#### Collaboration & sync
+
+| Command | Description |
+| :--- | :--- |
+| `velo clone <url> [dir]` | Copy a repository, set up `origin`, and check out its default branch |
+| `velo remote add <name> <url>` | Add a remote (a filesystem path, `ssh://[user@]host[:port]/path` or `http://host[:port]/`) |
+| `velo remote` | List configured remotes |
+| `velo remote remove <name>` | Remove a remote and its tracking refs |
+| `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
+| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work) |
+| `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
+
+Remote defaults to `origin`, and branch defaults to the current branch.
+
+To host a repository over HTTP, run `velo serve-http <path> [--listen <addr>]`
+(default `127.0.0.1:8417`); it prints `listening on http://<addr>/`. Then
+`velo clone http://<addr>/` and the usual `push` / `pull` work against it, with
+the same fast-forward-only rule. **`serve-http` is a reference server with no
+authentication and no TLS**: anyone who can reach the port can read and push.
+Put it behind a reverse proxy that authenticates and terminates TLS for
+anything public.
+
+After a `fetch`, `velo status` shows ahead/behind, and `origin/<branch>`
+can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
+
+#### Offline transfer
+
+| Command | Description |
+| :--- | :--- |
+| `velo bundle create <file>` | Pack the entire repository into one self-contained file |
+| `velo bundle create <file> <ref>` | Pack only the history reachable from a snapshot, tag, or branch |
+| `velo bundle apply <file>` | Import a bundle into this repository (verified, idempotent) |
+
+#### Maintenance
+
+| Command | Description |
+| :--- | :--- |
+| `velo gc` | Remove orphaned objects and stale undo/conflict state |
+| `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
+| `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
+| `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
+
+---
+
+### Merge workflow example
+
+```bash
+# Start a feature branch
+velo switch feature/payments
+echo "stripe_key = 'live_...'" > config.py
+velo save "Add payment config"
+
+# Back on main, make a conflicting change
+velo switch main
+echo "stripe_key = 'test_...'" > config.py
+velo save "Set test payment key"
+
+# Merge — Velo finds the common ancestor automatically
+velo merge feature/payments
+# → Conflict: config.py
+
+# Resolve interactively — hunk-by-hunk TUI, your file stays valid throughout
+velo resolve config.py
+# [1] Keep ours  [2] Take theirs  [3] Both  [e] Edit  [q] Quit
+
+# Or resolve non-interactively
+velo resolve config.py --take theirs
+
+# Changed your mind? Abort at any point before saving
+velo merge --abort   # ← restores exact pre-merge state
+
+# Finalise
+velo save "Merge feature/payments"
+```
+
+The `--graph` flag shows the merge in history:
+
+```
+●  a709f1062fbec2f1  (main)  2026-07-25 13:51:25  Merge feature/payments
+│ ╲
+│ │
+○ │  3ca49fa15b5d1461  (main)  2026-07-25 13:51:25  Set test payment key
+│ │
+│ ○  7ba17e5444285026  (feature/payments)  2026-07-25 13:51:24  Add payment config
+│ ╱
+│
+○  b663407a874fb830  (main)  2026-07-25 13:51:24  Initial commit
+```
+
+#### Conflicts only when the changes really overlap
+
+Velo performs a real line-level 3-way merge. If both branches touched the same
+file but in different places, both sets of changes are combined automatically —
+you are only asked to resolve regions that genuinely overlap:
+
+```bash
+# ancestor:  DEBUG = False  …  RETRIES = 3
+# feature/payments changed line 3;  main changed line 5
+velo merge feature/payments
+```
+```
+Merging 'feature/payments' into 'main' (ancestor: 38735ed3e87fca9f)…
+  ~ Auto-merged: config.py
+
+Merge summary
+  New:      0
+  Updated:  1
+  Deleted:  0
+  Conflicts: 0
+
+✔ Clean merge! Run velo save "Merge <branch>" to finalise.
+```
+
+The merged file keeps **both** sides — `DEBUG = True` from the feature branch and
+`RETRIES = 5` from main. The same engine backs `cherry-pick` and `rebase`.
+
+---
+
+### Collaboration
+
+Velo repositories can be shared over a filesystem path (including a network or
+shared drive), over SSH, or as a single self-contained file — no server to run.
+
+#### Clone, push, pull
+
+```bash
+# Clone from a path or over SSH
+velo clone /shared/project
+velo clone ssh://user@host/srv/project        # ssh://[user@]host[:port]/path
+
+# Everyday loop
+velo save "Add login page"
+velo push                  # fast-forward only
+velo pull                  # fast-forward, or tells you it diverged
+
+# Remotes
+velo remote add origin /shared/project
+velo remote                             # list
+velo remote remove origin
+
+# Download without touching your branches or working tree
+velo fetch
+```
+
+`velo status` tells you where you stand relative to the last-fetched remote state
+(no network access needed):
+
+```
+Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
+  ↑ 1 ahead of origin/main — velo push to publish
+```
+```
+  ↓ 1 behind origin/main — velo pull to catch up
+  ↕ diverged from origin/main (1 ahead, 1 behind) — velo pull then velo merge origin/main
+  ✔ up to date with origin/main
+```
+
+#### When two people diverge
+
+```bash
+velo push
+# → Push rejected — 'main' has commits you don't have (non-fast-forward).
+#   Run 'velo pull origin' and reconcile, then push again.
+
+velo pull
+# → ! 'main' and 'origin/main' have diverged.
+#     Reconcile with velo merge origin/main then velo save "Merge …"
+
+velo merge origin/main     # the normal 3-way merge — auto-merges what it can
+velo save "Merge origin/main"
+velo push                  # now a fast-forward
+```
+
+Nothing is ever force-overwritten, and `pull` never rewrites your history behind
+your back.
+
+#### Offline transfer with bundles
+
+A bundle is one self-contained file carrying snapshots, all the objects they
+reference, and their tags. Useful for air-gapped machines, backups, or emailing a
+branch to someone.
+
+```bash
+velo bundle create backup.velo              # whole repository
+velo bundle create feature.velo feature     # everything reachable from a ref
+velo bundle apply backup.velo               # import into another repository
+```
+
+Applying a bundle is **idempotent** — re-applying imports nothing and reports
+that you're already up to date.
+
+#### Only what's missing goes over the wire
+
+Both `push` and `fetch` negotiate: the peer's known snapshots are subtracted, and
+objects the peer already holds are skipped. A one-line change in a 20-file project
+transfers a single object, not the whole tree — a snapshot references its entire
+file tree, so naive syncing would resend everything on every push. (`bundle create`
+deliberately opts out of this, since a bundle must stand alone.)
+
+---
+
+### Integrity & safety
+
+```bash
+velo fsck            # verify everything (read-only)
+velo fsck --repair   # also tidy safely-fixable cruft
+```
+
+```
+Checking repository integrity…
+  ✔ Objects: 4 referenced, 4 verified
+  ✔ Snapshots: 3 checked, 3 ids verified
+  ✔ Refs: PARENT, tags, stash
+  ✔ State: no cruft
+
+✔ Repository is healthy.
+```
+
+`fsck` checks that every referenced object exists **and re-hashes to its own
+name**, that every snapshot's content-addressed ID recomputes correctly, that
+parents and merge parents resolve, and that all refs (`PARENT`, tags, stash,
+remote-tracking) point at something real. It exits non-zero when it finds
+corruption, so it works in scripts and CI. Cruft (orphaned conflict rows, stale
+tracking refs) is reported as a warning and cleaned up by `--repair`.
+
+Underneath, a few things protect your data:
+
+- **Atomic writes.** Objects and refs (`PARENT`, `HEAD`, `MERGE_HEAD`) are written
+  to a temp file and renamed into place, so a crash mid-write can never leave a
+  truncated ref or a half-written object.
+- **Repository lock.** Mutating commands take an advisory lock on `.velo/lock`, so
+  two concurrent `velo` processes can't race (a `gc` can't delete an object a
+  `save` is still committing). Read-only commands never block.
+- **Verified imports.** Anything received from a bundle or a remote is fully
+  verified — objects re-hashed, snapshot IDs recomputed — inside one transaction
+  before it is trusted.
+
+---
+
+### Leaving velo
+
+You can take your history with you. `velo export-git` writes every branch, tag,
+file mode and symlink as a `git fast-import` stream, with no git needed on the
+velo side:
+
+```bash
+velo export-git | (mkdir ../out && cd ../out && git init -q && git fast-import)
+velo export-git --branch main --output history.fi   # one branch, to a file
+```
+
+Merge commits keep both parents. What git has no place for -- snapshot metadata,
+recorded renames, the branch a snapshot was made on and its exact millisecond
+timestamp -- goes into `Velo-*` trailers at the end of each commit message. Snapshot
+ids are preserved in the `Velo-Snapshot` trailer, so the history can be brought back
+with identical ids. Stashes, deleted-branch shelves and remote-tracking branches are
+not exported.
+
+#### ...and coming back
+
+`velo import-git` reads a `git fast-export` stream, from stdin or `--input FILE`:
+
+```bash
+git fast-export --all --reencode=yes --signed-tags=strip --tag-of-filtered-object=drop -M | velo import-git
+```
+
+A round trip through git preserves ids. Export, let git hold the history, export it
+from git and import into a fresh repository, and every snapshot comes back with the
+id it had, with its metadata, author, rename edges, branch and millisecond timestamp
+restored from the `Velo-*` trailers:
+
+```bash
+velo export-git | (mkdir ../git && cd ../git && git init -q && git fast-import)
+(cd ../git && git fast-export --all --reencode=yes --signed-tags=strip -M) | (mkdir ../back && cd ../back && velo init && velo import-git)
+```
+
+A plain git repository imports too, with its authors, committer timestamps (whole
+seconds), branches, tags and merges; a rename git detects with `-M` becomes a rename
+edge. Annotated tags become lightweight tags (velo tags carry no message), submodules
+are skipped and counted, and an octopus merge is refused because a snapshot has at
+most two parents. Importing does not touch the working tree.
 
 ---
 
@@ -216,8 +834,9 @@ Download the latest `velo-x86_64-windows.zip` from the [Releases page](https://g
 
 ### As a library
 
-Velo's core is published separately, so a program can use the repository, history
-and merge engine without the CLI:
+Velo's core is a separate crate, so a program can use the repository, history
+and merge engine without the CLI. It is not on crates.io yet; depend on it from
+git:
 
 ```toml
 [dependencies]
@@ -233,6 +852,9 @@ no working tree.
 Optional features, both off by default so an embedder does not pay for the CLI's
 dependencies: `bundle` (offline history transfer) and `ssh` (sync over a spawned
 server process).
+
+The Python, Node.js, C, WebAssembly and MCP surfaces are built from source too;
+see [Use it from your language](#use-it-from-your-language).
 
 ### Pre-built binaries
 
@@ -256,422 +878,26 @@ cargo build --release
 ```
 
 ---
-
-## Quick start
-
-```bash
-# Initialise a repository
-velo init
-
-# Save a snapshot
-echo "hello world" > app.py
-velo save "Initial commit"
-
-# See what changed
-velo status
-velo diff
-
-# View history and time-travel
-velo history
-velo restore <hash>
-
-# Work on a feature branch
-velo switch feature/login
-# ... edit files ...
-velo save "Add login page"
-
-# Merge back
-velo switch main
-velo merge feature/login
-velo save "Merge feature/login"
-
-# Share it
-velo remote add origin /shared/app     # or ssh://user@host/srv/app
-velo push
-velo pull
-```
-
----
-
-## Command reference
-
-### Core workflow
-
-| Command | Description |
-| :--- | :--- |
-| `velo init` | Initialise a new repository in the current directory |
-| `velo save "<message>"` | Snapshot all tracked files with a description |
-| `velo mv <from> <to>` | Move a file **and record that it moved**, so `blame` and `history --file` follow it across |
-| `velo save "<message>" -- <path>` | Snapshot only the listed paths; other changes remain unsaved |
-| `velo save --amend` | Fold changes into the last snapshot, keeping its message |
-| `velo save "<message>" --amend` | Replace the last snapshot and reword it (keeps same parent) |
-| `velo status` | Show new, modified, and deleted files vs the last snapshot |
-| `velo status -- <path>` | Restrict status output to specific paths |
-| `velo diff [<file>]` | Show line-level diff against the last snapshot (see below for comparing snapshots) |
-| `velo show <target>` | Inspect a past snapshot without restoring — hash, prefix, tag, or branch name |
-| `velo show <target> -- <path>` | Restrict the diff to a specific file or directory |
-| `velo blame <file>` | Annotate each line with the snapshot that last changed it |
-| `velo blame <file> --at <target>` | Blame at a specific past snapshot, tag, or branch |
-| `velo blame <file> --lines N-M` | Only these lines — and faster, since the walk stops sooner |
-| | Shows the author alongside each line, when the history records one |
-| `velo grep <pattern>` | Search tracked files for a regex pattern |
-| `velo grep <pattern> --snapshot <target>` | Search inside a stored snapshot |
-| `velo grep <pattern> -i` | Case-insensitive search |
-| `velo grep <pattern> -l` | Print only file names with matches |
-| `velo grep <pattern> -C <n>` | Show N lines of context around each match |
-
-### History and time-travel
-
-| Command | Description |
-| :--- | :--- |
-| `velo history` | Linear history of the current branch (last 20 by default) |
-| `velo history --all` | History across all branches |
-| `velo history --graph` | ASCII branch graph with coloured lanes |
-| `velo history --graph --all` | Full topology graph across all branches |
-| `velo history --branch <n>` | History for a specific branch without switching |
-| `velo history --file <path>` | Only snapshots that **changed** this file or directory (repeatable) |
-| `velo history --from <target>` | What led to a snapshot, across branches — follows both parents through merges |
-| `velo history --oneline` | Compact one-line-per-snapshot format |
-| `velo history --limit <n>` | Limit the number of entries shown |
-| `velo restore <target>` | Restore the working tree to a hash, prefix, tag, or branch name |
-| `velo restore <target> --force` | Restore, discarding any unsaved changes |
-| `velo restore <target> -- <path>` | Restore only specific files (PARENT is not updated) |
-| `velo diff <a> <b>` | Diff between two snapshots; hash prefixes, tags, branches, and remote refs accepted |
-| `velo diff <a>..<b>` | Same, using range syntax |
-| `velo diff <a>` | Compare a snapshot against the current working tree |
-| `velo diff <a> <b> -- <path>` | Restrict the diff to specific paths |
-| `velo squash <n> "<msg>"` | Collapse the last N snapshots into one with a new message |
-| `velo undo` | Remove the most recent snapshot and rewind the working tree |
-| `velo redo` | Re-apply the most recently undone snapshot |
-
-### Branches
-
-| Command | Description |
-| :--- | :--- |
-| `velo switch <name>` | Switch to a branch (creates it if it doesn't exist) |
-| `velo switch <name> --force` | Switch, discarding any unsaved changes |
-| `velo branches` | List all branches with their latest snapshot |
-| `velo branches --delete <name>` | Soft-delete a branch (history preserved, purged by `velo gc`) |
-
-### Merging and conflict resolution
-
-| Command | Description |
-| :--- | :--- |
-| `velo merge <branch>` | 3-way merge `<branch>` into the current branch |
-| `velo merge --abort` | Restore the exact pre-merge state (works at any point before `velo save`) |
-| `velo resolve <file>` | Interactive hunk-by-hunk conflict resolver |
-| `velo resolve <file> --take ours` | Non-interactive: keep the current branch's version |
-| `velo resolve <file> --take theirs` | Non-interactive: take the incoming branch's version |
-| `velo resolve --all --take <ours\|theirs>` | Resolve all outstanding conflicts non-interactively |
-| `velo cherry-pick <target>` | Apply the diff from one snapshot onto the current branch |
-| `velo rebase <target>` | Replay current branch commits on top of another branch |
-| `velo rebase --abort` | Abort the rebase and restore the original branch state |
-| `velo rebase --continue` | Continue after resolving a rebase conflict |
-
-### Stash
-
-| Command | Description |
-| :--- | :--- |
-| `velo stash push <name>` | Shelve dirty working-tree state under a name |
-| `velo stash list` | List all stash shelves |
-| `velo stash pop <name>` | Restore a shelf and delete it |
-| `velo stash drop <name>` | Delete a shelf without restoring |
-| `velo stash show <name>` | Inspect a shelf's contents |
-
-### Tags
-
-| Command | Description |
-| :--- | :--- |
-| `velo tag <name>` | Tag the current snapshot |
-| `velo tag <name> <target>` | Tag a specific snapshot by hash, prefix, or branch name |
-| `velo tag <name> --force` | Overwrite an existing tag |
-| `velo tag` | List all tags |
-| `velo tag --delete <name>` | Delete a tag |
-
-### Collaboration & sync
-
-| Command | Description |
-| :--- | :--- |
-| `velo clone <url> [dir]` | Copy a repository, set up `origin`, and check out its default branch |
-| `velo remote add <name> <url>` | Add a remote (a filesystem path, `ssh://[user@]host[:port]/path` or `http://host[:port]/`) |
-| `velo remote` | List configured remotes |
-| `velo remote remove <name>` | Remove a remote and its tracking refs |
-| `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
-| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work) |
-| `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
-
-Remote defaults to `origin`, and branch defaults to the current branch.
-
-To host a repository over HTTP, run `velo serve-http <path> [--listen <addr>]`
-(default `127.0.0.1:8417`); it prints `listening on http://<addr>/`. Then
-`velo clone http://<addr>/` and the usual `push` / `pull` work against it, with
-the same fast-forward-only rule. **`serve-http` is a reference server with no
-authentication and no TLS**: anyone who can reach the port can read and push.
-Put it behind a reverse proxy that authenticates and terminates TLS for
-anything public.
-
-After a `fetch`, `velo status` shows ahead/behind, and `origin/<branch>`
-can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
-
-### Offline transfer
-
-| Command | Description |
-| :--- | :--- |
-| `velo bundle create <file>` | Pack the entire repository into one self-contained file |
-| `velo bundle create <file> <ref>` | Pack only the history reachable from a snapshot, tag, or branch |
-| `velo bundle apply <file>` | Import a bundle into this repository (verified, idempotent) |
-
-### Maintenance
-
-| Command | Description |
-| :--- | :--- |
-| `velo gc` | Remove orphaned objects and stale undo/conflict state |
-| `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
-| `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
-| `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
-
----
-
-## Merge workflow example
-
-```bash
-# Start a feature branch
-velo switch feature/payments
-echo "stripe_key = 'live_...'" > config.py
-velo save "Add payment config"
-
-# Back on main, make a conflicting change
-velo switch main
-echo "stripe_key = 'test_...'" > config.py
-velo save "Set test payment key"
-
-# Merge — Velo finds the common ancestor automatically
-velo merge feature/payments
-# → Conflict: config.py
-
-# Resolve interactively — hunk-by-hunk TUI, your file stays valid throughout
-velo resolve config.py
-# [1] Keep ours  [2] Take theirs  [3] Both  [e] Edit  [q] Quit
-
-# Or resolve non-interactively
-velo resolve config.py --take theirs
-
-# Changed your mind? Abort at any point before saving
-velo merge --abort   # ← restores exact pre-merge state
-
-# Finalise
-velo save "Merge feature/payments"
-```
-
-The `--graph` flag shows the merge in history:
-
-```
-●  a709f1062fbec2f1  (main)  2026-07-25 13:51:25  Merge feature/payments
-│ ╲
-│ │
-○ │  3ca49fa15b5d1461  (main)  2026-07-25 13:51:25  Set test payment key
-│ │
-│ ○  7ba17e5444285026  (feature/payments)  2026-07-25 13:51:24  Add payment config
-│ ╱
-│
-○  b663407a874fb830  (main)  2026-07-25 13:51:24  Initial commit
-```
-
-### Conflicts only when the changes really overlap
-
-Velo performs a real line-level 3-way merge. If both branches touched the same
-file but in different places, both sets of changes are combined automatically —
-you are only asked to resolve regions that genuinely overlap:
-
-```bash
-# ancestor:  DEBUG = False  …  RETRIES = 3
-# feature/payments changed line 3;  main changed line 5
-velo merge feature/payments
-```
-```
-Merging 'feature/payments' into 'main' (ancestor: 38735ed3e87fca9f)…
-  ~ Auto-merged: config.py
-
-Merge summary
-  New:      0
-  Updated:  1
-  Deleted:  0
-  Conflicts: 0
-
-✔ Clean merge! Run velo save "Merge <branch>" to finalise.
-```
-
-The merged file keeps **both** sides — `DEBUG = True` from the feature branch and
-`RETRIES = 5` from main. The same engine backs `cherry-pick` and `rebase`.
-
----
-
-## Collaboration
-
-Velo repositories can be shared over a filesystem path (including a network or
-shared drive), over SSH, or as a single self-contained file — no server to run.
-
-### Clone, push, pull
-
-```bash
-# Clone from a path or over SSH
-velo clone /shared/project
-velo clone ssh://user@host/srv/project        # ssh://[user@]host[:port]/path
-
-# Everyday loop
-velo save "Add login page"
-velo push                  # fast-forward only
-velo pull                  # fast-forward, or tells you it diverged
-
-# Remotes
-velo remote add origin /shared/project
-velo remote                             # list
-velo remote remove origin
-
-# Download without touching your branches or working tree
-velo fetch
-```
-
-`velo status` tells you where you stand relative to the last-fetched remote state
-(no network access needed):
-
-```
-Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
-  ↑ 1 ahead of origin/main — velo push to publish
-```
-```
-  ↓ 1 behind origin/main — velo pull to catch up
-  ↕ diverged from origin/main (1 ahead, 1 behind) — velo pull then velo merge origin/main
-  ✔ up to date with origin/main
-```
-
-### When two people diverge
-
-```bash
-velo push
-# → Push rejected — 'main' has commits you don't have (non-fast-forward).
-#   Run 'velo pull origin' and reconcile, then push again.
-
-velo pull
-# → ! 'main' and 'origin/main' have diverged.
-#     Reconcile with velo merge origin/main then velo save "Merge …"
-
-velo merge origin/main     # the normal 3-way merge — auto-merges what it can
-velo save "Merge origin/main"
-velo push                  # now a fast-forward
-```
-
-Nothing is ever force-overwritten, and `pull` never rewrites your history behind
-your back.
-
-### Offline transfer with bundles
-
-A bundle is one self-contained file carrying snapshots, all the objects they
-reference, and their tags. Useful for air-gapped machines, backups, or emailing a
-branch to someone.
-
-```bash
-velo bundle create backup.velo              # whole repository
-velo bundle create feature.velo feature     # everything reachable from a ref
-velo bundle apply backup.velo               # import into another repository
-```
-
-Applying a bundle is **idempotent** — re-applying imports nothing and reports
-that you're already up to date.
-
-### Only what's missing goes over the wire
-
-Both `push` and `fetch` negotiate: the peer's known snapshots are subtracted, and
-objects the peer already holds are skipped. A one-line change in a 20-file project
-transfers a single object, not the whole tree — a snapshot references its entire
-file tree, so naive syncing would resend everything on every push. (`bundle create`
-deliberately opts out of this, since a bundle must stand alone.)
-
----
-
-## Integrity & safety
-
-```bash
-velo fsck            # verify everything (read-only)
-velo fsck --repair   # also tidy safely-fixable cruft
-```
-
-```
-Checking repository integrity…
-  ✔ Objects: 4 referenced, 4 verified
-  ✔ Snapshots: 3 checked, 3 ids verified
-  ✔ Refs: PARENT, tags, stash
-  ✔ State: no cruft
-
-✔ Repository is healthy.
-```
-
-`fsck` checks that every referenced object exists **and re-hashes to its own
-name**, that every snapshot's content-addressed ID recomputes correctly, that
-parents and merge parents resolve, and that all refs (`PARENT`, tags, stash,
-remote-tracking) point at something real. It exits non-zero when it finds
-corruption, so it works in scripts and CI. Cruft (orphaned conflict rows, stale
-tracking refs) is reported as a warning and cleaned up by `--repair`.
-
-Underneath, a few things protect your data:
-
-- **Atomic writes.** Objects and refs (`PARENT`, `HEAD`, `MERGE_HEAD`) are written
-  to a temp file and renamed into place, so a crash mid-write can never leave a
-  truncated ref or a half-written object.
-- **Repository lock.** Mutating commands take an advisory lock on `.velo/lock`, so
-  two concurrent `velo` processes can't race (a `gc` can't delete an object a
-  `save` is still committing). Read-only commands never block.
-- **Verified imports.** Anything received from a bundle or a remote is fully
-  verified — objects re-hashed, snapshot IDs recomputed — inside one transaction
-  before it is trusted.
-
----
-
-## Leaving velo
-
-You can take your history with you. `velo export-git` writes every branch, tag,
-file mode and symlink as a `git fast-import` stream, with no git needed on the
-velo side:
-
-```bash
-velo export-git | (mkdir ../out && cd ../out && git init -q && git fast-import)
-velo export-git --branch main --output history.fi   # one branch, to a file
-```
-
-Merge commits keep both parents. What git has no place for -- snapshot metadata,
-recorded renames, the branch a snapshot was made on and its exact millisecond
-timestamp -- goes into `Velo-*` trailers at the end of each commit message. Snapshot
-ids are preserved in the `Velo-Snapshot` trailer, so the history can be brought back
-with identical ids. Stashes, deleted-branch shelves and remote-tracking branches are
-not exported.
-
-### ...and coming back
-
-`velo import-git` reads a `git fast-export` stream, from stdin or `--input FILE`:
-
-```bash
-git fast-export --all --reencode=yes --signed-tags=strip --tag-of-filtered-object=drop -M | velo import-git
-```
-
-A round trip through git preserves ids. Export, let git hold the history, export it
-from git and import into a fresh repository, and every snapshot comes back with the
-id it had, with its metadata, author, rename edges, branch and millisecond timestamp
-restored from the `Velo-*` trailers:
-
-```bash
-velo export-git | (mkdir ../git && cd ../git && git init -q && git fast-import)
-(cd ../git && git fast-export --all --reencode=yes --signed-tags=strip -M) | (mkdir ../back && cd ../back && velo init && velo import-git)
-```
-
-A plain git repository imports too, with its authors, committer timestamps (whole
-seconds), branches, tags and merges; a rename git detects with `-M` becomes a rename
-edge. Annotated tags become lightweight tags (velo tags carry no message), submodules
-are skipped and counted, and an octopus merge is refused because a snapshot has at
-most two parents. Importing does not touch the working tree.
-
----
-
 ## Architecture
+
+Velo is a Cargo workspace. Everything that matters lives in the engine; the
+other crates are consumers of it.
+
+| Crate / directory | Role |
+| :--- | :--- |
+| `crates/velo-core` | The engine: repository, snapshots, history, blame, sync. Synchronous, no terminal output |
+| `crates/velo-merge` | The pure three-way merge engine and merge drivers |
+| `crates/velo-tui` | The interactive conflict resolver used by the CLI |
+| `crates/velo-cli` | The `velo` command, one consumer of the engine |
+| `crates/velo-ffi` | A C ABI (`include/velo.h`) over the embeddable half of the engine |
+| `crates/velo-mcp` | A stdio MCP server that makes velo a checkpoint layer for agents |
+| `crates/velo-testkit` | Shared test fixtures |
+| `bindings/python` | PyO3 binding, built with maturin |
+| `bindings/node` | napi-rs binding (`@velo/core`) |
+| `bindings/wasm` | wasm-bindgen binding over single-file repositories |
+
+The bindings are separate Cargo workspaces so their toolchains stay out of the
+main build.
 
 | Layer | Technology | Role |
 | :--- | :--- | :--- |
@@ -699,6 +925,27 @@ most two parents. Importing does not touch the working tree.
 ---
 
 ## Repository layout
+
+The source tree:
+
+```
+crates/
+├── velo-core/      # the engine
+├── velo-merge/     # three-way merge engine and drivers
+├── velo-tui/       # interactive conflict resolver
+├── velo-cli/       # the `velo` binary
+├── velo-ffi/       # C ABI, include/velo.h
+├── velo-mcp/       # MCP server
+└── velo-testkit/   # shared test fixtures
+bindings/
+├── python/         # PyO3 + maturin
+├── node/           # napi-rs
+└── wasm/           # wasm-bindgen, single-file repositories
+examples/prompt-registry/   # a registry with no working tree
+docs/                       # FORMAT.md and the cookbook
+```
+
+A repository on disk:
 
 ```
 .velo/
@@ -741,5 +988,3 @@ ends by verifying the repository with `fsck`.
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-Built with 🦀 by [Lucas Vascovici](https://github.com/LucasVascovici).
