@@ -112,7 +112,7 @@ impl Server {
             }
             Err(tools::ToolError::Velo(e)) => {
                 let variant = tools::variant_name(&e);
-                let text = format!("{variant}: {e}");
+                let mut text = format!("{variant}: {e}");
                 let mut structured = json!({"error": variant, "message": e.to_string()});
                 match &e {
                     velo_core::Error::DirtyWorkingTree { paths }
@@ -121,6 +121,20 @@ impl Server {
                             .iter()
                             .map(|p| p.to_string_lossy().replace('\\', "/"))
                             .collect();
+                        if matches!(e, velo_core::Error::Conflicts { .. }) {
+                            // Many clients show the model only the text, so the
+                            // paths and the next step must be in it.
+                            let source = args
+                                .get("source")
+                                .and_then(Value::as_str)
+                                .unwrap_or("<source>");
+                            let hint = format!(
+                                "Conflicted paths: {}. Call velo_merge_plan {{\"source\": \"{source}\"}} and pass `resolutions` for each conflicted path to velo_merge_apply.",
+                                paths.join(", ")
+                            );
+                            text = format!("{text}\n{hint}");
+                            structured["hint"] = json!(hint);
+                        }
                         structured["paths"] = json!(paths);
                     }
                     _ => {}
@@ -418,6 +432,7 @@ mod tests {
         assert_eq!(r["result"]["isError"], true);
         let t = r["result"]["content"][0]["text"].as_str().unwrap();
         assert!(t.starts_with("Conflicts: "), "{t}");
+        assert!(t.contains("f.txt") && t.contains("velo_merge_plan"), "{t}");
         assert_eq!(r["result"]["structuredContent"]["paths"][0], "f.txt");
 
         let r = call(
