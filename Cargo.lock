@@ -1386,6 +1386,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "velo-mcp"
+version = "4.0.0"
+dependencies = [
+ "chrono",
+ "clap",
+ "serde_json",
+ "tempfile",
+ "velo-core",
+]
+
+[[package]]
 name = "velo-merge"
 version = "4.0.0"
 dependencies = [
