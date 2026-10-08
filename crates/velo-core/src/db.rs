@@ -192,6 +192,27 @@ pub fn connect(path: &Path) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Open an **existing** database file, never creating one, and apply pragmas.
+///
+/// Returns `Ok(None)` when there is no such file. Existence is asked of SQLite,
+/// not `std::fs`: on wasm32 a single-file repository lives in a SQLite VFS
+/// (in memory, or the origin-private file system) that `std::fs` cannot see,
+/// and every `std::fs` query there fails.
+pub fn connect_existing(path: &Path) -> Result<Option<Connection>> {
+    use rusqlite::{ffi::ErrorCode, OpenFlags};
+    let flags = OpenFlags::SQLITE_OPEN_READ_WRITE
+        | OpenFlags::SQLITE_OPEN_URI
+        | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+    match Connection::open_with_flags(path, flags) {
+        Ok(conn) => {
+            apply_pragmas(&conn)?;
+            Ok(Some(conn))
+        }
+        Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == ErrorCode::CannotOpen => Ok(None),
+        Err(e) => Err(e),
+    }
+}
+
 /// The repository format version recorded in `PRAGMA user_version`.
 ///
 /// `0` means "written before versioning existed", which is a **v1** repository —

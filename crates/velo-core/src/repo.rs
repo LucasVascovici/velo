@@ -217,7 +217,8 @@ impl Repo {
     ///
     /// Fails with [`Error::AlreadyInitialized`] if `path` exists.
     pub fn create_file(path: &Path) -> Result<Self> {
-        if path.exists() {
+        // `path.exists()` alone is always false on wasm32; see `db::connect_existing`.
+        if path.exists() || db::connect_existing(path)?.is_some() {
             return Err(Error::AlreadyInitialized {
                 at: path.to_path_buf(),
             });
@@ -273,12 +274,16 @@ impl Repo {
     }
 
     fn connect_file(path: &Path) -> Result<rusqlite::Connection> {
-        if !path.is_file() {
+        // A directory is never a single-file repository; on wasm32 `is_dir` is
+        // always false, and SQLite answers whether the file exists.
+        if path.is_dir() {
             return Err(Error::NotARepo {
                 searched_from: path.to_path_buf(),
             });
         }
-        Ok(db::connect(path)?)
+        db::connect_existing(path)?.ok_or_else(|| Error::NotARepo {
+            searched_from: path.to_path_buf(),
+        })
     }
 
     fn from_file(path: &Path, conn: rusqlite::Connection) -> Result<Self> {
