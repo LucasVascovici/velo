@@ -79,8 +79,7 @@ let id = repo.write()?.save_tree(SaveTree {
     parent: None,
     merge_parent: None,
     message: "first",
-    entries: vec![TreeEntry::file("notes.md", b"hello
-".to_vec())],
+    entries: vec![TreeEntry::file("notes.md", b"hello\n".to_vec())],
     meta: Default::default(),
     timestamp_ms: None,
     author: None,
@@ -111,11 +110,9 @@ python -m venv .venv && .venv/bin/python -m pip install maturin pytest   # Scrip
 ```python
 import velo
 repo = velo.Repo.init("work")
-a = repo.save_tree(branch="main", message="a", entries={"n.txt": "one
-"},
+a = repo.save_tree(branch="main", message="a", entries={"n.txt": "one\n"},
                    author=velo.Author("ada"))
-c = repo.save_tree(branch="main", message="c", parent=a, entries={"n.txt": "two
-"})
+c = repo.save_tree(branch="main", message="c", parent=a, entries={"n.txt": "two\n"})
 repo.history(from_=c, limit=5)
 repo.blame("n.txt", at=c).lines[0].origin.author.name
 ```
@@ -137,8 +134,7 @@ const repo = await Repo.init('work')
 const id = await repo.saveTree({
   branch: 'main',
   message: 'hi',
-  entries: [{ path: 'a.txt', data: 'hello
-' }],
+  entries: [{ path: 'a.txt', data: 'hello\n' }],
 })
 await repo.history({ from: id, limit: 5 })
 await repo.blame('a.txt', { at: id })
@@ -157,11 +153,9 @@ cargo build -p velo-ffi --release     # cdylib and staticlib in target/release/
 VeloRepo *repo; VeloTree *tree; char *id;
 velo_repo_init("/tmp/r", &repo);
 velo_tree_new(&tree);
-velo_tree_add_file(tree, "a.txt", (const uint8_t *)"hi
-", 3, VELO_KIND_REGULAR);
-if (velo_save_tree(repo, tree, "{"branch":"main","message":"first"}", &id) != 0)
-    fprintf(stderr, "%s
-", velo_last_error_message());
+velo_tree_add_file(tree, "a.txt", (const uint8_t *)"hi\n", 3, VELO_KIND_REGULAR);
+if (velo_save_tree(repo, tree, "{\"branch\":\"main\",\"message\":\"first\"}", &id) != 0)
+    fprintf(stderr, "%s\n", velo_last_error_message());
 velo_string_free(id);
 velo_tree_free(tree);
 velo_repo_free(repo);
@@ -187,8 +181,7 @@ const repo = Repo.createInMemory('notes.db');
 const id = repo.saveTree({
   branch: 'main',
   message: 'first',
-  entries: [{ path: 'a.txt', data: 'hello
-' }],
+  entries: [{ path: 'a.txt', data: 'hello\n' }],
 });
 repo.history({ from: id });
 repo.blame('a.txt', { at: id });
