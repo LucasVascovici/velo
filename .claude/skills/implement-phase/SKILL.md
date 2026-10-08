@@ -60,9 +60,18 @@ file.
 
 ## 4. Run
 
+Never paste the briefs into the call — they are long, and you would be
+restating in Opus output what is already on disk. Pass a **skeleton** (every
+task's `id, item, title, depends_on, parallel_safe, risk, files`, done ones
+included) plus `planFile`; each agent prints its own brief with
+`.claude/scripts/brief.py`. Build the skeleton with a one-line Python
+script and copy its compact JSON.
+
 ```
 Workflow({ scriptPath: ".claude/workflows/implement-phase.js", args: {
-  phase, branch, repoRoot, maxParallel, plan,
+  phase, branch, repoRoot, maxParallel,
+  plan: <skeleton>,
+  planFile: "<repoRoot>/.claude/plans/<branch>.json",
   planBase,                          // from the saved plan
   refresh: <planBase != HEAD and HEAD has code commits since>,
   doneEarlier: saved.done,           // approved in an earlier pass

@@ -20,7 +20,9 @@ export const meta = {
 //   maxParallel?: 2,               worktree lanes; 0 = everything in the main checkout, one at a time
 //   maxFixRounds?: 2,
 //   planOnly?: bool,               plan, return, stop
-//   plan?: object,                 an approved plan; skips the planner
+//   plan?: object,                 an approved plan; skips the planner. Tasks may omit brief/acceptance/tests
+//                                  when planFile is given — agents then read their own brief from it
+//   planFile?: "C:/…/plan.json",   absolute path of the saved plan ({ plan } or a bare plan)
 //   planBase?: sha,                commit the plan was written against; with refresh, briefs are reconciled with base..HEAD
 //   refresh?: bool,                reconcile every brief with the code before implementing it
 //   skip?: [taskId],              not run in this pass, and not counted as done
@@ -175,7 +177,15 @@ if (A.planOnly) return { mode: 'plan', phase: PHASE, branch: BRANCH, plan: { ...
 
 // ─── Prompts ────────────────────────────────────────────────────────────────
 const others = (t) => tasks.filter((o) => o.id !== t.id).map((o) => `- ${o.id} ${o.title}`).join('\n')
-const taskBlock = (t) => `## Task ${t.id} — ${t.title}  (ARCHITECTURE.md ${t.item})
+const PLAN_FILE = (A.planFile || '').replace(/\\/g, '/')
+const taskBlock = (t) => (!t.brief && PLAN_FILE ? `## Task ${t.id} — ${t.title}  (ARCHITECTURE.md ${t.item})
+
+Your full brief — spec, files, acceptance criteria and tests — is in the saved plan. Print it first and treat it exactly as if it were written here:
+
+\`\`\`bash
+python .claude/scripts/brief.py "${PLAN_FILE}" ${t.id}
+\`\`\`` : taskBlockInline(t))
+const taskBlockInline = (t) => `## Task ${t.id} — ${t.title}  (ARCHITECTURE.md ${t.item})
 
 ${t.brief}
 
