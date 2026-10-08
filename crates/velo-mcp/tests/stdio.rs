@@ -41,5 +41,5 @@ fn stdout_is_json_rpc_only() {
         assert_eq!(v["jsonrpc"], "2.0");
         assert_eq!(v["id"], i as u64 + 1);
     }
-    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 6);
+    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 10);
 }

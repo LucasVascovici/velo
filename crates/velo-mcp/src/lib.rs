@@ -208,7 +208,11 @@ mod tests {
                 "velo_status",
                 "velo_diff",
                 "velo_history",
-                "velo_metadata"
+                "velo_metadata",
+                "velo_branch",
+                "velo_merge_plan",
+                "velo_merge_apply",
+                "velo_blame"
             ]
         );
     }
@@ -339,5 +343,169 @@ mod tests {
         }
         let r = call(&mut s, "velo_save", json!({}));
         assert_eq!(r["error"]["code"], -32602);
+    }
+
+    fn sc(r: &Value) -> &Value {
+        &r["result"]["structuredContent"]
+    }
+
+    fn agent_repo() -> (tempfile::TempDir, Server, Server) {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repo::init(dir.path()).unwrap();
+        std::fs::write(dir.path().join("f.txt"), "top\nmid\nend\n").unwrap();
+        let mut s1 = Server::new(repo, "r1".into());
+        init(&mut s1);
+        call(&mut s1, "velo_save", json!({"message": "base"}));
+        let s2 = Server::new(Repo::open(dir.path()).unwrap(), "r2".into());
+        (dir, s1, s2)
+    }
+
+    /// Branch a1 saved by r1, main edited by r2 on the same line; returns with
+    /// main checked out.
+    fn conflicted() -> (tempfile::TempDir, Server, Server) {
+        let (d, mut s1, mut s2) = agent_repo();
+        let f = d.path().join("f.txt");
+        let r = call(
+            &mut s1,
+            "velo_branch",
+            json!({"action": "create", "name": "a1"}),
+        );
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let r = call(
+            &mut s1,
+            "velo_branch",
+            json!({"action": "switch", "name": "a1"}),
+        );
+        assert_eq!(sc(&r)["result"], "started_unborn", "{r}");
+        std::fs::write(&f, "top\nmid-a1\nend\nadded by a1\n").unwrap();
+        call(&mut s1, "velo_save", json!({"message": "a1 work"}));
+        call(
+            &mut s1,
+            "velo_branch",
+            json!({"action": "switch", "name": "main"}),
+        );
+        std::fs::write(&f, "top\nmid-main\nend\n").unwrap();
+        init(&mut s2);
+        let r = call(&mut s2, "velo_save", json!({"message": "main work"}));
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        (d, s1, s2)
+    }
+
+    #[test]
+    fn agent_branch_plan_apply() {
+        let (d, _s1, mut s2) = conflicted();
+        let r = call(&mut s2, "velo_merge_plan", json!({"source": "a1"}));
+        let p = sc(&r);
+        assert_eq!(p["clean"], false, "{r}");
+        assert_eq!(
+            p["files"][0]["conflict"]["ours_text"],
+            "top\nmid-main\nend\n"
+        );
+        assert_eq!(
+            p["files"][0]["conflict"]["theirs_text"],
+            "top\nmid-a1\nend\nadded by a1\n"
+        );
+        assert!(p["apply_hint"]
+            .as_str()
+            .unwrap()
+            .contains("velo_merge_apply"));
+
+        let r = call(
+            &mut s2,
+            "velo_merge_apply",
+            json!({"source": "a1", "message": "m"}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        let t = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(t.starts_with("Conflicts: "), "{t}");
+        assert_eq!(r["result"]["structuredContent"]["paths"][0], "f.txt");
+
+        let r = call(
+            &mut s2,
+            "velo_merge_apply",
+            json!({"source": "a1", "message": "merge a1", "tool_call_id": "t9",
+                   "resolutions": {"f.txt": {"content": "resolved\n"}}}),
+        );
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let snap = sc(&r)["snapshot"].as_str().unwrap().to_string();
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("f.txt")).unwrap(),
+            "resolved\n"
+        );
+        let m = call(&mut s2, "velo_metadata", json!({"snapshot": snap}));
+        assert_eq!(sc(&m)["meta"]["mcp"]["run"], "r2");
+        assert_eq!(sc(&m)["meta"]["mcp"]["tool"], "velo_merge_apply");
+        let h = call(&mut s2, "velo_history", json!({"limit": 1}));
+        let e = &sc(&h)["entries"][0];
+        assert_eq!(e["snapshot"], snap.as_str());
+        assert!(e["merge_parent"].is_string());
+        let st = call(&mut s2, "velo_status", json!({}));
+        assert_eq!(sc(&st)["position"], snap.as_str());
+    }
+
+    #[test]
+    fn blame_names_the_run() {
+        let (_d, _s1, mut s2) = conflicted();
+        let r = call(
+            &mut s2,
+            "velo_merge_apply",
+            json!({"source": "a1", "message": "merge",
+                   "resolutions": {"f.txt": {"content": "top\nmid-main\nend\nadded by a1\n"}}}),
+        );
+        assert_eq!(r["result"]["isError"], false, "{r}");
+        let r = call(&mut s2, "velo_blame", json!({"path": "f.txt"}));
+        let lines = sc(&r)["lines"].as_array().unwrap().clone();
+        assert_eq!(lines.len(), 4, "{r}");
+        assert_eq!(lines[3]["text"], "added by a1");
+        assert_eq!(lines[3]["origin"]["run"], "r1");
+        let r = call(
+            &mut s2,
+            "velo_blame",
+            json!({"path": "f.txt", "start_line": 4, "end_line": 4}),
+        );
+        assert_eq!(sc(&r)["lines"].as_array().unwrap().len(), 1);
+        assert_eq!(sc(&r)["lines"][0]["line_no"], 4);
+    }
+
+    #[test]
+    fn dirty_tree_blocks_apply_and_switch() {
+        let (d, _s1, mut s2) = conflicted();
+        std::fs::write(d.path().join("f.txt"), "dirty\n").unwrap();
+        let r = call(
+            &mut s2,
+            "velo_merge_apply",
+            json!({"source": "a1", "message": "m",
+                   "resolutions": {"f.txt": "theirs"}}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        let t = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(t.starts_with("DirtyWorkingTree: "), "{t}");
+        let r = call(
+            &mut s2,
+            "velo_branch",
+            json!({"action": "switch", "name": "a1", "force": true}),
+        );
+        assert_eq!(r["result"]["isError"], true);
+        let t = r["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(t.starts_with("DirtyWorkingTree: "), "{t}");
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("f.txt")).unwrap(),
+            "dirty\n"
+        );
+    }
+
+    #[test]
+    fn merge_plan_writes_nothing() {
+        let (d, _s1, mut s2) = conflicted();
+        let before = s2.repo.head_token().unwrap();
+        let file = std::fs::read_to_string(d.path().join("f.txt")).unwrap();
+        call(&mut s2, "velo_merge_plan", json!({"source": "a1"}));
+        assert_eq!(s2.repo.head_token().unwrap(), before);
+        assert_eq!(
+            std::fs::read_to_string(d.path().join("f.txt")).unwrap(),
+            file
+        );
+        let r = call(&mut s2, "velo_branch", json!({"action": "list"}));
+        assert_eq!(sc(&r)["branches"].as_array().unwrap().len(), 2);
     }
 }
