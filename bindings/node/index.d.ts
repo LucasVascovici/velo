@@ -11,19 +11,6 @@ export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-was
 
 /** An open velo repository. */
 export declare class Repo {
-  static init(path: string): Promise<Repo>
-  static open(path: string): Promise<Repo>
-  /** Save a whole tree as a snapshot and resolve to its id. */
-  saveTree(input: SaveTreeInput): Promise<string>
-  treeAt(id: string): Promise<Array<TreeFile>>
-  readFileAt(id: string, path: string): Promise<Buffer>
-  readObject(object: string): Promise<Buffer>
-  snapshot(id: string): Promise<SnapshotInfo>
-  snapshotMeta(id: string): Promise<Record<string, Record<string, string>>>
-  /** Resolve a snapshot name (id, prefix, branch, tag, ...) to a full id. */
-  resolve(spec: string): Promise<string>
-  branchTip(branch: string): Promise<string | null>
-  headToken(): Promise<bigint>
   /** Snapshots newest first, filtered by `options`. */
   history(options?: HistoryOptions | undefined | null): Promise<Array<SnapshotInfo>>
   /** Snapshots whose metadata satisfies every filter, newest first. */
@@ -45,6 +32,19 @@ export declare class Repo {
   createBranch(name: string, at?: string | undefined | null): Promise<void>
   /** Point an existing branch at snapshot `to`. */
   setBranchTip(name: string, to: string): Promise<void>
+  static init(path: string): Promise<Repo>
+  static open(path: string): Promise<Repo>
+  /** Save a whole tree as a snapshot and resolve to its id. */
+  saveTree(input: SaveTreeInput): Promise<string>
+  treeAt(id: string): Promise<Array<TreeFile>>
+  readFileAt(id: string, path: string): Promise<Buffer>
+  readObject(object: string): Promise<Buffer>
+  snapshot(id: string): Promise<SnapshotInfo>
+  snapshotMeta(id: string): Promise<Record<string, Record<string, string>>>
+  /** Resolve a snapshot name (id, prefix, branch, tag, ...) to a full id. */
+  resolve(spec: string): Promise<string>
+  branchTip(branch: string): Promise<string | null>
+  headToken(): Promise<bigint>
 }
 
 /** The author of a snapshot. */
@@ -149,7 +149,7 @@ export interface MergeCommitInput {
    * UTF-8 content; pass a `Buffer` to write bytes that may spell either word.
    */
   resolutions?: Record<string, 'ours' | 'theirs' | null | Buffer | string>
-  meta?: Meta
+  meta?: Record<string, Record<string, string>>
   author?: AuthorInput
   timestampMs?: number
 }
