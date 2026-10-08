@@ -833,7 +833,7 @@ git:
 
 ```toml
 [dependencies]
-velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v4.1.0" }
+velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.0.0" }
 ```
 
 It produces no terminal output at all — every command returns data — which is
