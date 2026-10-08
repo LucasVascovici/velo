@@ -200,10 +200,19 @@ fn print_line(line: &DiffLine) {
         Some(n) => format!("{:>width$}", n, width = GUTTER),
         None => " ".repeat(GUTTER),
     };
-    println!(
-        "{} {}{}",
-        style(gutter).dim(),
-        style(sign).fg(colour).bold(),
-        style(&line.text).fg(colour)
-    );
+    // Under a paragraph or key driver the text spans lines: the first carries
+    // the line number, continuations a blank gutter and the same sign.
+    for (i, text) in line.text.split('\n').enumerate() {
+        let gutter = if i == 0 {
+            gutter.clone()
+        } else {
+            " ".repeat(GUTTER)
+        };
+        println!(
+            "{} {}{}",
+            style(gutter).dim(),
+            style(sign).fg(colour).bold(),
+            style(text).fg(colour)
+        );
+    }
 }

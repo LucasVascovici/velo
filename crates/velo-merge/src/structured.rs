@@ -167,6 +167,12 @@ impl MergeDriver for JsonDriver {
     fn merge(&self, ancestor: &str, ours: &str, theirs: &str) -> MergeResult {
         run::<serde_json::Value>(ancestor, ours, theirs)
     }
+    fn units(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        if serde_json::from_str::<serde_json::Value>(text).is_err() {
+            return line_units(text);
+        }
+        json_units(text)
+    }
 }
 
 /// Key-aware merge for YAML. Falls back to diff3 if any side does not parse.
@@ -183,6 +189,21 @@ impl MergeDriver for YamlDriver {
     fn merge(&self, ancestor: &str, ours: &str, theirs: &str) -> MergeResult {
         run::<serde_yaml_ng::Value>(ancestor, ours, theirs)
     }
+    fn units(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        if serde_yaml_ng::from_str::<serde_yaml_ng::Value>(text).is_err() {
+            return line_units(text);
+        }
+        let starts: Vec<usize> = text
+            .lines()
+            .enumerate()
+            .filter(|(_, l)| {
+                !l.trim().is_empty() && !l.starts_with(char::is_whitespace) && !l.starts_with('#')
+            })
+            .map(|(i, _)| i)
+            .collect();
+        let n = text.lines().count();
+        crate::ranges_from_starts(n, &starts)
+    }
 }
 
 /// Key-aware merge for TOML. Falls back to diff3 if any side does not parse.
@@ -198,4 +219,56 @@ impl MergeDriver for TomlDriver {
     fn merge(&self, ancestor: &str, ours: &str, theirs: &str) -> MergeResult {
         run::<toml::Value>(ancestor, ours, theirs)
     }
+    fn units(&self, text: &str) -> Vec<std::ops::Range<usize>> {
+        if text.parse::<toml::Table>().is_err() {
+            return line_units(text);
+        }
+        let lines: Vec<&str> = text.lines().collect();
+        let is_header = |l: &str| {
+            let t = l.trim();
+            t.starts_with('[') && t.split('#').next().unwrap_or("").trim_end().ends_with(']')
+        };
+        let first = lines
+            .iter()
+            .position(|l| is_header(l))
+            .unwrap_or(lines.len());
+        let mut starts: Vec<usize> = (0..first).collect();
+        starts.extend((first..lines.len()).filter(|&i| is_header(lines[i])));
+        crate::ranges_from_starts(lines.len(), &starts)
+    }
+}
+
+/// One unit per line: what a document that does not parse falls back to.
+fn line_units(text: &str) -> Vec<std::ops::Range<usize>> {
+    (0..text.lines().count()).map(|i| i..i + 1).collect()
+}
+
+/// Units of a parsed JSON document: the opening line, each top-level member, and
+/// the closing line. A member starts at a line indented like the first member
+/// line, so nested objects and arrays stay inside their key's unit. A document
+/// without that shape (one-liners, bare scalars) keeps line units.
+#[cfg(feature = "json")]
+fn json_units(text: &str) -> Vec<std::ops::Range<usize>> {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(close) = lines.iter().rposition(|l| !l.trim().is_empty()) else {
+        return line_units(text);
+    };
+    let first = (1..close).find(|&i| !lines[i].trim().is_empty());
+    let Some(first) =
+        first.filter(|_| close >= 2 && lines[close].trim_start().starts_with(['}', ']']))
+    else {
+        return line_units(text);
+    };
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let ind = indent(lines[first]);
+    let mut starts: Vec<usize> = (first..close)
+        .filter(|&i| {
+            !lines[i].trim().is_empty()
+                && indent(lines[i]) == ind
+                && !lines[i].trim_start().starts_with(['}', ']'])
+        })
+        .collect();
+    starts.push(close);
+    starts.extend(close + 1..lines.len());
+    crate::ranges_from_starts(lines.len(), &starts)
 }
