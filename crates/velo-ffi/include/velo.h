@@ -124,6 +124,63 @@ int32_t velo_snapshot(const VeloRepo *repo, const char *spec, char **out_json);
 /* JSON {namespace:{key:value}}, including the reserved "velo" namespace. */
 int32_t velo_snapshot_meta(const VeloRepo *repo, const char *spec, char **out_json);
 
+/* ---- History ---- */
+
+/* JSON {"entries":[Entry...],"empty":null|"unborn_branch"|"no_snapshots"|
+ * "no_snapshots_touching"|"no_snapshots_matching"|"other"}, newest first;
+ * Entry is the velo_snapshot shape.
+ *
+ * options_json members are all optional: "from" (spec; walk its ancestry),
+ * "branch", "all" (bool), "paths" [str], "limit" (int) and "meta"
+ * [{"namespace","key","value"|null}] (null/missing value = key is set).
+ *
+ * With none of from, branch or all, history follows .velo/PARENT, which a
+ * store-only embedder does not have: pass "from" or "branch". */
+int32_t velo_history(const VeloRepo *repo, const char *options_json, char **out_json);
+/* JSON array of Entry for snapshots matching every filter in filters_json,
+ * [{"namespace","key","value"|null}]. An empty array is VELO_ERR_INVALID_INPUT. */
+int32_t velo_find_snapshots(const VeloRepo *repo, const char *filters_json,
+                            char **out_json);
+/* JSON {"path","snapshot","lines":[{"line_no","line_count","text","origin"}]}.
+ * origin is null or {"id","created_at","created_at_ms","message","author"
+ * (null or {"name","email"}),"branch","path"}.
+ *
+ * options_json: optional "at" (spec), "start_line" and "end_line" (1-based,
+ * inclusive; no end_line means to the end of the file). */
+int32_t velo_blame(const VeloRepo *repo, const char *path, const char *options_json,
+                   char **out_json);
+
+/* ---- Merge ---- */
+
+/* Nearest common ancestor of specs a and b. *out_id is NULL when they share
+ * no history (not an error). */
+int32_t velo_merge_base(const VeloRepo *repo, const char *a, const char *b,
+                        char **out_id);
+/* JSON {"base":id|null,"files":[{"path","action",...}]}. action is deleted,
+ * added, updated, auto_merged, kept_ours or conflicted. added/updated add
+ * "object" and "mode"; auto_merged adds "content_base64" and "mode";
+ * conflicted adds "base", "ours", "theirs" (object ids or null). */
+int32_t velo_merge_plan(const VeloRepo *repo, const char *ours, const char *theirs,
+                        char **out_json);
+/* Record a merge as a new snapshot; writes its id to *out_id.
+ *
+ * spec_json: required "branch", "ours", "theirs" (specs) and "message";
+ * optional "resolutions" {path: "ours"|"theirs"|"delete"|{"content_base64"}},
+ * "meta", "author" and "timestamp_ms" as for velo_save_tree. An unresolved
+ * conflict returns VELO_ERR_CONFLICTS and the message lists the paths. */
+int32_t velo_merge_commit(const VeloRepo *repo, const char *spec_json, char **out_id);
+
+/* ---- Branches ---- */
+
+/* JSON array of {"name","is_current","tip":null|{"id","message","created_at",
+ * "created_at_ms"}}. */
+int32_t velo_branches(const VeloRepo *repo, char **out_json);
+/* Create a branch at spec at_or_null, or at the current snapshot if NULL. */
+int32_t velo_branch_create(const VeloRepo *repo, const char *name,
+                           const char *at_or_null);
+/* Point a branch at snapshot spec `to`; unknown is VELO_ERR_NOT_FOUND. */
+int32_t velo_branch_set_tip(const VeloRepo *repo, const char *name, const char *to);
+
 #ifdef __cplusplus
 }
 #endif

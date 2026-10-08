@@ -69,3 +69,30 @@ velo_string_free(id);
 velo_tree_free(tree);
 velo_repo_free(repo);
 ```
+
+## History and blame
+
+`velo_history(repo, options_json, &out)` takes `from`, `branch`, `all`, `paths`,
+`limit` and `meta` (`[{"namespace","key","value"|null}]`) and returns
+`{"entries": [...], "empty": reason|null}`. `velo_find_snapshots` takes just the
+filter array. `velo_blame(repo, path, options_json, &out)` returns every line with
+its `line_count` and an `origin` (id, author, branch); `start_line`/`end_line` are
+1-based and inclusive.
+
+**Pass `from` or `branch` to `velo_history`.** With neither (and no `all`) it
+follows `.velo/PARENT`, which an embedder working on the store alone does not have.
+
+## Merge
+
+`velo_merge_base` writes NULL when two snapshots share no history.
+`velo_merge_plan` lists each file with its `action`; conflicted files carry the
+`base`, `ours` and `theirs` object ids. `velo_merge_commit` records the merge from
+a spec naming `branch`, `ours`, `theirs`, `message` and per-path `resolutions`
+(`"ours"`, `"theirs"`, `"delete"` or `{"content_base64": ...}`); an unresolved
+conflict returns `VELO_ERR_CONFLICTS` with the paths in the message.
+
+## Branches
+
+`velo_branches` lists branches with their tips, `velo_branch_create` makes one at a
+snapshot (or the current one when NULL) and `velo_branch_set_tip` moves it; an
+unknown snapshot is `VELO_ERR_NOT_FOUND`.

@@ -1379,6 +1379,7 @@ dependencies = [
 name = "velo-ffi"
 version = "4.0.0"
 dependencies = [
+ "base64",
  "rusqlite",
  "serde_json",
  "tempfile",
