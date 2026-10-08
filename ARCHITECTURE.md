@@ -1911,6 +1911,327 @@ core stays synchronous.
 | An async core for the bindings | Pools at the binding layer cost nothing; async in core costs everything (see Anti-goals) |
 | Bindings over the CLI commands | The working-tree half is the CLI's; bindings expose the embedder half |
 
+---
+
+# Phase 15 — What the simulation found 🔴/🟡/🟢
+
+The first round of the team simulation (`sim/`, reports in `sim/reports/`):
+four simulated developers, about 510 commands, plus a 1000-file / 200-snapshot
+performance bench. This is the first evidence about velo that came from *using*
+it rather than from reading it, and it is a separate phase from 14 because it
+is fixes, not new capability. It outranks most of Phase 14: a timeline engine
+that silently loses content, or hangs holding a lock, is not one to build
+bindings on.
+
+**Provenance of the claims.** Each finding is marked **[observed]** (seen in a
+command log), **[read]** (seen in code by a reviewer who did not run it) or
+**[inferred]**. The perf report ran no profiler, and the UX report's
+exit-0-on-divergence claims rest on developer self-reports, not raw logs. Every
+item therefore starts with *reproduce it*, and gets a regression test before the
+fix, as in Phase 5.
+
+**Ordering** is Phase 5's rule again: wrong answers and data loss, then
+robustness, then speed, then wording, then re-measure. Perf comes after
+correctness except 15.5, which is on the critical path of the agent wedge.
+
+| # | Item | Marker | Source |
+| :--- | :--- | :--- | :--- |
+| 15.1 | Silent content loss | 🔴 | UX 3, 8, 11 |
+| 15.2 | `resolve` without a terminal | 🔴 | UX 1; perf F10 |
+| 15.3 | Non-interactive resolution: `--mark`, `--take both` | 🟡 | UX 2, 10 |
+| 15.4 | Locks: bounded wait, named holder | 🟡 | UX 6; perf |
+| 15.5 | Restore writes only what differs | 🔴 | perf F1 |
+| 15.6 | Sync classification, exit codes, one recipe | 🟡 | UX 4, 5, 7 |
+| 15.7 | Small local speedups | 🟢 | perf F3, F4, F5, F6, F7, F8 |
+| 15.8 | Discoverability and help | 🟢 | UX 9, 10, 11 |
+| 15.9 | Metadata growth | 🟢 | perf F2, F9 — a decision, not a fix |
+| 15.10 | Round two of the simulation | 🟡 | gated on 15.1 to 15.6 |
+
+## 15.1 Silent content loss 🔴
+
+Three places where velo discards a user's content and prints success. They
+contradict the README's own claim — "guards block destructive ops when you have
+unsaved changes" — so they come before anything else.
+
+- **`resolve --take` replaces hand edits** **[observed]**. A developer's
+  hand-merged file was reverted by `--take ours` with one line, `Resolved
+  shop/config.py (took ours)`; a second developer reported the same on three
+  files. Refuse when the working file differs from *both* sides, unless
+  `--force`; otherwise state what was replaced (`replaced your unsaved edits in
+  <file> (3 lines)`) and what "ours" means (your last saved snapshot). The
+  refusal belongs in core and is typed — a variant a consumer can match on, not
+  a message — because an agent calling `resolve` has the same problem.
+- **`save --amend` on a merge snapshot drops the merge parent** **[observed]**.
+  After the amend, history and `show` list one parent, `merge origin/main`
+  reports "Already up to date", and status says diverged: about ten commands to
+  recover. Either preserve every parent or refuse (`cannot amend a merge
+  snapshot`). Preserving is right if it is cheap, because identity covers the
+  parents — the amended snapshot is a new id either way — and 10.1 made
+  ancestry follow `merge_parent`, so a dropped one is now a wrong answer, not a
+  cosmetic one. Test through `merge_base` and `blame`, not only `show`.
+- **Timestamp and count wrongness in `stash`** **[observed]**. `stash list`
+  prints `1970-01-01 00:00`, which looks like the epoch-millisecond migration
+  (D3) leaking into one reader; `stash pop` says "14 file(s) restored" when 2
+  changed. Same family as Phase 5: a reader that was missed when a
+  representation changed. Audit every consumer of `created_at_ms`, not only
+  this one.
+
+`show` should also print all parents and `history` should mark a merge — the
+information is in the model and absent from the output that would have shown the
+amend bug on the first run.
+
+## 15.2 `resolve` without a terminal 🔴
+
+`velo resolve <file>` launches the TUI whether or not stdin and stdout are
+terminals **[read]**, and `run_resolve` holds the write guard for the whole
+session. Three simulated developers each lost 140 to 146 s to it, which is the
+entire `resolve` p95, and every other mutating command on the repository failed
+meanwhile.
+
+- Refuse at once if either end is not a TTY: `interactive resolve needs a
+  terminal; use --take ours|theirs|both, or edit the file and run velo resolve
+  --mark <file>`. The check is the **CLI's**, not core's — core still reads no
+  environment — so it lives next to the existing `run_resolve` dispatch.
+- Check *merge in progress and file conflicted* **before** drawing anything. A
+  developer got the TUI with no merge active and learned that on the next call.
+- Stop repainting on EOF.
+- Take the lock **per decision**, not per session. A human at a keyboard can
+  leave a TUI open for an hour, and the lock should not be theirs for that
+  hour. This is the structural fix; the TTY check only removes the common
+  trigger. It must keep the property that `merge --abort` restores the exact
+  pre-merge state at any point.
+- Fix the help line `velo resolve src/auth.py # mark manually edited file as
+  resolved`, which is not what happens.
+
+This matters most for the agent and MCP wedge (14.3): an agent never has a TTY,
+so for it the hang was the only behaviour.
+
+## 15.3 Non-interactive resolution 🟡
+
+Four developers hit whole-file `--take` where both sides' lines were wanted; one
+lost three of his own markers to it, and another called the workaround "`--take
+theirs` then re-edit". Non-interactive handling is whole-file only, and the
+per-hunk model exists only inside the TUI.
+
+- **`resolve --mark <file>`** — accept a file the user edited by hand. Refuse if
+  the content still equals either side untouched, and echo what was accepted.
+- **`--take both`** — ours then theirs, per hunk, using the order the TUI's
+  "both" already defines (one definition, shared).
+- **`velo conflicts <file>`** — print both sides of each hunk as data, with a
+  `--json` form. This is also the embedder's missing view: `merge::plan` gives a
+  classification, and a consumer with no TUI has no way to *show* a conflict to
+  its own user. Echo-what-was-dropped from 15.1 comes from the same model.
+- Help promises a `<file>.conflict` sidecar that is never created, and
+  `merge --help` cites `velo diff <file> --conflict`, which does not exist.
+  Correct the help — the sidecar would put a file in the user's tree, which
+  15.1's ground rules argue against, and `conflicts` replaces both.
+
+## 15.4 Locks 🟡
+
+The lock is fail-fast (`try_lock_exclusive`), so any overlap is a user-visible
+error. It hit 4 of 510 calls (0.8%), all from `resolve`, and the error names no
+holder; one developer cleared a stuck lock by killing her own processes.
+
+- A bounded wait in the **CLI** (2 to 5 s, 10 to 50 ms backoff) before
+  surfacing `Locked`. Core keeps `write` / `try_write` / `write_timeout` as they
+  are — the policy is the caller's, and an embedder will want its own.
+- Record the holder in the lock: pid, command line, start time. `Locked` carries
+  it, and the CLI prints `another velo operation holds the lock (pid 4812,
+  'velo resolve CHANGELOG.md', started 2m ago)` and whether that pid is alive.
+- A dead holder's lock is cleared automatically. The advisory lock is already
+  crash-safe, so this is about *reporting* a stale holder rather than releasing
+  anything new — but say so, and verify, before adding a `velo unlock`.
+- Not part of this item: a `velo sync` that fetches, merges and pushes under one
+  lock. That shrinks the race the sim measured (about 1.25 refused pushes per
+  success under four-way racing), but it is a new command, and it overlaps
+  15.6. Decide there.
+
+## 15.5 Restore writes only what differs 🔴
+
+The one performance item that is not 🟢, because it is the hot path of the
+engine's best use. Agent checkpointing is `restore`, `switch` and `undo` called
+constantly, and these are the slow commands: `switch` 1534 ms against git's 201
+(7.6x), `redo` 1911 ms, `undo` 531 ms, `clone` checkout the same path.
+
+Three causes, all **[read]** and none profiled **[inferred]**:
+
+1. `restore::run` rewrites every file of the target tree and never compares with
+   the tree being left. Undo differs by one commit and rewrites 1000 files; a
+   200-file switch costs the same as a 1000-file one.
+2. `invalidate_cache_entries` deletes the `index_cache` row of every written
+   file and nothing re-seeds it, so the *next* dirty check re-hashes the whole
+   tree. This is the proposed reason `redo` costs 3.6x `undo` (it runs on the
+   cache undo just emptied); it should be confirmed by measuring `redo` with the
+   cache pre-seeded, not accepted.
+3. `get_dirty_files` runs twice per undo, redo and switch, loading `file_map`
+   and `index_cache` into maps each time.
+
+The change: write only paths whose `(hash, mode)` differ from the tree being
+left or are missing; after writing, stat and **insert** the `index_cache` row
+(the hash is the object name, already known) instead of deleting it; pass the
+dirty set the caller already computed. Target is status-plus-delta cost, about
+100 to 150 ms.
+
+**The risk is the point.** "Skip what looks the same" is exactly the shortcut
+that loses work if the comparison is wrong: a file the user edited back to the
+old content, a mode change, a path that is a file in one tree and a directory in
+the other, a symlink. Skipping is safe only against the tree **the working
+directory is known to equal**, which is `PARENT` plus a clean dirty scan, and
+`--force` must still overwrite what the scan flagged. Property test: for random
+tree pairs and random dirty states, the result of the optimised restore is
+byte-identical to the current rewrite-everything one. Keep the slow path
+reachable until that test has run for a while.
+
+## 15.6 Sync classification, exit codes and one recipe 🟡
+
+The collaboration flow scored lowest (2 of 5): diverge, pull, merge, resolve,
+save, push cost four to nine commands per refused push, three developers told
+three different recipes.
+
+- **`pull` when only ahead** **[observed]** printed `diverged` seven times for
+  one developer whose status said "2 ahead", and the suggested `merge
+  origin/main` answered "Already up to date". Ahead-only is `Nothing to pull; N
+  local snapshots. Run velo push.` Diverged is its own outcome with both counts.
+  *Reproduce first:* the divergence claim in the report is partly digest-based,
+  and one reading is that `pull` classifies against a stale tracking ref.
+- **Exit codes.** A genuinely diverged `pull` and a conflicted `merge` exit 0
+  today per the developer reviews **[unverified]**. Scripts and agents decide on
+  the exit code. Divergence and conflict get distinct non-zero codes, documented
+  alongside the rest (the CLI help documents none). Per the Phase 1 rule, this
+  is the CLI's mapping over a typed outcome that already exists — the core must
+  not grow an `Err` for "diverged".
+- **One recipe** after a refused push, said identically by `push`, `pull` and
+  `status`: `velo pull`, `velo merge origin/main`, `velo save`, `velo push`. Drop
+  the `origin`-argument form, which the CLI rejects. A refused push refreshes
+  the tracking ref so `status` stops advertising a push that will be refused.
+- **Status during a merge** shows the merge's next step, not sync advice:
+  `resolve <file>, then velo save to finish merging origin/main`. Counts are
+  labelled "as of last fetch".
+- Optional, decide here and not in 15.4: `velo pull --merge`, and a `sync`
+  command that does the whole loop under one lock and stops at the first
+  conflict. It must keep the no-surprises stance — it stops, it never picks a
+  side.
+
+## 15.7 Small local speedups 🟢
+
+Each is independent and local; take them as a batch, and re-measure after each
+rather than trusting the estimate.
+
+| Item | Change | Evidence |
+| :--- | :--- | :--- |
+| `diff a..b` | Compare the two trees' hashes first and skip the object store for equal paths; also skip hash-equal paths in the worktree arm. `snapshot_diff` already does this | 270 ms vs git 82 **[read]** |
+| `grep` | `par_iter` over files, sort at the end for stable output; a literal prefilter for plain patterns | 584 ms vs 97, serial **[read]** |
+| Import (`bundle apply`, `clone`) | Parallelise the object loop; test `exists()` *before* decoding and re-verifying; avoid rebuilding a `Vec<(path, hash, mode)>` per snapshot | 4654 ms vs create 855 **[read]**; split across object loop, tree insert and checkout is not verified |
+| `save` | Return the hashes the dirty scan already computed; `put_file` takes a known hash and one read buffer (today up to three reads) | 4.75 s initial 1000-file save, 512 vs 181 ms on 16 MB **[read]** |
+| `merge` apply | Parallelise writes and the reconcile fan-out, as restore does | 411 ms vs 60 **[read]**; low priority, conflicts are 109 ms |
+| Dirty-check floor | Join `file_map` and `index_cache` during the walk instead of loading both into `HashMap<String,_>`; `save` with nothing to save should cost what `status` does | 143 vs 81 ms; matters at 50k files, not 1k **[read]** |
+
+Also verify, do not assume: `snapshot_diff` appears to test `is_binary` on the
+*working-tree* file rather than the snapshot object **[read, unconfirmed]**,
+which would be a wrong answer for historical diffs. If it reproduces it belongs
+in 15.1.
+
+Rayon in `grep` and `import` is the one place this phase touches an existing
+discipline: parallelism over `&Repo` reads is fine, but one `Connection` is not
+`Sync` (see Anti-goals), so each parallel stage reads what it needs *out* of the
+database first and works on owned data.
+
+## 15.8 Discoverability and help 🟢
+
+Cheap, and the pilot's "similar subcommand" tip showed they work: it fixed a
+mistyped `stash-push` in one step.
+
+- Alias `log` to `history` (three developers typed it), `-n` to `--limit`; hints
+  for `history-all` and `diff-worktree`.
+- `history --branch origin/main` finds nothing while `--all` shows
+  `remotes/origin/main`; accept both spellings.
+- `undo` removes files from disk, which surprised a developer: say `working
+  files rewound to <hash>`, hint `velo redo` when "Nothing to save" follows an
+  undo. `undo --keep` only if it can be defined without becoming a second,
+  half-working restore.
+- `gc --dry-run`; a warning before rewriting history that has been pushed;
+  document exit codes; fix the `mv` Examples block and the duplicated `[default:
+  N]`.
+- **A test that every command quoted in help text parses.** Three of the reports'
+  findings were help text citing commands or files that do not exist; this
+  turns that class of bug into a failing test instead of a round of simulation.
+
+## 15.9 Metadata growth — a decision, not a fix 🟢
+
+`velo.db` was 64 MB for 243 snapshots × 1000 files against 7.4 MB of objects:
+88% of `.velo` is tree metadata, because `file_map` stores a full tree copy per
+snapshot, at about 260 B per row with two indexes. That grows as snapshots ×
+files rather than with the amount of change, and at 10k files and 2k snapshots
+is roughly 20 M rows **[extrapolated, not measured]**. Save latency also
+doubled over the 200 snapshots (178 to 353 ms), plausibly the same insert loop
+into a growing index, **not verified** by anything in the report.
+
+None of it hurts at today's sizes, so the first deliverable is a **measurement,
+not a change**: time the insert loop, and find who needs `idx_filemap_path`
+before dropping it.
+
+Cheap, format-compatible options, in order: carry unchanged paths forward with
+one `INSERT … SELECT` so those rows never cross into Rust; store hashes as
+32-byte blobs rather than 64-char hex; `WITHOUT ROWID` keyed on `(snapshot_hash,
+path)`. The structural option is a tree-object or delta model, which changes the
+format and which `FORMAT.md` lists as a non-goal ("no separate hashed tree
+object").
+
+**This is the same decision as Phase 14's 14.1 and 14.5** — retention and
+compaction change what is stored per snapshot, and a tree-object model changes
+what a snapshot *is* on disk — so it is decided there, once, with the format
+decisions, rather than here as a performance tweak. Nothing in this phase may
+pre-empt it; the cheap options above are the ones that do not.
+
+## 15.10 Round two of the simulation 🟡
+
+Gated on 15.1 to 15.6, so it tests something new rather than re-finding what is
+already listed. The first round's limits are the brief for the second:
+
+- **Exercise what was not exercised:** `merge --abort` (never run), `rebase`,
+  `bundle`, the HTTP remote, history surgery.
+- **Re-run the collaboration flow** and compare against round one's counts:
+  commands per refused push, the non-zero exit rate, and the scorecard's
+  collaboration, safety and error-message rows, which scored 2 to 3.
+- **Read the raw logs** for the exit-0 claims rather than the digests.
+- **Agent-driven, no TTY, concurrent writers:** checkpoint, branch per attempt,
+  merge the winner, undo — the wedge as a workload. It would have caught 15.2
+  on its first call.
+- **Bindings and MCP** (14.2, 14.3) once they exist: a script and an MCP client
+  using only the public surface, no working tree.
+- **Fix the harness before trusting it:** randomised backoff (one developer
+  starved on a retry cap, which is the harness's fault, not velo's), and perf
+  budgets re-based — several in the bench are guesses, and the git gc, fsck and
+  initial-save figures look like Defender scanning rather than git. **Do not
+  quote those ratios.**
+
+## What not to change
+
+The reports named these as working, and they match what earlier phases chose
+deliberately. Recorded so a fix does not "improve" them:
+
+- Partial save (`save "msg" -- file`) and the counted summary.
+- `undo` / `redo` symmetry, and `redo` restoring the identical hash.
+- Named `stash push` / `pop`, matched exactly.
+- The dirty-tree refusal that names the file and offers save or stash.
+- Merge's per-file summary, quick-take line, and the end message.
+- Fast-forward-only push, and the push-success text.
+- Exit 0 with plain text for "nothing to save" and "already up to date" — these
+  are not failures, and 15.6's new exit codes must leave them alone.
+- Chunked large-file storage, `fsck` and `gc` speed, and reads never blocking on
+  a writer.
+
+## Deliberately not doing
+
+| Not doing | Why |
+| :--- | :--- |
+| A `<file>.conflict` sidecar | Puts a file in the user's tree; `velo conflicts` (15.3) shows the same thing as data |
+| Core refusing to run without a TTY | Core reads no environment (1.6). The check is the CLI's |
+| Dropping `idx_filemap_path` or changing `file_map` as a perf tweak | It is part of the retention and tree-object decision in 14.1/14.5 (15.9) |
+| Fixing the git comparison numbers | They look like Defender noise; re-measure rather than quote |
+| A `--force` for push | Unchanged: fast-forward-only is the design, and the pilot's refusals were the design working |
+| Optimising `merge` conflict handling | 109 ms already |
+
 
 ## Anti-goals
 
@@ -1968,6 +2289,7 @@ regresses within a month.
 | **12** | crates.io, after 10 and 11 — packaged and CI-checked, upload still manual | 🟡 |
 | **13** | Provenance: rename edges recorded and followed, blame asks which parent explains a line, `blame::Options` | ✅ |
 | **14** | Timeline engine: format decisions (signing, chunking, compaction), Python/Node/C bindings, MCP server, merge drivers, retention, metadata queries, events, sync, git export, WASM — publishing excluded until production-ready | 🔴/🟡/🟢 |
+| **15** | What the simulation found: silent content loss, `resolve` without a TTY, non-interactive resolution, locks, restore writing only what differs, sync messaging and exit codes, small speedups, help, metadata-growth decision, round two | 🔴/🟡/🟢 |
 
 **12 of the original 16 items confirmed as-written.** Four premises corrected
 (no `anyhow`; coupling is 3 files not pervasive; merge engine already pure;

@@ -6,3 +6,6 @@
 /.claude/settings.local.json
 /target-lane*
 /.claude/plans/
+
+# velo team simulation: keep the scripts
+!/sim/team/*.py
