@@ -11,6 +11,8 @@ use velo_core::tree::{FileKind, SaveTree, TreeEntry as CoreEntry};
 use velo_core::{Author as CoreAuthor, BranchName, ObjectHash, SnapshotId, SnapshotMeta};
 
 use crate::errors::to_py;
+use crate::history::{meta_filters, Blame, Branch};
+use crate::merge::{parse_resolutions, MergePlan};
 
 fn kind_name(kind: FileKind) -> &'static str {
     match kind {
@@ -32,11 +34,11 @@ fn parse_kind(kind: &str) -> PyResult<FileKind> {
     }
 }
 
-fn snapshot_id(text: &str) -> PyResult<SnapshotId> {
+pub(crate) fn snapshot_id(text: &str) -> PyResult<SnapshotId> {
     text.parse().map_err(to_py)
 }
 
-fn branch_name(text: &str) -> PyResult<BranchName> {
+pub(crate) fn branch_name(text: &str) -> PyResult<BranchName> {
     text.parse().map_err(to_py)
 }
 
@@ -108,14 +110,14 @@ impl TreeFile {
 /// Who made a snapshot.
 #[pyclass(frozen, module = "velo")]
 pub struct Author {
-    inner: CoreAuthor,
+    pub(crate) inner: CoreAuthor,
 }
 
 #[pymethods]
 impl Author {
     #[new]
     #[pyo3(signature = (name, email = None))]
-    fn new(name: String, email: Option<String>) -> PyResult<Self> {
+    pub(crate) fn new(name: String, email: Option<String>) -> PyResult<Self> {
         let inner = match email {
             Some(email) => CoreAuthor::with_email(name, email),
             None => CoreAuthor::new(name),
@@ -135,6 +137,28 @@ impl Author {
     }
 }
 
+/// A timezone-aware `datetime` in UTC for a millisecond timestamp.
+pub(crate) fn utc_datetime(py: Python<'_>, ms: i64) -> PyResult<Bound<'_, PyAny>> {
+    let datetime = py.import("datetime")?;
+    let utc = datetime.getattr("timezone")?.getattr("utc")?;
+    datetime
+        .getattr("datetime")?
+        .call_method1("fromtimestamp", (ms as f64 / 1000.0, utc))
+}
+
+/// Build snapshot metadata from the `{namespace: {key: value}}` shape.
+pub(crate) fn build_meta(
+    meta: Option<BTreeMap<String, BTreeMap<String, String>>>,
+) -> PyResult<SnapshotMeta> {
+    let mut snapshot_meta = SnapshotMeta::new();
+    for (namespace, keys) in meta.unwrap_or_default() {
+        for (key, value) in keys {
+            snapshot_meta.set(&namespace, key, value).map_err(to_py)?;
+        }
+    }
+    Ok(snapshot_meta)
+}
+
 /// A snapshot's header.
 #[pyclass(frozen, get_all, module = "velo")]
 pub struct Entry {
@@ -152,11 +176,7 @@ impl Entry {
     /// A timezone-aware `datetime` in UTC.
     #[getter]
     fn created_at<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyAny>> {
-        let datetime = py.import("datetime")?;
-        let utc = datetime.getattr("timezone")?.getattr("utc")?;
-        datetime
-            .getattr("datetime")?
-            .call_method1("fromtimestamp", (self.created_at_ms as f64 / 1000.0, utc))
+        utc_datetime(py, self.created_at_ms)
     }
 
     #[getter]
@@ -290,12 +310,7 @@ impl Repo {
         let parent = parent.map(snapshot_id).transpose()?;
         let merge_parent = merge_parent.map(snapshot_id).transpose()?;
         let entries = collect_entries(entries)?;
-        let mut snapshot_meta = SnapshotMeta::new();
-        for (namespace, keys) in meta.unwrap_or_default() {
-            for (key, value) in keys {
-                snapshot_meta.set(&namespace, key, value).map_err(to_py)?;
-            }
-        }
+        let snapshot_meta = build_meta(meta)?;
         let renames: Vec<(PathBuf, PathBuf)> = renames
             .unwrap_or_default()
             .into_iter()
@@ -389,6 +404,178 @@ impl Repo {
     fn head_token(&self) -> PyResult<u64> {
         self.core()?.head_token().map_err(to_py)
     }
+
+    /// Snapshots, newest first.
+    ///
+    /// `from_` takes precedence over `branch` and `all`. With none of the three
+    /// the ancestry of the working tree's position is used, which a repository
+    /// without a working tree does not have: pass `from_` or `branch` there.
+    /// Each `meta` tuple is `(namespace, key, value)` or `(namespace, key)`.
+    #[pyo3(signature = (*, from_ = None, branch = None, all = false, paths = None,
+        limit = None, meta = None))]
+    fn history(
+        &self,
+        from_: Option<&str>,
+        branch: Option<&str>,
+        all: bool,
+        paths: Option<Vec<String>>,
+        limit: Option<usize>,
+        meta: Option<Vec<Vec<String>>>,
+    ) -> PyResult<Vec<Entry>> {
+        let from = from_.map(snapshot_id).transpose()?;
+        let branch = branch.map(branch_name).transpose()?;
+        let paths: Vec<PathBuf> = paths
+            .unwrap_or_default()
+            .into_iter()
+            .map(PathBuf::from)
+            .collect();
+        let path_refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
+        let meta = meta.unwrap_or_default();
+        let filters = meta_filters(&meta)?;
+        let history = velo_core::commands::history::run(
+            &*self.core()?,
+            velo_core::commands::history::Options {
+                all,
+                branch: branch.as_ref(),
+                from: from.as_ref(),
+                paths: &path_refs,
+                meta: &filters,
+                limit,
+            },
+        )
+        .map_err(to_py)?;
+        Ok(history.entries.into_iter().map(Entry::from).collect())
+    }
+
+    /// Snapshots whose metadata satisfies every filter, newest first.
+    fn find_snapshots(&self, meta: Vec<Vec<String>>) -> PyResult<Vec<Entry>> {
+        let filters = meta_filters(&meta)?;
+        let found = self.core()?.find_snapshots(&filters).map_err(to_py)?;
+        Ok(found.into_iter().map(Entry::from).collect())
+    }
+
+    /// Attribute each line of `path` to the snapshot that last changed it.
+    ///
+    /// `lines` is `(first, last)`, 1-based and inclusive.
+    #[pyo3(signature = (path, *, at = None, lines = None))]
+    fn blame(
+        &self,
+        path: &str,
+        at: Option<&str>,
+        lines: Option<(usize, usize)>,
+    ) -> PyResult<Blame> {
+        let at = at.map(snapshot_id).transpose()?;
+        let range = match lines {
+            Some((first, last)) => {
+                if first == 0 || last < first {
+                    return Err(to_py(velo_core::Error::invalid(
+                        "lines must be (first, last), 1-based and inclusive, with first <= last.",
+                    )));
+                }
+                Some(first..last + 1)
+            }
+            None => None,
+        };
+        let blame = velo_core::commands::blame::run(
+            &*self.core()?,
+            Path::new(path),
+            velo_core::commands::blame::Options {
+                at: at.as_ref(),
+                lines: range,
+                ..Default::default()
+            },
+        )
+        .map_err(to_py)?;
+        Ok(Blame::from(blame))
+    }
+
+    /// The nearest common ancestor of two snapshots, if they share history.
+    fn merge_base(&self, a: &str, b: &str) -> PyResult<Option<String>> {
+        let base = velo_core::commands::merge::merge_base(
+            &*self.core()?,
+            &snapshot_id(a)?,
+            &snapshot_id(b)?,
+        )
+        .map_err(to_py)?;
+        Ok(base.map(|b| b.as_str().to_string()))
+    }
+
+    /// What merging `theirs` into `ours` would do, with nothing done.
+    fn merge_plan(&self, ours: &str, theirs: &str) -> PyResult<MergePlan> {
+        let plan = velo_core::commands::merge::plan(
+            &*self.core()?,
+            &snapshot_id(ours)?,
+            &snapshot_id(theirs)?,
+        )
+        .map_err(to_py)?;
+        Ok(plan.into())
+    }
+
+    /// Record the merge of `theirs` into `ours` as a snapshot on `branch`.
+    ///
+    /// `resolutions` maps a path to `"ours"`, `"theirs"`, `None` (delete) or
+    /// the bytes to write. A conflict left without one raises `Conflicts`.
+    #[pyo3(signature = (*, branch, ours, theirs, message, resolutions = None, meta = None,
+        author = None, timestamp_ms = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn merge_commit(
+        &self,
+        branch: &str,
+        ours: &str,
+        theirs: &str,
+        message: &str,
+        resolutions: Option<BTreeMap<String, Option<Bound<'_, PyAny>>>>,
+        meta: Option<BTreeMap<String, BTreeMap<String, String>>>,
+        author: Option<PyRef<'_, Author>>,
+        timestamp_ms: Option<i64>,
+    ) -> PyResult<String> {
+        let branch = branch_name(branch)?;
+        let ours = snapshot_id(ours)?;
+        let theirs = snapshot_id(theirs)?;
+        let resolutions = parse_resolutions(resolutions.unwrap_or_default())?;
+        let meta = build_meta(meta)?;
+        let repo = self.core()?;
+        let guard = repo.write().map_err(to_py)?;
+        let id = velo_core::commands::merge::commit(
+            &guard,
+            velo_core::commands::merge::MergeCommit {
+                branch: &branch,
+                ours: &ours,
+                theirs: &theirs,
+                resolutions: &resolutions,
+                message,
+                meta,
+                author: author.as_ref().map(|a| &a.inner),
+                timestamp_ms,
+            },
+        )
+        .map_err(to_py)?;
+        Ok(id.as_str().to_string())
+    }
+
+    fn branches(&self) -> PyResult<Vec<Branch>> {
+        let list = velo_core::commands::branches::list(&*self.core()?).map_err(to_py)?;
+        Ok(list.into_iter().map(Branch::from).collect())
+    }
+
+    /// Create `name`, at snapshot `at` or unborn when `at` is `None`.
+    #[pyo3(signature = (name, at = None))]
+    fn create_branch(&self, name: &str, at: Option<&str>) -> PyResult<()> {
+        let name = branch_name(name)?;
+        let at = at.map(snapshot_id).transpose()?;
+        let repo = self.core()?;
+        let guard = repo.write().map_err(to_py)?;
+        velo_core::commands::branches::create(&guard, &name, at.as_ref()).map_err(to_py)
+    }
+
+    /// Point an existing branch at `to`. Nothing is rewritten or deleted.
+    fn set_branch_tip(&self, name: &str, to: &str) -> PyResult<()> {
+        let name = branch_name(name)?;
+        let to = snapshot_id(to)?;
+        let repo = self.core()?;
+        let guard = repo.write().map_err(to_py)?;
+        velo_core::commands::branches::set_tip(&guard, &name, &to).map_err(to_py)
+    }
 }
 
 pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -397,5 +584,7 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<TreeFile>()?;
     m.add_class::<Author>()?;
     m.add_class::<Entry>()?;
+    crate::history::register(m)?;
+    crate::merge::register(m)?;
     Ok(())
 }

@@ -26,4 +26,21 @@ Notes:
   named after the variant (`Io` is `VeloIOError`, `Db` is `DatabaseError`), with
   the variant's fields as attributes (`NotFound.kind`, `Compacted.into`, ...).
 - Ids are plain `str`; a malformed one raises `InvalidInput`.
-- History, blame, merge and branches are not yet exposed.
+- A repository with no working tree has no current position, so pass `from_`
+  or `branch` to `history`.
+
+History, blame and a store-only merge:
+
+```python
+a = repo.save_tree(branch="main", message="a", entries={"n.txt": "one\n"},
+                   author=velo.Author("ada"), meta={"app": {"kind": "draft"}})
+b = repo.save_tree(branch="side", message="b", parent=a, entries={"n.txt": "two\n"})
+c = repo.save_tree(branch="main", message="c", parent=a, entries={"n.txt": "three\n"})
+
+repo.history(from_=c, limit=5, meta=[("app", "kind", "draft")])
+repo.blame("n.txt", at=c, lines=(1, 1)).lines[0].origin.author.name
+plan = repo.merge_plan(c, b)            # plan.is_clean is False
+repo.merge_commit(branch="main", ours=c, theirs=b, message="merge",
+                  resolutions={"n.txt": b"two\nthree\n"})
+repo.create_branch("release", at=c)
+```

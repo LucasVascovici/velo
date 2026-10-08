@@ -5,6 +5,8 @@
 use pyo3::prelude::*;
 
 mod errors;
+mod history;
+mod merge;
 mod repo;
 
 #[pymodule]

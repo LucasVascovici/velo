@@ -2,7 +2,13 @@
 
 from ._velo import (
     Author,
+    Blame,
+    BlameLine,
+    Branch,
     Entry,
+    LineOrigin,
+    MergePlan,
+    PlannedFile,
     Repo,
     TreeEntry,
     TreeFile,
@@ -35,7 +41,8 @@ from ._velo import (
 )
 
 __all__ = [
-    "Author", "Entry", "Repo", "TreeEntry", "TreeFile", "VeloError",
+    "Author", "Blame", "BlameLine", "Branch", "Entry", "LineOrigin",
+    "MergePlan", "PlannedFile", "Repo", "TreeEntry", "TreeFile", "VeloError",
     "NotARepo", "AlreadyInitialized", "NestedRepo", "SchemaTooNew",
     "MigrationRequired", "FormatTooOld", "Cancelled", "Locked",
     "DirtyWorkingTree", "OperationInProgress", "NoOperationInProgress",
