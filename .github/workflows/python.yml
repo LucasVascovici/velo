@@ -41,6 +41,9 @@ jobs:
           $BIN/python -m pip install maturin pytest
           $BIN/maturin develop
           $BIN/python -m pytest -q
+          for example in agent_checkpointing config_registry document_editor; do
+            $BIN/python examples/$example.py
+          done
 
       - name: Clippy
         run: cargo clippy --manifest-path bindings/python/Cargo.toml --all-targets -- -D warnings
