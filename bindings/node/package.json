@@ -1,0 +1,21 @@
+{
+  "name": "@velo/core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node.js binding for velo-core",
+  "main": "index.js",
+  "types": "index.d.ts",
+  "napi": {
+    "binaryName": "velo"
+  },
+  "engines": {
+    "node": ">= 18"
+  },
+  "scripts": {
+    "build": "napi build --platform --release",
+    "test": "node --test \"__test__/*.test.mjs\""
+  },
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  }
+}
