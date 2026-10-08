@@ -36,6 +36,10 @@ pub struct DiffLine {
     /// otherwise. `None` when the line exists on neither side.
     pub line_no: Option<usize>,
     /// Line content with the trailing newline stripped.
+    ///
+    /// When the path's merge driver has multi-line units (a paragraph, a
+    /// top-level key) this is the whole unit, lines joined with a line feed, so
+    /// the text can span several lines and `line_no` is its first.
     pub text: String,
 }
 
@@ -198,7 +202,7 @@ fn working_tree_change(
     let new = fs::read_to_string(&full_path).unwrap_or_default();
 
     Ok(FileChange::Modified {
-        hunks: build_hunks(&old, &new),
+        hunks: build_hunks_for(repo.drivers().for_path(rel_path), &old, &new),
     })
 }
 
@@ -258,7 +262,7 @@ pub fn between(
                 }
                 out.push(FileDiff {
                     change: FileChange::Modified {
-                        hunks: build_hunks(&old, &new),
+                        hunks: build_hunks_for(repo.drivers().for_path(&path), &old, &new),
                     },
                     path,
                 });
@@ -287,7 +291,7 @@ pub fn between(
                 }
                 out.push(FileDiff {
                     change: FileChange::Modified {
-                        hunks: build_hunks(&old, &new),
+                        hunks: build_hunks_for(repo.drivers().for_path(&path), &old, &new),
                     },
                     path,
                 });
@@ -351,7 +355,7 @@ pub(crate) fn snapshot_diff(
                 (Some(oh), Some(nh)) if oh != nh && !is_binary(&full_path) => {
                     let old = read_text(&objects, oh)?;
                     let new = read_text(&objects, nh)?;
-                    build_hunks(&old, &new)
+                    build_hunks_for(repo.drivers().for_path(&path), &old, &new)
                 }
                 _ => Vec::new(),
             };
@@ -387,7 +391,7 @@ pub(crate) fn snapshot_diff(
                     let old = read_text(&objects, oh)?;
                     let new = read_text(&objects, nh)?;
                     FileChange::Modified {
-                        hunks: build_hunks(&old, &new),
+                        hunks: build_hunks_for(repo.drivers().for_path(&path), &old, &new),
                     }
                 }
             }
@@ -493,6 +497,68 @@ pub fn build_hunks(old: &str, new: &str) -> Vec<Hunk> {
                 old_start: ops.first().map(|o| o.old_range().start + 1).unwrap_or(1),
                 old_count: ops.iter().map(|o| o.old_range().len()).sum(),
                 new_start: ops.first().map(|o| o.new_range().start + 1).unwrap_or(1),
+                new_count: ops.iter().map(|o| o.new_range().len()).sum(),
+                lines,
+            }
+        })
+        .collect()
+}
+
+/// Hunks between two texts, over the units `driver` defines for the path.
+///
+/// When every unit on both sides is a single line this is exactly
+/// [`build_hunks`], so the default driver costs nothing and changes nothing.
+/// Otherwise the texts are diffed as sequences of units: [`DiffLine::text`] is
+/// the unit, [`DiffLine::line_no`] its first line, and the [`Hunk`] counts are
+/// in units.
+fn build_hunks_for(driver: &dyn velo_merge::MergeDriver, old: &str, new: &str) -> Vec<Hunk> {
+    let (old_n, new_n) = (normalise(old), normalise(new));
+    let (old_units, new_units) = (driver.units(&old_n), driver.units(&new_n));
+    let single = |u: &[std::ops::Range<usize>]| u.iter().all(|r| r.len() == 1);
+    if single(&old_units) && single(&new_units) {
+        return build_hunks(old, new);
+    }
+    let old_texts = velo_merge::unit_texts(&old_n, &old_units);
+    let new_texts = velo_merge::unit_texts(&new_n, &new_units);
+    let old_refs: Vec<&str> = old_texts.iter().map(String::as_str).collect();
+    let new_refs: Vec<&str> = new_texts.iter().map(String::as_str).collect();
+    let diff = TextDiff::from_slices(&old_refs, &new_refs);
+    // A unit's number is the line it starts on, not its index.
+    let first_line = |units: &[std::ops::Range<usize>], i: Option<usize>| {
+        i.and_then(|i| units.get(i)).map(|u| u.start + 1)
+    };
+
+    diff.grouped_ops(3)
+        .into_iter()
+        .map(|ops| {
+            let mut lines = Vec::new();
+            for op in &ops {
+                for change in diff.iter_changes(op) {
+                    let (tag, line_no) = match change.tag() {
+                        ChangeTag::Delete => {
+                            (LineTag::Removed, first_line(&old_units, change.old_index()))
+                        }
+                        ChangeTag::Insert => {
+                            (LineTag::Added, first_line(&new_units, change.new_index()))
+                        }
+                        ChangeTag::Equal => {
+                            (LineTag::Context, first_line(&new_units, change.new_index()))
+                        }
+                    };
+                    lines.push(DiffLine {
+                        tag,
+                        line_no,
+                        text: change.value().to_string(),
+                    });
+                }
+            }
+            let start = |units: &[std::ops::Range<usize>], i: Option<usize>| {
+                first_line(units, i).unwrap_or(1)
+            };
+            Hunk {
+                old_start: start(&old_units, ops.first().map(|o| o.old_range().start)),
+                old_count: ops.iter().map(|o| o.old_range().len()).sum(),
+                new_start: start(&new_units, ops.first().map(|o| o.new_range().start)),
                 new_count: ops.iter().map(|o| o.new_range().len()).sum(),
                 lines,
             }

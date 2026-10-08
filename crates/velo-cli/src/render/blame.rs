@@ -43,16 +43,24 @@ pub fn print(blame: &Blame) {
         } else {
             String::new()
         };
-        println!(
-            "{} {} {}{:<width$}  {}  {}",
+        let prefix = format!(
+            "{} {} {}{:<width$}  {}  ",
             hash,
             date,
             who,
             message,
             style(format!("{:>4}", line.line_no)).dim(),
-            line.text,
             width = MSG_WIDTH
         );
+        // A unit can span several lines under a paragraph or key driver. Its
+        // first line carries the gutter; the rest get a blank one of the same
+        // width so the text stays in its column.
+        let blank = " ".repeat(console::measure_text_width(&prefix));
+        let mut text = line.text.split('\n');
+        println!("{}{}", prefix, text.next().unwrap_or(""));
+        for rest in text {
+            println!("{}{}", blank, rest);
+        }
     }
 }
 
