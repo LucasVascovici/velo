@@ -233,6 +233,13 @@ COMMITS=${commits.map((c) => c.sha).join(' ')}
 
 Confirm these commits are on origin/${BRANCH}, push them if not, and report their diff stats.`
 
+// A fix agent that pushed but reported no commits: find what it pushed after the task's last known commit.
+const discoverPrompt = (after, t, iso) => `BRANCH=${BRANCH}
+MODE=${iso ? 'worktree' : 'main'}
+COMMITS=(unknown)
+
+An implementer fixed task ${t.id} but did not report its commits. Run \`git fetch -q origin && git log --format='%H %s' ${after}..origin/${BRANCH}\`, and report as the task's commits only those whose files overlap this task's (\`git show --stat\`): ${t.files.join(', ') || '(see the subjects)'}. If there are none, report \`landed: false\` with error "no fix commits found". Then report their diff stats as usual.`
+
 const reviewPrompt = (t, commits, impl, prior) => `Review task ${t.id} on branch \`${BRANCH}\`.
 
 Commits to review: ${commits.map((c) => c.sha).join(' ')}
@@ -316,8 +323,11 @@ async function runTask(t, iso, lane) {
     r.rounds++
     const fix = await agent(fixPrompt(t, review, r.rounds, iso, lane), implOpts(`fix${r.rounds}:${t.id}`))
     if (!fix) { halt(`fix${r.rounds}:${t.id}`); return r }
-    if (fix.status === 'failed' || !fix.commits.length) { r.status = 'needs-attention'; r.note = fix.notes || fix.summary; return r }
-    const fixLand = await landIt(fix.commits, `land:${t.id}#${r.rounds}`)
+    if (fix.status === 'failed') { r.status = 'needs-attention'; r.note = fix.notes || fix.summary; return r }
+    const fixLand = fix.commits.length
+      ? await landIt(fix.commits, `land:${t.id}#${r.rounds}`)
+      : await agent(discoverPrompt(r.commits[r.commits.length - 1].sha, t, iso), { label: `land:${t.id}#${r.rounds}`, phase: 'Land', agentType: 'phase-lander', model: 'haiku', effort: 'low', schema: LAND_SCHEMA })
+    if (!fixLand) halt(`land:${t.id}#${r.rounds}`)
     if (!fixLand) return r
     if (!fixLand.landed) { r.status = 'push-failed'; r.note = fixLand.error || 'fix commits not on origin'; return r }
     const fixCommits = fixLand.commits.length ? fixLand.commits : fix.commits
