@@ -193,10 +193,12 @@ ${t.brief}
 ${t.files.map((f) => `- ${f}`).join('\n')}
 
 ### Acceptance criteria
-${t.acceptance.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+${t.acceptance ? t.acceptance.map((c, i) => `${i + 1}. ${c}`).join('\n') : fromPlan(t)}
 
 ### Tests
-${t.tests}`
+${t.tests || fromPlan(t)}`
+// A refresh may return a new brief but leave the criteria or tests as they were; those parts then come from the saved plan.
+const fromPlan = (t) => (PLAN_FILE ? `Unchanged from the saved plan: \`python .claude/scripts/brief.py "${PLAN_FILE}" ${t.id}\` (use this section of its output).` : '(none given)')
 
 const header = (iso, lane) => `BRANCH=${BRANCH}
 MODE=${iso ? 'worktree' : 'main'}${iso ? `\nTARGET_DIR=${ROOT}/target-lane${lane}` : ''}`
