@@ -13,9 +13,12 @@ use velo_core::commands::resolve_snapshot_id;
 use velo_core::tree::{FileKind, SaveTree, TreeEntry};
 use velo_core::{Author, BranchName, ObjectHash, SnapshotId, SnapshotMeta};
 
-use crate::error::{Failure, VELO_ERR_INVALID_INPUT, VELO_ERR_INVALID_JSON};
+use crate::error::{Failure, VELO_ERR_INVALID_INPUT};
 use crate::repo::VeloRepo;
-use crate::{mut_arg, ref_arg, run, str_arg, to_c_string, Res};
+use crate::{
+    bad_json, emit, mut_arg, opt_str, ref_arg, req_str, run, snapshot_arg, str_arg, to_c_string,
+    Res,
+};
 
 /// `kind` for an ordinary file.
 pub const VELO_KIND_REGULAR: i32 = 0;
@@ -115,20 +118,54 @@ pub unsafe extern "C" fn velo_tree_add_stored(
     })
 }
 
-fn bad_json(detail: impl std::fmt::Display) -> Failure {
-    Failure::new(VELO_ERR_INVALID_JSON, format!("options_json: {detail}"))
-}
-
-fn opt_str<'a>(doc: &'a Map<String, Value>, key: &str) -> Res<Option<&'a str>> {
-    match doc.get(key) {
-        None | Some(Value::Null) => Ok(None),
-        Some(Value::String(s)) => Ok(Some(s)),
-        Some(_) => Err(bad_json(format!("`{key}` must be a string"))),
+/// The `meta` member of an options document: `{namespace: {key: value}}`.
+pub(crate) fn parse_meta(doc: &Map<String, Value>) -> Res<SnapshotMeta> {
+    let mut meta = SnapshotMeta::new();
+    match doc.get("meta") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(namespaces)) => {
+            for (namespace, keys) in namespaces {
+                let keys = keys
+                    .as_object()
+                    .ok_or_else(|| bad_json("`meta` must map namespace -> key -> string"))?;
+                for (key, val) in keys {
+                    let val = val
+                        .as_str()
+                        .ok_or_else(|| bad_json("`meta` values must be strings"))?;
+                    meta.set(namespace.as_str(), key.as_str(), val)?;
+                }
+            }
+        }
+        Some(_) => return Err(bad_json("`meta` must be an object")),
     }
+    Ok(meta)
 }
 
-fn req_str<'a>(doc: &'a Map<String, Value>, key: &str) -> Res<&'a str> {
-    opt_str(doc, key)?.ok_or_else(|| bad_json(format!("`{key}` is required")))
+/// The `author` member of an options document: `{"name", "email"?}`.
+pub(crate) fn parse_author(doc: &Map<String, Value>) -> Res<Option<Author>> {
+    Ok(match doc.get("author") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(a)) => {
+            let name = req_str(a, "name").map_err(|_| bad_json("`author.name` is required"))?;
+            Some(match opt_str(a, "email")? {
+                Some(email) => Author::with_email(name, email)?,
+                None => Author::new(name)?,
+            })
+        }
+        Some(_) => return Err(bad_json("`author` must be an object")),
+    })
+}
+
+/// The `timestamp_ms` member of an options document.
+pub(crate) fn parse_timestamp(doc: &Map<String, Value>) -> Res<Option<i64>> {
+    match doc.get("timestamp_ms") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            Ok(Some(v.as_i64().ok_or_else(|| {
+                bad_json("`timestamp_ms` must be an integer")
+            })?))
+        }
+    }
 }
 
 /// Everything `SaveTree` borrows, owned, so the borrows can be taken afterwards.
@@ -156,36 +193,8 @@ fn parse_options(repo: &velo_core::Repo, text: &str) -> Res<Options> {
         }
     };
 
-    let mut meta = SnapshotMeta::new();
-    match doc.get("meta") {
-        None | Some(Value::Null) => {}
-        Some(Value::Object(namespaces)) => {
-            for (namespace, keys) in namespaces {
-                let keys = keys
-                    .as_object()
-                    .ok_or_else(|| bad_json("`meta` must map namespace -> key -> string"))?;
-                for (key, val) in keys {
-                    let val = val
-                        .as_str()
-                        .ok_or_else(|| bad_json("`meta` values must be strings"))?;
-                    meta.set(namespace.as_str(), key.as_str(), val)?;
-                }
-            }
-        }
-        Some(_) => return Err(bad_json("`meta` must be an object")),
-    }
-
-    let author = match doc.get("author") {
-        None | Some(Value::Null) => None,
-        Some(Value::Object(a)) => {
-            let name = req_str(a, "name").map_err(|_| bad_json("`author.name` is required"))?;
-            Some(match opt_str(a, "email")? {
-                Some(email) => Author::with_email(name, email)?,
-                None => Author::new(name)?,
-            })
-        }
-        Some(_) => return Err(bad_json("`author` must be an object")),
-    };
+    let meta = parse_meta(doc)?;
+    let author = parse_author(doc)?;
 
     let mut renames = Vec::new();
     match doc.get("renames") {
@@ -203,13 +212,7 @@ fn parse_options(repo: &velo_core::Repo, text: &str) -> Res<Options> {
         Some(_) => return Err(bad_json("`renames` must be an array")),
     }
 
-    let timestamp_ms = match doc.get("timestamp_ms") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(
-            v.as_i64()
-                .ok_or_else(|| bad_json("`timestamp_ms` must be an integer"))?,
-        ),
-    };
+    let timestamp_ms = parse_timestamp(doc)?;
 
     Ok(Options {
         branch: req_str(doc, "branch")?.parse()?,
@@ -258,18 +261,6 @@ pub unsafe extern "C" fn velo_save_tree(
         *out = to_c_string(id.into_string())?;
         Ok(())
     })
-}
-
-fn snapshot_arg(repo: &velo_core::Repo, spec: *const c_char) -> Res<SnapshotId> {
-    Ok(resolve_snapshot_id(repo, unsafe {
-        str_arg(spec, "spec")?
-    })?)
-}
-
-fn emit(out: *mut *mut c_char, value: Value) -> Res<()> {
-    let out = unsafe { mut_arg(out, "out_json")? };
-    *out = to_c_string(value.to_string())?;
-    Ok(())
 }
 
 /// The files of a snapshot, as a JSON array of `{"path", "object", "kind"}`
@@ -334,19 +325,7 @@ pub unsafe extern "C" fn velo_snapshot(
         let repo = &ref_arg(repo, "repo")?.repo;
         let id = snapshot_arg(repo, spec)?;
         let e = repo.snapshot(&id)?;
-        emit(
-            out_json,
-            json!({
-                "id": e.hash.as_str(),
-                "message": e.message,
-                "created_at": e.created_at.to_rfc3339(),
-                "created_at_ms": e.created_at.timestamp_millis(),
-                "branch": e.branch.as_str(),
-                "parent": e.parent.as_ref().map(|p| p.as_str()),
-                "merge_parent": e.merge_parent.as_ref().map(|p| p.as_str()),
-                "tag": e.tag.as_ref().map(|t| t.as_str()),
-            }),
-        )
+        emit(out_json, crate::history::entry_json(&e))
     })
 }
 

@@ -109,9 +109,18 @@ impl Failure {
 
 impl From<Error> for Failure {
     fn from(error: Error) -> Self {
+        let mut message = error.to_string();
+        // The core text gives only a count; an embedder has no working tree to
+        // look at, so the message must name the files itself.
+        if let Error::Conflicts { paths } = &error {
+            if !paths.is_empty() {
+                let names: Vec<_> = paths.iter().map(|p| p.display().to_string()).collect();
+                message = format!("{message}: {}", names.join(", "));
+            }
+        }
         Failure {
             code: code_of(&error),
-            message: error.to_string(),
+            message,
         }
     }
 }

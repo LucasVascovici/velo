@@ -29,14 +29,24 @@
 // this library and are not used after being freed.
 #![allow(clippy::missing_safety_doc)]
 
+mod branches;
 pub mod error;
+mod history;
+mod merge;
 mod repo;
 mod tree;
 
 use std::ffi::{c_char, CStr, CString};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+use serde_json::{Map, Value};
+use velo_core::commands::resolve_snapshot_id;
+use velo_core::SnapshotId;
+
+pub use branches::*;
 pub use error::*;
+pub use history::*;
+pub use merge::*;
 pub use repo::*;
 pub use tree::*;
 
@@ -98,6 +108,43 @@ pub(crate) fn to_c_string(text: String) -> Res<*mut c_char> {
             "the result contains a NUL byte and cannot be returned as a C string.",
         )
     })
+}
+
+/// A malformed JSON argument. Every JSON-taking function funnels its parse
+/// failures through here so the code and the wording are the same everywhere.
+pub(crate) fn bad_json(detail: impl std::fmt::Display) -> Failure {
+    Failure::new(
+        VELO_ERR_INVALID_JSON,
+        format!("invalid JSON argument: {detail}"),
+    )
+}
+
+/// An optional string member; absent and `null` are the same.
+pub(crate) fn opt_str<'a>(doc: &'a Map<String, Value>, key: &str) -> Res<Option<&'a str>> {
+    match doc.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(bad_json(format!("`{key}` must be a string"))),
+    }
+}
+
+/// A required string member.
+pub(crate) fn req_str<'a>(doc: &'a Map<String, Value>, key: &str) -> Res<&'a str> {
+    opt_str(doc, key)?.ok_or_else(|| bad_json(format!("`{key}` is required")))
+}
+
+/// A snapshot spec (tag, branch, id or prefix) taken from a C string.
+pub(crate) fn snapshot_arg(repo: &velo_core::Repo, spec: *const c_char) -> Res<SnapshotId> {
+    Ok(resolve_snapshot_id(repo, unsafe {
+        str_arg(spec, "spec")?
+    })?)
+}
+
+/// Write a JSON result to the caller's out-parameter.
+pub(crate) fn emit(out: *mut *mut c_char, value: Value) -> Res<()> {
+    let out = unsafe { mut_arg(out, "out_json")? };
+    *out = to_c_string(value.to_string())?;
+    Ok(())
 }
 
 /// Free a string returned by this library. NULL is a no-op.
