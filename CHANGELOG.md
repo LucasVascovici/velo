@@ -6,16 +6,13 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
-## 4.0.0
+## 4.1.0
 
-The v4.0.0 tag has been **moved** rather than superseded, twice. It was first
-pushed before Phases 5 to 11 landed, and again before Phase 13, and nothing was
-depending on either — Velum, the only consumer outside this repository, pins a
-commit rather than a tag. Everything below therefore ships as one version.
-
-Nothing is on crates.io yet, which is the only reason this is available. Once a
-version is published there it is permanent: it cannot be replaced, re-uploaded
-or deleted.
+Phase 14: velo as a timeline engine. Language bindings (C, Python, Node, WASM),
+an MCP server, pluggable merge drivers, metadata queries, change events,
+chunked storage, compaction and retention, HTTP sync, git interchange and
+single-file repositories. A repository that stores a chunked object becomes
+format v3, which 4.0.0 refuses; see the format section below.
 
 ### Added
 
@@ -33,32 +30,6 @@ or deleted.
 
 - **The README presents Velo as a timeline engine**, with runnable cookbooks
   for agent checkpointing, a config registry and a document editor.
-
-- **Velo has a rename concept.** It had none anywhere, and a snapshot is a whole
-  tree — so a move arrived as a delete plus an add and was gone by construction.
-  Renames are now **recorded, not detected**: `velo mv` writes the edge, and
-  `SaveTree.renames` takes it from a consumer that moved the file itself.
-  Content-similarity detection is deliberately not implemented; it is a
-  heuristic where an exact answer is available.
-
-  Reading the edges back is one shared primitive, `commands::paths`. Its
-  starting point is a parameter rather than implicit: following renames
-  backwards needs to know where backwards starts, and the only endpoint
-  available to invent is `.velo/PARENT`, which is exactly the wrong guess for a
-  consumer built on `save_tree`.
-
-- **`velo blame --lines N-M`, and `blame::Options`.** The walk reads and diffs
-  two whole file texts per snapshot and stops once the requested lines are
-  explained, so a window ends it far sooner — a gutter's worth of a document
-  whose first line is original otherwise walks the entire history. `Options`
-  also carries an observer and a cancel, and an `at` that falls back to the
-  checked-out branch tip so the default works without a working tree.
-
-- **`LineOrigin.branch`**, and `show` reports its rename edges. Both on the
-  argument that put the author on `LineOrigin`: the column is in the row the
-  walk already reads, and otherwise every consumer writes the same lookup.
-
-### Added — Phase 14
 
 - **`velo-mcp`**, a synchronous stdio MCP server over a repository with a
   working tree: `velo_save`, `velo_restore`, `velo_status`, `velo_diff`,
@@ -115,7 +86,7 @@ or deleted.
   and **single-file repositories** with no working tree. Working-tree commands,
   including `diff::between` against the tree, return `Unsupported` there.
 
-### Changed — Phase 14
+### Changed
 
 - **`ObjectStore`** is now the one seam behind every object access;
   `store_raw`, `hash_and_compress` and `read_object` keep their signatures.
@@ -123,13 +94,50 @@ or deleted.
   computed in Rust and bound as an integer.
 - `FileKind::from_mode` is `pub(crate)`.
 
-### Changed — repository format (Phase 14)
+### Changed — repository format
 
 - **Repository format v3**: large objects may be stored as chunks behind a
   manifest, and objects may live in the database. Object hashes and bundles are
   unchanged. `FORMAT.md` records signatures, chunked objects and compaction as
   decisions (§10 D5 to D7, §11), documents the HTTP transport (§9.1) and updates
   §2, §7.1 and §7.2.
+
+## 4.0.0
+
+The v4.0.0 tag has been **moved** rather than superseded, twice. It was first
+pushed before Phases 5 to 11 landed, and again before Phase 13, and nothing was
+depending on either — Velum, the only consumer outside this repository, pins a
+commit rather than a tag. Everything below therefore ships as one version.
+
+Nothing is on crates.io yet, which is the only reason this is available. Once a
+version is published there it is permanent: it cannot be replaced, re-uploaded
+or deleted.
+
+### Added
+
+- **Velo has a rename concept.** It had none anywhere, and a snapshot is a whole
+  tree — so a move arrived as a delete plus an add and was gone by construction.
+  Renames are now **recorded, not detected**: `velo mv` writes the edge, and
+  `SaveTree.renames` takes it from a consumer that moved the file itself.
+  Content-similarity detection is deliberately not implemented; it is a
+  heuristic where an exact answer is available.
+
+  Reading the edges back is one shared primitive, `commands::paths`. Its
+  starting point is a parameter rather than implicit: following renames
+  backwards needs to know where backwards starts, and the only endpoint
+  available to invent is `.velo/PARENT`, which is exactly the wrong guess for a
+  consumer built on `save_tree`.
+
+- **`velo blame --lines N-M`, and `blame::Options`.** The walk reads and diffs
+  two whole file texts per snapshot and stops once the requested lines are
+  explained, so a window ends it far sooner — a gutter's worth of a document
+  whose first line is original otherwise walks the entire history. `Options`
+  also carries an observer and a cancel, and an `at` that falls back to the
+  checked-out branch tip so the default works without a working tree.
+
+- **`LineOrigin.branch`**, and `show` reports its rename edges. Both on the
+  argument that put the author on `LineOrigin`: the column is in the row the
+  walk already reads, and otherwise every consumer writes the same lookup.
 
 ### Fixed
 

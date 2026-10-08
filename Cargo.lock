@@ -756,7 +756,7 @@ dependencies = [
 
 [[package]]
 name = "prompt-registry"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "chrono",
  "tempfile",
@@ -1338,7 +1338,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "velo-cli"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1354,7 +1354,7 @@ dependencies = [
 
 [[package]]
 name = "velo-core"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -1377,7 +1377,7 @@ dependencies = [
 
 [[package]]
 name = "velo-ffi"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "base64",
  "rusqlite",
@@ -1388,7 +1388,7 @@ dependencies = [
 
 [[package]]
 name = "velo-mcp"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "chrono",
  "clap",
@@ -1399,7 +1399,7 @@ dependencies = [
 
 [[package]]
 name = "velo-merge"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "proptest",
  "serde_json",
@@ -1410,7 +1410,7 @@ dependencies = [
 
 [[package]]
 name = "velo-testkit"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "tempfile",
  "velo-core",
@@ -1418,7 +1418,7 @@ dependencies = [
 
 [[package]]
 name = "velo-tui"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "console",
  "velo-core",
