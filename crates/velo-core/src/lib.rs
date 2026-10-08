@@ -45,6 +45,12 @@
 //! [`Repo::read_file_at`] / [`Repo::read_object`] read one back, none of them
 //! going near the filesystem.
 //!
+//! # WebAssembly
+//!
+//! The crate builds for `wasm32-unknown-unknown`, with single-file repositories
+//! only: there is no working tree to scan, [`lock::RepoLock`] is a no-op, and
+//! large-file reads use `fs::read` instead of mmap. See `DEVELOPING.md`.
+//!
 //! # Entry point
 //!
 //! [`Repo`] is the handle: [`Repo::init`], [`Repo::open`], [`Repo::discover`].

@@ -699,6 +699,19 @@ impl Repo {
 
     /// Retry acquiring the write lock until `timeout` elapses.
     pub fn write_timeout(&self, timeout: Duration) -> Result<WriteGuard<'_>> {
+        // `Instant::now()` panics on wasm32-unknown-unknown, and the wasm
+        // `RepoLock` always succeeds, so there is nothing to wait for: take it once.
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = timeout;
+            self.write()
+        }
+        #[cfg(not(target_family = "wasm"))]
+        self.write_timeout_native(timeout)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    fn write_timeout_native(&self, timeout: Duration) -> Result<WriteGuard<'_>> {
         let deadline = Instant::now() + timeout;
         let mut backoff = Duration::from_millis(5);
         loop {

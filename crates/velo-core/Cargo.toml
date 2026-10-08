@@ -36,10 +36,8 @@ velo-merge.workspace = true
 blake3.workspace = true
 fastcdc.workspace = true
 chrono.workspace = true
-fs2.workspace = true
 globset.workspace = true
 ignore.workspace = true
-memmap2.workspace = true
 parking_lot.workspace = true
 rayon.workspace = true
 regex.workspace = true
@@ -51,3 +49,13 @@ zstd.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+
+# File locking and mmap have no wasm equivalent; `RepoLock` is a no-op there and
+# storage falls back to `fs::read`.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+fs2.workspace = true
+memmap2.workspace = true
+
+# `Utc::now()` needs the JS clock on wasm32-unknown-unknown.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }
