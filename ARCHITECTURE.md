@@ -1696,7 +1696,7 @@ capability, then ecosystem.** 14.1 has no code, like Phase 0, and gates 14.5 and
 | 14.1 | Format decisions: signatures, chunked objects, compaction | ✅ **DONE** | — |
 | 14.2 | Language bindings: C ABI, Python, Node | 🔴 | — |
 | 14.3 | `velo-mcp` | 🔴 | — |
-| 14.4 | Pluggable merge and diff drivers | 🟡 | — |
+| 14.4 | Pluggable merge and diff drivers | ✅ **DONE** | — |
 | 14.5 | Retention and compaction | ✅ **DONE** | 14.1 |
 | 14.6 | Querying metadata | ✅ **DONE** | — |
 | 14.7 | Chunked object storage | ✅ **DONE** | 14.1 |
@@ -1763,9 +1763,7 @@ Tool calls are the place to apply the project's safety stance: no `--force`
 equivalent, merges as a plan the agent must apply explicitly, and every write
 tool records the calling run in metadata so blame can name it.
 
-## 14.4 Pluggable merge and diff drivers 🟡
-
-*Partly landed: the `MergeDriver` trait, the default `LineDriver`, and per-path drivers on the handle (`Repo::merging`), used by plan, merge, cherry-pick and rebase. The JSON, YAML and TOML drivers and driver-aware diff and blame are not.*
+## 14.4 Pluggable merge and diff drivers ✅ **DONE**
 
 `velo-merge` is line-based `&str → String`. Configuration, CMS content and
 low-code definitions are JSON, YAML and TOML, where a line merge produces
@@ -1845,7 +1843,7 @@ milestone, not of this phase.
 
 ## What landed
 
-Seven of the twelve items, and the seams under three more.
+Eight of the twelve items, and the seams under three more.
 
 14.1 was decisions only: signatures, chunked objects and compaction records are
 written down in `FORMAT.md` §10 and §11 before the code that needed them.
@@ -1865,9 +1863,16 @@ same process only, after commit), HTTP sync (14.9, with `velo serve-http` as a
 reference server and no auth) and git export and import (14.10, lossless
 through Velo trailers) are as briefed.
 
+Merge drivers (14.4) are a trait chosen per path on the handle, with diff3 as
+the default and key-aware `JsonDriver`, `YamlDriver` and `TomlDriver` behind
+features: keys merge independently, arrays and scalars are atomic, and a side
+that does not parse falls back to diff3 exactly. Re-serialising can change
+formatting, and YAML comments are dropped. Diff and blame follow the path's
+driver.
+
 Not landed: bindings (14.2), the `velo-mcp` crate (14.3, though `merge::commit`
-and `save::Options.meta` are its store-only prerequisites), key-aware merge
-drivers (14.4), WASM (14.11) and the positioning work (14.12).
+and `save::Options.meta` are its store-only prerequisites), WASM (14.11) and the
+positioning work (14.12).
 
 ## Anti-goal tensions
 
