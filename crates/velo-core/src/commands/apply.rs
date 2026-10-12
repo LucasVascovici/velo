@@ -224,8 +224,23 @@ pub fn reconcile_tree(
     }
     drop(contents);
 
-    // Pass 3: write. Wholesale takes read their object in parallel; merged
-    // contents and deletes are written in parallel. Every failure is reported.
+    // Pass 3: write. Deletes run first, as `restore` removes ghosts before
+    // writing: an incoming change from file `a` to `a/b` must remove `a`
+    // before `a/b` can create its directory. Then wholesale takes read their
+    // object in parallel and merged contents are written in parallel. Every
+    // failure is reported.
+    let mut errors: Vec<String> = planned
+        .par_iter()
+        .filter_map(|p| {
+            let full = root.join(crate::db::db_to_path(p.path));
+            match p.decision.as_ref() {
+                Some(Reconcile::Delete) if full.exists() => fs::remove_file(&full)
+                    .err()
+                    .map(|e| format!("delete '{}': {e}", p.path)),
+                _ => None,
+            }
+        })
+        .collect();
     let take_items: Vec<(&str, &str, i64)> = planned
         .iter()
         .filter_map(|p| match p.decision.as_ref() {
@@ -233,7 +248,7 @@ pub fn reconcile_tree(
             _ => None,
         })
         .collect();
-    let mut errors: Vec<String> = objects.par_with_content(
+    errors.extend(objects.par_with_content(
         &take_items,
         |(_, hash, _)| hash,
         |(path, _, mode), content| {
@@ -245,7 +260,7 @@ pub fn reconcile_tree(
                 Err(e) => Some(format!("read object for '{path}': {e}")),
             }
         },
-    );
+    ));
     errors.extend(
         planned
             .par_iter()
@@ -257,9 +272,6 @@ pub fn reconcile_tree(
                             .err()
                             .map(|e| format!("write '{}': {e}", p.path))
                     }
-                    Some(Reconcile::Delete) if full.exists() => fs::remove_file(&full)
-                        .err()
-                        .map(|e| format!("delete '{}': {e}", p.path)),
                     _ => None,
                 }
             })

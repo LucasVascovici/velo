@@ -194,3 +194,37 @@ fn a_write_failure_names_every_path() {
         "{err}"
     );
 }
+
+#[test]
+fn a_file_becoming_a_directory_removes_the_file_before_writing_under_it() {
+    let tmp = setup(false);
+    let root = tmp.path();
+    let repo = Repo::open_and_migrate(root).unwrap();
+    let guard = repo.write().unwrap();
+    let objects = guard.repo().objects();
+    let old = objects.put(b"old\n").unwrap();
+    let new = objects.put(b"new\n").unwrap();
+    drop(objects);
+    let mut anc = Tree::new();
+    anc.insert("a".to_string(), (old, 0o644));
+    let our = anc.clone();
+    let mut thr = Tree::new();
+    thr.insert("a/b".to_string(), (new, 0o644));
+    fs::write(root.join("a"), "old\n").unwrap();
+
+    let applied = apply::reconcile_tree(&guard, &anc, &our, &thr).unwrap();
+
+    assert_eq!(fs::read_to_string(root.join("a/b")).unwrap(), "new\n");
+    let got: Vec<(String, FileAction)> = applied
+        .files
+        .iter()
+        .map(|f| (f.path.clone(), f.action))
+        .collect();
+    assert_eq!(
+        got,
+        vec![
+            ("a".to_string(), FileAction::Deleted),
+            ("a/b".to_string(), FileAction::Added)
+        ]
+    );
+}
