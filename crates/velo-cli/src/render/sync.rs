@@ -3,6 +3,38 @@
 use console::style;
 use velo_core::commands::sync::{BranchCreated, Cloned, Fetched, Pulled, Pushed};
 
+/// The steps after a refused push, in order. One definition so `push`, `pull`
+/// and `status` can never give different advice. `pull` and `push` carry the
+/// remote name only when it is not the default one.
+pub fn recipe(remote: &str, branch: &str) -> Vec<(String, &'static str)> {
+    let arg = if remote == "origin" {
+        String::new()
+    } else {
+        format!(" {remote}")
+    };
+    vec![
+        (format!("velo pull{arg}"), "bring their snapshots in"),
+        (
+            format!("velo merge {remote}/{branch}"),
+            "combine them with yours",
+        ),
+        (
+            format!("velo save \"Merge {remote}/{branch}\""),
+            "record the merge",
+        ),
+        (format!("velo push{arg}"), "publish"),
+    ]
+}
+
+/// Print [`recipe`] as an aligned list.
+pub fn print_recipe(remote: &str, branch: &str) {
+    let steps = recipe(remote, branch);
+    let width = steps.iter().map(|(c, _)| c.len()).max().unwrap_or(0);
+    for (cmd, why) in &steps {
+        println!("    · {}  {}", style(format!("{cmd:<width$}")).cyan(), why);
+    }
+}
+
 pub fn print_cloned(cloned: &Cloned) {
     println!(
         "{} Cloned {} snapshot(s), {} object(s), {} branch(es) into {}",
@@ -41,7 +73,7 @@ pub fn print_fetched(fetched: &Fetched) {
         println!(
             "  {} your branches are untouched — {} to incorporate the changes.",
             style("note:").dim(),
-            style(format!("velo pull {}", fetched.remote)).cyan()
+            style("velo pull").cyan()
         );
     }
 }
@@ -81,7 +113,7 @@ pub fn print_pushed(pushed: &Pushed) {
                     style("note:").dim(),
                     remote,
                     what,
-                    style(format!("velo clone <url> / velo pull {}", remote)).cyan()
+                    style("velo clone <url> / velo pull").cyan()
                 );
             }
             println!(
@@ -129,11 +161,8 @@ pub fn print_pulled(pulled: &Pulled) {
                 ahead,
                 behind
             );
-            println!(
-                "  Reconcile with {} then {}",
-                style(format!("velo merge {}/{}", remote, branch)).cyan(),
-                style("velo save \"Merge …\"").cyan()
-            );
+            println!("  Reconcile with:");
+            print_recipe(remote, branch);
         }
         // `Pulled` is non-exhaustive; a future outcome falls back to its debug form.
         other => println!("{other:?}"),

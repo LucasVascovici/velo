@@ -512,6 +512,19 @@ velo pull
 
 Remote defaults to `origin`, and branch defaults to the current branch.
 
+### Exit codes
+
+Scripts can decide on the exit code:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
+| 1 | Error |
+| 2 | Command-line usage error |
+| 3 | Conflicts left to resolve (`merge`, `cherry-pick` or `rebase` stopped on conflicts) |
+| 4 | Histories diverged (`pull`, or a `push` the remote refused) |
+| 5 | Repository locked by another velo process |
+
 To host a repository over HTTP, run `velo serve-http <path> [--listen <addr>]`
 (default `127.0.0.1:8417`); it prints `listening on http://<addr>/`. Then
 `velo clone http://<addr>/` and the usual `push` / `pull` work against it, with
@@ -647,12 +660,13 @@ velo fetch
 
 ```
 Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
-  ↑ 1 ahead of origin/main — velo push to publish
+  ↑ 1 ahead of origin/main (as of last fetch) — velo push to publish
 ```
 ```
-  ↓ 1 behind origin/main — velo pull to catch up
-  ↕ diverged from origin/main (1 ahead, 1 behind) — velo pull then velo merge origin/main
-  ✔ up to date with origin/main
+  ↓ 1 behind origin/main (as of last fetch) — velo pull to catch up
+  ↕ diverged from origin/main (1 ahead, 1 behind, as of last fetch) — reconcile with:
+      velo pull, velo merge origin/main, velo save "Merge origin/main", velo push
+  ✔ up to date with origin/main (as of last fetch)
 ```
 
 #### When two people diverge
@@ -660,11 +674,11 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
 ```bash
 velo push
 # → Push rejected — 'main' has commits you don't have (non-fast-forward).
-#   Run 'velo pull origin' and reconcile, then push again.
+#   velo pull, velo merge origin/main, velo save "Merge origin/main", velo push   (exit code 4)
 
 velo pull
 # → ! 'main' and 'origin/main' have diverged.
-#     Reconcile with velo merge origin/main then velo save "Merge …"
+#     Reconcile with: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push   (exit code 4)
 
 velo merge origin/main     # the normal 3-way merge — auto-merges what it can
 velo save "Merge origin/main"

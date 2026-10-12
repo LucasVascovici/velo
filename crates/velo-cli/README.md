@@ -39,3 +39,14 @@ Velo was vibe-coded for fun — a real working tool, built as an experiment in a
 tight loop with an AI assistant, not as a production-grade Git replacement.
 
 MIT licensed.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
+| 1 | Error |
+| 2 | Command-line usage error |
+| 3 | Conflicts left to resolve (`merge`, `cherry-pick` or `rebase` stopped on conflicts) |
+| 4 | Histories diverged (`pull`, or a `push` the remote refused) |
+| 5 | Repository locked by another velo process |

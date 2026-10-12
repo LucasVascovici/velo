@@ -5,8 +5,15 @@ use velo_core::commands::status::{Status, Tracking};
 
 pub fn print(status: &Status) {
     print_header(status);
-    print_tracking(&status.tracking);
-    print_conflicts(&status.conflicts);
+    // Mid-merge the next step is finishing the merge; sync advice would only
+    // send the user down a second, competing path.
+    match &status.merging {
+        Some(source) => print_merge_step(source, &status.conflicts),
+        None => {
+            print_tracking(&status.tracking);
+            print_conflicts(&status.conflicts);
+        }
+    }
 
     if status.is_clean() {
         println!("  {}", style("Working directory clean.").dim());
@@ -57,36 +64,67 @@ fn print_tracking(tracking: &Tracking) {
             style(&label).cyan(),
             style("velo fetch").cyan()
         ),
-        Tracking::Known { ahead, behind, .. } => match (*ahead, *behind) {
+        Tracking::Known {
+            remote,
+            branch,
+            ahead,
+            behind,
+        } => match (*ahead, *behind) {
             (0, 0) => println!(
-                "  {} up to date with {}",
+                "  {} up to date with {} (as of last fetch)",
                 style("✔").green(),
                 style(&label).cyan()
             ),
             (a, 0) => println!(
-                "  {} {} ahead of {} — {} to publish",
+                "  {} {} ahead of {} (as of last fetch) — {} to publish",
                 style("↑").green().bold(),
                 a,
                 style(&label).cyan(),
                 style("velo push").cyan()
             ),
             (0, b) => println!(
-                "  {} {} behind {} — {} to catch up",
+                "  {} {} behind {} (as of last fetch) — {} to catch up",
                 style("↓").yellow().bold(),
                 b,
                 style(&label).cyan(),
                 style("velo pull").cyan()
             ),
-            (a, b) => println!(
-                "  {} diverged from {} ({} ahead, {} behind) — {} then {}",
-                style("↕").yellow().bold(),
-                style(&label).cyan(),
-                a,
-                b,
-                style("velo pull").cyan(),
-                style(format!("velo merge {}", label)).cyan()
-            ),
+            (a, b) => {
+                println!(
+                    "  {} diverged from {} ({} ahead, {} behind, as of last fetch) — reconcile with:",
+                    style("↕").yellow().bold(),
+                    style(&label).cyan(),
+                    a,
+                    b
+                );
+                super::sync::print_recipe(remote, branch);
+            }
         },
+    }
+}
+
+/// The merge's next step, in place of any sync advice.
+fn print_merge_step(source: &str, conflicts: &[String]) {
+    for c in conflicts {
+        println!("  {} {}", style("[Conflict]").red().bold(), c);
+    }
+    if conflicts.is_empty() {
+        println!(
+            "  Merge of {} ready — {} to finish it ({} to cancel)",
+            style(source).cyan(),
+            style("velo save").green(),
+            style("velo merge --abort").cyan()
+        );
+    } else {
+        println!(
+            "  Merging {}: resolve {} file(s) with {} ({} shows both sides), then {} to finish merging {}",
+            style(source).cyan(),
+            conflicts.len(),
+            style("velo resolve <file>").cyan(),
+            style("velo conflicts <file>").cyan(),
+            style("velo save").green(),
+            style(source).cyan()
+        );
     }
 }
 

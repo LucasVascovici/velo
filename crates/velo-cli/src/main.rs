@@ -72,7 +72,15 @@ Quick start
   velo save \"Initial commit\"
   velo status
   velo history",
-    after_help = "Run `velo help <COMMAND>` for detailed usage of any command.",
+    after_help = "Run `velo help <COMMAND>` for detailed usage of any command.
+
+EXIT CODES
+  0  success (including nothing to save, already up to date, nothing to pull)
+  1  error
+  2  command-line usage error
+  3  conflicts left to resolve (merge, cherry-pick or rebase stopped)
+  4  histories diverged (pull, or a push the remote refused)
+  5  repository locked by another velo process",
 )]
 struct Cli {
     #[command(subcommand)]
@@ -1174,12 +1182,50 @@ fn main() {
     // captured before `cli.command` is consumed.
     let force_form = force_form(&cli.command);
 
-    if let Err(e) = run(cli) {
-        eprintln!("{} {}", console::style("error:").red().bold(), e);
-        if let Some(hint) = hint_for(&e, force_form) {
-            eprintln!("{}", hint);
+    let code = match run(cli) {
+        Ok(exit) => exit.code(),
+        Err(e) => {
+            eprintln!("{} {}", console::style("error:").red().bold(), e);
+            if let Some(hint) = hint_for(&e, force_form) {
+                eprintln!("{}", hint);
+            }
+            error_code(&e)
         }
-        std::process::exit(1);
+    };
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+/// How a command that ran to the end finished. Anything other than `Success`
+/// is not an error — the output has already been printed — but a script needs
+/// to tell it apart from a clean run.
+enum Exit {
+    Success,
+    /// A merge, cherry-pick or rebase stopped on conflicts.
+    Conflicts,
+    /// Local and remote histories diverged.
+    Diverged,
+}
+
+impl Exit {
+    fn code(&self) -> i32 {
+        match self {
+            Exit::Success => 0,
+            Exit::Conflicts => 3,
+            Exit::Diverged => 4,
+        }
+    }
+}
+
+/// The CLI's mapping from a typed error to an exit code; documented in the
+/// EXIT CODES block of `velo --help`.
+fn error_code(e: &VeloError) -> i32 {
+    match e {
+        VeloError::Conflicts { .. } => 3,
+        VeloError::Diverged { .. } | VeloError::NotFastForward { .. } => 4,
+        VeloError::Locked { .. } => 5,
+        _ => 1,
     }
 }
 
@@ -1306,21 +1352,12 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 console::style(branch).cyan(),
                 console::style(remote).cyan()
             ));
-            suggest(
-                &mut lines,
-                &[
-                    (
-                        &format!("velo pull {}", remote),
-                        "bring their commits in first",
-                        Tone::Do,
-                    ),
-                    (
-                        &format!("velo push {}", remote),
-                        "then send yours",
-                        Tone::Alt,
-                    ),
-                ],
-            );
+            let recipe = render::sync::recipe(remote, branch);
+            let steps: Vec<(&str, &str, Tone)> = recipe
+                .iter()
+                .map(|(cmd, why)| (cmd.as_str(), *why, Tone::Do))
+                .collect();
+            suggest(&mut lines, &steps);
         }
         VeloError::Conflicts { paths } => {
             list_paths(&mut lines, paths);
@@ -1776,7 +1813,7 @@ fn serve_http(path: &str, listen: &str) -> Result<()> {
     Ok(())
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<Exit> {
     let current_dir = std::env::current_dir().map_err(VeloError::Io)?;
 
     // Commands that don't require (or create) an enclosing repo run first.
@@ -1785,7 +1822,7 @@ fn run(cli: Cli) -> Result<()> {
     match &cli.command {
         Commands::Init => {
             render::init::print(&commands::init::run(&current_dir)?);
-            return Ok(());
+            return Ok(Exit::Success);
         }
         Commands::Clone { url, dir } => {
             let cloned = commands::sync::clone(
@@ -1800,11 +1837,13 @@ fn run(cli: Cli) -> Result<()> {
                 },
             )?;
             render::sync::print_cloned(&cloned);
-            return Ok(());
+            return Ok(Exit::Success);
         }
-        Commands::ServeUpload { path } => return serve::upload(path),
-        Commands::ServeReceive { path } => return serve::receive(path),
-        Commands::ServeHttp { path, listen } => return serve_http(path, listen),
+        Commands::ServeUpload { path } => return serve::upload(path).map(|()| Exit::Success),
+        Commands::ServeReceive { path } => return serve::receive(path).map(|()| Exit::Success),
+        Commands::ServeHttp { path, listen } => {
+            return serve_http(path, listen).map(|()| Exit::Success)
+        }
         _ => {}
     }
 
@@ -1816,6 +1855,7 @@ fn run(cli: Cli) -> Result<()> {
     // written by a newer Velo is refused instead of half-read.
     // Long operations report through this. Inert on a non-TTY, so piped output
     // stays clean.
+    let mut exit = Exit::Success;
     let repo = velo_core::Repo::open_and_migrate(&root)?
         .lock_label(lockwait::command_label())
         .observing(render::progress::Bar::new())
@@ -1963,11 +2003,12 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::CherryPick { target } => {
             let target = commands::resolve_snapshot_id(&repo, &target)?;
-            render::cherry_pick::print(&commands::cherry_pick::run(
-                write(),
-                &target,
-                author::from_env()?.as_ref(),
-            )?);
+            let outcome =
+                commands::cherry_pick::run(write(), &target, author::from_env()?.as_ref())?;
+            render::cherry_pick::print(&outcome);
+            if !outcome.applied.conflicts().is_empty() {
+                exit = Exit::Conflicts;
+            }
         }
 
         Commands::Switch { name, force } => {
@@ -2020,7 +2061,13 @@ fn run(cli: Cli) -> Result<()> {
                     ))
                 }
             };
-            render::merge::print(&commands::merge::run(write(), mode)?);
+            let outcome = commands::merge::run(write(), mode)?;
+            render::merge::print(&outcome);
+            if let commands::merge::Outcome::Merged(result) = &outcome {
+                if !result.conflicts().is_empty() {
+                    exit = Exit::Conflicts;
+                }
+            }
         }
 
         Commands::Resolve {
@@ -2185,11 +2232,11 @@ fn run(cli: Cli) -> Result<()> {
                     ))
                 }
             };
-            render::rebase::print(&commands::rebase::run(
-                write(),
-                mode,
-                author::from_env()?.as_ref(),
-            )?);
+            let outcome = commands::rebase::run(write(), mode, author::from_env()?.as_ref())?;
+            render::rebase::print(&outcome);
+            if matches!(outcome, commands::rebase::Outcome::Paused { .. }) {
+                exit = Exit::Conflicts;
+            }
         }
 
         Commands::Gc { keep_days } => {
@@ -2254,12 +2301,12 @@ fn run(cli: Cli) -> Result<()> {
             )?);
         }
         Commands::Pull { remote } => {
-            render::sync::print_pulled(&commands::sync::pull(
-                write(),
-                &remote,
-                &spawn_config()?,
-                Default::default(),
-            )?);
+            let pulled =
+                commands::sync::pull(write(), &remote, &spawn_config()?, Default::default())?;
+            render::sync::print_pulled(&pulled);
+            if matches!(pulled, commands::sync::Pulled::Diverged { .. }) {
+                exit = Exit::Diverged;
+            }
         }
         Commands::Remote { cmd } => match cmd {
             None => render::remote::print_list(&commands::remote::list(&repo)?),
@@ -2273,7 +2320,7 @@ fn run(cli: Cli) -> Result<()> {
         },
     }
 
-    Ok(())
+    Ok(exit)
 }
 
 /// Parse `NS:KEY=VALUE` or `NS:KEY` into a metadata filter.

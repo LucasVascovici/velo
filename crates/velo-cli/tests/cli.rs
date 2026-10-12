@@ -21,6 +21,18 @@ fn velo(dir: &Path, args: &[&str]) -> (String, bool) {
     (s, out.status.success())
 }
 
+/// Run `velo <args>` in `dir`; return (stdout+stderr, exit code).
+fn velo_code(dir: &Path, args: &[&str]) -> (String, Option<i32>) {
+    let out = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run velo binary");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (s, out.status.code())
+}
+
 fn write(dir: &Path, rel: &str, content: &str) {
     let p = dir.join(rel);
     if let Some(parent) = p.parent() {
@@ -266,15 +278,15 @@ fn clone_push_pull_full_collaboration_loop() {
     assert!(!ok, "B push must be rejected:\n{out}");
     assert!(out.contains("non-fast-forward"), "and must say why:\n{out}");
     assert!(
-        out.contains("velo pull origin"),
+        out.contains("velo pull") && out.contains("velo merge origin/main"),
         "and must point at the fix:\n{out}"
     );
 
     // B pulls → divergence is reported (not auto-merged).
-    let (out, ok) = velo(&b, &["pull"]);
+    let (out, code) = velo_code(&b, &["pull"]);
     assert!(
-        ok && out.to_lowercase().contains("diverged"),
-        "B pull should report divergence:\n{out}"
+        code == Some(4) && out.to_lowercase().contains("diverged"),
+        "B pull should report divergence and exit 4:\n{out}"
     );
 
     // B reconciles via the existing merge engine, then pushes (now ff).
@@ -345,10 +357,10 @@ fn sync_over_streaming_child_protocol() {
     assert!(out.contains("non-fast-forward"), "and must say why:\n{out}");
 
     // B pulls (diverged), merges, and pushes.
-    let (out, ok) = velo(&b, &["pull"]);
+    let (out, code) = velo_code(&b, &["pull"]);
     assert!(
-        ok && out.to_lowercase().contains("diverged"),
-        "streaming pull should report divergence:\n{out}"
+        code == Some(4) && out.to_lowercase().contains("diverged"),
+        "streaming pull should report divergence and exit 4:\n{out}"
     );
     assert!(velo(&b, &["merge", "origin/main"]).1);
     assert!(velo(&b, &["save", "merge"]).1);
