@@ -18,6 +18,34 @@ section below.
 
 ### Added
 
+- **`resolve --take both`, `resolve --mark` and `velo conflicts [file] [--json]`.**
+  Core gains `TakeOption::Both` (ours then theirs, `Decision::BothOursFirst`;
+  `TakeOption` is now `#[non_exhaustive]`), `resolve::mark` and
+  `resolve::merge_source`. `mark` accepts a hand-edited file and refuses when it
+  is missing, equals ours or theirs, or still has conflict markers. `conflicts`
+  is read-only and prints both sides of each hunk. The help no longer promises a
+  sidecar file or `diff --conflict`, and the hints, the TTY refusal text and the
+  README are corrected.
+
+- **`restore` writes only paths that differ from the tree being left**, and
+  scans for dirty files once per command. A path is skipped only when `PARENT`
+  has the same hash and mode, it is not dirty and its on-disk mode matches.
+  `undo`, `redo` and `switch` pass their scan in. A property test holds the
+  result byte-identical to rewriting everything.
+
+- **Import is faster.** `bundle apply`, `clone` and fetch check for a held
+  object before decoding it, verify the rest and the snapshot ids in parallel,
+  and no longer rebuild a tree per snapshot. Errors and ids are unchanged.
+
+- **`save` reuses the dirty scan's hashes**, so each new object is read once,
+  and the scan loads the snapshot file map and index cache in one joined query.
+
+- **`merge` apply is parallel.** Deletes run first, then the merged and taken
+  files are written in parallel, so a file can become a directory.
+
+- **`file_map` growth is documented.** `docs/FORMAT.md` 11.4 lists who reads
+  `idx_filemap_path` and `idx_filemap_snap`; no format change.
+
 - **`resolve --take` refuses to replace hand edits.** Core checks every file
   first and returns the typed `WouldOverwriteEdits` (paths sorted, nothing
   written) unless the caller passes `OnEdits::Replace`. The CLI's `--force`
