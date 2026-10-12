@@ -12125,3 +12125,6 @@ mod stash_fixes;
 
 #[cfg(test)]
 mod historical_binary;
+
+#[cfg(test)]
+mod grep_parallel;
