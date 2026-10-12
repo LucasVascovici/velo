@@ -97,11 +97,23 @@ pub fn print_snapshot(detail: &SnapshotDetail) {
         style(super::when::seconds(detail.created_at)).dim()
     );
     println!("  {}", style(&detail.message).white().bold());
-    if let Some(parent) = &detail.parent {
-        println!(
+    match (&detail.parent, &detail.merge_parent) {
+        (Some(p1), Some(p2)) => println!(
+            "  parents: {}, {}  {}",
+            style(super::id::short(p1)).yellow().dim(),
+            style(super::id::short(p2)).yellow().dim(),
+            style("(merge)").dim()
+        ),
+        (None, Some(p2)) => println!(
+            "  parents: {}  {}",
+            style(super::id::short(p2)).yellow().dim(),
+            style("(merge)").dim()
+        ),
+        (Some(parent), None) => println!(
             "  parent: {}",
             style(super::id::short(parent)).yellow().dim()
-        );
+        ),
+        (None, None) => {}
     }
     println!();
 

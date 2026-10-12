@@ -115,6 +115,14 @@ fn join_refs(refs: &[BranchRef]) -> String {
         .join(", ")
 }
 
+fn merge_suffix(entry: &Entry) -> String {
+    if entry.is_merge() {
+        format!(" {}", style("(merge)").dim())
+    } else {
+        String::new()
+    }
+}
+
 fn tag_suffix(entry: &Entry, bold: bool) -> String {
     match &entry.tag {
         Some(t) => {
@@ -187,7 +195,7 @@ fn print_full(history: &History) {
         };
 
         println!(
-            "{} {:<hash_w$}{:GAP$}{:<BRANCH_W$}{:GAP$}{:<DATE_W$}{:GAP$}{}{}{}",
+            "{} {:<hash_w$}{:GAP$}{:<BRANCH_W$}{:GAP$}{:<DATE_W$}{:GAP$}{}{}{}{}",
             arrow,
             hash_styled,
             "",
@@ -196,6 +204,7 @@ fn print_full(history: &History) {
             style(super::when::seconds(e.created_at)).dim(),
             "",
             style(&e.message).white(),
+            merge_suffix(e),
             decorate(history, &e.hash),
             tag_suffix(e, true),
         );
@@ -213,12 +222,13 @@ fn print_oneline(history: &History) {
             "  "
         };
         println!(
-            "{}{} {}{}  {}",
+            "{}{} {}{}  {}{}",
             marker,
             style(super::id::short(&e.hash)).yellow(),
             refs_or_origin(history, e),
             tag_suffix(e, false),
-            e.message
+            e.message,
+            merge_suffix(e)
         );
     }
 }
@@ -312,12 +322,13 @@ fn print_graph(history: &History) {
             style(short).white().to_string()
         };
         println!(
-            "{}  {}  {}  {}  {}{}",
+            "{}  {}  {}  {}  {}{}{}",
             row,
             hash_s,
             refs_or_origin(history, entry),
             style(super::when::seconds(entry.created_at)).dim(),
             entry.message,
+            merge_suffix(entry),
             entry
                 .tag
                 .as_ref()
