@@ -580,6 +580,14 @@ NOTES
         /// Resolve all outstanding conflict files at once.
         #[arg(long, help = "Resolve all conflicts (requires --take)")]
         all: bool,
+
+        /// Replace hand edits to a conflicted file when taking a side.
+        #[arg(
+            long,
+            requires = "take",
+            help = "Replace hand edits when taking a side"
+        )]
+        force: bool,
     },
 
     /// Shelve and restore dirty working-tree state.
@@ -1204,6 +1212,23 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             suggest(&mut lines, &options);
         }
+        VeloError::WouldOverwriteEdits { paths } => {
+            list_paths(&mut lines, paths);
+            lines.push("  Taking a side would replace those edits:".into());
+            let file = paths
+                .first()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<file>".into());
+            let force = format!("velo resolve {} --take <side> --force", file);
+            let diff = format!("velo diff {}", file);
+            suggest(
+                &mut lines,
+                &[
+                    (&diff, "see your edits", Tone::Do),
+                    (&force, "replace them", Tone::Destructive),
+                ],
+            );
+        }
         VeloError::FormatTooOld { found, .. } => {
             lines.push(format!(
                 "  This repository was written by Velo before format v2 (found v{}).",
@@ -1366,6 +1391,7 @@ fn run_resolve(
     file: Option<&str>,
     take: Option<TakeOption>,
     all: bool,
+    force: bool,
 ) -> Result<()> {
     use console::style;
     use velo_core::commands::resolve;
@@ -1401,14 +1427,47 @@ fn run_resolve(
 
     match take {
         Some(side) => {
-            for cf in &targets {
-                resolve::take_side(guard, cf, side)?;
+            let on_edits = if force {
+                resolve::OnEdits::Replace
+            } else {
+                resolve::OnEdits::Refuse
+            };
+            let taken = resolve::take_all(guard, &targets, side, on_edits)?;
+            let root = guard.root();
+            let branch = std::fs::read_to_string(root.join(".velo/HEAD"))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let source = std::fs::read_to_string(root.join(".velo/MERGE_HEAD"))
+                .ok()
+                .and_then(|s| s.trim().split_once(':').map(|(_, r)| r.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "incoming".to_string());
+            for t in &taken {
+                let (meaning, lost) = match t.side {
+                    TakeOption::Ours => {
+                        (format!("your last saved snapshot on {}", branch), "theirs")
+                    }
+                    _ => (source.clone(), "ours"),
+                };
                 println!(
-                    "{} Resolved '{}' (took {}).",
+                    "{} Resolved '{}' — took {} ({})",
                     style("✔").green(),
-                    cf.path,
-                    side.as_str()
+                    t.path,
+                    t.side.as_str(),
+                    meaning
                 );
+                if t.dropped_lines > 0 {
+                    println!("  discarded {} line(s) from {}", t.dropped_lines, lost);
+                }
+                if t.replaced_edit_lines > 0 {
+                    println!(
+                        "  {} replaced your unsaved edits in {} ({} lines)",
+                        style("!").yellow().bold(),
+                        t.path,
+                        t.replaced_edit_lines
+                    );
+                }
             }
         }
         None => {
@@ -1837,8 +1896,13 @@ fn run(cli: Cli) -> Result<()> {
             render::merge::print(&commands::merge::run(write(), mode)?);
         }
 
-        Commands::Resolve { file, take, all } => {
-            run_resolve(write(), file.as_deref(), take.map(Into::into), all)?;
+        Commands::Resolve {
+            file,
+            take,
+            all,
+            force,
+        } => {
+            run_resolve(write(), file.as_deref(), take.map(Into::into), all, force)?;
         }
 
         Commands::Stash { sub } => match sub {

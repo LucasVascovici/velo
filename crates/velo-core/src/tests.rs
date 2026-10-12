@@ -43,7 +43,7 @@ mod tests {
             vec![resolve::get_conflict(&repo, file.expect("file or --all"))?]
         };
         for cf in &targets {
-            resolve::take_side(&guard, cf, side)?;
+            resolve::take_side(&guard, cf, side, resolve::OnEdits::Refuse)?;
         }
         Ok(())
     }
@@ -12128,3 +12128,6 @@ mod historical_binary;
 
 #[cfg(test)]
 mod grep_parallel;
+
+#[cfg(test)]
+mod resolve_edits;

@@ -188,7 +188,7 @@ fn save_after_resolving_succeeds_and_clears_conflict_rows() {
     {
         let g = repo.write().unwrap();
         for cf in resolve::list_conflicts(&repo).unwrap() {
-            resolve::take_side(&g, &cf, TakeOption::Theirs).unwrap();
+            resolve::take_side(&g, &cf, TakeOption::Theirs, resolve::OnEdits::Refuse).unwrap();
         }
     }
     assert!(save_as(&repo, "merged", false).unwrap().saved());

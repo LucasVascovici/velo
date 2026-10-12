@@ -120,6 +120,10 @@ pub enum Error {
     DirtyWorkingTree {
         paths: Vec<PathBuf>,
     },
+    /// Taking a side would replace edits made by hand to these conflicted files.
+    WouldOverwriteEdits {
+        paths: Vec<PathBuf>,
+    },
     /// An operation is already underway; finish or abort it first.
     OperationInProgress {
         what: InProgress,
@@ -251,6 +255,11 @@ impl fmt::Display for Error {
             Error::DirtyWorkingTree { paths } => {
                 write!(f, "{} unsaved change(s) would be overwritten", paths.len())
             }
+            Error::WouldOverwriteEdits { paths } => write!(
+                f,
+                "{} conflicted file(s) were edited by hand; taking a side would replace those edits",
+                paths.len()
+            ),
             Error::OperationInProgress { what } => write!(f, "a {} is already in progress", what),
             Error::NoOperationInProgress { what } => write!(f, "no {} in progress", what),
             Error::Conflicts { paths } => {

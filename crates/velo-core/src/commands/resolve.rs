@@ -206,18 +206,125 @@ pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
     clear_conflict(guard, &session.file.path)
 }
 
-/// Resolve a whole file by taking one side, with no per-hunk interaction.
-pub fn take_side(guard: &WriteGuard, file: &ConflictFile, side: TakeOption) -> Result<()> {
+/// What to do when the working copy of a conflicted file holds edits made by
+/// hand since the merge wrote it.
+///
+/// An enum rather than a bool so a call site reads as a decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OnEdits {
+    /// Refuse with [`VeloError::WouldOverwriteEdits`]; nothing is written.
+    #[default]
+    Refuse,
+    /// Overwrite the edits with the chosen side.
+    Replace,
+}
+
+/// What [`take_all`] did to one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Taken {
+    pub path: String,
+    pub side: TakeOption,
+    /// Lines of hand edits that `Replace` overwrote; 0 when there were none.
+    pub replaced_edit_lines: usize,
+    /// Lines of the losing side's conflicting hunks that were discarded.
+    pub dropped_lines: usize,
+}
+
+/// Has the working copy of `file` been edited by hand?
+///
+/// A merge leaves a conflicted file on disk equal to "ours", with no markers,
+/// so a working file that matches neither side was changed by the user.
+/// Returns the number of inserted plus deleted lines relative to "ours", or
+/// `None` when the file matches either side.
+pub fn edits(repo: &Repo, file: &ConflictFile) -> Result<Option<usize>> {
+    let full = repo.root().join(db::db_to_path(&file.path));
+    let hash = if full.exists() {
+        crate::storage::hash_for(&full, crate::storage::capture_mode(&full))
+    } else {
+        String::new()
+    };
+    if hash == file.our_hash || hash == file.their_hash {
+        return Ok(None);
+    }
+    let ours = read_text(&repo.objects(), &file.our_hash)?;
+    let working = match std::fs::read(&full) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => String::new(),
+    };
+    let n = similar::TextDiff::from_lines(&ours, &working)
+        .iter_all_changes()
+        .filter(|c| c.tag() != similar::ChangeTag::Equal)
+        .count();
+    Ok(Some(n))
+}
+
+/// Resolve several files by taking one side of each.
+///
+/// Every file is checked for hand edits first; with [`OnEdits::Refuse`] one
+/// edited file fails the whole call before anything is written, so a refusal
+/// never leaves the set half-resolved.
+pub fn take_all(
+    guard: &WriteGuard,
+    files: &[ConflictFile],
+    side: TakeOption,
+    on_edits: OnEdits,
+) -> Result<Vec<Taken>> {
     require_working_tree(guard.repo(), "resolve")?;
-    let mut session = open_session(guard.repo(), file.clone())?;
-    let decision = side.decision();
-    for h in &mut session.hunks {
-        h.decision = Some(decision.clone());
+    let mut edited: Vec<Option<usize>> = Vec::with_capacity(files.len());
+    for f in files {
+        edited.push(edits(guard.repo(), f)?);
     }
-    for h in &session.hunks {
-        record_decision(guard, &file.path, h.id, &decision)?;
+    if on_edits == OnEdits::Refuse && edited.iter().any(Option::is_some) {
+        let mut paths: Vec<std::path::PathBuf> = files
+            .iter()
+            .zip(&edited)
+            .filter(|(_, e)| e.is_some())
+            .map(|(f, _)| db::db_to_path(&f.path))
+            .collect();
+        paths.sort();
+        return Err(VeloError::WouldOverwriteEdits { paths });
     }
-    finalise(guard, &session)
+
+    let mut out = Vec::with_capacity(files.len());
+    for (file, edit) in files.iter().zip(edited) {
+        let mut session = open_session(guard.repo(), file.clone())?;
+        let decision = side.decision();
+        let dropped_lines = session
+            .hunks
+            .iter()
+            .map(|h| match side {
+                TakeOption::Ours => h.theirs.len(),
+                TakeOption::Theirs => h.ours.len(),
+            })
+            .sum();
+        for h in &mut session.hunks {
+            h.decision = Some(decision.clone());
+        }
+        for h in &session.hunks {
+            record_decision(guard, &file.path, h.id, &decision)?;
+        }
+        finalise(guard, &session)?;
+        out.push(Taken {
+            path: file.path.clone(),
+            side,
+            replaced_edit_lines: edit.unwrap_or(0),
+            dropped_lines,
+        });
+    }
+    Ok(out)
+}
+
+/// Resolve a whole file by taking one side, with no per-hunk interaction.
+pub fn take_side(
+    guard: &WriteGuard,
+    file: &ConflictFile,
+    side: TakeOption,
+    on_edits: OnEdits,
+) -> Result<Taken> {
+    let mut taken = take_all(guard, std::slice::from_ref(file), side, on_edits)?;
+    Ok(taken.remove(0))
 }
 
 /// Drop a file's conflict rows once it is resolved.
