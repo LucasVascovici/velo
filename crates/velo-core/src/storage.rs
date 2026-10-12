@@ -412,21 +412,65 @@ impl ObjectStore<'_> {
         }
     }
 
-    pub(crate) fn import_compressed(&self, hash: &str, frame: &[u8]) -> Result<bool> {
+    /// Verify and store many received frames, returning how many were new.
+    ///
+    /// An object the store already holds is skipped before it is decoded: its
+    /// name is the proof, and decompressing it again would only re-verify what
+    /// is stored. The files backend verifies and writes from the pool; the
+    /// database backend cannot share its connection, so it filters on the
+    /// calling thread, verifies owned frames in parallel, and inserts serially.
+    /// The first error in input order is returned, so a bad bundle fails the
+    /// same way every time.
+    pub(crate) fn import_many(
+        &self,
+        items: &[(String, Vec<u8>)],
+        progress: &crate::progress::PhaseGuard<'_>,
+    ) -> Result<usize> {
+        use rayon::prelude::*;
         match self {
-            ObjectStore::Files(f) => f.import_compressed(hash, frame),
-            ObjectStore::Database(c) => {
-                let decompressed = zstd::decode_all(frame).map_err(|_| {
-                    VeloError::corrupt(format!("object {} could not be decompressed", hash))
-                })?;
-                let actual = blake3::hash(&decompressed).to_hex().to_string();
-                if actual != hash {
-                    return Err(VeloError::corrupt(format!(
-                        "object {} is corrupt (content hashes to {})",
-                        hash, actual
-                    )));
+            ObjectStore::Files(f) => {
+                let results: Vec<Result<bool>> = items
+                    .par_iter()
+                    .map(|(hash, frame)| {
+                        progress.tick();
+                        if f.contains(hash) {
+                            Ok(false)
+                        } else {
+                            f.import_compressed(hash, frame)
+                        }
+                    })
+                    .collect();
+                let mut new = 0;
+                for r in results {
+                    if r? {
+                        new += 1;
+                    }
                 }
-                db_insert(c, hash, frame)
+                Ok(new)
+            }
+            ObjectStore::Database(c) => {
+                let mut fresh: Vec<&(String, Vec<u8>)> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for it in items {
+                    if seen.insert(it.0.as_str()) && !db_contains(c, &it.0)? {
+                        fresh.push(it);
+                    }
+                    progress.tick();
+                }
+                let verified: Vec<Result<()>> = fresh
+                    .par_iter()
+                    .map(|(hash, frame)| verify_frame(hash, frame))
+                    .collect();
+                for r in verified {
+                    r?;
+                }
+                let mut new = 0;
+                for (hash, frame) in fresh {
+                    if db_insert(c, hash, frame)? {
+                        new += 1;
+                    }
+                }
+                Ok(new)
             }
         }
     }
@@ -512,6 +556,20 @@ impl ObjectStore<'_> {
             ObjectStore::Database(_) => Verified::Missing,
         }
     }
+}
+
+/// Check that a received frame decompresses and hashes to its own name.
+fn verify_frame(hash: &str, frame: &[u8]) -> Result<()> {
+    let decompressed = zstd::decode_all(frame)
+        .map_err(|_| VeloError::corrupt(format!("object {} could not be decompressed", hash)))?;
+    let actual = blake3::hash(&decompressed).to_hex().to_string();
+    if actual != hash {
+        return Err(VeloError::corrupt(format!(
+            "object {} is corrupt (content hashes to {})",
+            hash, actual
+        )));
+    }
+    Ok(())
 }
 
 fn db_contains(conn: &rusqlite::Connection, hash: &str) -> Result<bool> {

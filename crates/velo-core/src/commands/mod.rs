@@ -114,8 +114,29 @@ pub struct SnapshotIdentity<'a> {
 /// change can shift an id. Metadata is hashed. And the result is returned at
 /// full width instead of truncated to 16 characters.
 pub fn snapshot_id(id: SnapshotIdentity<'_>) -> String {
-    let mut entries: Vec<&(String, String, i64)> = id.tree.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    snapshot_id_of(
+        id.tree.iter().map(|(p, h, m)| (p.as_str(), h.as_str(), *m)),
+        id.parent,
+        id.merge_parent,
+        id.message,
+        id.timestamp_ms,
+        id.meta,
+    )
+}
+
+/// [`snapshot_id`] over borrowed rows, so a caller holding a tree in some
+/// other shape (a bundle's `file_map`) need not clone it into owned tuples.
+/// Sorts by path, then hashes exactly the bytes `snapshot_id` always has.
+pub(crate) fn snapshot_id_of<'a>(
+    tree: impl IntoIterator<Item = (&'a str, &'a str, i64)>,
+    parent: &str,
+    merge_parent: &str,
+    message: &str,
+    timestamp_ms: i64,
+    meta: &SnapshotMeta,
+) -> String {
+    let mut entries: Vec<(&str, &str, i64)> = tree.into_iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
 
     let mut h = blake3::Hasher::new();
     h.update(b"velo-snapshot-v2\n");
@@ -128,17 +149,17 @@ pub fn snapshot_id(id: SnapshotIdentity<'_>) -> String {
         h.update(b"\n");
     }
     h.update(b"parent\0");
-    h.update(id.parent.as_bytes());
+    h.update(parent.as_bytes());
     h.update(b"\nmerge\0");
-    h.update(id.merge_parent.as_bytes());
+    h.update(merge_parent.as_bytes());
     h.update(b"\nmessage\0");
-    h.update(id.message.as_bytes());
+    h.update(message.as_bytes());
     h.update(b"\ntime\0");
-    h.update(id.timestamp_ms.to_string().as_bytes());
+    h.update(timestamp_ms.to_string().as_bytes());
     // The marker is emitted even when there is no metadata, so "none" and
     // "absent" are the same thing rather than two different ids.
     h.update(b"\nmeta\0");
-    for (namespace, key, value) in id.meta.iter() {
+    for (namespace, key, value) in meta.iter() {
         h.update(namespace.as_bytes());
         h.update(b"\0");
         h.update(key.as_bytes());

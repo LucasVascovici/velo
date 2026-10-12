@@ -12134,3 +12134,6 @@ mod resolve_edits;
 
 #[cfg(test)]
 mod diff_shortcuts;
+
+#[cfg(test)]
+mod import_parallel;
