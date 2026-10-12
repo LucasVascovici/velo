@@ -22,6 +22,29 @@ pub struct Outcome {
     pub message: String,
 }
 
+/// What `run` would restore on the current branch, without changing anything.
+///
+/// Uses the same query as `run`, so a caller can tell the user "your last undo
+/// removed X" and be right about what `redo` would bring back. Needs no write
+/// lock: it only reads the trash.
+pub fn peek(repo: &crate::Repo) -> Result<Option<Outcome>> {
+    let branch = repo.head_branch().into_string();
+    let found = repo
+        .conn()
+        .query_row(
+            "SELECT hash, message FROM trash WHERE branch = ? ORDER BY deleted_at_ms DESC LIMIT 1",
+            [branch.trim()],
+            |r| {
+                Ok(Outcome {
+                    snapshot: r.get(0)?,
+                    message: r.get(1)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(found)
+}
+
 /// Restore the most recently undone snapshot on the current branch.
 pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     require_working_tree(guard.repo(), "redo")?;

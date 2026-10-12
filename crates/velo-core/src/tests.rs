@@ -12152,3 +12152,6 @@ mod apply_parallel;
 
 #[cfg(test)]
 mod resolve_revalidate;
+
+#[cfg(test)]
+mod redo_peek;

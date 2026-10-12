@@ -15,7 +15,10 @@ pub fn print(outcome: &undo::Outcome) {
         style(&outcome.message).dim()
     );
     match &outcome.now_at {
-        Some(now_at) => println!("  Now at {}", style(super::id::short(now_at)).yellow()),
+        Some(now_at) => println!(
+            "  Working files rewound to {}",
+            style(super::id::short(now_at)).yellow()
+        ),
         None => println!(
             "  {} That was the first snapshot, so the working tree is now empty.",
             style("!").yellow()

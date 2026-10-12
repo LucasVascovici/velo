@@ -227,6 +227,7 @@ NOTES
     #[command(
         verbatim_doc_comment,
         name = "history",
+        alias = "log",
         after_help = "\
 NOTES
     · --file filters by any path prefix, so --file src/ matches all
@@ -241,10 +242,11 @@ NOTES
         /// Maximum number of snapshots to display.
         #[arg(
             short,
+            short_alias = 'n',
             long,
             default_value_t = 20,
             value_name = "N",
-            help = "Maximum number of entries to show [default: 20]"
+            help = "Maximum number of entries to show"
         )]
         limit: usize,
 
@@ -718,7 +720,10 @@ NOTES
     /// Examples
     ///   velo mv notes.txt docs/notes.md
     ///   velo save "move the notes"
-    #[command(after_help = "The rename is recorded on the next 'velo save'.")]
+    #[command(
+        verbatim_doc_comment,
+        after_help = "The rename is recorded on the next 'velo save'."
+    )]
     Mv {
         /// Path to move.
         #[arg(value_name = "FROM")]
@@ -818,7 +823,7 @@ NOTES
             long = "context",
             default_value_t = 2,
             value_name = "N",
-            help = "Lines of context around each match [default: 2]"
+            help = "Lines of context around each match"
         )]
         context: usize,
     },
@@ -1167,6 +1172,20 @@ enum StashSub {
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
+/// A nudge for a command people type out of git habit, keyed on the first
+/// argument that is not a flag.
+fn git_habit_hint(args: impl Iterator<Item = String>) -> Option<&'static str> {
+    let word = args.into_iter().find(|a| !a.starts_with('-'))?;
+    Some(match word.as_str() {
+        "history-all" => "hint: velo history --all",
+        "diff-worktree" => "hint: velo diff",
+        "commit" => "hint: velo save \"<message>\"",
+        "add" => "hint: velo has no staging area — velo save records every change",
+        "checkout" => "hint: velo switch <branch>, or velo restore <snapshot>",
+        _ => return None,
+    })
+}
+
 fn main() {
     #[cfg(windows)]
     unsafe {
@@ -1177,7 +1196,19 @@ fn main() {
         SetConsoleOutputCP(65001);
     }
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let wrong_subcommand = e.kind() == clap::error::ErrorKind::InvalidSubcommand;
+            let _ = e.print();
+            if wrong_subcommand {
+                if let Some(hint) = git_habit_hint(std::env::args().skip(1)) {
+                    eprintln!("{hint}");
+                }
+            }
+            std::process::exit(e.exit_code());
+        }
+    };
     // The force-flag suggestion depends on which command was run, so it is
     // captured before `cli.command` is consumed.
     let force_form = force_form(&cli.command);
@@ -1912,6 +1943,15 @@ fn run(cli: Cli) -> Result<Exit> {
                 .trim()
                 .to_string();
             render::save::print(&outcome, &branch, amend);
+            if matches!(outcome, commands::save::Outcome::NothingToSave) {
+                if let Some(o) = commands::redo::peek(&repo)? {
+                    println!(
+                        "  Your last velo undo removed {} \"{}\" — velo redo brings it back.",
+                        console::style(render::id::short(&o.snapshot)).yellow(),
+                        o.message
+                    );
+                }
+            }
         }
 
         Commands::Restore {
@@ -1954,6 +1994,23 @@ fn run(cli: Cli) -> Result<Exit> {
             };
             // Parsed here, at the argv boundary, so a malformed branch name is
             // a clear error rather than a query that quietly matches nothing.
+            // A remote-tracking branch (`origin/main`, or `remotes/origin/main`
+            // as `--all` prints it) is not a local branch, so it is shown as
+            // the ancestry of the snapshot it points at.
+            let mut from = from;
+            let mut branch = branch;
+            if let Some(b) = branch.clone() {
+                let bare = b.strip_prefix("remotes/").unwrap_or(&b).to_string();
+                let is_local = commands::branches::list(&repo)?
+                    .iter()
+                    .any(|x| x.name.as_str() == b);
+                if !is_local && bare.contains('/') {
+                    if let Ok(id) = commands::resolve_snapshot_id(&repo, &bare) {
+                        from = Some(id.to_string());
+                        branch = None;
+                    }
+                }
+            }
             let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
             let from = from
                 .map(|t| commands::resolve_snapshot_id(&repo, t.as_str()))

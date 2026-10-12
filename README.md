@@ -379,7 +379,7 @@ velo status
 velo diff
 
 # View history and time-travel
-velo history
+velo history              # also: velo log, velo history -n 5
 velo restore <hash>
 
 # Work on a feature branch
