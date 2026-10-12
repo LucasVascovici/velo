@@ -64,8 +64,13 @@ pub fn resolve_interactive(repo: &Repo, file: ConflictFile) -> Result<Outcome> {
         .map(|(_, b)| b.to_string())
         .unwrap_or_else(|| "(unknown)".into());
 
+    // One-line status shown under the header. `draw` clears the screen on a
+    // terminal, so a notice printed any other way would vanish at once.
+    let mut notice: Option<&'static str> = None;
+
     loop {
-        draw(&term, &session, cursor, &source_branch);
+        draw(&term, &session, cursor, &source_branch, notice);
+        notice = None;
 
         let decision = match read_key(&term) {
             Key::Char('1') => Some(Decision::Ours),
@@ -81,7 +86,7 @@ pub fn resolve_interactive(repo: &Repo, file: ConflictFile) -> Result<Outcome> {
                     .and_then(|guard| resolve::clear_decision(&guard, &session.file.path, cursor));
                 match cleared {
                     Err(e) if is_stale(&e) => return Ok(stale()),
-                    Err(e) if e.is_transient() => busy_notice(),
+                    Err(e) if e.is_transient() => notice = Some(BUSY_NOTICE),
                     _ => {}
                 }
                 None
@@ -117,7 +122,7 @@ pub fn resolve_interactive(repo: &Repo, file: ConflictFile) -> Result<Outcome> {
                 Err(e) if is_stale(&e) => return Ok(stale()),
                 // Someone else holds the lock right now: leave the hunk
                 // undecided and let the user press the key again.
-                Err(e) if e.is_transient() => busy_notice(),
+                Err(e) if e.is_transient() => notice = Some(BUSY_NOTICE),
                 Err(e) => return Err(e),
             }
         }
@@ -129,7 +134,7 @@ pub fn resolve_interactive(repo: &Repo, file: ConflictFile) -> Result<Outcome> {
                 Ok(()) => {}
                 Err(e) if is_stale(&e) => return Ok(stale()),
                 Err(e) if e.is_transient() => {
-                    busy_notice();
+                    notice = Some(FINALISE_BUSY_NOTICE);
                     continue;
                 }
                 Err(e) => return Err(e),
@@ -169,16 +174,19 @@ fn stale() -> Outcome {
     Outcome::Stale
 }
 
-fn busy_notice() {
-    println!(
-        "{} The repository is busy; that decision was not recorded. Try again.",
-        style("!").yellow()
-    );
-}
+const BUSY_NOTICE: &str = "The repository is busy; that decision was not recorded. Try again.";
+const FINALISE_BUSY_NOTICE: &str =
+    "The repository is busy; the file was not written yet. Press any key to retry.";
 
 // ─── Rendering ────────────────────────────────────────────────────────────────
 
-fn draw(term: &Term, session: &ConflictSession, cursor: usize, source_branch: &str) {
+fn draw(
+    term: &Term,
+    session: &ConflictSession,
+    cursor: usize,
+    source_branch: &str,
+    notice: Option<&str>,
+) {
     if term.is_term() {
         let _ = term.clear_screen();
     } else {
@@ -196,6 +204,9 @@ fn draw(term: &Term, session: &ConflictSession, cursor: usize, source_branch: &s
         style(source_branch.trim()).yellow()
     );
     println!("{}", style("─".repeat(72)).dim());
+    if let Some(n) = notice {
+        println!("  {} {}", style("!").yellow(), n);
+    }
 
     for line in &hunk.context_before {
         println!("  {}", style(line).dim());
