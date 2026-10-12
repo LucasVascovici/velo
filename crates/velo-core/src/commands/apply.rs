@@ -16,8 +16,10 @@ use std::path::Path;
 
 use rusqlite::params;
 
-use crate::commands::require_working_tree;
-use crate::error::Result;
+use rayon::prelude::*;
+
+use crate::commands::{classify, merge_contents, require_working_tree, Classified, Reconcile};
+use crate::error::{Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
 use crate::WriteGuard;
@@ -150,69 +152,161 @@ pub fn reconcile_tree(
         .collect();
 
     let progress = guard.phase(Phase::Reconciling, Some(all_paths.len() as u64));
-    let mut files = Vec::new();
-    let mut conflicts = Vec::new();
 
+    // Pass 1 (serial, cheap): classify every path from hashes and modes alone.
+    struct Planned<'a> {
+        path: &'a str,
+        anc_h: &'a str,
+        our_h: &'a str,
+        thr_h: &'a str,
+        thr_m: i64,
+        decision: Option<Reconcile>,
+    }
+    let mut planned: Vec<Planned> = Vec::new();
     for path in all_paths {
         progress.tick();
-        let side = |t: &Tree| {
-            t.get(path)
-                .map(|(h, m)| (h.clone(), *m))
-                .unwrap_or_default()
+        let (anc_h, anc_m) = side(ancestor, path);
+        let (our_h, our_m) = side(ours, path);
+        let (thr_h, thr_m) = side(theirs, path);
+        let decision = match classify((anc_h, anc_m), (our_h, our_m), (thr_h, thr_m)) {
+            Classified::Done(Reconcile::Nothing) => continue,
+            Classified::Done(r) => Some(r),
+            Classified::NeedsContent => None,
         };
-        let (anc_h, anc_m) = side(ancestor);
-        let (our_h, our_m) = side(ours);
-        let (thr_h, thr_m) = side(theirs);
-        let anc = (anc_h.as_str(), anc_m);
-        let our = (our_h.as_str(), our_m);
-        let thr = (thr_h.as_str(), thr_m);
+        planned.push(Planned {
+            path,
+            anc_h,
+            our_h,
+            thr_h,
+            thr_m,
+            decision,
+        });
+    }
 
-        let full = root.join(crate::db::db_to_path(path));
+    // Pass 2: read each object the content merges need exactly once, in
+    // parallel, then merge in parallel. Workers never touch the Repo or its
+    // Connection: the database backend fetches on this thread (see
+    // `par_with_content`), and the drivers are `Send + Sync`.
+    let needed: Vec<&str> = planned
+        .iter()
+        .filter(|p| p.decision.is_none())
+        .flat_map(|p| [p.anc_h, p.our_h, p.thr_h])
+        .filter(|h| !h.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let fetched: Vec<(&str, Result<Vec<u8>>)> =
+        objects.par_with_content(&needed, |h| h, |h, content| Some((*h, content)));
+    let mut contents: HashMap<&str, Vec<u8>> = HashMap::with_capacity(fetched.len());
+    for (h, content) in fetched {
+        contents.insert(h, content?);
+    }
+    let drivers = guard.repo().drivers();
+    let empty: Vec<u8> = Vec::new();
+    let merged: Vec<(usize, Reconcile)> = planned
+        .par_iter()
+        .enumerate()
+        .filter(|(_, p)| p.decision.is_none())
+        .map(|(i, p)| {
+            let get = |h: &str| contents.get(h).unwrap_or(&empty);
+            let r = merge_contents(
+                get(p.anc_h),
+                get(p.our_h),
+                get(p.thr_h),
+                p.thr_m,
+                drivers.for_path(p.path),
+            );
+            (i, r)
+        })
+        .collect();
+    for (i, r) in merged {
+        planned[i].decision = Some(r);
+    }
+    drop(contents);
 
-        let action = match crate::commands::reconcile_file(
-            &guard.repo().objects(),
-            anc,
-            our,
-            thr,
-            guard.repo().drivers().for_path(path),
-        )? {
-            crate::commands::Reconcile::Nothing => continue,
-            crate::commands::Reconcile::Delete => {
-                if full.exists() {
-                    fs::remove_file(&full)?;
+    // Pass 3: write. Wholesale takes read their object in parallel; merged
+    // contents and deletes are written in parallel. Every failure is reported.
+    let take_items: Vec<(&str, &str, i64)> = planned
+        .iter()
+        .filter_map(|p| match p.decision.as_ref() {
+            Some(Reconcile::TakeTheirs { hash, mode, .. }) => Some((p.path, hash.as_str(), *mode)),
+            _ => None,
+        })
+        .collect();
+    let mut errors: Vec<String> = objects.par_with_content(
+        &take_items,
+        |(_, hash, _)| hash,
+        |(path, _, mode), content| {
+            let full = root.join(crate::db::db_to_path(path));
+            match content {
+                Ok(data) => write_file(&full, *mode, &data)
+                    .err()
+                    .map(|e| format!("write '{path}': {e}")),
+                Err(e) => Some(format!("read object for '{path}': {e}")),
+            }
+        },
+    );
+    errors.extend(
+        planned
+            .par_iter()
+            .filter_map(|p| {
+                let full = root.join(crate::db::db_to_path(p.path));
+                match p.decision.as_ref() {
+                    Some(Reconcile::AutoMerged { content, mode }) => {
+                        write_file(&full, *mode, content)
+                            .err()
+                            .map(|e| format!("write '{}': {e}", p.path))
+                    }
+                    Some(Reconcile::Delete) if full.exists() => fs::remove_file(&full)
+                        .err()
+                        .map(|e| format!("delete '{}': {e}", p.path)),
+                    _ => None,
                 }
-                FileAction::Deleted
-            }
-            crate::commands::Reconcile::TakeTheirs { hash, mode, is_new } => {
-                write_file(&full, mode, &objects.get(&hash)?)?;
-                if is_new {
-                    FileAction::Added
-                } else {
-                    FileAction::Updated
-                }
-            }
-            crate::commands::Reconcile::AutoMerged { content, mode } => {
-                write_file(&full, mode, &content)?;
-                FileAction::AutoMerged
-            }
-            crate::commands::Reconcile::KeepOurs => FileAction::KeptOurs,
-            crate::commands::Reconcile::Conflict => {
+            })
+            .collect::<Vec<String>>(),
+    );
+    if !errors.is_empty() {
+        errors.sort();
+        return Err(VeloError::invalid(format!(
+            "{} file(s) could not be written:\n  {}",
+            errors.len(),
+            errors.join("\n  ")
+        )));
+    }
+
+    // Pass 4: the report, in sorted path order.
+    let mut files = Vec::with_capacity(planned.len());
+    let mut conflicts = Vec::new();
+    for p in &planned {
+        let action = match p.decision.as_ref().expect("decided above") {
+            Reconcile::Nothing => continue,
+            Reconcile::Delete => FileAction::Deleted,
+            Reconcile::TakeTheirs { is_new: true, .. } => FileAction::Added,
+            Reconcile::TakeTheirs { .. } => FileAction::Updated,
+            Reconcile::AutoMerged { .. } => FileAction::AutoMerged,
+            Reconcile::KeepOurs => FileAction::KeptOurs,
+            Reconcile::Conflict => {
                 conflicts.push(ConflictRow {
-                    path: path.to_string(),
-                    ancestor: anc_h.clone(),
-                    ours: our_h.clone(),
-                    theirs: thr_h.clone(),
+                    path: p.path.to_string(),
+                    ancestor: p.anc_h.to_string(),
+                    ours: p.our_h.to_string(),
+                    theirs: p.thr_h.to_string(),
                 });
                 FileAction::Conflicted
             }
         };
         files.push(FileOutcome {
-            path: path.to_string(),
+            path: p.path.to_string(),
             action,
         });
     }
 
     Ok(Applied { files, conflicts })
+}
+
+/// A path's hash ("" = absent) and mode in `tree`, borrowed from it.
+fn side<'a>(tree: &'a Tree, path: &str) -> (&'a str, i64) {
+    tree.get(path).map_or(("", 0), |(h, m)| (h.as_str(), *m))
 }
 
 fn write_file(full: &Path, mode: i64, content: &[u8]) -> Result<()> {
