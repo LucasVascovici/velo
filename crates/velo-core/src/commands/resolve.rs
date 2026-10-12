@@ -11,7 +11,7 @@ use velo_merge::{build_resolved_content, compute_conflict_hunks, ConflictHunk, D
 
 use crate::commands::require_working_tree;
 use crate::db;
-use crate::error::{RefKind, Result, VeloError};
+use crate::error::{InProgress, RefKind, Result, VeloError};
 use crate::{Repo, WriteGuard};
 
 /// Which side to take when resolving without per-hunk decisions.
@@ -170,6 +170,7 @@ pub fn record_decision(
     hunk_id: usize,
     decision: &Decision,
 ) -> Result<()> {
+    require_conflict_row(guard, path)?;
     let (kind, manual) = decision_to_db(decision);
     guard.conn().execute(
         "INSERT OR REPLACE INTO hunk_decisions (file_path, hunk_id, decision, manual_content)
@@ -179,8 +180,35 @@ pub fn record_decision(
     Ok(())
 }
 
+/// The stored conflict row for `path`, if any, read under the guard.
+///
+/// An interactive session holds the lock only per decision, so a merge abort
+/// can land between two decisions; every write re-checks the row first.
+fn conflict_row(guard: &WriteGuard, path: &str) -> Option<ConflictFile> {
+    guard
+        .conn()
+        .query_row(
+            "SELECT path, ancestor_hash, our_hash, their_hash FROM conflict_files WHERE path = ?",
+            [path],
+            |r| {
+                Ok(ConflictFile {
+                    path: r.get(0)?,
+                    ancestor_hash: r.get(1)?,
+                    our_hash: r.get(2)?,
+                    their_hash: r.get(3)?,
+                })
+            },
+        )
+        .ok()
+}
+
+fn require_conflict_row(guard: &WriteGuard, path: &str) -> Result<ConflictFile> {
+    conflict_row(guard, path).ok_or_else(|| VeloError::not_found(RefKind::Path, path))
+}
+
 /// Forget one hunk's decision.
 pub fn clear_decision(guard: &WriteGuard, path: &str, hunk_id: usize) -> Result<()> {
+    require_conflict_row(guard, path)?;
     let conn = guard.conn();
     conn.execute(
         "DELETE FROM hunk_decisions WHERE file_path = ? AND hunk_id = ?",
@@ -194,6 +222,28 @@ pub fn clear_decision(guard: &WriteGuard, path: &str, hunk_id: usize) -> Result<
 /// Undecided hunks fall back to "ours", matching the merge engine's default.
 pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
     require_working_tree(guard.repo(), "resolve")?;
+    let path = &session.file.path;
+    match conflict_row(guard, path) {
+        None => {
+            return Err(if guard.root().join(".velo/MERGE_HEAD").exists() {
+                VeloError::not_found(RefKind::Path, path.as_str())
+            } else {
+                VeloError::NoOperationInProgress {
+                    what: InProgress::Merge,
+                }
+            });
+        }
+        Some(row)
+            if row.ancestor_hash != session.file.ancestor_hash
+                || row.our_hash != session.file.our_hash
+                || row.their_hash != session.file.their_hash =>
+        {
+            return Err(VeloError::invalid(format!(
+                "the conflict in '{path}' changed since it was opened; open it again"
+            )));
+        }
+        Some(_) => {}
+    }
     let anc: Vec<&str> = session.ancestor.lines().collect();
     let our: Vec<&str> = session.ours.lines().collect();
     let thr: Vec<&str> = session.theirs.lines().collect();

@@ -12149,3 +12149,6 @@ mod save_hash_reuse;
 
 #[cfg(test)]
 mod apply_parallel;
+
+#[cfg(test)]
+mod resolve_revalidate;

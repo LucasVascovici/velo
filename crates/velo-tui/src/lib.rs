@@ -6,15 +6,17 @@
 //! core API directly.
 
 use console::{style, Key, Term};
+use std::time::Duration;
 use velo_core::commands::resolve::{self, ConflictFile, ConflictSession};
-use velo_core::error::Result;
+use velo_core::error::{Error, Result};
 use velo_core::merge::{ConflictHunk, Decision};
-use velo_core::WriteGuard;
+use velo_core::{Repo, WriteGuard};
 
 const RESOLUTION_MARKER: &str = "# >>> VELO RESOLUTION — EDIT BELOW THIS LINE <<<";
 
 /// Outcome of an interactive session over one file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Outcome {
     /// All hunks decided and the file written.
     Resolved,
@@ -22,6 +24,9 @@ pub enum Outcome {
     Aborted,
     /// The file had no real conflicts, so its stale conflict state was cleared.
     NothingToDo,
+    /// The merge was aborted, or the conflict changed or was resolved elsewhere
+    /// while the session was open; nothing was written.
+    Stale,
 }
 
 /// Walk the user through every hunk of `file`, writing the resolved file once all
@@ -29,13 +34,23 @@ pub enum Outcome {
 ///
 /// Decisions are persisted as they are made, so quitting and re-running resumes
 /// where the user left off.
-pub fn resolve_interactive(guard: &WriteGuard, file: ConflictFile) -> Result<Outcome> {
-    let root = guard.root();
-    let mut session = resolve::open_session(guard.repo(), file)?;
+///
+/// The repository lock is taken per decision, never across a key read or an
+/// editor run, so a session left open for an hour does not block anyone. Core
+/// re-checks the conflict under each short lock, so a decision cannot land
+/// after the merge was aborted.
+pub fn resolve_interactive(repo: &Repo, file: ConflictFile) -> Result<Outcome> {
+    let root = repo.root().to_path_buf();
+    let mut session = resolve::open_session(repo, file)?;
     if session.hunks.is_empty() {
         // No genuine conflict — this file was recorded in error.
-        resolve::clear_conflict(guard, &session.file.path)?;
-        return Ok(Outcome::NothingToDo);
+        let cleared =
+            lock(repo).and_then(|guard| resolve::clear_conflict(&guard, &session.file.path));
+        return match cleared {
+            Ok(()) => Ok(Outcome::NothingToDo),
+            Err(e) if is_stale(&e) => Ok(stale()),
+            Err(e) => Err(e),
+        };
     }
 
     let term = Term::stdout();
@@ -62,7 +77,13 @@ pub fn resolve_interactive(guard: &WriteGuard, file: ConflictFile) -> Result<Out
             }
             Key::Char('u') | Key::Backspace => {
                 session.hunks[cursor].decision = None;
-                resolve::clear_decision(guard, &session.file.path, cursor).ok();
+                let cleared = lock(repo)
+                    .and_then(|guard| resolve::clear_decision(&guard, &session.file.path, cursor));
+                match cleared {
+                    Err(e) if is_stale(&e) => return Ok(stale()),
+                    Err(e) if e.is_transient() => busy_notice(),
+                    _ => {}
+                }
                 None
             }
             Key::Char('n') | Key::ArrowRight => {
@@ -81,19 +102,38 @@ pub fn resolve_interactive(guard: &WriteGuard, file: ConflictFile) -> Result<Out
         };
 
         if let Some(d) = decision {
-            resolve::record_decision(guard, &session.file.path, cursor, &d)?;
-            session.hunks[cursor].decision = Some(d);
-            // Jump to the next undecided hunk.
-            cursor = session
-                .hunks
-                .iter()
-                .position(|h| h.decision.is_none())
-                .unwrap_or(session.hunks.len().saturating_sub(1));
+            let recorded = lock(repo)
+                .and_then(|guard| resolve::record_decision(&guard, &session.file.path, cursor, &d));
+            match recorded {
+                Ok(()) => {
+                    session.hunks[cursor].decision = Some(d);
+                    // Jump to the next undecided hunk.
+                    cursor = session
+                        .hunks
+                        .iter()
+                        .position(|h| h.decision.is_none())
+                        .unwrap_or(session.hunks.len().saturating_sub(1));
+                }
+                Err(e) if is_stale(&e) => return Ok(stale()),
+                // Someone else holds the lock right now: leave the hunk
+                // undecided and let the user press the key again.
+                Err(e) if e.is_transient() => busy_notice(),
+                Err(e) => return Err(e),
+            }
         }
 
         if session.all_decided() {
             let total = session.hunks.len();
-            resolve::finalise(guard, &session)?;
+            let finalised = lock(repo).and_then(|guard| resolve::finalise(&guard, &session));
+            match finalised {
+                Ok(()) => {}
+                Err(e) if is_stale(&e) => return Ok(stale()),
+                Err(e) if e.is_transient() => {
+                    busy_notice();
+                    continue;
+                }
+                Err(e) => return Err(e),
+            }
             if term.is_term() {
                 let _ = term.clear_screen();
             }
@@ -106,6 +146,34 @@ pub fn resolve_interactive(guard: &WriteGuard, file: ConflictFile) -> Result<Out
             return Ok(Outcome::Resolved);
         }
     }
+}
+
+/// Take the write lock for one core call; the caller drops it straight after.
+fn lock(repo: &Repo) -> Result<WriteGuard<'_>> {
+    repo.write_timeout(Duration::from_secs(5))
+}
+
+/// Did the merge go away or the conflict change since the session was opened?
+fn is_stale(e: &Error) -> bool {
+    matches!(
+        e,
+        Error::NotFound { .. } | Error::NoOperationInProgress { .. } | Error::InvalidInput { .. }
+    )
+}
+
+fn stale() -> Outcome {
+    println!(
+        "{} The merge was aborted or this file was resolved elsewhere — nothing written.",
+        style("!").yellow()
+    );
+    Outcome::Stale
+}
+
+fn busy_notice() {
+    println!(
+        "{} The repository is busy; that decision was not recorded. Try again.",
+        style("!").yellow()
+    );
 }
 
 // ─── Rendering ────────────────────────────────────────────────────────────────

@@ -1427,7 +1427,8 @@ fn not_a_repo_hint(cmd: &Commands) -> VeloError {
 /// `velo-tui` provides the interactive navigator. This wiring lives in the CLI so
 /// neither of those crates needs to know about the other.
 fn run_resolve(
-    guard: &velo_core::WriteGuard,
+    repo: &velo_core::Repo,
+    guard: Option<&velo_core::WriteGuard>,
     file: Option<&str>,
     take: Option<TakeOption>,
     all: bool,
@@ -1435,8 +1436,6 @@ fn run_resolve(
 ) -> Result<()> {
     use console::style;
     use velo_core::commands::resolve;
-
-    let repo = guard.repo();
 
     if !resolve::merge_active(repo) {
         if all {
@@ -1472,6 +1471,7 @@ fn run_resolve(
             } else {
                 resolve::OnEdits::Refuse
             };
+            let guard = guard.expect("--take must hold the write guard");
             let taken = resolve::take_all(guard, &targets, side, on_edits)?;
             let root = guard.root();
             let branch = std::fs::read_to_string(root.join(".velo/HEAD"))
@@ -1513,8 +1513,9 @@ fn run_resolve(
         }
         None => {
             // The TUI needs a real terminal at both ends; without one it
-            // would hang holding the write lock. The check is the CLI's, so
-            // core stays free of environment reads.
+            // would hang on a key read. The check is the CLI's, so core stays
+            // free of environment reads. The session takes the write lock
+            // itself, one decision at a time.
             use std::io::IsTerminal;
             if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
                 return Err(VeloError::invalid(
@@ -1523,7 +1524,7 @@ fn run_resolve(
                 ));
             }
             for cf in targets {
-                velo_tui::resolve_interactive(guard, cf)?;
+                velo_tui::resolve_interactive(repo, cf)?;
             }
         }
     }
@@ -1606,6 +1607,22 @@ fn report_remaining_conflicts(repo: &velo_core::Repo) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Does this command hold the repo lock for its whole run?
+///
+/// Interactive `resolve` does not: a human can leave the TUI open for an hour,
+/// so it takes the lock per decision instead.
+fn needs_write_guard(cmd: &Commands) -> bool {
+    !is_read_only(cmd)
+        && !matches!(
+            cmd,
+            Commands::Resolve {
+                take: None,
+                mark: false,
+                ..
+            }
+        )
 }
 
 /// Commands that never mutate the repository — they skip the repo lock so a
@@ -1792,10 +1809,10 @@ fn run(cli: Cli) -> Result<()> {
     // commands skip the lock so they never block on a long-running mutation.
     // The guard is held until the command returns, and is what grants write
     // access to core at all.
-    let guard = if is_read_only(&cli.command) {
-        None
-    } else {
+    let guard = if needs_write_guard(&cli.command) {
         Some(repo.write()?)
+    } else {
+        None
     };
     // Mutating arms need the guard; `is_read_only` above decides which is which,
     // so a mismatch here is a programming error rather than a user-visible one.
@@ -1994,7 +2011,17 @@ fn run(cli: Cli) -> Result<()> {
             if mark {
                 run_mark(write(), file.as_deref().unwrap_or_default())?;
             } else {
-                run_resolve(write(), file.as_deref(), take.map(Into::into), all, force)?;
+                // Interactive resolve holds no guard here; the TUI takes the
+                // lock for one decision at a time.
+                let guard = if take.is_some() { Some(write()) } else { None };
+                run_resolve(
+                    &repo,
+                    guard,
+                    file.as_deref(),
+                    take.map(Into::into),
+                    all,
+                    force,
+                )?;
             }
         }
 
