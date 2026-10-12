@@ -12131,3 +12131,6 @@ mod grep_parallel;
 
 #[cfg(test)]
 mod resolve_edits;
+
+#[cfg(test)]
+mod diff_shortcuts;

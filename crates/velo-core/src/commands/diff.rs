@@ -255,6 +255,10 @@ pub fn between(
                 if !matches_filter(&path) {
                     continue;
                 }
+                // Equal hashes mean equal content: skip the object store.
+                if a_files.get(&path) == b_files.get(&path) {
+                    continue;
+                }
                 let old = read_opt(&objects, a_files.get(&path))?;
                 let new = read_opt(&objects, b_files.get(&path))?;
                 if old == new {
@@ -271,6 +275,10 @@ pub fn between(
         }
         None => {
             let dirty = get_dirty_files(repo);
+            // The dirty set is relative to PARENT, so only when `a` is PARENT
+            // does "tracked and not dirty" prove the file equals `a`'s object.
+            let parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+            let a_is_parent = parent.trim() == a_hash.as_str();
             let mut candidates: Vec<String> = a_files
                 .keys()
                 .cloned()
@@ -282,6 +290,9 @@ pub fn between(
             let mut out = Vec::new();
             for path in candidates {
                 if !matches_filter(&path) {
+                    continue;
+                }
+                if a_is_parent && a_files.contains_key(&path) && !dirty.contains_key(&path) {
                     continue;
                 }
                 let old = read_opt(&objects, a_files.get(&path))?;
