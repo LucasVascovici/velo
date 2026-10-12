@@ -309,6 +309,13 @@ pub fn between(
 
 // ─── Snapshot vs its parent (used by `show` and `stash show`) ─────────────────
 
+/// Whether stored content reads as binary: a NUL in its first 1024 bytes, the
+/// same heuristic as `commands::is_binary`, applied to the snapshot's own
+/// bytes so a historical diff does not depend on today's working tree.
+fn looks_binary(bytes: &[u8]) -> bool {
+    bytes.iter().take(1024).any(|&b| b == 0)
+}
+
 /// Diff `new_hash` against `old_hash`, distinguishing added and deleted files.
 ///
 /// `old_hash` may be empty, meaning the snapshot has no parent, in which case
@@ -321,7 +328,6 @@ pub(crate) fn snapshot_diff(
     new_hash: &str,
     file_filter: &Option<String>,
 ) -> Result<Diff> {
-    let root = repo.root();
     let objects = repo.objects();
     let old_files = load_file_map(conn, old_hash)?;
     let new_files = load_file_map(conn, new_hash)?;
@@ -349,13 +355,20 @@ pub(crate) fn snapshot_diff(
             continue;
         }
 
-        let full_path = root.join(db::db_to_path(&path));
         if let Some(from) = moved.get(&path) {
             let hunks = match (old_files.get(from), new_files.get(&path)) {
-                (Some(oh), Some(nh)) if oh != nh && !is_binary(&full_path) => {
-                    let old = read_text(&objects, oh)?;
-                    let new = read_text(&objects, nh)?;
-                    build_hunks_for(repo.drivers().for_path(&path), &old, &new)
+                (Some(oh), Some(nh)) if oh != nh => {
+                    let old = objects.get(oh)?;
+                    let new = objects.get(nh)?;
+                    if looks_binary(&old) || looks_binary(&new) {
+                        Vec::new()
+                    } else {
+                        build_hunks_for(
+                            repo.drivers().for_path(&path),
+                            &String::from_utf8_lossy(&old),
+                            &String::from_utf8_lossy(&new),
+                        )
+                    }
                 }
                 _ => Vec::new(),
             };
@@ -371,10 +384,10 @@ pub(crate) fn snapshot_diff(
 
         let change = match (old_files.get(&path), new_files.get(&path)) {
             (None, Some(nh)) => {
-                if is_binary(&full_path) {
+                let bytes = objects.get(nh)?;
+                if looks_binary(&bytes) {
                     FileChange::BinaryChanged { added: true }
                 } else {
-                    let bytes = objects.get(nh)?;
                     FileChange::Added {
                         lines: String::from_utf8_lossy(&bytes)
                             .lines()
@@ -385,13 +398,17 @@ pub(crate) fn snapshot_diff(
             }
             (Some(_), None) => FileChange::Deleted,
             (Some(oh), Some(nh)) if oh != nh => {
-                if is_binary(&full_path) {
+                let old = objects.get(oh)?;
+                let new = objects.get(nh)?;
+                if looks_binary(&old) || looks_binary(&new) {
                     FileChange::BinaryChanged { added: false }
                 } else {
-                    let old = read_text(&objects, oh)?;
-                    let new = read_text(&objects, nh)?;
                     FileChange::Modified {
-                        hunks: build_hunks_for(repo.drivers().for_path(&path), &old, &new),
+                        hunks: build_hunks_for(
+                            repo.drivers().for_path(&path),
+                            &String::from_utf8_lossy(&old),
+                            &String::from_utf8_lossy(&new),
+                        ),
                     }
                 }
             }

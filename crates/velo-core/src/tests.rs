@@ -12117,3 +12117,6 @@ mod restore_delta;
 
 #[cfg(test)]
 mod stash_fixes;
+
+#[cfg(test)]
+mod historical_binary;
