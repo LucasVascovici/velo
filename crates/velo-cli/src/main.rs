@@ -4,6 +4,8 @@ use clap::{builder::styling, Parser, Subcommand};
 // layer — argument parsing, rendering, and exit codes.
 mod author;
 mod diffargs;
+#[cfg(test)]
+mod help_check;
 mod lockwait;
 mod render;
 
@@ -710,9 +712,9 @@ NOTES
     /// Velo has no staging area — the disk is the snapshot — but a rename is
     /// the one thing the disk cannot express: afterwards the tree looks
     /// exactly as it would if the old file had been deleted and a new one
-    /// written.  Recording it here is what lets `velo blame` follow the file
+    /// written.  Recording it here is what lets `velo blame <file>` follow the file
     /// across the move instead of crediting every line to it, and what lets
-    /// `velo history --file` reach past it.
+    /// `velo history --file <file>` reach past it.
     ///
     /// Using `mv` from your shell still works; the move simply reads as a
     /// delete and an add, because by then nothing knows any better.
@@ -1037,7 +1039,7 @@ NOTES
         path: String,
     },
 
-    /// Serve a repository over HTTP, for `velo clone/push/pull http://...`.
+    /// Serve a repository over HTTP, for `velo clone http://...`, `velo push` and `velo pull`.
     ///
     /// A reference server: it handles one request at a time and has NO
     /// authentication and no TLS. Anyone who can reach the port can read
