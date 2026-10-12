@@ -18,6 +18,15 @@ section below.
 
 ### Added
 
+- **`resolve --take` refuses to replace hand edits.** Core checks every file
+  first and returns the typed `WouldOverwriteEdits` (paths sorted, nothing
+  written) unless the caller passes `OnEdits::Replace`. The CLI's `--force`
+  replaces, prints the replaced and discarded line counts, and says that "ours"
+  means your last saved snapshot.
+
+- **`diff a..b` and the worktree diff skip hash-equal paths** without reading
+  the object store, so the cost follows what changed, not the tree size.
+
 - **The Node binding covers history, blame, merge and branches.** `history`
   (from, branch, all, paths, limit, meta), `findSnapshots`, `blame` (with
   `lineCount` and a 1-based inclusive window), `mergeBase`, `mergePlan`,
