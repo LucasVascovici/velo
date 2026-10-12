@@ -167,11 +167,19 @@ fn locked_repository_exits_5() {
 
 #[test]
 fn status_during_a_conflicted_merge_gives_the_merge_next_step() {
-    let tmp = conflicted();
-    let d = tmp.path();
-    let (_, code) = velo(d, &["merge", "feature"]);
-    assert_eq!(code, Some(3));
-    let out = ok(d, &["status"]);
+    // A diverged clone that has fetched, so status would print the
+    // reconcile recipe (starting with `velo pull`) if it were not suppressed.
+    let (_root, a, b) = pair();
+    write(&a, "shared.txt", "from a\n");
+    ok(&a, &["save", "A1"]);
+    ok(&a, &["push"]);
+    write(&b, "shared.txt", "from b\n");
+    ok(&b, &["save", "B1"]);
+    let (out, code) = velo(&b, &["pull"]);
+    assert_eq!(code, Some(4), "{out}");
+    let (out, code) = velo(&b, &["merge", "origin/main"]);
+    assert_eq!(code, Some(3), "{out}");
+    let out = ok(&b, &["status"]);
     assert!(out.contains("to finish merging"), "{out}");
     assert!(!out.contains("velo pull"), "{out}");
 }
