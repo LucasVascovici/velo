@@ -77,7 +77,8 @@ pub struct Popped {
     pub branch_mismatch: Option<BranchMismatch>,
     /// True when the position has moved since the shelf was created.
     pub position_moved: bool,
-    /// Files written back onto the working tree.
+    /// Files actually written back onto the working tree: those the shelf holds
+    /// that differ from (or are absent in) the position's tree.
     pub restored: usize,
     /// Files removed because the shelf recorded them as deleted.
     pub removed: usize,
@@ -172,8 +173,15 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
         }
     }
     tx.execute(
-        "INSERT INTO stash (name, snapshot_hash, branch, parent_hash) VALUES (?, ?, ?, ?)",
-        params![shelf_name, snapshot, branch.trim(), parent_hash],
+        "INSERT INTO stash (name, snapshot_hash, branch, parent_hash, created_at_ms)
+         VALUES (?, ?, ?, ?, ?)",
+        params![
+            shelf_name,
+            snapshot,
+            branch.trim(),
+            parent_hash,
+            timestamp_ms
+        ],
     )?;
     tx.commit()?;
     // Deliberately no event: the shelf's snapshot lives on the internal
@@ -226,8 +234,16 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
 /// Every shelf, newest first.
 pub fn list(repo: &Repo) -> Result<Vec<Shelf>> {
     let conn = repo.conn();
-    let mut stmt = conn
-        .prepare("SELECT name, branch, created_at_ms, snapshot_hash FROM stash ORDER BY id DESC")?;
+    // Shelves pushed before the column was written hold 0; their shelf snapshot
+    // carries the real time.
+    let mut stmt = conn.prepare(
+        "SELECT st.name, st.branch,
+                CASE WHEN st.created_at_ms = 0 THEN COALESCE(s.created_at_ms, 0)
+                     ELSE st.created_at_ms END,
+                st.snapshot_hash
+         FROM stash st LEFT JOIN snapshots s ON s.hash = st.snapshot_hash
+         ORDER BY st.id DESC",
+    )?;
     let shelves: Vec<Shelf> = stmt
         .query_map([], |r| {
             Ok(Shelf {
@@ -310,9 +326,26 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
         .collect();
     drop(stmt);
 
-    let progress = guard.phase(Phase::Writing, Some(files.len() as u64));
+    // `pop` refused a dirty tree, so the working tree equals PARENT. Entries
+    // identical to PARENT's are already on disk and are not rewritten.
+    let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+    let on_disk: HashMap<String, (String, i64)> = stmt
+        .query_map([current_parent.trim()], |r| {
+            Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?)))
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+    let to_write: Vec<(String, String, i64)> = files
+        .iter()
+        .filter(|(p, h, m)| on_disk.get(p).map(|(oh, om)| (oh, om)) != Some((h, m)))
+        .cloned()
+        .collect();
+
+    let progress = guard.phase(Phase::Writing, Some(to_write.len() as u64));
     let errors: Vec<String> = objects.par_with_content(
-        &files,
+        &to_write,
         |(_, hash, _)| hash.as_str(),
         |(rel, _, mode), content| {
             progress.tick();
@@ -363,7 +396,7 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
         }
     }
 
-    Ok((files.len(), removed))
+    Ok((to_write.len(), removed))
 }
 
 /// Delete a shelf's registration and the hidden snapshot behind it.

@@ -12114,3 +12114,6 @@ mod save_merge_safety;
 
 #[cfg(test)]
 mod restore_delta;
+
+#[cfg(test)]
+mod stash_fixes;
