@@ -4,6 +4,7 @@ use clap::{builder::styling, Parser, Subcommand};
 // layer — argument parsing, rendering, and exit codes.
 mod author;
 mod diffargs;
+mod lockwait;
 mod render;
 
 use std::path::{Path, PathBuf};
@@ -1345,6 +1346,26 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 ],
             );
         }
+        VeloError::Locked { holder, .. } => match holder {
+            Some(h) => {
+                let live = match lockwait::pid_alive(h.pid) {
+                    Some(true) => {
+                        "; that process is still running \u{2014} wait for it to finish".to_string()
+                    }
+                    Some(false) => format!(
+                        "; process {} is no longer running, so that record is stale \u{2014} retry",
+                        h.pid
+                    ),
+                    None => String::new(),
+                };
+                lines.push(format!(
+                    "  started {} ago{}",
+                    lockwait::age(h.started_at_ms),
+                    live
+                ));
+            }
+            None => lines.push("  another velo process is writing; retry in a moment".into()),
+        },
         _ => return None,
     }
     Some(lines.join(
@@ -1796,6 +1817,7 @@ fn run(cli: Cli) -> Result<()> {
     // Long operations report through this. Inert on a non-TTY, so piped output
     // stays clean.
     let repo = velo_core::Repo::open_and_migrate(&root)?
+        .lock_label(lockwait::command_label())
         .observing(render::progress::Bar::new())
         .merging(
             velo_core::Drivers::new()
@@ -1810,7 +1832,7 @@ fn run(cli: Cli) -> Result<()> {
     // The guard is held until the command returns, and is what grants write
     // access to core at all.
     let guard = if needs_write_guard(&cli.command) {
-        Some(repo.write()?)
+        Some(lockwait::acquire(&repo)?)
     } else {
         None
     };
