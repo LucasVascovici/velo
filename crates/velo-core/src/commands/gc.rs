@@ -29,6 +29,9 @@ pub struct Collected {
     pub bytes_freed: u64,
     /// The retention window that was applied, in days.
     pub keep_days: u32,
+    /// This was a dry run: the counts say what a real run would collect, and
+    /// nothing was removed.
+    pub dry_run: bool,
 }
 
 impl Collected {
@@ -65,6 +68,10 @@ pub struct Options<'a> {
     /// statements in one transaction, and splitting it would trade a bounded
     /// wait for a half-pruned index.
     pub cancel: Option<&'a Cancel>,
+    /// Report what would be collected and remove nothing. The database prunes
+    /// run inside a transaction that is rolled back, so the counts match a real
+    /// run made straight afterwards.
+    pub dry_run: bool,
 }
 
 /// Collect garbage.
@@ -87,10 +94,14 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         keep_days,
         observer,
         cancel,
+        dry_run,
     } = options;
-    let conn = guard.conn();
+    // One transaction for the prunes. A dry run drops it without committing, so
+    // the later queries still see the pruned state but nothing persists.
+    let conn = guard.conn().unchecked_transaction()?;
     let mut collected = Collected {
         keep_days,
+        dry_run,
         ..Default::default()
     };
 
@@ -148,6 +159,8 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         None,
     );
     let objects = guard.repo().objects();
+    // Objects a dry run left in place but a real run would have removed.
+    let mut doomed: HashSet<String> = HashSet::new();
     for (name, size) in objects.list()? {
         // Checked per object, so cancelling takes effect at the next one rather
         // than part-way through a delete.
@@ -158,7 +171,11 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         if referenced.contains(&name) {
             continue;
         }
-        objects.remove(&name)?;
+        if dry_run {
+            doomed.insert(name);
+        } else {
+            objects.remove(&name)?;
+        }
         collected.objects += 1;
         collected.bytes_freed += size;
     }
@@ -170,6 +187,11 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
     if !cancel.is_some_and(Cancel::is_cancelled) {
         let mut needed: HashSet<String> = HashSet::new();
         for (name, _) in objects.list()? {
+            // A dry run left the garbage objects on disk; a real run would not
+            // see them here, so neither may the dry run.
+            if doomed.contains(&name) {
+                continue;
+            }
             if let Some(chunks) = objects.chunks_of(&name)? {
                 needed.extend(chunks);
             }
@@ -182,10 +204,16 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
             if needed.contains(&name) {
                 continue;
             }
-            objects.remove_chunk(&name)?;
+            if !dry_run {
+                objects.remove_chunk(&name)?;
+            }
             collected.chunks += 1;
             collected.bytes_freed += size;
         }
+    }
+
+    if !dry_run {
+        conn.commit()?;
     }
 
     // A cancelled pass reports `Cancelled` rather than a partial tally, as

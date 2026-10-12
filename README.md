@@ -549,6 +549,7 @@ can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 | Command | Description |
 | :--- | :--- |
 | `velo gc` | Remove orphaned objects and stale undo/conflict state |
+| `velo gc --dry-run` | Report what `gc` would collect and remove nothing |
 | `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
 | `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
 | `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |

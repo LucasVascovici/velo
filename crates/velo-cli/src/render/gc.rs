@@ -4,11 +4,15 @@ use console::style;
 use velo_core::commands::gc::Collected;
 
 pub fn print(collected: &Collected) {
+    let dry = collected.dry_run;
     if collected.is_empty() {
         println!(
             "{}",
             style("Repository is already clean. Nothing to collect.").dim()
         );
+        if dry {
+            println!("{}", style("Nothing was removed (dry run).").dim());
+        }
         return;
     }
 
@@ -20,35 +24,41 @@ pub fn print(collected: &Collected) {
     line(
         collected.expired_trash,
         format!(
-            "Removed {} trash entry/entries older than {} days.",
-            collected.expired_trash, collected.keep_days
+            "{} {} trash entry/entries older than {} days.",
+            if dry { "Would remove" } else { "Removed" },
+            collected.expired_trash,
+            collected.keep_days
         ),
     );
     line(
         collected.orphan_file_map,
         format!(
-            "Cleaned {} orphaned file_map row(s).",
+            "{} {} orphaned file_map row(s).",
+            if dry { "Would clean" } else { "Cleaned" },
             collected.orphan_file_map
         ),
     );
     line(
         collected.orphan_decisions,
         format!(
-            "Cleaned {} orphaned hunk decision(s).",
+            "{} {} orphaned hunk decision(s).",
+            if dry { "Would clean" } else { "Cleaned" },
             collected.orphan_decisions
         ),
     );
     line(
         collected.orphan_shelved_tags,
         format!(
-            "Cleaned {} shelved tag(s) with no snapshot.",
+            "{} {} shelved tag(s) with no snapshot.",
+            if dry { "Would clean" } else { "Cleaned" },
             collected.orphan_shelved_tags
         ),
     );
     line(
         collected.stale_cache,
         format!(
-            "Pruned {} stale index cache entry/entries.",
+            "{} {} stale index cache entry/entries.",
+            if dry { "Would prune" } else { "Pruned" },
             collected.stale_cache
         ),
     );
@@ -60,6 +70,17 @@ pub fn print(collected: &Collected) {
     } else {
         String::new()
     };
+    if dry {
+        println!(
+            "{} Would reclaim {} object(s){}, freeing {}.",
+            style("~").yellow().bold(),
+            collected.objects,
+            chunks,
+            human_size(collected.bytes_freed)
+        );
+        println!("{}", style("Nothing was removed (dry run).").dim());
+        return;
+    }
     println!(
         "{} GC complete — removed {} object(s){}, freed {}.",
         style("✔").green().bold(),

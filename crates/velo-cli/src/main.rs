@@ -901,6 +901,7 @@ NOTES
     ///   velo gc                   # default: keep undo history for 30 days
     ///   velo gc --keep-days 0     # purge everything immediately
     ///   velo gc --keep-days 90    # keep undo history for 90 days
+    ///   velo gc --dry-run         # report what would be removed
     #[command(
         verbatim_doc_comment,
         after_help = "\
@@ -915,14 +916,17 @@ NOTES
     · The operation is idempotent — running it twice is harmless."
     )]
     Gc {
-        /// Keep undone snapshot history for this many days (default: 30).
+        /// Keep undone snapshot history for this many days.
         #[arg(
             long,
             default_value_t = 30,
             value_name = "DAYS",
-            help = "Retain undo history for N days [default: 30]"
+            help = "Retain undo history for N days"
         )]
         keep_days: u32,
+        /// Report what would be collected and remove nothing.
+        #[arg(long, help = "Report what would be collected, remove nothing")]
+        dry_run: bool,
     },
 
     /// Verify repository integrity (read-only).
@@ -2296,11 +2300,12 @@ fn run(cli: Cli) -> Result<Exit> {
             }
         }
 
-        Commands::Gc { keep_days } => {
+        Commands::Gc { keep_days, dry_run } => {
             render::gc::print(&commands::gc::run(
                 write(),
                 commands::gc::Options {
                     keep_days,
+                    dry_run,
                     ..Default::default()
                 },
             )?);

@@ -12155,3 +12155,6 @@ mod resolve_revalidate;
 
 #[cfg(test)]
 mod redo_peek;
+
+#[cfg(test)]
+mod gc_dry_run;
