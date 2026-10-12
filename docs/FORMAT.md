@@ -666,17 +666,22 @@ on this):
 
 - `blame.rs`: `WHERE snapshot_hash = ? AND path = ?` plans as `SEARCH ... USING
   INDEX idx_filemap_path (path=?)`.
+- `tree.rs` `Repo::read_file_at` (public API): the same statement as
+  `blame.rs`, same plan.
 - `diff.rs` (stored hash of a path against `PARENT`): `WHERE path = ? AND
   snapshot_hash = ?`, same plan.
 - `fsck.rs` (does a snapshot hold a path): same plan.
 
 Everything else uses `idx_filemap_snap` or scans: tree loads (`apply`,
 `compact`, `fsck`, `merge`, `restore`, `save`, `commands::mod`, `grep`,
-`diff` `load_file_map`), `tracks_path`, `history --file`, the `gc` orphan
+`diff` `load_file_map`, and `tree.rs` `Repo::tree_at`, whose `ORDER BY path`
+still plans through `idx_filemap_snap` plus a temp B-tree sort), `tracks_path`,
+`history --file` (both the parent comparison and the root-snapshot check, which
+plans through `idx_filemap_snap`), the `gc` orphan
 sweep, and the `gc` stale `index_cache` prune (its subquery is keyed on
 `snapshot_hash`, not path). `fsck`/`gc` `SELECT DISTINCT hash` and the bundle
 export scan the whole table. `mv.rs` and `paths.rs` do not read `file_map`.
-Dropping `idx_filemap_path` would therefore turn those three point lookups into
+Dropping `idx_filemap_path` would therefore turn those four point lookups into
 a scan of the snapshot's rows via `idx_filemap_snap` (about one tree), not of
 the table; a composite `(snapshot_hash, path)` index would serve them better
 and is the `WITHOUT ROWID` option below.

@@ -174,6 +174,10 @@ const READERS: &[(&str, &str)] = &[
         "SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?",
     ),
     (
+        "tree.rs tree_at (public API): a tree in path order, with mode",
+        "SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ? ORDER BY path",
+    ),
+    (
         "grep.rs: a tree in path order",
         "SELECT path, hash FROM file_map WHERE snapshot_hash = ? ORDER BY path",
     ),
@@ -182,7 +186,7 @@ const READERS: &[(&str, &str)] = &[
         "SELECT path FROM file_map WHERE snapshot_hash = ?",
     ),
     (
-        "blame.rs: one file in one snapshot",
+        "blame.rs / tree.rs read_file_at (public API): one file in one snapshot",
         "SELECT hash FROM file_map WHERE snapshot_hash = ? AND path = ?",
     ),
     (
@@ -204,6 +208,10 @@ const READERS: &[(&str, &str)] = &[
     (
         "diff.rs tracks_path: prefix match",
         "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ? AND (path = ? OR path LIKE ? || '/%'))",
+    ),
+    (
+        "history.rs --file: root snapshot holds a path in the slice",
+        "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?1 AND (path = ?2 OR path LIKE ?3 ESCAPE '\\'))",
     ),
     (
         "history.rs --file: slice differs from the parent's",
