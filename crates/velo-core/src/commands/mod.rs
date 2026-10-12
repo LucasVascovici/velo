@@ -655,61 +655,77 @@ fn walk_with_meta(root: &Path, scope: &crate::Scope) -> Vec<WalkEntry> {
 ///
 /// ### Performance strategy
 ///
-/// 1. **One DB round-trip** – load the snapshot's file map into a `HashMap`.
-/// 2. **One DB round-trip** – load the full `index_cache` into a `HashMap`.
-/// 3. **Parallel filesystem walk** – enumerate files + read metadata in
+/// 1. **One joined DB query** – the snapshot's file map and the `index_cache`
+///    come back together, keyed by path, so no second full map is built.
+/// 2. **Parallel filesystem walk** – enumerate files + read metadata in
 ///    parallel using `ignore`'s built-in parallel walker.
-/// 4. **Parallel hash phase** – rayon processes all walk entries; files whose
+/// 3. **Parallel hash phase** – rayon processes all walk entries; files whose
 ///    `(mtime_ns, size)` match the cache skip the disk read entirely.
-/// 5. **Batch cache write** – newly computed hashes are written back in one
+/// 4. **Batch cache write** – newly computed hashes are written back in one
 ///    transaction so the next call is even faster.
 ///
 /// On a clean working tree with a warm cache this is essentially:
 ///   N × stat()  +  1 DB read  (instead of N × read + N × hash)
 pub fn get_dirty_files(repo: &Repo) -> HashMap<String, FileStatus> {
+    dirty_scan(repo).status
+}
+
+/// The result of one dirty scan: what differs, and the content hash the scan
+/// already computed for each file that is present. `save` hands those hashes
+/// to the object store so it need not hash a changed file a second time.
+pub(crate) struct DirtyScan {
+    pub status: HashMap<String, FileStatus>,
+    /// Current content hash per `New`/`Modified` path.
+    pub hashes: HashMap<String, String>,
+}
+
+/// One path as the joined query sees it: its hash in the snapshot (if it is
+/// tracked there) and its cache row (if it has one).
+struct Joined {
+    snap: Option<String>,
+    cache: Option<CacheEntry>,
+}
+
+/// The dirty scan behind [`get_dirty_files`], also returning the hashes.
+pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     let mut dirty = HashMap::new();
+    let mut hashes = HashMap::new();
     let root = repo.root();
     let conn = repo.conn();
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
-    // ── 1. Load snapshot's file map ───────────────────────────────────────────
+    // ── 1. Load snapshot file map and index cache in one query ───────────────
     // Degrade gracefully: a transient DB error (e.g. a momentary lock) yields an
     // empty map rather than panicking the whole command.
-    let mut db_files: HashMap<String, String> = conn
-        .prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")
+    let mut joined: HashMap<String, Joined> = conn
+        .prepare(
+            "SELECT COALESCE(f.path, c.path), f.hash, c.mtime_ns, c.size, c.hash
+             FROM (SELECT path, hash FROM file_map WHERE snapshot_hash = ?1) f
+             FULL OUTER JOIN index_cache c ON c.path = f.path",
+        )
         .and_then(|mut stmt| {
             let rows = stmt.query_map([parent_hash.trim()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            Ok(rows.filter_map(|r| r.ok()).collect::<HashMap<_, _>>())
-        })
-        .unwrap_or_default();
-
-    // ── 2. Load index cache ───────────────────────────────────────────────────
-    let index: HashMap<String, CacheEntry> = conn
-        .prepare("SELECT path, mtime_ns, size, hash FROM index_cache")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| {
+                let cache = match (
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ) {
+                    (Some(mtime_ns), Some(size), Some(hash)) => Some(CacheEntry {
+                        mtime_ns,
+                        size,
+                        hash,
+                    }),
+                    _ => None,
+                };
                 Ok((
                     r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, String>(3)?,
+                    Joined {
+                        snap: r.get::<_, Option<String>>(1)?,
+                        cache,
+                    },
                 ))
             })?;
-            Ok(rows
-                .filter_map(|r| r.ok())
-                .map(|(p, m, s, h)| {
-                    (
-                        p,
-                        CacheEntry {
-                            mtime_ns: m,
-                            size: s,
-                            hash: h,
-                        },
-                    )
-                })
-                .collect::<HashMap<_, _>>())
+            Ok(rows.filter_map(|r| r.ok()).collect::<HashMap<_, _>>())
         })
         .unwrap_or_default();
 
@@ -724,7 +740,8 @@ pub fn get_dirty_files(repo: &Repo) -> HashMap<String, FileStatus> {
             // Skip paths that aren't under root or aren't valid UTF-8 rather
             // than panicking on the (rare) non-UTF-8 path.
             let rel = crate::db::normalise(e.path.strip_prefix(root).ok()?.to_str()?);
-            let (hash, miss) = if let Some(cached) = index.get(&rel) {
+            let (hash, miss) = if let Some(cached) = joined.get(&rel).and_then(|j| j.cache.as_ref())
+            {
                 if cached.mtime_ns == e.mtime_ns && cached.size == e.size {
                     (cached.hash.clone(), false) // cache hit — no disk read
                 } else {
@@ -756,21 +773,32 @@ pub fn get_dirty_files(repo: &Repo) -> HashMap<String, FileStatus> {
 
     // ── 6. Compare hashes against snapshot ───────────────────────────────────
     for (rel, hash, _, _, _) in results {
-        if let Some(snap_hash) = db_files.remove(&rel) {
-            if snap_hash != hash {
-                dirty.insert(rel, FileStatus::Modified);
+        match joined.remove(&rel).and_then(|j| j.snap) {
+            Some(snap_hash) => {
+                if snap_hash != hash {
+                    hashes.insert(rel.clone(), hash);
+                    dirty.insert(rel, FileStatus::Modified);
+                }
             }
-        } else {
-            dirty.insert(rel, FileStatus::New);
+            None => {
+                hashes.insert(rel.clone(), hash);
+                dirty.insert(rel, FileStatus::New);
+            }
         }
     }
 
-    // Anything left in db_files was deleted from disk
-    for rel in db_files.into_keys() {
-        dirty.insert(rel, FileStatus::Deleted);
+    // Anything tracked that the walk did not see was deleted from disk. Rows
+    // with no snapshot hash are only cache entries for files that are gone.
+    for (rel, j) in joined {
+        if j.snap.is_some() {
+            dirty.insert(rel, FileStatus::Deleted);
+        }
     }
 
-    dirty
+    DirtyScan {
+        status: dirty,
+        hashes,
+    }
 }
 
 /// Invalidate index_cache entries for a set of paths.

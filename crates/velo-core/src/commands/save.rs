@@ -138,7 +138,9 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         });
     }
 
-    let full_dirty = crate::commands::get_dirty_files(guard.repo());
+    let scan = crate::commands::dirty_scan(guard.repo());
+    let full_dirty = scan.status;
+    let known_hashes = scan.hashes;
     // Apply pathspec filter: if paths given, only snapshot matching files
     let dirty: std::collections::HashMap<String, FileStatus> = if paths.is_empty() {
         full_dirty
@@ -251,10 +253,12 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
 
     // ── Parallel hash + compress ───────────────────────────────────────────────
     let objects = guard.repo().objects();
-    let files_to_hash: Vec<String> = dirty
+    // The dirty scan already hashed each changed file; passing its hash lets the
+    // store skip reading a file whose object exists.
+    let files_to_hash: Vec<(String, Option<String>)> = dirty
         .iter()
         .filter(|(_, s)| **s != FileStatus::Deleted)
-        .map(|(p, _)| p.clone())
+        .map(|(p, _)| (p.clone(), known_hashes.get(p).cloned()))
         .collect();
 
     // Hash each changed file, capturing its mode. Symlinks store their target
@@ -268,7 +272,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     // an object nothing references is what `gc` collects, so stopping here
     // leaves no snapshot and no dangling reference.
     let hash_results: Result<Vec<(String, String, i64)>> =
-        objects.put_paths(root, files_to_hash, &progress, || {
+        objects.put_paths_known(root, files_to_hash, &progress, || {
             crate::progress::Cancel::check(cancel)
         });
     // `mut` is only needed by the non-Unix sticky-exec-bit pass below; on Unix

@@ -12143,3 +12143,6 @@ mod import_parallel;
 
 #[cfg(test)]
 mod metadata_growth;
+
+#[cfg(test)]
+mod save_hash_reuse;

@@ -232,6 +232,20 @@ impl ObjectStore<'static> {
     }
 }
 
+/// Paths `put_paths_known` had to read, so a test can show that a file whose
+/// object already existed was not read at all. A list of paths rather than a
+/// counter, because tests run in parallel and each only looks at its own files.
+#[cfg(test)]
+pub(crate) static KNOWN_READS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn record_known_read(path: &Path) {
+    KNOWN_READS.lock().unwrap().push(path.to_path_buf());
+}
+
+#[cfg(not(test))]
+fn record_known_read(_path: &Path) {}
+
 /// Compress `content` as the database backend stores it: one zstd frame.
 fn frame_of(content: &[u8]) -> Result<Vec<u8>> {
     zstd::encode_all(content, 1).map_err(VeloError::Io)
@@ -306,6 +320,82 @@ impl ObjectStore<'_> {
                     .into_iter()
                     .map(|(rel, hash, frame, mode)| {
                         db_insert(c, &hash, &frame)?;
+                        Ok((rel, hash, mode))
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Like [`put_paths`](Self::put_paths), for callers that already know each
+    /// file's content hash (the dirty scan computed it). A hint naming an
+    /// object that exists is returned without touching the file. Anything
+    /// else is read once, hashed and stored under its *actual* hash: the hint
+    /// may be stale or racy, so it is never trusted for an object that is not
+    /// there. Symlinks ignore the hint and store their target as before.
+    pub(crate) fn put_paths_known(
+        &self,
+        root: &Path,
+        items: Vec<(String, Option<String>)>,
+        progress: &crate::progress::PhaseGuard<'_>,
+        check: impl Fn() -> Result<()> + Sync + Send,
+    ) -> Result<Vec<(String, String, i64)>> {
+        use rayon::prelude::*;
+        let locate = |rel: &str| root.join(crate::db::db_to_path(rel));
+        match self {
+            ObjectStore::Files(f) => items
+                .into_par_iter()
+                .inspect(|_| progress.tick())
+                .map(|(rel, hint)| {
+                    check()?;
+                    let full = locate(&rel);
+                    let mode = capture_mode(&full);
+                    let hash = if mode == MODE_SYMLINK {
+                        f.put(&read_symlink_target(&full)?)?
+                    } else {
+                        match hint {
+                            Some(h) if f.contains(&h) => h,
+                            _ => f.put_file_once(&full)?,
+                        }
+                    };
+                    Ok((rel, hash, mode))
+                })
+                .collect(),
+            ObjectStore::Database(c) => {
+                // The connection stays on this thread, so existence is checked
+                // here; the reads and compression then fan out.
+                let items: Vec<(String, Option<String>)> = items
+                    .into_iter()
+                    .map(|(rel, hint)| {
+                        let known = hint.filter(|h| db_contains(c, h).unwrap_or(false));
+                        (rel, known)
+                    })
+                    .collect();
+                let prepared: Vec<(String, String, Option<Vec<u8>>, i64)> = items
+                    .into_par_iter()
+                    .inspect(|_| progress.tick())
+                    .map(|(rel, known)| {
+                        check()?;
+                        let full = locate(&rel);
+                        let mode = capture_mode(&full);
+                        if mode == MODE_SYMLINK {
+                            let (hash, frame) = prepare_bytes(&read_symlink_target(&full)?)?;
+                            return Ok((rel, hash, Some(frame), mode));
+                        }
+                        if let Some(h) = known {
+                            return Ok((rel, h, None, mode));
+                        }
+                        record_known_read(&full);
+                        let (hash, frame) = prepare_file(&full)?;
+                        Ok((rel, hash, Some(frame), mode))
+                    })
+                    .collect::<Result<_>>()?;
+                prepared
+                    .into_iter()
+                    .map(|(rel, hash, frame, mode)| {
+                        if let Some(frame) = frame {
+                            db_insert(c, &hash, &frame)?;
+                        }
                         Ok((rel, hash, mode))
                     })
                     .collect()
@@ -669,6 +759,23 @@ impl FileObjects {
         let hash = blake3::hash(normalised).to_hex().to_string();
         if !self.path(&hash).exists() {
             self.store(&hash, normalised)?;
+        }
+        Ok(hash)
+    }
+
+    /// Like [`put_file`](Self::put_file) but reads the file exactly once: the
+    /// bytes that are hashed are the bytes that get stored.
+    pub(crate) fn put_file_once(&self, file_path: &Path) -> Result<String> {
+        record_known_read(file_path);
+        let size = fs::metadata(file_path).map_err(VeloError::Io)?.len();
+        let data = normalise_crlf(if size >= MMAP_THRESHOLD {
+            read_mmap(file_path)?
+        } else {
+            fs::read(file_path).map_err(VeloError::Io)?
+        });
+        let hash = blake3::hash(&data).to_hex().to_string();
+        if !self.path(&hash).exists() {
+            self.store(&hash, &data)?;
         }
         Ok(hash)
     }
