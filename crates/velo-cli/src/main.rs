@@ -19,6 +19,7 @@ use velo_core::commands::resolve::TakeOption;
 enum TakeArg {
     Ours,
     Theirs,
+    Both,
 }
 
 impl From<TakeArg> for TakeOption {
@@ -26,6 +27,7 @@ impl From<TakeArg> for TakeOption {
         match a {
             TakeArg::Ours => TakeOption::Ours,
             TakeArg::Theirs => TakeOption::Theirs,
+            TakeArg::Both => TakeOption::Both,
         }
     }
 }
@@ -59,7 +61,7 @@ and replaces what it gets wrong (staging area, cryptic commands, data loss).
 
 Key differences from Git
   · No staging area — what's on disk is what gets saved
-  · Conflict sidecars — your code stays valid during a merge
+  · Conflicts as data — your files stay valid during a merge
   · Undo/redo — remove or restore snapshots with one command
   · Stash shelves — named, not cryptic stash@{2} indices
   · True 3-way merges — no false conflicts on one-sided changes
@@ -340,7 +342,7 @@ NOTES
     · Accepts a full hash, unique prefix, tag, branch, or remote ref (origin/main).
     · Binary files are detected automatically and their diffs are omitted.
     · Diff output uses unified format with 3 lines of context per hunk.
-    · To inspect merge conflicts, use `velo resolve <file>` (interactive TUI)."
+    · To inspect merge conflicts, use `velo conflicts <file>`."
     )]
     Diff {
         /// Snapshot(s) to compare, or a single file. At most two.
@@ -383,8 +385,8 @@ NOTES
     ///
     /// Uses 3-way merge logic: the snapshot's parent acts as the
     /// common ancestor.  Changes that only exist in the cherry-picked
-    /// snapshot are applied cleanly.  True conflicts produce .conflict
-    /// sidecars just like `velo merge`.
+    /// snapshot are applied cleanly.  True conflicts are recorded for
+    /// `velo resolve`, just like `velo merge`.
     ///
     /// When there are no conflicts, the result is auto-saved as a new
     /// snapshot so the command is self-contained.
@@ -505,7 +507,7 @@ NOTES
     /// ancestor (LCA) of the two branch tips.  A file modified only
     /// on one side since the ancestor is never flagged as a conflict.
     ///
-    /// Conflicts are written as .conflict sidecars — your code stays
+    /// Conflicts are recorded in the repository and your files are left
     /// valid and runnable during the resolution process.
     ///
     /// Examples
@@ -516,9 +518,9 @@ NOTES
         after_help = "\
 CONFLICT RESOLUTION WORKFLOW
     1. velo merge <branch>
-    2. velo diff <file> --conflict    # inspect each conflict
-    3. velo resolve <file> --take theirs|ours
-       — or edit the file manually, then `velo resolve <file>`
+    2. velo conflicts <file>          # see both sides of each conflict
+    3. velo resolve <file> --take ours|theirs|both
+       — or edit the file, then `velo resolve --mark <file>`
     4. velo save \"Merge <branch>\"
 
 NOTES
@@ -543,14 +545,15 @@ NOTES
 
     /// Resolve a merge conflict.
     ///
-    /// Conflict files (<file>.conflict) are created during a merge when
-    /// both branches modified the same file since their common ancestor.
-    /// Your version is kept as <file>; the incoming version is in
-    /// <file>.conflict.
+    /// A merge records a conflict when both branches modified the same
+    /// lines since their common ancestor. Your version stays in <file>,
+    /// valid and unmarked; see both sides with `velo conflicts <file>`.
     ///
     /// Examples
     ///   velo resolve src/auth.py --take theirs    # accept incoming version
     ///   velo resolve src/auth.py --take ours      # keep current version
+    ///   velo resolve src/auth.py --take both      # ours then theirs, per hunk
+    ///   velo resolve --mark src/auth.py           # accept your own edit of the file
     ///   velo resolve src/auth.py                  # step through each conflict hunk (needs a terminal)
     ///   velo resolve --all --take theirs          # resolve all conflicts at once
     #[command(
@@ -573,7 +576,7 @@ NOTES
             long,
             value_enum,
             value_name = "VERSION",
-            help = "Which version to keep: ours or theirs"
+            help = "Which version to keep: ours, theirs, or both (ours then theirs, per hunk)"
         )]
         take: Option<TakeArg>,
 
@@ -588,6 +591,35 @@ NOTES
             help = "Replace hand edits when taking a side"
         )]
         force: bool,
+
+        /// Accept your hand edit of the file as the resolution.
+        #[arg(
+            long,
+            requires = "file",
+            conflicts_with_all = ["take", "all"],
+            help = "Accept your edit of the file as the resolution"
+        )]
+        mark: bool,
+    },
+
+    /// Show both sides of each conflicting hunk.
+    ///
+    /// Read-only. Prints, for each conflicted file, every hunk with your
+    /// side, the incoming side and the lines around it.
+    ///
+    /// Examples
+    ///   velo conflicts                # every conflicted file
+    ///   velo conflicts src/auth.py    # one file
+    ///   velo conflicts --json         # as data, for scripts
+    #[command(verbatim_doc_comment)]
+    Conflicts {
+        /// File to show (omit for all conflicted files).
+        #[arg(value_name = "FILE", help = "File to show (omit for all)")]
+        file: Option<String>,
+
+        /// Print as JSON.
+        #[arg(long, help = "Print as JSON")]
+        json: bool,
     },
 
     /// Shelve and restore dirty working-tree state.
@@ -1221,9 +1253,11 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 .unwrap_or_else(|| "<file>".into());
             let force = format!("velo resolve {} --take <side> --force", file);
             let diff = format!("velo diff {}", file);
+            let mark = format!("velo resolve --mark {}", file);
             suggest(
                 &mut lines,
                 &[
+                    (&mark, "keep your edit as the resolution", Tone::Do),
                     (&diff, "see your edits", Tone::Do),
                     (&force, "replace them", Tone::Destructive),
                 ],
@@ -1292,6 +1326,12 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             suggest(
                 &mut lines,
                 &[
+                    ("velo conflicts <file>", "see both sides", Tone::Do),
+                    (
+                        "velo resolve --mark <file>",
+                        "after editing it yourself",
+                        Tone::Alt,
+                    ),
                     (
                         "velo resolve <file>",
                         "walk through them hunk by hunk",
@@ -1448,6 +1488,7 @@ fn run_resolve(
                     TakeOption::Ours => {
                         (format!("your last saved snapshot on {}", branch), "theirs")
                     }
+                    TakeOption::Both => (format!("ours then {}", source), "neither side"),
                     _ => (source.clone(), "ours"),
                 };
                 println!(
@@ -1477,8 +1518,8 @@ fn run_resolve(
             use std::io::IsTerminal;
             if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
                 return Err(VeloError::invalid(
-                    "interactive resolve needs a terminal; use --take ours|theirs, \
-                     or run velo resolve in a terminal",
+                    "interactive resolve needs a terminal; use --take ours|theirs|both, \
+                     or edit the file and run velo resolve --mark <file>",
                 ));
             }
             for cf in targets {
@@ -1488,6 +1529,52 @@ fn run_resolve(
     }
 
     report_remaining_conflicts(repo)
+}
+
+/// `velo resolve --mark <file>`: accept the hand-edited file as the resolution.
+fn run_mark(guard: &velo_core::WriteGuard, file: &str) -> Result<()> {
+    use console::style;
+    use velo_core::commands::resolve;
+
+    let repo = guard.repo();
+    if !resolve::merge_active(repo) {
+        return Err(VeloError::invalid(
+            "No merge in progress. Nothing to resolve.",
+        ));
+    }
+    let cf = resolve::get_conflict(repo, file)?;
+    let m = resolve::mark(guard, &cf)?;
+    println!(
+        "{} Accepted your edit of '{}' ({} lines; {} differ from ours, {} from theirs).",
+        style("✔").green(),
+        m.path,
+        m.lines,
+        m.differs_from_ours,
+        m.differs_from_theirs
+    );
+    report_remaining_conflicts(repo)
+}
+
+/// `velo conflicts`: show both sides of each hunk, as text or JSON.
+fn run_conflicts(repo: &velo_core::Repo, file: Option<&str>, json: bool) -> Result<()> {
+    use velo_core::commands::resolve;
+
+    let targets = match file {
+        Some(f) if resolve::merge_active(repo) => vec![resolve::get_conflict(repo, f)?],
+        Some(_) => Vec::new(),
+        None => resolve::list_conflicts(repo)?,
+    };
+    let source = resolve::merge_source(repo);
+    let mut sessions = Vec::with_capacity(targets.len());
+    for cf in targets {
+        sessions.push(resolve::open_session(repo, cf)?);
+    }
+    if json {
+        render::conflicts::print_json(source.as_deref(), &sessions);
+    } else {
+        render::conflicts::print_text(source.as_deref(), &sessions);
+    }
+    Ok(())
 }
 
 /// After resolving, tell the user what is left and what to do next.
@@ -1532,6 +1619,7 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Show { .. }
             | Commands::Blame { .. }
             | Commands::Grep { .. }
+            | Commands::Conflicts { .. }
             | Commands::ExportGit { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
@@ -1901,8 +1989,17 @@ fn run(cli: Cli) -> Result<()> {
             take,
             all,
             force,
+            mark,
         } => {
-            run_resolve(write(), file.as_deref(), take.map(Into::into), all, force)?;
+            if mark {
+                run_mark(write(), file.as_deref().unwrap_or_default())?;
+            } else {
+                run_resolve(write(), file.as_deref(), take.map(Into::into), all, force)?;
+            }
+        }
+
+        Commands::Conflicts { file, json } => {
+            run_conflicts(&repo, file.as_deref(), json)?;
         }
 
         Commands::Stash { sub } => match sub {

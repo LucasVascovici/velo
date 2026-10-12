@@ -284,9 +284,11 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
-| See conflicts | `<<<<<<<` markers in file | Interactive TUI — `velo resolve <file>` |
+| See conflicts | `<<<<<<<` markers in file | `velo conflicts <file>` (text or `--json`); interactive TUI — `velo resolve <file>` |
 | Take our version | `git checkout --ours <file>` | `velo resolve <file> --take ours` |
 | Take their version | `git checkout --theirs <file>` | `velo resolve <file> --take theirs` |
+| Keep both sides | edit the markers by hand | `velo resolve <file> --take both` (ours then theirs, per hunk) |
+| Accept your own edit | delete markers, `git add` | `velo resolve --mark <file>` |
 | Resolve all at once | — | `velo resolve --all --take theirs` |
 | Code validity during merge | ❌ Markers break syntax | ✅ File untouched; TUI shows both sides |
 | Abort after resolving | ❌ `--abort` fails if you started editing | ✅ `--abort` works until `velo save` |
@@ -464,10 +466,13 @@ velo pull
 | :--- | :--- |
 | `velo merge <branch>` | 3-way merge `<branch>` into the current branch |
 | `velo merge --abort` | Restore the exact pre-merge state (works at any point before `velo save`) |
+| `velo conflicts [<file>] [--json]` | Show both sides of each conflicting hunk, as text or JSON |
 | `velo resolve <file>` | Interactive hunk-by-hunk conflict resolver |
 | `velo resolve <file> --take ours` | Non-interactive: keep the current branch's version |
 | `velo resolve <file> --take theirs` | Non-interactive: take the incoming branch's version |
-| `velo resolve --all --take <ours\|theirs>` | Resolve all outstanding conflicts non-interactively |
+| `velo resolve <file> --take both` | Non-interactive: keep both sides, ours then theirs, per hunk |
+| `velo resolve --mark <file>` | Accept your hand edit of the file as the resolution |
+| `velo resolve --all --take <ours\|theirs\|both>` | Resolve all outstanding conflicts non-interactively |
 | `velo cherry-pick <target>` | Apply the diff from one snapshot onto the current branch |
 | `velo rebase <target>` | Replay current branch commits on top of another branch |
 | `velo rebase --abort` | Abort the rebase and restore the original branch state |
