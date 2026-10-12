@@ -12111,3 +12111,6 @@ mod lock_holder;
 
 #[cfg(test)]
 mod save_merge_safety;
+
+#[cfg(test)]
+mod restore_delta;

@@ -148,6 +148,7 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
             Some(snapshot_files.len() as u64),
         );
         write_files(
+            guard,
             root,
             &guard.repo().objects(),
             &snapshot_files,
@@ -155,9 +156,6 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
             cancel,
         )?;
     }
-
-    let written: Vec<String> = snapshot_files.iter().map(|(p, _, _)| p.clone()).collect();
-    crate::commands::invalidate_cache_entries(guard.repo(), &written);
 
     if partial {
         return Ok(Outcome::RestoredPaths {
@@ -246,18 +244,33 @@ fn remove_ghosts(
     Ok(ghosts.len())
 }
 
+/// One restored file's `index_cache` row: path, mtime (ns), size, hash.
+type CacheRow = (String, i64, i64, String);
+
 /// Write every file in parallel, collecting the failures rather than the first.
+///
+/// Each file that lands is stat-ed and its `index_cache` row is written, so the
+/// next dirty check is a cache hit instead of a re-hash of the whole tree. The
+/// seeded hash is the object name: `storage::apply_file` writes exactly the
+/// object's normalised content (for a symlink, the target string), and
+/// `storage::hash_for` of those bytes is that same name. The usual caveat of the
+/// cache applies: an edit within one mtime tick that keeps the size is missed.
+///
+/// On error or cancellation the rows of files that were written are still
+/// seeded, and the rows of every other path in the set are invalidated, so no
+/// stale row can vouch for content that is no longer on disk.
 fn write_files(
+    guard: &crate::repo::WriteGuard<'_>,
     root: &Path,
     objects: &crate::storage::ObjectStore,
     files: &[(String, String, i64)],
     progress: &PhaseGuard<'_>,
     cancel: Option<&Cancel>,
 ) -> Result<()> {
-    let errors: Vec<String> = objects.par_with_content(
+    let results: Vec<std::result::Result<CacheRow, String>> = objects.par_with_content(
         files,
         |(_, hash, _)| hash.as_str(),
-        |(rel_path, _, mode), content| {
+        |(rel_path, hash, mode), content| {
             progress.tick();
             // Checked per file, so cancelling takes effect at the next one and
             // never part-way through writing a file. Workers already in flight
@@ -268,18 +281,55 @@ fn write_files(
             let full_path = root.join(crate::db::db_to_path(rel_path));
             if let Some(parent) = full_path.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
-                    return Some(format!("mkdir '{}': {}", rel_path, e));
+                    return Some(Err(format!("mkdir '{}': {}", rel_path, e)));
                 }
             }
             match content {
                 Ok(data) => match storage::apply_file(&full_path, *mode, &data) {
-                    Ok(_) => None,
-                    Err(e) => Some(format!("write '{}': {} (is the file locked?)", rel_path, e)),
+                    Ok(_) => {
+                        // A file that cannot be stat-ed is simply not seeded.
+                        let meta = fs::symlink_metadata(&full_path).ok()?;
+                        let mtime_ns = meta
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_nanos() as i64)
+                            .unwrap_or(0);
+                        Some(Ok((
+                            rel_path.clone(),
+                            mtime_ns,
+                            meta.len() as i64,
+                            hash.clone(),
+                        )))
+                    }
+                    Err(e) => Some(Err(format!(
+                        "write '{}': {} (is the file locked?)",
+                        rel_path, e
+                    ))),
                 },
-                Err(e) => Some(format!("read object for '{}': {}", rel_path, e)),
+                Err(e) => Some(Err(format!("read object for '{}': {}", rel_path, e))),
             }
         },
     );
+
+    let mut rows: Vec<CacheRow> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+    for r in results {
+        match r {
+            Ok(row) => rows.push(row),
+            Err(e) => errors.push(e),
+        }
+    }
+    crate::commands::seed_cache_entries(guard.repo(), &rows);
+    if rows.len() != files.len() {
+        let seeded: std::collections::HashSet<&str> = rows.iter().map(|r| r.0.as_str()).collect();
+        let unwritten: Vec<String> = files
+            .iter()
+            .filter(|(p, _, _)| !seeded.contains(p.as_str()))
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        crate::commands::invalidate_cache_entries(guard.repo(), &unwritten);
+    }
 
     // Reported before any write error: a cancelled restore skipped files rather
     // than failing on them, so "you asked me to stop" is the truthful answer.
@@ -291,9 +341,13 @@ fn write_files(
     // Report every failure: a locked file part-way through a restore leaves the
     // tree half-written, and knowing which paths failed is what makes it fixable.
     Err(VeloError::invalid(format!(
-        "{} file(s) could not be written:\n  {}",
+        "{} file(s) could not be written:
+  {}",
         errors.len(),
-        errors.join("\n  ")
+        errors.join(
+            "
+  "
+        )
     )))
 }
 

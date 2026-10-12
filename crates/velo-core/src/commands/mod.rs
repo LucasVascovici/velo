@@ -770,6 +770,25 @@ pub(crate) fn invalidate_cache_entries(repo: &Repo, paths: &[String]) {
     }
 }
 
+/// Seed index_cache rows for files whose hash is already known (just written
+/// by `restore`), so the next dirty check is warm. One transaction.
+pub(crate) fn seed_cache_entries(repo: &Repo, rows: &[(String, i64, i64, String)]) {
+    if rows.is_empty() {
+        return;
+    }
+    let conn = repo.conn();
+    if let Ok(tx) = conn.unchecked_transaction() {
+        if let Ok(mut stmt) = tx.prepare(
+            "INSERT OR REPLACE INTO index_cache (path, mtime_ns, size, hash) VALUES (?, ?, ?, ?)",
+        ) {
+            for (p, m, s, h) in rows {
+                let _ = stmt.execute(rusqlite::params![p, m, s, h]);
+            }
+        }
+        let _ = tx.commit();
+    }
+}
+
 /// Return the list of files with active merge conflicts (reads from DB).
 pub(crate) fn get_conflict_files(repo: &Repo) -> Vec<String> {
     let conn = repo.conn();
