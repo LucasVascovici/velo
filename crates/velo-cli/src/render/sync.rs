@@ -107,13 +107,27 @@ pub fn print_pulled(pulled: &Pulled) {
             branch,
             style(super::id::short(to)).yellow()
         ),
-        Pulled::Diverged { branch, remote } => {
+        Pulled::Ahead { remote, ahead, .. } => println!(
+            "{} Nothing to pull; {} local snapshot(s) not yet on '{}'. Run {}.",
+            style("✔").green(),
+            ahead,
+            remote,
+            style("velo push").cyan()
+        ),
+        Pulled::Diverged {
+            branch,
+            remote,
+            ahead,
+            behind,
+        } => {
             println!(
-                "{} '{}' and '{}/{}' have diverged.",
+                "{} '{}' and '{}/{}' have diverged: {} local and {} remote snapshot(s).",
                 style("!").yellow().bold(),
                 branch,
                 remote,
-                branch
+                branch,
+                ahead,
+                behind
             );
             println!(
                 "  Reconcile with {} then {}",
@@ -121,5 +135,7 @@ pub fn print_pulled(pulled: &Pulled) {
                 style("velo save \"Merge …\"").cyan()
             );
         }
+        // `Pulled` is non-exhaustive; a future outcome falls back to its debug form.
+        other => println!("{other:?}"),
     }
 }

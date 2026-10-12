@@ -4062,7 +4062,9 @@ mod tests {
             pulled,
             Pulled::Diverged {
                 branch: "main".into(),
-                remote: "origin".into()
+                remote: "origin".into(),
+                ahead: 1,
+                behind: 1,
             }
         );
         // Our branch is left where it was; the remote's history waits under a
@@ -12090,6 +12092,9 @@ mod meta_query;
 
 #[cfg(test)]
 mod change_events;
+
+#[cfg(test)]
+mod sync_outcomes;
 
 #[cfg(test)]
 mod chunked_objects;
