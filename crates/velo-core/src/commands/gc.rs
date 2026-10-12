@@ -151,6 +151,15 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         set
     };
 
+    // The last database access. A real run makes the prunes durable before any
+    // file is touched, so an I/O error later leaves trash and file_map rows
+    // that still match the objects on disk; a dry run rolls them back.
+    if dry_run {
+        drop(conn);
+    } else {
+        conn.commit()?;
+    }
+
     // No total: the directory is streamed rather than counted first, so a
     // consumer gets liveness without us walking the whole store twice.
     let progress = PhaseGuard::new(
@@ -210,10 +219,6 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
             collected.chunks += 1;
             collected.bytes_freed += size;
         }
-    }
-
-    if !dry_run {
-        conn.commit()?;
     }
 
     // A cancelled pass reports `Cancelled` rather than a partial tally, as
