@@ -12140,3 +12140,6 @@ mod diff_shortcuts;
 
 #[cfg(test)]
 mod import_parallel;
+
+#[cfg(test)]
+mod metadata_growth;
