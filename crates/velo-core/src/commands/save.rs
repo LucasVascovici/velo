@@ -6,7 +6,7 @@ use rusqlite::params;
 use crate::commands::require_working_tree;
 use crate::commands::FileStatus;
 use crate::commands::SnapshotIdentity;
-use crate::error::{Result, VeloError};
+use crate::error::{InProgress, Result, VeloError};
 use crate::progress::Phase;
 use crate::storage;
 use std::path::Path;
@@ -118,6 +118,26 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         ));
     }
 
+    // Amending mid-merge used to skip `merge_pending` yet still delete
+    // `MERGE_HEAD` at the end, silently discarding the merge. Refuse instead.
+    if amend && root.join(".velo/MERGE_HEAD").exists() {
+        return Err(VeloError::OperationInProgress {
+            what: InProgress::Merge,
+        });
+    }
+    // Saving over unresolved conflicts records "ours" for each file, drops
+    // theirs, and leaves the rows behind so `status` reports a merge that no
+    // longer exists. Make the caller resolve first.
+    let unresolved = crate::commands::get_conflict_files(guard.repo());
+    if !unresolved.is_empty() {
+        return Err(VeloError::Conflicts {
+            paths: unresolved
+                .into_iter()
+                .map(std::path::PathBuf::from)
+                .collect(),
+        });
+    }
+
     let full_dirty = crate::commands::get_dirty_files(guard.repo());
     // Apply pathspec filter: if paths given, only snapshot matching files
     let dirty: std::collections::HashMap<String, FileStatus> = if paths.is_empty() {
@@ -150,12 +170,12 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     // ── Amend: find the snapshot to replace ──────────────────────────────────
     // Its message is captured too, so `velo save --amend` with no message can
     // reuse it.
-    let amend_target: Option<(String, String, String)> = if amend {
+    let amend_target: Option<(String, String, String, String)> = if amend {
         conn.query_row(
-            "SELECT hash, parent_hash, message FROM snapshots
+            "SELECT hash, parent_hash, message, merge_parent FROM snapshots
              WHERE branch = ? ORDER BY created_at_ms DESC, rowid DESC LIMIT 1",
             [branch.trim()],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .ok()
     } else {
@@ -163,13 +183,13 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     };
     let amend_hash: Option<(String, String)> = amend_target
         .as_ref()
-        .map(|(h, p, _)| (h.clone(), p.clone()));
+        .map(|(h, p, _, _)| (h.clone(), p.clone()));
 
     // ── Resolve the message ───────────────────────────────────────────────────
     let message: String = match provided {
         Some(m) => m.to_string(),
         None => match &amend_target {
-            Some((_, _, previous)) => previous.clone(),
+            Some((_, _, previous, _)) => previous.clone(),
             None => {
                 return Err(VeloError::invalid(format!(
                     "Nothing to amend on branch '{}' — it has no snapshots yet.",
@@ -187,7 +207,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     }
 
     // The effective parent for the new snapshot: amend keeps the original
-    // snapshot's parent so history stays linear.
+    // snapshot's parent (and merge parent, below) so history is unchanged.
     let effective_parent = match &amend_hash {
         Some((_, orig_parent)) => orig_parent.trim().to_string(),
         None => parent_hash.trim().to_string(),
@@ -196,7 +216,12 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     // ── Detect merge parent (second parent for merge commits) ────────────────
     // MERGE_HEAD stores "pre_merge_hash:source_branch". The source branch tip
     // at the time of the merge is the second parent of this snapshot.
-    let merge_parent: String = if merge_pending {
+    // An amend keeps the replaced snapshot's second parent: identity covers
+    // parents and ancestry follows `merge_parent`, so dropping it would make
+    // `merge_base` and `blame` give wrong answers.
+    let merge_parent: String = if let Some((_, _, _, mp)) = &amend_target {
+        mp.clone()
+    } else if merge_pending {
         let info = fs::read_to_string(root.join(".velo/MERGE_HEAD")).unwrap_or_default();
         let source_branch = info.trim().split_once(':').map(|(_, b)| b).unwrap_or("");
         // Resolve the source to a snapshot: exact branch tip first, then a
