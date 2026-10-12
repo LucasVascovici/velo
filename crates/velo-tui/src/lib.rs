@@ -185,11 +185,16 @@ fn draw(term: &Term, session: &ConflictSession, cursor: usize, source_branch: &s
 
 fn read_key(term: &Term) -> Key {
     if term.is_term() {
-        term.read_key().unwrap_or(Key::Char('n'))
+        // A read error means the terminal is gone: quit rather than repaint.
+        term.read_key().unwrap_or(Key::Escape)
     } else {
         // Non-TTY fallback: read a line so the resolver stays scriptable.
+        // EOF or an error means no more input will come: quit.
         let mut buf = String::new();
-        std::io::stdin().read_line(&mut buf).ok();
+        match std::io::stdin().read_line(&mut buf) {
+            Ok(0) | Err(_) => return Key::Escape,
+            Ok(_) => {}
+        }
         match buf.trim() {
             "1" => Key::Char('1'),
             "2" => Key::Char('2'),

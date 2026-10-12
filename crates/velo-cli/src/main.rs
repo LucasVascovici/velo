@@ -551,7 +551,7 @@ NOTES
     /// Examples
     ///   velo resolve src/auth.py --take theirs    # accept incoming version
     ///   velo resolve src/auth.py --take ours      # keep current version
-    ///   velo resolve src/auth.py                  # mark manually edited file as resolved
+    ///   velo resolve src/auth.py                  # step through each conflict hunk (needs a terminal)
     ///   velo resolve --all --take theirs          # resolve all conflicts at once
     #[command(
         verbatim_doc_comment,
@@ -1412,6 +1412,16 @@ fn run_resolve(
             }
         }
         None => {
+            // The TUI needs a real terminal at both ends; without one it
+            // would hang holding the write lock. The check is the CLI's, so
+            // core stays free of environment reads.
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                return Err(VeloError::invalid(
+                    "interactive resolve needs a terminal; use --take ours|theirs, \
+                     or run velo resolve in a terminal",
+                ));
+            }
             for cf in targets {
                 velo_tui::resolve_interactive(guard, cf)?;
             }
