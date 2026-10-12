@@ -12133,6 +12133,9 @@ mod grep_parallel;
 mod resolve_edits;
 
 #[cfg(test)]
+mod resolve_noninteractive;
+
+#[cfg(test)]
 mod diff_shortcuts;
 
 #[cfg(test)]

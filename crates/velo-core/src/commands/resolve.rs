@@ -2,8 +2,9 @@
 //!
 //! Core exposes conflicts as data and applies decisions; it never prompts. The
 //! interactive hunk-by-hunk navigator lives in `velo-tui`, which drives the
-//! functions here. Non-interactive resolution (`--take ours|theirs`) needs no UI
-//! and is fully served by [`take_side`].
+//! functions here. Non-interactive resolution (`--take ours|theirs|both`) needs no
+//! UI and is served by [`take_side`]; accepting a file edited by hand is served
+//! by [`mark`].
 
 use rusqlite::params;
 use velo_merge::{build_resolved_content, compute_conflict_hunks, ConflictHunk, Decision};
@@ -15,9 +16,12 @@ use crate::{Repo, WriteGuard};
 
 /// Which side to take when resolving without per-hunk decisions.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TakeOption {
     Ours,
     Theirs,
+    /// Ours then theirs, per hunk: the same order as the TUI's key `3`.
+    Both,
 }
 
 impl TakeOption {
@@ -26,6 +30,7 @@ impl TakeOption {
         match self {
             TakeOption::Ours => Decision::Ours,
             TakeOption::Theirs => Decision::Theirs,
+            TakeOption::Both => Decision::BothOursFirst,
         }
     }
 
@@ -33,6 +38,7 @@ impl TakeOption {
         match self {
             TakeOption::Ours => "ours",
             TakeOption::Theirs => "theirs",
+            TakeOption::Both => "both",
         }
     }
 }
@@ -239,12 +245,7 @@ pub struct Taken {
 /// Returns the number of inserted plus deleted lines relative to "ours", or
 /// `None` when the file matches either side.
 pub fn edits(repo: &Repo, file: &ConflictFile) -> Result<Option<usize>> {
-    let full = repo.root().join(db::db_to_path(&file.path));
-    let hash = if full.exists() {
-        crate::storage::hash_for(&full, crate::storage::capture_mode(&full))
-    } else {
-        String::new()
-    };
+    let (full, hash) = working_hash(repo, file);
     if hash == file.our_hash || hash == file.their_hash {
         return Ok(None);
     }
@@ -258,6 +259,97 @@ pub fn edits(repo: &Repo, file: &ConflictFile) -> Result<Option<usize>> {
         .filter(|c| c.tag() != similar::ChangeTag::Equal)
         .count();
     Ok(Some(n))
+}
+
+/// The working file's path and content hash; the hash is empty when missing.
+fn working_hash(repo: &Repo, file: &ConflictFile) -> (std::path::PathBuf, String) {
+    let full = repo.root().join(db::db_to_path(&file.path));
+    let hash = if full.exists() {
+        crate::storage::hash_for(&full, crate::storage::capture_mode(&full))
+    } else {
+        String::new()
+    };
+    (full, hash)
+}
+
+/// Inserted plus deleted lines between two texts.
+fn changed_lines(a: &str, b: &str) -> usize {
+    similar::TextDiff::from_lines(a, b)
+        .iter_all_changes()
+        .filter(|c| c.tag() != similar::ChangeTag::Equal)
+        .count()
+}
+
+/// What [`mark`] accepted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Marked {
+    pub path: String,
+    /// Lines in the accepted working file.
+    pub lines: usize,
+    /// Inserted plus deleted lines relative to ours.
+    pub differs_from_ours: usize,
+    /// Inserted plus deleted lines relative to theirs.
+    pub differs_from_theirs: usize,
+}
+
+/// Accept the working file, edited by hand, as the resolution of `file`.
+///
+/// Refuses when the file is missing, still equals either side untouched (that
+/// is what `--take` is for), or still holds conflict markers. The working file
+/// is never written, and `MERGE_HEAD` stays until `save`.
+pub fn mark(guard: &WriteGuard, file: &ConflictFile) -> Result<Marked> {
+    let repo = guard.repo();
+    require_working_tree(repo, "resolve")?;
+    let (full, hash) = working_hash(repo, file);
+    let path = &file.path;
+    if hash.is_empty() {
+        return Err(VeloError::invalid(format!(
+            "'{path}' is missing; restore it or use --take"
+        )));
+    }
+    if hash == file.our_hash {
+        return Err(VeloError::invalid(format!(
+            "'{path}' is still your saved version — nothing from the other side is in it. Edit it, or use --take ours"
+        )));
+    }
+    if hash == file.their_hash {
+        return Err(VeloError::invalid(format!(
+            "'{path}' is exactly the incoming version; use --take theirs"
+        )));
+    }
+    let working = match std::fs::read(&full) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => String::new(),
+    };
+    if working
+        .lines()
+        .any(|l| l.starts_with("<<<<<<<") || l.starts_with(">>>>>>>"))
+    {
+        return Err(VeloError::invalid(format!(
+            "'{path}' still contains conflict markers"
+        )));
+    }
+    let ours = read_text(&repo.objects(), &file.our_hash)?;
+    let theirs = read_text(&repo.objects(), &file.their_hash)?;
+    let marked = Marked {
+        path: file.path.clone(),
+        lines: working.lines().count(),
+        differs_from_ours: changed_lines(&ours, &working),
+        differs_from_theirs: changed_lines(&theirs, &working),
+    };
+    clear_conflict(guard, &file.path)?;
+    Ok(marked)
+}
+
+/// The source of the merge in progress (`feature`, `cherry-pick/<snap>`, ...).
+///
+/// `.velo/MERGE_HEAD` holds `pre_merge_hash:source`.
+pub fn merge_source(repo: &Repo) -> Option<String> {
+    let text = std::fs::read_to_string(repo.root().join(".velo/MERGE_HEAD")).ok()?;
+    let (_, source) = text.split_once(':')?;
+    let source = source.trim();
+    (!source.is_empty()).then(|| source.to_string())
 }
 
 /// Resolve several files by taking one side of each.
@@ -297,6 +389,7 @@ pub fn take_all(
             .map(|h| match side {
                 TakeOption::Ours => h.theirs.len(),
                 TakeOption::Theirs => h.ours.len(),
+                TakeOption::Both => 0,
             })
             .sum();
         for h in &mut session.hunks {
