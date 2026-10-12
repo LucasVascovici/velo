@@ -12064,7 +12064,10 @@ mod repo_api {
     #[test]
     fn errors_are_classifiable_without_string_matching() {
         // The point of typed errors: consumers branch on state.
-        let locked = Error::Locked { held_by: Some(42) };
+        let locked = Error::Locked {
+            held_by: Some(42),
+            holder: None,
+        };
         assert!(locked.is_transient());
         assert!(!locked.is_reconcile_needed());
 
@@ -12102,3 +12105,6 @@ mod database_objects;
 
 #[cfg(test)]
 mod driver_units;
+
+#[cfg(test)]
+mod lock_holder;

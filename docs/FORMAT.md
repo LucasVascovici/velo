@@ -34,6 +34,7 @@ third-party tool — must conform to this document.
 ├── HEAD          current branch name (text, no trailing newline required)
 ├── PARENT        snapshot id the working tree is based on ("" if unborn)
 ├── lock          advisory lock file (fs2); held by mutating operations
+├── lock.holder   who holds the lock: pid, start time (ms), command; informational
 ├── MERGE_HEAD    present only mid-merge/cherry-pick: "<pre-merge-id>:<source>"
 └── REBASE_STATE  present only mid-rebase (with REBASE_ONTO, REBASE_ORIG_HEAD)
 ```
@@ -46,7 +47,7 @@ must tolerate a missing or empty `PARENT` (a repository with no commits).
 A repository may instead be **one SQLite file**, created by `Repo::create_file`. It has the same schema and the same format version as a directory repository, and its `settings` table holds `layout = single-file` and `objects = database`. Objects are rows of the `objects` table (section 2.5).
 
 - There is no `.velo` directory, no working tree, and no `HEAD` or `PARENT`: the default branch is `main` and nothing is checked out.
-- Writers lock `<file>.lock`, a sibling of the database, instead of `.velo/lock`.
+- Writers lock `<file>.lock`, a sibling of the database, instead of `.velo/lock`, and record the holder in `<file>.lock.holder`.
 - Only store-only operations apply; commands that read or write files refuse with `Unsupported`.
 - A database without `layout = single-file`, such as a directory repository's `velo.db`, is not opened as a single-file repository.
 

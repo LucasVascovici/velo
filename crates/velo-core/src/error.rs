@@ -109,7 +109,10 @@ pub enum Error {
     // ── Concurrency ──────────────────────────────────────────────────────────
     /// Another process holds the repository write lock.
     Locked {
+        /// Process id of the holder, when its record could be read.
         held_by: Option<u32>,
+        /// Everything recorded about the holder (pid, start time, command).
+        holder: Option<crate::lock::LockHolder>,
     },
 
     // ── Working-tree preconditions ───────────────────────────────────────────
@@ -228,7 +231,17 @@ impl fmt::Display for Error {
                 found, supported
             ),
             Error::Cancelled => f.write_str("the operation was cancelled"),
-            Error::Locked { held_by } => match held_by {
+            Error::Locked {
+                holder: Some(h), ..
+            } => match &h.command {
+                Some(cmd) => write!(
+                    f,
+                    "another Velo operation holds the lock (pid {}, '{}')",
+                    h.pid, cmd
+                ),
+                None => write!(f, "another Velo operation holds the lock (pid {})", h.pid),
+            },
+            Error::Locked { held_by, .. } => match held_by {
                 Some(pid) => write!(f, "repository is locked by process {}", pid),
                 None => write!(
                     f,

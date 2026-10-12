@@ -196,7 +196,13 @@ mod tests {
                 6,
             ),
             (Error::Cancelled, 7),
-            (Error::Locked { held_by: None }, 8),
+            (
+                Error::Locked {
+                    held_by: None,
+                    holder: None,
+                },
+                8,
+            ),
             (Error::DirtyWorkingTree { paths: vec![] }, 9),
             (
                 Error::OperationInProgress {

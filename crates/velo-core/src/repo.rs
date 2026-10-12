@@ -37,6 +37,9 @@ pub struct Repo {
     listeners: Vec<Box<dyn crate::events::Listener>>,
     /// Where objects live, read once when the handle opens.
     object_location: crate::ObjectLocation,
+    /// What this handle writes into the lock's holder record, so a refused
+    /// writer can say what is running. Set via [`Repo::lock_label`].
+    lock_label: Option<String>,
 }
 
 /// How a repository sits on disk.
@@ -156,6 +159,7 @@ impl Repo {
             drivers: crate::Drivers::new(),
             listeners: Vec::new(),
             object_location,
+            lock_label: None,
         })
     }
 
@@ -204,6 +208,7 @@ impl Repo {
             drivers: crate::Drivers::new(),
             listeners: Vec::new(),
             object_location,
+            lock_label: None,
         })
     }
 
@@ -298,6 +303,7 @@ impl Repo {
             drivers: crate::Drivers::new(),
             listeners: Vec::new(),
             object_location,
+            lock_label: None,
         })
     }
 
@@ -344,6 +350,22 @@ impl Repo {
                 PathBuf::from(name)
             }
         }
+    }
+
+    /// Label this handle's lock in the holder record (typically the command
+    /// line). Core never reads argv itself; the caller decides what to say.
+    pub fn lock_label(mut self, label: impl Into<String>) -> Self {
+        self.lock_label = Some(label.into());
+        self
+    }
+
+    /// Who currently holds this repository's write lock, if a record exists.
+    ///
+    /// The record can be stale when nobody holds the lock (it is removed on a
+    /// normal release, but not after a crash), and it is informational only.
+    /// Whether the pid is still alive is the caller's check.
+    pub fn lock_holder(&self) -> Option<crate::lock::LockHolder> {
+        RepoLock::holder_at(&self.lock_path())
     }
 
     /// Search `start` and its ancestors for a repository and open it.
@@ -676,6 +698,15 @@ impl Repo {
 
     // ── Write access ─────────────────────────────────────────────────────────
 
+    /// The `Locked` error for a busy lock, naming the holder when it is known.
+    fn locked_error(&self) -> Error {
+        let holder = RepoLock::holder_at(&self.lock_path());
+        Error::Locked {
+            held_by: holder.as_ref().map(|h| h.pid),
+            holder,
+        }
+    }
+
     /// Take the exclusive repository lock, failing immediately if another
     /// process holds it.
     ///
@@ -684,8 +715,11 @@ impl Repo {
     /// not hold it across user interaction — a GUI that takes the lock and then
     /// shows a modal will wedge every other process.
     pub fn write(&self) -> Result<WriteGuard<'_>> {
+        let lock =
+            RepoLock::try_acquire_labelled_at(&self.lock_path(), self.lock_label.as_deref())?
+                .ok_or_else(|| self.locked_error())?;
         Ok(WriteGuard {
-            _lock: RepoLock::acquire_at(&self.lock_path())?,
+            _lock: lock,
             repo: self,
         })
     }
@@ -693,7 +727,7 @@ impl Repo {
     /// Like [`Repo::write`] but returns `Ok(None)` instead of erroring when the
     /// lock is already held.
     pub fn try_write(&self) -> Result<Option<WriteGuard<'_>>> {
-        match RepoLock::try_acquire_at(&self.lock_path())? {
+        match RepoLock::try_acquire_labelled_at(&self.lock_path(), self.lock_label.as_deref())? {
             Some(lock) => Ok(Some(WriteGuard {
                 _lock: lock,
                 repo: self,
@@ -724,7 +758,7 @@ impl Repo {
                 return Ok(guard);
             }
             if Instant::now() >= deadline {
-                return Err(Error::Locked { held_by: None });
+                return Err(self.locked_error());
             }
             std::thread::sleep(backoff.min(Duration::from_millis(100)));
             backoff *= 2;
