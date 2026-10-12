@@ -12158,3 +12158,6 @@ mod redo_peek;
 
 #[cfg(test)]
 mod gc_dry_run;
+
+#[cfg(test)]
+mod published_history;

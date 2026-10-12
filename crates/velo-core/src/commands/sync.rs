@@ -602,3 +602,48 @@ pub(crate) fn default_dir(url: &str) -> String {
         .unwrap_or("velo-clone")
         .to_string()
 }
+
+/// Whether rewriting the snapshots from `tip` down to (but excluding) `base`
+/// would replace history a remote-tracking ref already contains.
+///
+/// Returns the first `<remote>/<branch>` label, ordered by remote then branch,
+/// whose last-known tip has any of those snapshots in its ancestry. `base` of
+/// `None` means the whole history below `tip` is at stake. Read-only and
+/// offline: it trusts `remote_refs`, so it can be stale, which is acceptable
+/// for a warning.
+pub fn published(
+    repo: &Repo,
+    tip: &SnapshotId,
+    base: Option<&SnapshotId>,
+) -> Result<Option<String>> {
+    let conn = repo.conn();
+    let mut at_stake = bundle::reachable_ancestry(conn, tip.as_ref());
+    if let Some(base) = base {
+        for h in bundle::reachable_ancestry(conn, base.as_ref()) {
+            at_stake.remove(&h);
+        }
+    }
+    let mut stmt =
+        conn.prepare("SELECT remote, branch, hash FROM remote_refs ORDER BY remote, branch")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (remote, branch, hash) in rows {
+        if !snapshot_exists(conn, &hash) {
+            continue;
+        }
+        if bundle::reachable_ancestry(conn, &hash)
+            .iter()
+            .any(|h| at_stake.contains(h))
+        {
+            return Ok(Some(format!("{remote}/{branch}")));
+        }
+    }
+    Ok(None)
+}

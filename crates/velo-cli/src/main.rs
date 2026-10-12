@@ -1702,6 +1702,51 @@ fn report_remaining_conflicts(repo: &velo_core::Repo) -> Result<()> {
     Ok(())
 }
 
+/// Warn, on stderr, when a history-rewriting command is about to replace
+/// snapshots that a remote-tracking ref already contains.
+///
+/// Advisory only: the command proceeds either way, and any failure to work it
+/// out (no snapshots yet, an unresolvable target) silently means no warning.
+fn warn_if_rewriting_pushed(repo: &velo_core::Repo, root: &Path, cmd: &Commands) {
+    let check = || -> Option<String> {
+        let parent_of = |id: &velo_core::SnapshotId| -> Option<velo_core::SnapshotId> {
+            commands::show::run(repo, id, &[]).ok()?.parent
+        };
+        let position = std::fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+        let position = position.trim();
+        let tip = if position.is_empty() {
+            let branch = std::fs::read_to_string(root.join(".velo/HEAD")).ok()?;
+            commands::resolve_snapshot_id(repo, branch.trim()).ok()?
+        } else {
+            commands::resolve_snapshot_id(repo, position).ok()?
+        };
+        let base = match cmd {
+            Commands::Save { amend: true, .. } | Commands::Undo => parent_of(&tip),
+            Commands::Squash { count, .. } => {
+                let mut base = Some(tip.clone());
+                for _ in 0..*count {
+                    base = parent_of(&base?);
+                }
+                base
+            }
+            Commands::Rebase {
+                target: Some(spec),
+                abort: false,
+                cont: false,
+            } => Some(commands::resolve_snapshot_id(repo, spec).ok()?),
+            _ => return None,
+        };
+        commands::sync::published(repo, &tip, base.as_ref())
+            .ok()
+            .flatten()
+    };
+    if let Some(label) = check() {
+        eprintln!(
+            "warning: this rewrites snapshot(s) already pushed to {label}; anyone who pulled them will diverge from you."
+        );
+    }
+}
+
 /// Does this command hold the repo lock for its whole run?
 ///
 /// Interactive `resolve` does not: a human can leave the TUI open for an hour,
@@ -1918,6 +1963,8 @@ fn run(cli: Cli) -> Result<Exit> {
             .as_ref()
             .expect("a mutating command must hold the write guard")
     };
+
+    warn_if_rewriting_pushed(&repo, &root, &cli.command);
 
     match cli.command {
         Commands::Init
