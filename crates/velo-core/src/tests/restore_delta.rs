@@ -172,3 +172,358 @@ fn failed_restore_leaves_no_stale_row_for_the_failed_path() {
         tree(&root, &s1).get("dir/b.txt")
     );
 }
+
+// ─── 15.5-b: restore writes only the delta ───────────────────────────────────
+
+use commands::restore::{Options as RestoreOptions, Outcome, Strategy as Strat};
+use std::collections::BTreeMap;
+
+fn restore_with(root: &Path, snapshot: &str, strategy: Strat) -> Outcome {
+    with_write(root, |g| {
+        commands::restore::run_with(
+            g,
+            &crate::SnapshotId::from_stored(snapshot.to_string()),
+            RestoreOptions {
+                force: true,
+                ..Default::default()
+            },
+            strategy,
+            None,
+        )
+    })
+    .unwrap()
+}
+
+fn written(outcome: &Outcome) -> usize {
+    match outcome {
+        Outcome::Restored { files, .. } => *files,
+        other => panic!("expected a full restore, got {other:?}"),
+    }
+}
+
+#[test]
+fn undo_of_one_file_among_fifty_writes_one() {
+    let (_tmp, root) = setup();
+    for i in 0..50 {
+        write(&root, &format!("d{}/f{i}.txt", i % 5), &format!("body {i}"));
+    }
+    let s1 = save(&root, "s1");
+    write(&root, "d0/f0.txt", "changed body");
+    save(&root, "s2");
+    let out = restore_with(&root, &s1, Strat::Delta);
+    // The 50 files plus whatever `init` tracks; only the changed one is written.
+    assert_eq!(written(&out), 1);
+    assert_eq!(
+        fs::read_to_string(root.join("d0/f0.txt")).unwrap(),
+        "body 0"
+    );
+    assert!(dirty(&root).is_empty());
+
+    // The reference strategy still writes everything.
+    write(&root, "d0/f0.txt", "changed body");
+    let s2 = save(&root, "s2b");
+    let _ = s2;
+    let out = restore_with(&root, &s1, Strat::RewriteAll);
+    assert_eq!(written(&out), tree(&root, &s1).len());
+    assert!(written(&out) >= 50);
+}
+
+#[test]
+fn force_overwrites_a_dirty_file_unchanged_between_the_trees() {
+    let (_tmp, root) = setup();
+    write(&root, "keep.txt", "original");
+    write(&root, "move.txt", "one");
+    let s1 = save(&root, "s1");
+    write(&root, "move.txt", "two");
+    save(&root, "s2");
+    write(&root, "keep.txt", "hand edited, longer");
+    let out = restore_with(&root, &s1, Strat::Delta);
+    assert_eq!(
+        fs::read_to_string(root.join("keep.txt")).unwrap(),
+        "original"
+    );
+    assert_eq!(written(&out), 2);
+    assert!(dirty(&root).is_empty());
+}
+
+#[test]
+fn edit_back_to_original_is_clean_and_skipped() {
+    let (_tmp, root) = setup();
+    write(&root, "keep.txt", "original");
+    write(&root, "move.txt", "one");
+    let s1 = save(&root, "s1");
+    write(&root, "move.txt", "two");
+    save(&root, "s2");
+    write(&root, "keep.txt", "scribble");
+    write(&root, "keep.txt", "original");
+    let out = restore_with(&root, &s1, Strat::Delta);
+    assert_eq!(written(&out), 1);
+    assert_eq!(
+        fs::read_to_string(root.join("keep.txt")).unwrap(),
+        "original"
+    );
+}
+
+#[test]
+fn deleted_file_unchanged_between_trees_is_written_back() {
+    let (_tmp, root) = setup();
+    write(&root, "keep.txt", "original");
+    write(&root, "move.txt", "one");
+    let s1 = save(&root, "s1");
+    write(&root, "move.txt", "two");
+    save(&root, "s2");
+    fs::remove_file(root.join("keep.txt")).unwrap();
+    restore_with(&root, &s1, Strat::Delta);
+    assert_eq!(
+        fs::read_to_string(root.join("keep.txt")).unwrap(),
+        "original"
+    );
+}
+
+#[test]
+fn file_and_directory_clash_in_both_directions() {
+    let (_tmp, root) = setup();
+    write(&root, "a", "file");
+    write(&root, "z.txt", "z");
+    let s1 = save(&root, "file");
+    fs::remove_file(root.join("a")).unwrap();
+    write(&root, "a/b", "nested");
+    let s2 = save(&root, "dir");
+    restore_with(&root, &s1, Strat::Delta);
+    assert_eq!(fs::read_to_string(root.join("a")).unwrap(), "file");
+    restore_with(&root, &s2, Strat::Delta);
+    assert_eq!(fs::read_to_string(root.join("a/b")).unwrap(), "nested");
+    assert!(dirty(&root).is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn chmod_and_symlink_changes_are_restored() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_tmp, root) = setup();
+    write(&root, "run.sh", "#!/bin/sh");
+    write(&root, "other.txt", "o");
+    fs::set_permissions(root.join("run.sh"), fs::Permissions::from_mode(0o755)).unwrap();
+    std::os::unix::fs::symlink("other.txt", root.join("link")).unwrap();
+    let s1 = save(&root, "s1");
+    write(&root, "other.txt", "o2");
+    save(&root, "s2");
+    // A chmod does not change the hash, so the scan alone cannot see it.
+    fs::set_permissions(root.join("run.sh"), fs::Permissions::from_mode(0o644)).unwrap();
+    fs::remove_file(root.join("link")).unwrap();
+    fs::write(root.join("link"), "other.txt").unwrap();
+    restore_with(&root, &s1, Strat::Delta);
+    let mode = fs::metadata(root.join("run.sh"))
+        .unwrap()
+        .permissions()
+        .mode();
+    assert_ne!(mode & 0o111, 0);
+    assert_eq!(
+        fs::read_link(root.join("link")).unwrap(),
+        Path::new("other.txt")
+    );
+}
+
+// ─── Property: Delta is byte-identical to RewriteAll ─────────────────────────
+
+use proptest::prelude::*;
+
+const UNIVERSE: [&str; 6] = ["a", "a/b", "c", "d/e", "d/f", "g/h/i"];
+const BODIES: [&str; 3] = ["x", "yy", "zzz"];
+
+/// path -> (body index, mode: 0 regular, 1 exec, 2 symlink)
+type Spec = BTreeMap<&'static str, (usize, u8)>;
+
+fn spec(slots: &[Option<(usize, u8)>]) -> Spec {
+    let mut m = Spec::new();
+    for (path, slot) in UNIVERSE.iter().zip(slots) {
+        if let Some((body, mode)) = *slot {
+            let mode = if cfg!(unix) { mode } else { 0 };
+            m.insert(path, (body, mode));
+        }
+    }
+    // A path cannot be a file in one place and a directory in the same tree.
+    if m.contains_key("a") {
+        m.remove("a/b");
+    }
+    m
+}
+
+fn clear(root: &Path) {
+    for e in fs::read_dir(root).unwrap() {
+        let e = e.unwrap();
+        if e.file_name() == ".velo" {
+            continue;
+        }
+        let ft = e.file_type().unwrap();
+        if ft.is_dir() {
+            fs::remove_dir_all(e.path()).unwrap();
+        } else {
+            fs::remove_file(e.path()).unwrap();
+        }
+    }
+}
+
+fn materialise(root: &Path, spec: &Spec) {
+    clear(root);
+    for (path, (body, mode)) in spec {
+        let full = root.join(path);
+        fs::create_dir_all(full.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if *mode == 2 {
+                std::os::unix::fs::symlink(BODIES[*body], &full).unwrap();
+                continue;
+            }
+            fs::write(&full, BODIES[*body]).unwrap();
+            if *mode == 1 {
+                fs::set_permissions(&full, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = mode;
+            fs::write(&full, BODIES[*body]).unwrap();
+        }
+    }
+}
+
+fn copy_tree(from: &Path, to: &Path) {
+    fs::create_dir_all(to).unwrap();
+    for e in fs::read_dir(from).unwrap() {
+        let e = e.unwrap();
+        let dest = to.join(e.file_name());
+        let ft = e.file_type().unwrap();
+        if ft.is_dir() {
+            copy_tree(&e.path(), &dest);
+        } else if ft.is_symlink() {
+            #[cfg(unix)]
+            std::os::unix::fs::symlink(fs::read_link(e.path()).unwrap(), &dest).unwrap();
+        } else {
+            fs::copy(e.path(), &dest).unwrap();
+        }
+    }
+}
+
+/// kind/content/mode of every entry outside `.velo`.
+fn snapshot_of_disk(root: &Path) -> BTreeMap<String, String> {
+    fn walk(dir: &Path, root: &Path, out: &mut BTreeMap<String, String>) {
+        for e in fs::read_dir(dir).unwrap() {
+            let e = e.unwrap();
+            if e.file_name() == ".velo" && dir == root {
+                continue;
+            }
+            let rel = e
+                .path()
+                .strip_prefix(root)
+                .unwrap()
+                .to_string_lossy()
+                .replace('\\', "/");
+            let meta = fs::symlink_metadata(e.path()).unwrap();
+            if meta.is_dir() {
+                walk(&e.path(), root, out);
+            } else if meta.file_type().is_symlink() {
+                let t = fs::read_link(e.path()).unwrap();
+                out.insert(rel, format!("link {}", t.display()));
+            } else {
+                #[cfg(unix)]
+                let exec = {
+                    use std::os::unix::fs::PermissionsExt;
+                    meta.permissions().mode() & 0o111 != 0
+                };
+                #[cfg(not(unix))]
+                let exec = false;
+                let body = fs::read(e.path()).unwrap();
+                out.insert(rel, format!("file exec={exec} {body:?}"));
+            }
+        }
+    }
+    let mut out = BTreeMap::new();
+    walk(root, root, &mut out);
+    out
+}
+
+/// Apply one dirty operation to a tracked path on disk, where it still exists.
+fn dirty_op(root: &Path, path: &str, op: u8) {
+    let full = root.join(path);
+    // A universe path can be a directory in this tree (`a` when `a/b` exists).
+    let Ok(meta) = fs::symlink_metadata(&full) else {
+        return;
+    };
+    if meta.is_dir() {
+        return;
+    }
+    let is_link = meta.file_type().is_symlink();
+    match op {
+        1 if !is_link => fs::write(&full, "edited body!!").unwrap(),
+        2 if !is_link => {
+            let original = fs::read(&full).unwrap();
+            fs::write(&full, "scribble scribble").unwrap();
+            fs::write(&full, original).unwrap();
+        }
+        3 => {
+            fs::remove_file(&full).unwrap();
+            // Deleting the last file of a directory and leaving it empty makes
+            // a later file-for-directory swap fail in `restore` whichever
+            // strategy runs (pre-existing), so the test tidies up like an
+            // editor would and does not conflate the two.
+            let mut dir = full.parent();
+            while let Some(d) = dir.filter(|d| *d != root) {
+                if fs::remove_dir(d).is_err() {
+                    break;
+                }
+                dir = d.parent();
+            }
+        }
+        #[cfg(unix)]
+        4 if !is_link => {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = meta.permissions().mode();
+            fs::set_permissions(&full, fs::Permissions::from_mode(mode ^ 0o111)).unwrap();
+        }
+        _ => {}
+    }
+}
+
+fn slots() -> impl Strategy<Value = Vec<Option<(usize, u8)>>> {
+    prop::collection::vec(prop::option::of((0usize..3, 0u8..3)), UNIVERSE.len())
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(32))]
+
+    #[test]
+    fn delta_restore_matches_rewrite_all(
+        left in slots(),
+        right in slots(),
+        ops in prop::collection::vec(0u8..5, UNIVERSE.len()),
+        untracked in any::<bool>(),
+    ) {
+        let (left, right) = (spec(&left), spec(&right));
+        prop_assume!(!left.is_empty() && !right.is_empty() && left != right);
+
+        let (tmp, root) = setup();
+        materialise(&root, &left);
+        let s1 = save(&root, "left");
+        materialise(&root, &right);
+        save(&root, "right");
+
+        for (path, op) in UNIVERSE.iter().zip(&ops) {
+            dirty_op(&root, path, *op);
+        }
+        if untracked {
+            write(&root, "untracked.txt", "not in any tree");
+        }
+
+        let other = TempDir::new().unwrap();
+        let copy = other.path().join("copy");
+        copy_tree(&root, &copy);
+
+        restore_with(&root, &s1, Strat::Delta);
+        restore_with(&copy, &s1, Strat::RewriteAll);
+
+        prop_assert_eq!(snapshot_of_disk(&root), snapshot_of_disk(&copy));
+        drop(tmp);
+    }
+}

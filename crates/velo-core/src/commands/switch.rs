@@ -62,10 +62,11 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
     // blocking on them (and then deleting them under --force) was both surprising
     // and destructive. Creating a branch that inherits the current position
     // restores nothing, so it never blocks.
-    if target_tip.is_some() && !force {
-        let mut at_risk: Vec<std::path::PathBuf> = get_dirty_files(guard.repo())
-            .into_iter()
-            .filter(|(_, status)| *status != FileStatus::New)
+    let dirty = target_tip.is_some().then(|| get_dirty_files(guard.repo()));
+    if let (Some(dirty), false) = (&dirty, force) {
+        let mut at_risk: Vec<std::path::PathBuf> = dirty
+            .iter()
+            .filter(|(_, status)| **status != FileStatus::New)
             .map(|(path, _)| std::path::PathBuf::from(path))
             .collect();
         if !at_risk.is_empty() {
@@ -82,13 +83,15 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
 
     match target_tip {
         Some(at) => {
-            crate::commands::restore::run(
+            crate::commands::restore::run_with(
                 guard,
                 &SnapshotId::from_stored(at.as_str()),
                 crate::commands::restore::Options {
                     force: true,
                     ..Default::default()
                 },
+                crate::commands::restore::Strategy::Delta,
+                dirty,
             )?;
             // A whole-tree rewrite lands a tree that no pending move describes, so the
             // moves are forgotten rather than attached to whatever gets saved next.

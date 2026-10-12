@@ -5,7 +5,7 @@
 //! redo, rebase, stash, sync), and while it printed, all of them leaked its
 //! progress lines into the middle of their own output.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use rusqlite::params;
 
 use crate::commands::require_working_tree;
-use crate::commands::{get_dirty_files, get_tracked_files, remove_empty_parents};
+use crate::commands::{get_dirty_files, get_tracked_files, remove_empty_parents, FileStatus};
 use crate::error::{RefKind, Result, VeloError};
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
 use crate::storage;
@@ -33,7 +33,9 @@ pub enum Outcome {
         branch: String,
         /// Message of the restored snapshot.
         message: String,
-        /// Files written from the object store.
+        /// Files actually written from the object store. Paths already equal
+        /// to the target (same hash and mode, clean on disk) are not rewritten
+        /// and not counted.
         files: usize,
         /// Tracked files removed because the target snapshot doesn't have them.
         ghosts_removed: usize,
@@ -75,8 +77,31 @@ pub struct Options<'a> {
     pub cancel: Option<&'a Cancel>,
 }
 
+/// How a full restore decides which files to write.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Strategy {
+    /// Write only paths that differ from the tree being left, are dirty, or
+    /// whose mode on disk is not the target's.
+    Delta,
+    /// Write every file of the target. The reference behaviour, kept reachable
+    /// so the property test can hold `Delta` to it.
+    RewriteAll,
+}
+
 /// Put the working tree back to how it was at `snapshot`.
 pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> Result<Outcome> {
+    run_with(guard, snapshot, options, Strategy::Delta, None)
+}
+
+/// [`run`] with the write strategy chosen and, optionally, the dirty set the
+/// caller has already computed (it must describe the working tree as it is now).
+pub(crate) fn run_with(
+    guard: &WriteGuard,
+    snapshot: &SnapshotId,
+    options: Options<'_>,
+    strategy: Strategy,
+    dirty: Option<HashMap<String, FileStatus>>,
+) -> Result<Outcome> {
     require_working_tree(guard.repo(), "restore")?;
     let Options {
         force,
@@ -95,17 +120,19 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
     let root = guard.root();
     let partial = !paths.is_empty();
 
+    // One scan serves the already-there check, the dirty check and the delta.
+    let dirty = dirty.unwrap_or_else(|| get_dirty_files(guard.repo()));
+
     // Nothing to do when a full restore targets where we already are.
     if !partial {
         let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-        if position.trim() == snapshot_hash && get_dirty_files(guard.repo()).is_empty() {
+        if position.trim() == snapshot_hash && dirty.is_empty() {
             return Ok(Outcome::AlreadyThere {
                 snapshot: snapshot_hash.to_string(),
             });
         }
     }
 
-    let dirty = get_dirty_files(guard.repo());
     if !force && !dirty.is_empty() {
         let mut paths: Vec<PathBuf> = dirty.keys().map(PathBuf::from).collect();
         paths.sort();
@@ -135,6 +162,38 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
         }
     }
 
+    // Delta: the working tree is known to equal the tree at PARENT except for
+    // the paths in `dirty`. A tracked path the scan's walk did not see (out of
+    // scope, newly ignored, replaced by a directory) stays in its `db_files`
+    // and is reported `Deleted`, so it is in `dirty` and gets written. A chmod
+    // does not change the hash and is not dirty, hence the mode check.
+    let to_write: Vec<(String, String, i64)> = if partial || strategy == Strategy::RewriteAll {
+        snapshot_files.clone()
+    } else {
+        let source: HashMap<(String, String), i64> = {
+            let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+            load_tree(conn, position.trim())?
+                .into_iter()
+                .map(|(p, h, m)| ((p, h), m))
+                .collect()
+        };
+        snapshot_files
+            .iter()
+            .filter(|(rel, hash, mode)| {
+                let same_in_source = source
+                    .get(&(rel.clone(), hash.clone()))
+                    .is_some_and(|m| m == mode);
+                !(same_in_source
+                    && !dirty.contains_key(rel)
+                    && mode_matches(
+                        storage::capture_mode(&root.join(crate::db::db_to_path(rel))),
+                        *mode,
+                    ))
+            })
+            .cloned()
+            .collect()
+    };
+
     let ghosts_removed = if partial {
         0
     } else {
@@ -145,13 +204,13 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
         let progress = PhaseGuard::new(
             observer.unwrap_or_else(|| guard.repo().observer()),
             Phase::Writing,
-            Some(snapshot_files.len() as u64),
+            Some(to_write.len() as u64),
         );
         write_files(
             guard,
             root,
             &guard.repo().objects(),
-            &snapshot_files,
+            &to_write,
             &progress,
             cancel,
         )?;
@@ -184,10 +243,22 @@ pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> R
         snapshot: snapshot_hash.to_string(),
         branch,
         message,
-        files: snapshot_files.len(),
+        files: to_write.len(),
         ghosts_removed,
         discarded,
     })
+}
+
+/// Whether a file's mode on disk already is the target mode. Where the
+/// executable bit is not observable the two regular modes count as equal, the
+/// same sticky-exec rule `save` uses.
+fn mode_matches(on_disk: i64, target: i64) -> bool {
+    if on_disk == target {
+        return true;
+    }
+    !cfg!(unix)
+        && matches!(on_disk, storage::MODE_REGULAR | storage::MODE_EXEC)
+        && matches!(target, storage::MODE_REGULAR | storage::MODE_EXEC)
 }
 
 /// Delete files the snapshot we're leaving tracked but the target doesn't have.

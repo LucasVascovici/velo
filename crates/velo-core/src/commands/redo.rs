@@ -94,13 +94,15 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     }
 
     // restore::run writes PARENT itself.
-    crate::commands::restore::run(
+    crate::commands::restore::run_with(
         guard,
         &SnapshotId::from_stored(snapshot.as_str()),
         crate::commands::restore::Options {
             force: true,
             ..Default::default()
         },
+        crate::commands::restore::Strategy::Delta,
+        Some(dirty),
     )?;
     Ok(Outcome { snapshot, message })
 }
