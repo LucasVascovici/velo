@@ -83,7 +83,8 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     tx.execute(
         "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
          SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms
-         FROM trash WHERE hash = ?",
+         FROM trash WHERE hash = ?
+         ON CONFLICT(hash) DO UPDATE SET branch = excluded.branch",
         [&snapshot],
     )?;
     tx.execute("DELETE FROM trash WHERE hash = ?", [&snapshot])?;

@@ -12192,3 +12192,6 @@ mod merge_moves;
 
 #[cfg(test)]
 mod fast_forward_history;
+
+#[cfg(test)]
+mod fetch_after_undo;

@@ -362,6 +362,12 @@ pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
 /// each snapshot's id against its content. Idempotent. Returns
 /// `(new_snapshots, new_objects)`. Shared by `bundle apply`, `fetch`, `push`,
 /// and `clone`.
+///
+/// Never duplicates `file_map` rows. A snapshot this repository does not hold
+/// as a live row may still have rows left from `undo` (which keeps them for
+/// `redo`) or from a `save` that dropped its trash row; those are deleted and
+/// rewritten from the bundle, whose rows were verified against the id, so the
+/// stored tree is exactly what the id commits to.
 pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize, usize)> {
     // ── Write + verify objects (dedup by name) ────────────────────────────────
     let objects = guard.repo().objects();
@@ -446,9 +452,18 @@ pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize,
             "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
         )?;
 
+        let mut has_fm =
+            tx.prepare("SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?)")?;
+        let mut del_fm = tx.prepare("DELETE FROM file_map WHERE snapshot_hash = ?")?;
+
         for s in &bundle.snapshots {
             if existing.contains(&s.hash) {
                 continue; // already have it — idempotent
+            }
+            // Leftover rows (undo keeps them, save orphans them) are replaced,
+            // never added to. The trash row stays: `redo` still needs it.
+            if has_fm.query_row([&s.hash], |r| r.get::<_, bool>(0))? {
+                del_fm.execute([&s.hash])?;
             }
             // Its id was verified against its content before the transaction.
             ins_snap.execute(params![
