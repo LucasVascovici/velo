@@ -206,6 +206,21 @@ fn save_and_gc_keep_the_trash_row_a_snapshot_needs() {
     assert!(trash_has(tmp.path(), &a), "save purged the needed row");
     run_gc(tmp.path());
     assert!(trash_has(tmp.path(), &a), "gc expired the needed row");
+
+    // gc also deletes object files; redo must still find everything A needs.
+    let repo = Repo::open_and_migrate(tmp.path()).unwrap();
+    let out = redo::run(&repo.write().unwrap()).unwrap();
+    assert_eq!(out.snapshot, a.as_str());
+    let in_snapshots: i64 = repo
+        .conn()
+        .query_row(
+            "SELECT COUNT(*) FROM snapshots WHERE hash = ?",
+            [a.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_snapshots, 1, "redo did not bring A back");
+    assert_eq!(fs::read_to_string(tmp.path().join("f.txt")).unwrap(), "a");
 }
 
 #[test]
