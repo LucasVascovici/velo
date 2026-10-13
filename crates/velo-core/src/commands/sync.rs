@@ -603,6 +603,24 @@ pub(crate) fn default_dir(url: &str) -> String {
         .to_string()
 }
 
+/// The `(remote, branch)` tracking refs that point at exactly `snapshot`,
+/// ordered by remote then branch.
+///
+/// `undo` does not touch `remote_refs`, so after one a tracking ref can still
+/// name the snapshot it removed; a caller uses this to say the remote still has
+/// it and that a later `fetch` brings it back.
+pub fn tracking_refs_at(repo: &Repo, snapshot: &SnapshotId) -> Result<Vec<(String, String)>> {
+    let mut stmt = repo
+        .conn()
+        .prepare("SELECT remote, branch FROM remote_refs WHERE hash = ? ORDER BY remote, branch")?;
+    let rows = stmt
+        .query_map([snapshot.as_str()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 /// Whether rewriting the snapshots from `tip` down to (but excluding) `base`
 /// would replace history a remote-tracking ref already contains.
 ///

@@ -9,7 +9,7 @@ use std::fs;
 
 use crate::commands::require_working_tree;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
-use crate::error::{InProgress, Result, VeloError};
+use crate::error::{InProgress, RefKind, Result, VeloError};
 use crate::storage;
 use crate::{Author, BranchName, ObjectHash, Repo, SnapshotId, SnapshotMeta, WriteGuard};
 
@@ -260,16 +260,41 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
     // Resolve the merge source first, so an unborn current branch can adopt it.
     // An exact local-branch tip wins over a hash prefix, so a short branch name
     // can't be mis-read as one; tags and remote refs fall out of the fallback.
+    let mut absent_ref: Option<VeloError> = None;
     let target_probe = crate::commands::branch_tip(conn, target_branch).or_else(|| {
-        crate::commands::resolve_snapshot_id(guard.repo(), target_branch)
-            .ok()
-            .map(SnapshotId::into_string)
+        match crate::commands::resolve_snapshot_id(guard.repo(), target_branch) {
+            Ok(id) => Some(id.into_string()),
+            // Kept so the caller hears "fetch it", not a generic "not found".
+            Err(e @ VeloError::RemoteRefAbsent { .. }) => {
+                absent_ref = Some(e);
+                None
+            }
+            Err(_) => None,
+        }
     });
-    let not_found = || {
-        VeloError::invalid(format!(
-            "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
-            target_branch
-        ))
+    let target_hash: String = match target_probe {
+        Some(h) => {
+            // Checked before anything is written: a merge must never record a
+            // parent that is not a live snapshot (an undone one a tracking ref
+            // still names, say).
+            if !crate::commands::snapshot_is_live(conn, &h) {
+                return Err(
+                    match crate::commands::resolve_snapshot_id(guard.repo(), target_branch) {
+                        Err(e @ VeloError::RemoteRefAbsent { .. }) => e,
+                        _ => VeloError::not_found(RefKind::Snapshot, h),
+                    },
+                );
+            }
+            h
+        }
+        None => {
+            return Err(absent_ref.unwrap_or_else(|| {
+                VeloError::invalid(format!(
+                    "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
+                    target_branch
+                ))
+            }))
+        }
     };
 
     let current_hash: String = match crate::commands::branch_tip(conn, head_branch) {
@@ -277,7 +302,6 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         None => {
             // Merging into a branch with no commits just starts it at the source
             // (Git does the same) — there is nothing of ours to reconcile.
-            let target_hash = target_probe.ok_or_else(not_found)?;
             crate::commands::set_branch_tip(conn, head_branch, &target_hash)?;
             // The tree often already matches, having just branched from it; only
             // touch it when it genuinely differs.
@@ -297,8 +321,6 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
             });
         }
     };
-
-    let target_hash: String = target_probe.ok_or_else(not_found)?;
 
     // Common right after branching, before either side has diverged.
     if current_hash == target_hash {
@@ -538,6 +560,11 @@ impl MergePlan {
 /// ```
 pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<MergePlan> {
     let conn = repo.conn();
+    for id in [ours, theirs] {
+        if !crate::commands::snapshot_is_live(conn, id.as_str()) {
+            return Err(VeloError::not_found(RefKind::Snapshot, id.as_str()));
+        }
+    }
     let objects = repo.objects();
 
     let base = merge_base(repo, ours, theirs)?;

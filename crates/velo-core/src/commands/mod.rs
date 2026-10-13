@@ -339,6 +339,20 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<SnapshotId> {
     // 3. Try as a branch name — resolve to wherever that branch points
     //    (its own latest snapshot, or the position it was created at).
     if let Some(h) = branch_tip(conn, input) {
+        // A `remotes/<r>/<b>` spelling is read from `remote_refs`, which can name
+        // a snapshot this repository no longer holds.
+        if let Some((remote, rest)) = input
+            .strip_prefix("remotes/")
+            .and_then(|r| r.split_once('/'))
+        {
+            if !snapshot_is_live(conn, &h) {
+                return Err(VeloError::RemoteRefAbsent {
+                    remote: remote.to_string(),
+                    branch: rest.to_string(),
+                    snapshot: SnapshotId::from_stored(h),
+                });
+            }
+        }
         return Ok(SnapshotId::from_stored(h));
     }
 
@@ -349,6 +363,15 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<SnapshotId> {
             [remote, branch],
             |r| r.get::<_, String>(0),
         ) {
+            // Never hand back an id nothing holds: a merge would record it as a
+            // parent. The ref is right about the remote; a fetch restores it.
+            if !snapshot_is_live(conn, &h) {
+                return Err(VeloError::RemoteRefAbsent {
+                    remote: remote.to_string(),
+                    branch: branch.to_string(),
+                    snapshot: SnapshotId::from_stored(h),
+                });
+            }
             return Ok(SnapshotId::from_stored(h));
         }
     }
@@ -368,6 +391,12 @@ pub fn resolve_snapshot_id(repo: &Repo, input: &str) -> Result<SnapshotId> {
     // `RefKind::Any` exists for exactly this case: a ref that could have been a
     // snapshot, a tag or a branch.
     Err(VeloError::not_found(RefKind::Any, input))
+}
+
+/// Whether `hash` names a snapshot this repository holds.
+pub(crate) fn snapshot_is_live(conn: &rusqlite::Connection, hash: &str) -> bool {
+    conn.query_row("SELECT 1 FROM snapshots WHERE hash = ?", [hash], |_| Ok(()))
+        .is_ok()
 }
 
 /// Where a compacted id lives now, following the record to the end of its chain.

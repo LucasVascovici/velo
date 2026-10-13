@@ -164,6 +164,15 @@ pub enum Error {
         branch: String,
         remote: String,
     },
+    /// A remote-tracking ref names a snapshot this repository does not hold
+    /// (for example one that was undone here after a push). The ref is still
+    /// right about the remote; a `fetch` brings the snapshot back. Merging it
+    /// would otherwise record a parent that does not exist.
+    RemoteRefAbsent {
+        remote: String,
+        branch: String,
+        snapshot: crate::SnapshotId,
+    },
     /// The branch has no commits yet and this operation needs at least one.
     UnbornBranch {
         branch: String,
@@ -314,6 +323,17 @@ impl fmt::Display for Error {
                 f,
                 "'{}' on '{}' has commits you don't have (non-fast-forward)",
                 branch, remote
+            ),
+            Error::RemoteRefAbsent {
+                remote,
+                branch,
+                snapshot,
+            } => write!(
+                f,
+                "'{}/{}' points at snapshot {} which is not in this repository",
+                remote,
+                branch,
+                snapshot.short()
             ),
             Error::UnbornBranch { branch } => write!(f, "branch '{}' has no commits yet", branch),
             Error::NotFound { kind, name } => write!(f, "no {} found matching '{}'", kind, name),

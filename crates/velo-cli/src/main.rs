@@ -1507,6 +1507,12 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             None => lines.push("  another velo process is writing; retry in a moment".into()),
         },
+        VeloError::RemoteRefAbsent { remote, .. } => {
+            lines.push(format!(
+                "  Run velo fetch {} to bring it back, then try again.",
+                remote
+            ));
+        }
         _ => return None,
     }
     Some(lines.join(
@@ -2186,7 +2192,14 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::Undo => {
-            render::undo::print(&commands::undo::run(write())?);
+            let outcome = commands::undo::run(write())?;
+            // Undo leaves `remote_refs` alone, so a tracking ref may still name
+            // the snapshot just removed; say so rather than let it look gone.
+            let tracking = commands::sync::tracking_refs_at(
+                &repo,
+                &outcome.snapshot.parse::<velo_core::SnapshotId>()?,
+            )?;
+            render::undo::print(&outcome, &tracking);
         }
 
         Commands::Redo => render::undo::print_redo(&commands::redo::run(write())?),
@@ -2535,13 +2548,34 @@ fn run(cli: Cli) -> Result<Exit> {
             )?);
         }
         Commands::Push { remote, branch } => {
-            render::sync::print_pushed(&commands::sync::push(
+            let pushed = commands::sync::push(
                 write(),
                 &remote,
                 branch.as_deref(),
                 &spawn_config()?,
                 Default::default(),
-            )?);
+            );
+            match pushed {
+                Ok(pushed) => render::sync::print_pushed(&pushed),
+                Err(e) => {
+                    // The refused push has just refreshed the tracking ref to the
+                    // advertised tip. If this repository no longer holds that
+                    // snapshot (undone here), a plain merge would fail; say how
+                    // to get it back.
+                    if let VeloError::NotFastForward { branch, remote } = &e {
+                        let spec = format!("{remote}/{branch}");
+                        if let Err(VeloError::RemoteRefAbsent { snapshot, .. }) =
+                            commands::resolve_snapshot_id(&repo, &spec)
+                        {
+                            eprintln!(
+                                "{spec} points at {}, which this repository no longer has (undone here?); velo fetch brings it back as remotes/{spec}, then velo merge {spec}",
+                                render::id::short(snapshot.as_str())
+                            );
+                        }
+                    }
+                    return Err(e);
+                }
+            }
         }
         Commands::Pull { remote } => {
             let pulled =

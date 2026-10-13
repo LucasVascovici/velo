@@ -229,13 +229,33 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         // Resolve the source to a snapshot: exact branch tip first, then a
         // remote ref like `origin/main`, so merges of either still record
         // their second parent (and a short branch name isn't read as a hash).
-        crate::commands::branch_tip(conn, source_branch)
-            .or_else(|| {
-                crate::commands::resolve_snapshot_id(guard.repo(), source_branch)
-                    .ok()
-                    .map(SnapshotId::into_string)
-            })
-            .unwrap_or_default()
+        let mut absent_ref = None;
+        let resolved = crate::commands::branch_tip(conn, source_branch)
+            .or_else(
+                || match crate::commands::resolve_snapshot_id(guard.repo(), source_branch) {
+                    Ok(id) => Some(id.into_string()),
+                    Err(e @ crate::error::Error::RemoteRefAbsent { .. }) => {
+                        absent_ref = Some(e);
+                        None
+                    }
+                    Err(_) => None,
+                },
+            )
+            .unwrap_or_default();
+        // A merge parent must be a live snapshot; refuse before the transaction
+        // opens rather than record one that does not exist.
+        if let Some(e) = absent_ref {
+            return Err(e);
+        }
+        if !resolved.is_empty() && !crate::commands::snapshot_is_live(conn, &resolved) {
+            return Err(
+                match crate::commands::resolve_snapshot_id(guard.repo(), source_branch) {
+                    Err(e @ crate::error::Error::RemoteRefAbsent { .. }) => e,
+                    _ => crate::error::Error::not_found(crate::error::RefKind::Snapshot, resolved),
+                },
+            );
+        }
+        resolved
     } else {
         String::new()
     };

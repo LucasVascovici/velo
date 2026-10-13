@@ -12204,3 +12204,6 @@ mod rebase_merged_history;
 
 #[cfg(test)]
 mod deep_history_reads;
+
+#[cfg(test)]
+mod absent_tracking_ref;
