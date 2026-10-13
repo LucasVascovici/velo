@@ -12198,3 +12198,6 @@ mod fetch_after_undo;
 
 #[cfg(test)]
 mod fsck_duplicate_rows;
+
+#[cfg(test)]
+mod rebase_merged_history;
