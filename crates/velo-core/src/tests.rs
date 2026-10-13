@@ -12176,3 +12176,6 @@ mod resolve_mark_clean;
 
 #[cfg(test)]
 mod merge_equal_trees;
+
+#[cfg(test)]
+mod merge_abort_cleanup;

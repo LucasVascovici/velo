@@ -141,6 +141,12 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
         .unwrap_or((merge_info, "(unknown)"));
     let source = source_branch.to_string();
 
+    let conflict_paths: Vec<String> = conn
+        .prepare("SELECT path FROM conflict_files")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
     conn.execute("DELETE FROM hunk_decisions", [])?;
     conn.execute("DELETE FROM conflict_files", [])?;
     let _ = fs::remove_file(&merge_head_path);
@@ -162,10 +168,61 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
             ..Default::default()
         },
     )?;
+    remove_merge_added(guard, pre_merge_hash, &source, &conflict_paths)?;
     Ok(Outcome::Aborted {
         source,
         restored_to: Some(pre_merge_hash.to_string()),
     })
+}
+
+/// Delete the files a merge wrote that the pre-merge snapshot does not have.
+///
+/// `restore` only rewrites paths that differ from the tree being left, and the
+/// tree being left is still the pre-merge snapshot, so a file the merge added
+/// is invisible to it. The candidates are the source's paths plus the conflict
+/// paths, minus the pre-merge tree. A candidate is deleted only if the dirty
+/// scan reports it as new: that skips ignored paths, and `do_merge` refuses a
+/// dirty tree, so no untracked file of the user's can sit at such a path.
+fn remove_merge_added(
+    guard: &WriteGuard,
+    pre_merge_hash: &str,
+    source: &str,
+    conflict_paths: &[String],
+) -> Result<()> {
+    let conn = guard.conn();
+    let source_hash = crate::commands::branch_tip(conn, source).or_else(|| {
+        let spec = source
+            .strip_prefix("cherry-pick/")
+            .or_else(|| source.strip_prefix("rebase/"))
+            .unwrap_or(source);
+        crate::commands::resolve_snapshot_id(guard.repo(), spec)
+            .ok()
+            .map(SnapshotId::into_string)
+    });
+    let pre_tree = apply::load_tree(conn, pre_merge_hash)?;
+    let mut candidates: std::collections::BTreeSet<String> =
+        conflict_paths.iter().cloned().collect();
+    if let Some(h) = source_hash {
+        candidates.extend(apply::load_tree(conn, &h)?.into_keys());
+    }
+    candidates.retain(|p| !pre_tree.contains_key(p));
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let root = guard.root();
+    let dirty = get_dirty_files(guard.repo());
+    for path in candidates {
+        if dirty.get(&path) != Some(&crate::commands::FileStatus::New) {
+            continue;
+        }
+        let full = root.join(&path);
+        if fs::remove_file(&full).is_ok() {
+            if let Some(parent) = full.parent() {
+                crate::commands::remove_empty_parents(parent, root);
+            }
+        }
+    }
+    Ok(())
 }
 
 // ─── Merge ───────────────────────────────────────────────────────────────────
