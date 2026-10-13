@@ -467,6 +467,22 @@ pub(crate) fn tracking_ref(conn: &rusqlite::Connection, branch: &str) -> Option<
 /// repository — fall back to the tip recorded in the `branches` table, which is
 /// the position the branch was created at.
 pub(crate) fn branch_tip(conn: &rusqlite::Connection, branch: &str) -> Option<String> {
+    // A `remotes/<remote>/<branch>` name is a remote-tracking ref, and
+    // `remote_refs` is the only authority for where those point. The
+    // `snapshots.branch` label of that spelling only records where a fetched
+    // snapshot arrived, and push never relabels it, so it can name an older tip.
+    if let Some((remote, rest)) = branch
+        .strip_prefix("remotes/")
+        .and_then(|r| r.split_once('/'))
+    {
+        return conn
+            .query_row(
+                "SELECT hash FROM remote_refs WHERE remote = ? AND branch = ?",
+                [remote, rest],
+                |r| r.get::<_, String>(0),
+            )
+            .ok();
+    }
     let derived = conn
         .query_row(
             "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at_ms DESC, rowid DESC LIMIT 1",

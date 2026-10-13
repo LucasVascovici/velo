@@ -12179,3 +12179,6 @@ mod merge_equal_trees;
 
 #[cfg(test)]
 mod merge_abort_cleanup;
+
+#[cfg(test)]
+mod remote_ref_lookup;

@@ -345,6 +345,11 @@ for metadata queries).
 remote-tracking. `_deleted_<name>` is a soft-deleted branch. Consumers must not
 create branches matching these patterns.
 
+`remote_refs` is authoritative for remote-tracking tips: `remotes/<remote>/<branch>`
+and `<remote>/<branch>` both resolve through it. The `remotes/<remote>/<branch>`
+value in `snapshots.branch` records where a fetched snapshot arrived; it is
+display context only and is never used to resolve a ref.
+
 ### 7.3 Rename edges
 
 A snapshot is a whole tree, so a move is indistinguishable from a delete plus an
