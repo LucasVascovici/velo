@@ -341,6 +341,60 @@ pub struct Marked {
     pub differs_from_ours: usize,
     /// Inserted plus deleted lines relative to theirs.
     pub differs_from_theirs: usize,
+    /// Clean lines from the other side that `Drop` accepted losing; empty otherwise.
+    pub dropped_clean_changes: Vec<String>,
+}
+
+/// What to do when a hand edit lacks lines the other side changed cleanly,
+/// outside every conflict hunk.
+///
+/// An enum rather than a bool so a call site reads as a decision.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum OnCleanChanges {
+    /// Refuse with [`VeloError::MissingCleanChanges`]; nothing is cleared.
+    #[default]
+    Refuse,
+    /// Accept the edit and report the lines it drops.
+    Drop,
+}
+
+/// The lines the other side changed cleanly that the working file lacks.
+///
+/// Compared by exact line as a multiset: a line counts as present when it
+/// occurs in the working file at least as often as across all clean changes,
+/// so a line moved on purpose is accepted. Whitespace-only lines are skipped.
+/// Empty for a whole-file (driver) conflict, which has no clean regions.
+pub fn missing_clean_changes(repo: &Repo, file: &ConflictFile) -> Result<Vec<String>> {
+    let objects = repo.objects();
+    let ancestor = read_text(&objects, &file.ancestor_hash)?;
+    let ours = read_text(&objects, &file.our_hash)?;
+    let theirs = read_text(&objects, &file.their_hash)?;
+    if compute_conflict_hunks(&ancestor, &ours, &theirs).is_empty() {
+        return Ok(Vec::new());
+    }
+    let full = repo.root().join(db::db_to_path(&file.path));
+    let working = match std::fs::read(&full) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(_) => String::new(),
+    };
+    let mut available: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for l in working.lines() {
+        *available.entry(l).or_insert(0) += 1;
+    }
+    let mut missing = Vec::new();
+    for change in velo_merge::clean_changes_theirs(&ancestor, &ours, &theirs) {
+        for line in change.lines {
+            if line.trim().is_empty() {
+                continue;
+            }
+            match available.get_mut(line.as_str()) {
+                Some(n) if *n > 0 => *n -= 1,
+                _ => missing.push(line),
+            }
+        }
+    }
+    Ok(missing)
 }
 
 /// Accept the working file, edited by hand, as the resolution of `file`.
@@ -349,6 +403,16 @@ pub struct Marked {
 /// is what `--take` is for), or still holds conflict markers. The working file
 /// is never written, and `MERGE_HEAD` stays until `save`.
 pub fn mark(guard: &WriteGuard, file: &ConflictFile) -> Result<Marked> {
+    mark_with(guard, file, OnCleanChanges::Refuse)
+}
+
+/// [`mark`], with a choice for a hand edit that drops clean changes from the
+/// other side. The clean-change check runs after the other refusals.
+pub fn mark_with(
+    guard: &WriteGuard,
+    file: &ConflictFile,
+    on_clean: OnCleanChanges,
+) -> Result<Marked> {
     let repo = guard.repo();
     require_working_tree(repo, "resolve")?;
     let (full, hash) = working_hash(repo, file);
@@ -380,6 +444,20 @@ pub fn mark(guard: &WriteGuard, file: &ConflictFile) -> Result<Marked> {
             "'{path}' still contains conflict markers"
         )));
     }
+    let missing = missing_clean_changes(repo, file)?;
+    let mut dropped_clean_changes = Vec::new();
+    if !missing.is_empty() {
+        match on_clean {
+            OnCleanChanges::Refuse => {
+                return Err(VeloError::MissingCleanChanges {
+                    path: std::path::PathBuf::from(path),
+                    missing: missing.len(),
+                    sample: missing.into_iter().take(5).collect(),
+                });
+            }
+            OnCleanChanges::Drop => dropped_clean_changes = missing,
+        }
+    }
     let ours = read_text(&repo.objects(), &file.our_hash)?;
     let theirs = read_text(&repo.objects(), &file.their_hash)?;
     let marked = Marked {
@@ -387,6 +465,7 @@ pub fn mark(guard: &WriteGuard, file: &ConflictFile) -> Result<Marked> {
         lines: working.lines().count(),
         differs_from_ours: changed_lines(&ours, &working),
         differs_from_theirs: changed_lines(&theirs, &working),
+        dropped_clean_changes,
     };
     clear_conflict(guard, &file.path)?;
     Ok(marked)

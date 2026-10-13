@@ -124,6 +124,13 @@ pub enum Error {
     WouldOverwriteEdits {
         paths: Vec<PathBuf>,
     },
+    /// A hand edit accepted as a resolution would drop lines the other side changed cleanly.
+    MissingCleanChanges {
+        path: PathBuf,
+        missing: usize,
+        /// At most the first five missing lines.
+        sample: Vec<String>,
+    },
     /// Undoing this snapshot would leave other snapshots without their parent.
     SnapshotHasDependents {
         snapshot: crate::SnapshotId,
@@ -282,6 +289,12 @@ impl fmt::Display for Error {
                 f,
                 "{} conflicted file(s) were edited by hand; taking a side would replace those edits",
                 paths.len()
+            ),
+            Error::MissingCleanChanges { path, missing, .. } => write!(
+                f,
+                "'{}' is missing {} line(s) the other side changed outside the conflict",
+                path.display(),
+                missing
             ),
             Error::OperationInProgress { what } => write!(f, "a {} is already in progress", what),
             Error::NoOperationInProgress { what } => write!(f, "no {} in progress", what),

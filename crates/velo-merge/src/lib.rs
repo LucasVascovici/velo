@@ -208,7 +208,11 @@ enum Segment {
     /// Only our side changed this region — take ours automatically.
     OursOnly(Vec<String>),
     /// Only their side changed this region — take theirs automatically.
-    TheirsOnly(Vec<String>),
+    TheirsOnly {
+        anc_start: usize,
+        anc_end: usize,
+        lines: Vec<String>,
+    },
     /// A genuine conflict: both sides changed the same region differently.
     Conflict {
         anc_start: usize,
@@ -295,7 +299,11 @@ fn diff3_segments(ancestor: &str, ours: &str, theirs: &str) -> Vec<Segment> {
             if our_slot == thr_slot {
                 segments.push(Segment::Stable(our_slot));
             } else if our_slot == anc_slot {
-                segments.push(Segment::TheirsOnly(thr_slot));
+                segments.push(Segment::TheirsOnly {
+                    anc_start,
+                    anc_end,
+                    lines: thr_slot,
+                });
             } else if thr_slot == anc_slot {
                 segments.push(Segment::OursOnly(our_slot));
             } else {
@@ -318,6 +326,40 @@ fn diff3_segments(ancestor: &str, ours: &str, theirs: &str) -> Vec<Segment> {
 }
 
 // ─── Hunk computation ─────────────────────────────────────────────────────────
+
+/// A region only the incoming side changed, which diff3 applies without asking.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct CleanChange {
+    /// First ancestor line of the region (0-based).
+    pub ancestor_start: usize,
+    /// One past the last ancestor line of the region.
+    pub ancestor_end: usize,
+    /// The incoming side's lines for the region.
+    pub lines: Vec<String>,
+}
+
+/// Every non-empty `TheirsOnly` region of the diff3 walk, in order.
+///
+/// These are the changes `build_resolved_content` applies outside every
+/// conflict hunk. Pure deletions have no lines to look for and are skipped.
+pub fn clean_changes_theirs(ancestor: &str, ours: &str, theirs: &str) -> Vec<CleanChange> {
+    diff3_segments(ancestor, ours, theirs)
+        .into_iter()
+        .filter_map(|seg| match seg {
+            Segment::TheirsOnly {
+                anc_start,
+                anc_end,
+                lines,
+            } if !lines.is_empty() => Some(CleanChange {
+                ancestor_start: anc_start,
+                ancestor_end: anc_end,
+                lines,
+            }),
+            _ => None,
+        })
+        .collect()
+}
 
 /// Compute the conflicting hunks — the regions both sides changed differently.
 /// Non-overlapping changes are auto-merged and never surface here.
@@ -422,9 +464,9 @@ pub fn build_resolved_content(
     let mut output: Vec<String> = Vec::new();
     for seg in segments {
         match seg {
-            Segment::Stable(lines) | Segment::OursOnly(lines) | Segment::TheirsOnly(lines) => {
-                output.extend(lines)
-            }
+            Segment::Stable(lines)
+            | Segment::OursOnly(lines)
+            | Segment::TheirsOnly { lines, .. } => output.extend(lines),
             Segment::Conflict {
                 anc_start,
                 anc_end,

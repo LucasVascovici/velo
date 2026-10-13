@@ -12167,3 +12167,6 @@ mod undone_parent_recovery;
 
 #[cfg(test)]
 mod undo_dependents;
+
+#[cfg(test)]
+mod resolve_mark_clean;
