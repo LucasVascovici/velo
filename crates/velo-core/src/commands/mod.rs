@@ -627,6 +627,30 @@ pub(crate) fn get_tracked_files(root: &Path, scope: &crate::Scope) -> Vec<PathBu
     acc.into_inner()
 }
 
+/// Parallel walk collecting only the paths of regular files and symlinks.
+///
+/// The same entries as [`walk_with_meta`] but without its per-file `lstat` and
+/// mode capture: the file type comes from the directory listing the walker has
+/// already read. For callers, like grep, that go on to read the file anyway.
+pub(crate) fn walk_paths(root: &Path, scope: &crate::Scope) -> Vec<PathBuf> {
+    let restriction = scope.restriction(root).ok().flatten();
+    let acc: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
+    make_walker(root, scope).build_parallel().run(|| {
+        Box::new(|res| {
+            if let Ok(entry) = res {
+                let keep = entry
+                    .file_type()
+                    .is_some_and(|t| t.is_file() || t.is_symlink());
+                if keep && crate::scope::permitted(restriction.as_ref(), entry.path()) {
+                    acc.lock().push(entry.into_path());
+                }
+            }
+            WalkState::Continue
+        })
+    });
+    acc.into_inner()
+}
+
 /// Parallel walk collecting each entry's path, lstat metadata, and mode.
 /// Uses `symlink_metadata` so symlinks are recorded as symlinks (mode 2) rather
 /// than being followed to their target.

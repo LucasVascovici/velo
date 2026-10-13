@@ -137,3 +137,24 @@ fn parallel_grep_matches_serial_with_files_backend() {
 fn parallel_grep_matches_serial_with_database_backend() {
     check(ObjectLocation::Database);
 }
+
+/// The metadata-free walk must still honour `.veloignore` and skip binary files.
+#[test]
+fn working_tree_grep_skips_ignored_directories_and_binary_files() {
+    let (_tmp, root) = fixture(ObjectLocation::Files);
+    fs::write(root.join(".veloignore"), "skipped/\n").unwrap();
+    fs::create_dir_all(root.join("skipped")).unwrap();
+    fs::write(root.join("skipped/hidden.txt"), "needle in ignored dir\n").unwrap();
+    fs::create_dir_all(root.join("target")).unwrap();
+    fs::write(root.join("target/built.txt"), "needle in target\n").unwrap();
+    fs::write(root.join("bin2.dat"), b"needle\0\xff\xfe").unwrap();
+    let r = search(&root, "needle", false, false, false);
+    let paths: Vec<&str> = r.files.iter().map(|f| f.path.as_str()).collect();
+    assert!(
+        !paths.contains(&"skipped/hidden.txt"),
+        "ignored dir searched"
+    );
+    assert!(!paths.contains(&"target/built.txt"), "target searched");
+    assert!(!paths.contains(&"bin2.dat") && !paths.contains(&"bin.dat"));
+    assert_eq!(paths.len(), expected(|l| l.contains("needle")).len());
+}
