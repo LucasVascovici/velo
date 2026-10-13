@@ -211,6 +211,16 @@ fn a_fast_forwarded_branch_is_not_behind_and_pushes() {
         Tracking::Known { behind, .. } => assert_eq!(behind, 0),
         other => panic!("expected a known tracking state: {other:?}"),
     }
+    // Relative to the feature tip, main must not be behind: its merge parent
+    // is the target, so the feature's snapshots are in its ancestry.
+    let main_tip = commands::branch_tip(repo.conn(), "main").expect("main tip");
+    let feature_tip =
+        commands::branch_tip(repo.conn(), "remotes/origin/feature/x").expect("feature tip");
+    assert_eq!(
+        commands::ahead_behind(repo.conn(), &main_tip, &feature_tip).1,
+        0,
+        "the fast-forwarded main is not behind the feature tip"
+    );
     drop(repo);
     with_write(&copy, |g| {
         sync::push(g, "origin", None, &Spawn::new("velo"), Default::default())
