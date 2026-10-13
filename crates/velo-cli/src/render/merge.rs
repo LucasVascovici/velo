@@ -18,7 +18,7 @@ pub fn print(outcome: &Outcome) {
         ),
 
         Outcome::AlreadyUpToDate { branch, other } => println!(
-            "{} Already up to date — '{}' and '{}' point at the same snapshot.",
+            "{} Already up to date — '{}' already has everything in '{}'.",
             style("✔").green(),
             branch,
             other
@@ -72,11 +72,8 @@ fn print_three_way(result: &ThreeWay) {
             &[("Once resolved:", "velo save \"Merge <branch>\"")],
         );
     } else if result.applied_nothing() {
-        println!(
-            "
-{} Already up to date — nothing to merge.",
-            style("✔").green()
-        );
+        // Equal trees on diverged histories: the caller records the merge and
+        // says so, so there is nothing to add here.
     } else {
         println!(
             "

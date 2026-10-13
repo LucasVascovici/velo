@@ -62,7 +62,8 @@ impl ThreeWay {
         self.applied.is_clean()
     }
 
-    /// Nothing was applied — the branches already agreed on every file.
+    /// Nothing was applied — the trees were already equal but the histories
+    /// diverged. `MERGE_HEAD` is written and the next save records the merge.
     pub fn applied_nothing(&self) -> bool {
         self.applied.applied_nothing()
     }
@@ -79,7 +80,7 @@ pub enum Outcome {
     },
     /// The current branch had no commits, so it simply starts at the source.
     StartedUnbornBranch { branch: String, at: String },
-    /// Both branches already point at the same snapshot.
+    /// HEAD already contains the other tip (the same snapshot, or an ancestor).
     AlreadyUpToDate { branch: String, other: String },
     /// Our tip was an ancestor of theirs, so no merge commit was needed.
     FastForwarded { branch: String, to: String },
@@ -252,7 +253,11 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         });
     }
 
-    if is_ancestor(conn, &target_hash, &current_hash) {
+    // Both parents count: a branch a previous merge joined in is an ancestor
+    // through its `merge_parent`, and following first parents alone would call
+    // it diverged.
+    let theirs_ancestry = crate::commands::ancestors(conn, &target_hash)?;
+    if theirs_ancestry.contains_key(&current_hash) {
         return do_fast_forward(
             guard,
             head_branch,
@@ -260,6 +265,16 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
             &target_hash,
             target_branch,
         );
+    }
+
+    // HEAD already contains the other tip, so there is nothing to bring in. This
+    // is deliberately not true of diverged histories with equal trees: those
+    // fall through and record a merge.
+    if crate::commands::ancestors(conn, &current_hash)?.contains_key(&target_hash) {
+        return Ok(Outcome::AlreadyUpToDate {
+            branch: head_branch.to_string(),
+            other: target_branch.to_string(),
+        });
     }
 
     let ancestor_hash = lowest_common_ancestor(conn, &current_hash, &target_hash);
@@ -284,13 +299,13 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
     // MERGE_HEAD is written for a clean merge too, not just a conflicted one: the
     // finalising `velo save` reads it to stamp the second parent. Without it a
     // conflict-free merge would collapse to a single-parent commit and
-    // `velo history --graph` would draw it as linear.
-    if !result.is_clean() || !result.applied_nothing() {
-        storage::write_atomic(
-            &root.join(".velo/MERGE_HEAD"),
-            format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
-        )?;
-    }
+    // `velo history --graph` would draw it as linear. Every `Merged` outcome
+    // means the histories diverged, so it is written even when the trees were
+    // already equal: the merge still has to be recorded to join the histories.
+    storage::write_atomic(
+        &root.join(".velo/MERGE_HEAD"),
+        format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
+    )?;
     result.applied.record_conflicts(conn)?;
 
     Ok(Outcome::Merged(result))
@@ -351,21 +366,6 @@ fn do_fast_forward(
 }
 
 // ─── Ancestry ─────────────────────────────────────────────────────────────────
-
-/// Is `candidate` an ancestor of `tip` (following first parents)?
-fn is_ancestor(conn: &rusqlite::Connection, tip: &str, candidate: &str) -> bool {
-    conn.query_row(
-        "WITH RECURSIVE anc(hash, parent_hash) AS (
-            SELECT hash, parent_hash FROM snapshots WHERE hash = ?1
-            UNION ALL
-            SELECT s.hash, s.parent_hash FROM snapshots s JOIN anc a ON s.hash = a.parent_hash
-         )
-         SELECT EXISTS(SELECT 1 FROM anc WHERE hash = ?2)",
-        params![tip, candidate],
-        |r| r.get(0),
-    )
-    .unwrap_or(false)
-}
 
 /// The nearest snapshot that is an ancestor of both tips.
 ///
@@ -431,7 +431,10 @@ pub struct MergePlan {
     /// added or conflicting.
     pub base: Option<SnapshotId>,
     /// Paths that would change, in path order. Untouched files are omitted, so
-    /// an empty list means the merge is a no-op.
+    /// an empty list means the merge changes no content. That is still a merge
+    /// to record when `base` is not `theirs`: diverged histories with equal
+    /// trees join into a two-parent snapshot. Only `base == Some(theirs)` means
+    /// there is nothing to merge.
     pub files: Vec<PlannedFile>,
 }
 

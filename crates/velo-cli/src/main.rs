@@ -2211,6 +2211,26 @@ fn run(cli: Cli) -> Result<Exit> {
             if let commands::merge::Outcome::Merged(result) = &outcome {
                 if !result.conflicts().is_empty() {
                     exit = Exit::Conflicts;
+                } else if result.is_clean() && result.applied_nothing() {
+                    // The trees were already equal but the histories diverged:
+                    // there is nothing for a human to review, so record the
+                    // merge now. Otherwise the next push is refused again.
+                    let source = branch.as_deref().unwrap_or_default();
+                    let saved = commands::save::run(
+                        write(),
+                        Some(&format!("Merge {source}")),
+                        commands::save::Options {
+                            author: author::from_env()?.as_ref(),
+                            ..Default::default()
+                        },
+                    )?;
+                    if let Some(r) = saved.result() {
+                        println!(
+                            "{} Recorded merge {} with no content change — the trees were already equal, so this only joins the histories. velo push will now fast-forward.",
+                            console::style("✔").green(),
+                            console::style(render::id::short(&r.hash)).yellow()
+                        );
+                    }
                 }
             }
         }

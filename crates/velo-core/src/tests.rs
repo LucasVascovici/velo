@@ -2510,9 +2510,12 @@ mod tests {
             "the work is already incorporated: {:?}",
             result.files()
         );
+        // The histories still diverge (the fast-forward snapshot has no merge
+        // parent yet), so the merge is pending. 16.5 makes the fast-forward
+        // record its target, which turns this second merge into AlreadyUpToDate.
         assert!(
-            !root.join(".velo/MERGE_HEAD").exists(),
-            "a no-op merge must not leave merge state behind"
+            root.join(".velo/MERGE_HEAD").exists(),
+            "a merge of diverged histories must be recorded"
         );
     }
 
@@ -12170,3 +12173,6 @@ mod undo_dependents;
 
 #[cfg(test)]
 mod resolve_mark_clean;
+
+#[cfg(test)]
+mod merge_equal_trees;
