@@ -12201,3 +12201,6 @@ mod fsck_duplicate_rows;
 
 #[cfg(test)]
 mod rebase_merged_history;
+
+#[cfg(test)]
+mod deep_history_reads;

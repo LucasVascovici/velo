@@ -259,12 +259,13 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         queue.push(v);
     }
 
+    let mut tracked = TrackedHashes::default();
     while remaining > 0 {
         progress.check()?;
         let Some(visit) = queue.pop() else { break };
         progress.tick();
 
-        let our_text = read_tracked(conn, &objects, &visit.hash, &visit.path)?;
+        let our_text = tracked.read(conn, &objects, &visit.hash, &visit.path)?;
 
         // The path each parent knew the file by. A rename recorded on this
         // snapshot means the parents held the old name; without this the parent
@@ -284,7 +285,7 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         // absorbed branch's work, which it did not.
         let mut introduced: Option<HashSet<usize>> = None;
         for (parent, parent_path) in &parents {
-            let parent_text = read_tracked(conn, &objects, parent, parent_path)?;
+            let parent_text = tracked.read(conn, &objects, parent, parent_path)?;
             let against: HashSet<usize> = introduced_lines(driver, &parent_text, &our_text)
                 .into_iter()
                 .collect();
@@ -434,23 +435,44 @@ fn default_start(repo: &Repo) -> Result<String> {
     }
 }
 
-/// Content of `path` at `snapshot`, or empty when it isn't tracked there.
-fn read_tracked(
-    conn: &rusqlite::Connection,
-    objects: &crate::storage::ObjectStore,
-    snapshot: &str,
-    path: &str,
-) -> Result<String> {
-    let object: Option<String> = conn
-        .query_row(
-            "SELECT hash FROM file_map WHERE snapshot_hash = ? AND path = ?",
-            params![snapshot, path],
-            |r| r.get(0),
-        )
-        .ok();
-    match object {
-        Some(h) => read_text(objects, &h),
-        None => Ok(String::new()),
+/// Object hash of a path in each snapshot that tracks it, loaded one path at a
+/// time.
+///
+/// The walk asks for the same path in many snapshots. One `path = ?` lookup on
+/// `idx_filemap_path` returns every snapshot's row for it at once, where a
+/// `snapshot_hash = ? AND path = ?` lookup per visit repeats the index probe
+/// (and statement preparation) for each of them.
+#[derive(Default)]
+struct TrackedHashes {
+    by_path: HashMap<String, HashMap<String, String>>,
+}
+
+impl TrackedHashes {
+    /// Content of `path` at `snapshot`, or empty when it isn't tracked there.
+    fn read(
+        &mut self,
+        conn: &rusqlite::Connection,
+        objects: &crate::storage::ObjectStore,
+        snapshot: &str,
+        path: &str,
+    ) -> Result<String> {
+        if !self.by_path.contains_key(path) {
+            let mut rows = HashMap::new();
+            if let Ok(mut stmt) =
+                conn.prepare_cached("SELECT snapshot_hash, hash FROM file_map WHERE path = ?")
+            {
+                if let Ok(mapped) = stmt.query_map([path], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                }) {
+                    rows.extend(mapped.flatten());
+                }
+            }
+            self.by_path.insert(path.to_string(), rows);
+        }
+        match self.by_path[path].get(snapshot) {
+            Some(h) => read_text(objects, h),
+            None => Ok(String::new()),
+        }
     }
 }
 

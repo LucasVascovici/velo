@@ -290,11 +290,15 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
         normalised.dedup();
         // A snapshot qualifies if it changed *any* of the paths, so one pass over
         // the entries answers for all of them.
+        let lookups: Vec<PathLookup> = normalised
+            .iter()
+            .map(|path| PathLookup::load(conn, path))
+            .collect();
         entries.retain(|e| {
             let parent = e.parent.as_deref().unwrap_or("");
-            normalised
+            lookups
                 .iter()
-                .any(|path| changed_under(conn, e.hash.as_str(), parent, path))
+                .any(|lookup| lookup.changed(conn, e.hash.as_str(), parent))
         });
         if limit >= 0 {
             entries.truncate(limit as usize);
@@ -545,6 +549,63 @@ fn changed_under(conn: &rusqlite::Connection, snapshot: &str, parent: &str, path
         |r| r.get::<_, bool>(0),
     )
     .unwrap_or(false)
+}
+
+/// How one requested path answers "did this snapshot change it".
+///
+/// A file is answered from a single `path = ?` lookup on `idx_filemap_path`,
+/// which returns one row per snapshot that holds it (a few hundred). The
+/// per-snapshot `snapshot_hash = ?` probes of `changed_under` each walk every
+/// row of the snapshot (the whole tree), four times over, and the planner can
+/// only drive them from `idx_filemap_snap`. A directory, or a path no snapshot
+/// ever tracked, keeps the prefix query.
+enum PathLookup {
+    File(HashMap<String, (String, i64)>),
+    Prefix(String),
+}
+
+impl PathLookup {
+    fn load(conn: &rusqlite::Connection, path: &str) -> Self {
+        // '0' is the character after '/', so this range is exactly the paths
+        // below `path/`, and it is served by `idx_filemap_path`.
+        let is_directory = conn
+            .query_row(
+                "SELECT 1 FROM file_map WHERE path >= ?1 || '/' AND path < ?1 || '0' LIMIT 1",
+                [path],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !is_directory {
+            let rows: Option<HashMap<String, (String, i64)>> = (|| {
+                let mut stmt = conn
+                    .prepare("SELECT snapshot_hash, hash, mode FROM file_map WHERE path = ?")
+                    .ok()?;
+                let mapped = stmt
+                    .query_map([path], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))
+                    .ok()?;
+                mapped.collect::<rusqlite::Result<_>>().ok()
+            })();
+            if let Some(rows) = rows.filter(|r| !r.is_empty()) {
+                return PathLookup::File(rows);
+            }
+        }
+        PathLookup::Prefix(path.to_string())
+    }
+
+    fn changed(&self, conn: &rusqlite::Connection, snapshot: &str, parent: &str) -> bool {
+        match self {
+            PathLookup::File(rows) => {
+                // A root snapshot has no parent, so the parent side is empty.
+                let before = if parent.is_empty() {
+                    None
+                } else {
+                    rows.get(parent)
+                };
+                rows.get(snapshot) != before
+            }
+            PathLookup::Prefix(path) => changed_under(conn, snapshot, parent, path),
+        }
+    }
 }
 
 /// Which branches point at each snapshot, checked-out branch listed first.
