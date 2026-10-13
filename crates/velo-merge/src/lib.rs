@@ -260,9 +260,17 @@ fn diff3_segments(ancestor: &str, ours: &str, theirs: &str) -> Vec<Segment> {
     let anc: Vec<&str> = ancestor.lines().collect();
     let our: Vec<&str> = ours.lines().collect();
     let thr: Vec<&str> = theirs.lines().collect();
+    diff3_segments_lines(&anc, &our, &thr)
+}
 
-    let our_map = equal_line_map(&anc, &our);
-    let thr_map = equal_line_map(&anc, &thr);
+/// The diff3 walk over already-split lines.
+///
+/// `build_resolved_content` calls this directly so it segments exactly the
+/// lines `compute_conflict_hunks` saw; joining and re-splitting would alter a
+/// slice that ends in an empty line and shift the conflict range.
+fn diff3_segments_lines(anc: &[&str], our: &[&str], thr: &[&str]) -> Vec<Segment> {
+    let our_map = equal_line_map(anc, our);
+    let thr_map = equal_line_map(anc, thr);
 
     // Stable anchors: ancestor lines unchanged on BOTH sides. Sentinels at each
     // end let the loop treat the head and tail slots uniformly.
@@ -432,10 +440,7 @@ pub fn build_resolved_content(
 ) -> String {
     use std::collections::HashMap;
 
-    let ancestor = anc.join("\n");
-    let ours = our.join("\n");
-    let theirs = thr.join("\n");
-    let segments = diff3_segments(&ancestor, &ours, &theirs);
+    let segments = diff3_segments_lines(anc, our, thr);
 
     // Decisions keyed by the conflict region they resolve.
     let decisions: HashMap<(usize, usize), &ConflictHunk> = hunks
@@ -476,8 +481,9 @@ pub fn build_resolved_content(
                 if let Some(h) = decisions.get(&(anc_start, anc_end)) {
                     output.extend(hunk_lines(h));
                 } else {
-                    // No decision recorded (not reached in normal flow). Emit
-                    // both sides rather than silently dropping either.
+                    // No decision recorded. Unreachable for hunks from
+                    // `compute_conflict_hunks` on the same input, since both
+                    // walk identical lines. Emit both sides rather than silently dropping either.
                     output.extend(ours);
                     output.extend(theirs);
                 }
@@ -485,8 +491,11 @@ pub fn build_resolved_content(
         }
     }
 
+    // Every element of `output` is a line, so the terminator is added
+    // unconditionally: a last line that is itself empty must keep its own
+    // newline rather than be mistaken for one.
     let joined = output.join("\n");
-    if trailing_newline && !joined.ends_with('\n') {
+    if trailing_newline {
         format!("{}\n", joined)
     } else {
         joined
