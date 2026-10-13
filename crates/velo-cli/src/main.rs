@@ -871,6 +871,9 @@ NOTES
         after_help = "\
 NOTES
     · Rebase rewrites history — the rebased commits get new hashes.
+    · Snapshots the target already contains, directly or through a merge,
+      are skipped. A merge snapshot on your branch is replayed as one
+      change against its first parent.
     · If a conflict occurs: resolve with `velo resolve`, save with
       `velo save`, then continue with `velo rebase --continue`.
     · `velo rebase --abort` restores the original branch state."
