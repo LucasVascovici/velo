@@ -111,9 +111,51 @@ fn both_spellings_resolve_to_the_pushed_merge() {
 
 #[test]
 fn merging_through_the_long_spelling_records_the_merge_parent() {
-    // `repro` merges `remotes/origin/main` while it is b's snapshot; the save
-    // that follows must have recorded it as the merge parent.
-    let (_h, c, b_snap, _merged) = repro();
+    // After `repro`, `remote_refs` holds c's merge while the `snapshots.branch`
+    // label for `remotes/origin/main` still ends at b's snapshot. Merging from
+    // a side branch must follow `remote_refs`.
+    let (_h, c, b_snap, merged) = repro();
+    let base = {
+        let repo = Repo::open_and_migrate(&c).unwrap();
+        let h = history::run(
+            &repo,
+            history::Options {
+                all: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let e = h.entries.iter().find(|e| e.message == "base").unwrap();
+        SnapshotId::from_stored(e.hash.as_str().to_string())
+    };
+    with_write(&c, |g| {
+        commands::switch::run(g, "side", false).unwrap();
+        commands::restore::run(
+            g,
+            &base,
+            commands::restore::Options {
+                force: true,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    });
+    write(
+        &c, "side.txt", "side
+",
+    );
+    save(&c, "side work");
+    with_write(&c, |g| {
+        merge::run(
+            g,
+            merge::Mode::Bring {
+                source: "remotes/origin/main",
+            },
+        )
+    })
+    .unwrap();
+    assert!(c.join("c.txt").exists(), "merged c's side of origin/main");
+    save(&c, "side merge");
     let repo = Repo::open_and_migrate(&c).unwrap();
     let h = history::run(
         &repo,
@@ -126,12 +168,11 @@ fn merging_through_the_long_spelling_records_the_merge_parent() {
     let entry = h
         .entries
         .iter()
-        .find(|e| e.message == "merge from b")
+        .find(|e| e.message == "side merge")
         .unwrap();
-    assert!(
-        entry.merge_parent.as_ref().map(|p| p.as_str()) == Some(b_snap.as_str()),
-        "{entry:?}"
-    );
+    let mp = entry.merge_parent.as_ref().map(|p| p.as_str());
+    assert_eq!(mp, Some(merged.as_str()), "{entry:?}");
+    assert_ne!(mp, Some(b_snap.as_str()));
 }
 
 #[test]
