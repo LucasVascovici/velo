@@ -46,8 +46,63 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
 
     let current_head = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
     if current_head.trim() == branch_name {
-        return Ok(Outcome::AlreadyOn {
+        // "On the branch" is only true when the working position is its tip. An
+        // import onto the checked-out branch (a bundle applied to a fresh repo)
+        // or a `restore` of an older snapshot leaves PARENT empty or elsewhere,
+        // and answering "already on" there would strand the user with no way to
+        // get the files back short of naming a snapshot.
+        let conn = guard.conn();
+        let tip = crate::commands::branch_tip(conn, branch_name);
+        let position = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+        let position = position.trim();
+        let Some(tip) = tip.filter(|t| t != position) else {
+            return Ok(Outcome::AlreadyOn {
+                branch: branch_name.to_string(),
+            });
+        };
+
+        let mut dirty = get_dirty_files(guard.repo());
+        if position.is_empty() {
+            // With no position every file reads as New, which the normal rule
+            // treats as safe. Here the tip is about to be written over them, so a
+            // file that would be overwritten with different content is at risk.
+            let tree = crate::commands::apply::load_tree(conn, &tip)?;
+            for (path, status) in dirty.iter_mut() {
+                if *status != FileStatus::New {
+                    continue;
+                }
+                if let Some((hash, mode)) = tree.get(path) {
+                    if crate::storage::hash_for(&root.join(path), *mode) != *hash {
+                        *status = FileStatus::Modified;
+                    }
+                }
+            }
+        }
+        if !force {
+            let mut at_risk: Vec<std::path::PathBuf> = dirty
+                .iter()
+                .filter(|(_, status)| **status != FileStatus::New)
+                .map(|(path, _)| std::path::PathBuf::from(path))
+                .collect();
+            if !at_risk.is_empty() {
+                at_risk.sort();
+                return Err(VeloError::DirtyWorkingTree { paths: at_risk });
+            }
+        }
+        crate::commands::restore::run_with(
+            guard,
+            &SnapshotId::from_stored(tip.as_str()),
+            crate::commands::restore::Options {
+                force: true,
+                ..Default::default()
+            },
+            crate::commands::restore::Strategy::Delta,
+            Some(dirty),
+        )?;
+        crate::commands::mv::discard_pending(guard.conn())?;
+        return Ok(Outcome::Switched {
             branch: branch_name.to_string(),
+            at: tip,
         });
     }
 

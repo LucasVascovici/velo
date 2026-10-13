@@ -12182,3 +12182,6 @@ mod merge_abort_cleanup;
 
 #[cfg(test)]
 mod remote_ref_lookup;
+
+#[cfg(test)]
+mod switch_reposition;
