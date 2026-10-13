@@ -597,11 +597,11 @@ NOTES
         #[arg(long, help = "Resolve all conflicts (requires --take)")]
         all: bool,
 
-        /// Replace hand edits to a conflicted file when taking a side.
+        /// With --take, replace hand edits; with --mark, accept an edit that
+        /// drops lines the other side changed cleanly.
         #[arg(
             long,
-            requires = "take",
-            help = "Replace hand edits when taking a side"
+            help = "With --take, replace hand edits; with --mark, accept an edit that drops clean changes"
         )]
         force: bool,
 
@@ -1381,6 +1381,35 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 ],
             );
         }
+        VeloError::MissingCleanChanges {
+            path,
+            missing,
+            sample,
+        } => {
+            lines.push("  Lines the other side changed cleanly are not in your file:".into());
+            for l in sample {
+                lines.push(format!("    + {l}"));
+            }
+            if *missing > sample.len() {
+                lines.push(format!("    … and {} more", missing - sample.len()));
+            }
+            let file = path.display().to_string();
+            let again = format!("velo resolve --mark {}", file);
+            let both = format!("velo resolve {} --take both --force", file);
+            let drop = format!("velo resolve --mark {} --force", file);
+            suggest(
+                &mut lines,
+                &[
+                    (&again, "add them and run this again", Tone::Do),
+                    (
+                        &both,
+                        "replace your edit with both sides plus the clean changes",
+                        Tone::Destructive,
+                    ),
+                    (&drop, "accept your edit and drop them", Tone::Destructive),
+                ],
+            );
+        }
         VeloError::FormatTooOld { found, .. } => {
             lines.push(format!(
                 "  This repository was written by Velo before format v2 (found v{}).",
@@ -1663,7 +1692,7 @@ fn run_resolve(
 }
 
 /// `velo resolve --mark <file>`: accept the hand-edited file as the resolution.
-fn run_mark(guard: &velo_core::WriteGuard, file: &str) -> Result<()> {
+fn run_mark(guard: &velo_core::WriteGuard, file: &str, force: bool) -> Result<()> {
     use console::style;
     use velo_core::commands::resolve;
 
@@ -1674,7 +1703,12 @@ fn run_mark(guard: &velo_core::WriteGuard, file: &str) -> Result<()> {
         ));
     }
     let cf = resolve::get_conflict(repo, file)?;
-    let m = resolve::mark(guard, &cf)?;
+    let on_clean = if force {
+        resolve::OnCleanChanges::Drop
+    } else {
+        resolve::OnCleanChanges::Refuse
+    };
+    let m = resolve::mark_with(guard, &cf, on_clean)?;
     println!(
         "{} Accepted your edit of '{}' ({} lines; {} differ from ours, {} from theirs).",
         style("✔").green(),
@@ -1683,6 +1717,21 @@ fn run_mark(guard: &velo_core::WriteGuard, file: &str) -> Result<()> {
         m.differs_from_ours,
         m.differs_from_theirs
     );
+    if !m.dropped_clean_changes.is_empty() {
+        let source = resolve::merge_source(repo).unwrap_or_else(|| "incoming".into());
+        println!(
+            "  {} dropped {} line(s) from {} that merged cleanly:",
+            style("!").yellow().bold(),
+            m.dropped_clean_changes.len(),
+            source
+        );
+        for l in m.dropped_clean_changes.iter().take(5) {
+            println!("    {l}");
+        }
+        if m.dropped_clean_changes.len() > 5 {
+            println!("    … and {} more", m.dropped_clean_changes.len() - 5);
+        }
+    }
     report_remaining_conflicts(repo)
 }
 
@@ -1697,13 +1746,15 @@ fn run_conflicts(repo: &velo_core::Repo, file: Option<&str>, json: bool) -> Resu
     };
     let source = resolve::merge_source(repo);
     let mut sessions = Vec::with_capacity(targets.len());
+    let mut missing = Vec::with_capacity(targets.len());
     for cf in targets {
+        missing.push(resolve::missing_clean_changes(repo, &cf)?);
         sessions.push(resolve::open_session(repo, cf)?);
     }
     if json {
-        render::conflicts::print_json(source.as_deref(), &sessions);
+        render::conflicts::print_json(source.as_deref(), &sessions, &missing);
     } else {
-        render::conflicts::print_text(source.as_deref(), &sessions);
+        render::conflicts::print_text(source.as_deref(), &sessions, &missing);
     }
     Ok(())
 }
@@ -2242,8 +2293,11 @@ fn run(cli: Cli) -> Result<Exit> {
             force,
             mark,
         } => {
+            if force && !mark && take.is_none() {
+                return Err(VeloError::invalid("--force needs --take or --mark"));
+            }
             if mark {
-                run_mark(write(), file.as_deref().unwrap_or_default())?;
+                run_mark(write(), file.as_deref().unwrap_or_default(), force)?;
             } else {
                 // Interactive resolve holds no guard here; the TUI takes the
                 // lock for one decision at a time.

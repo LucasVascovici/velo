@@ -31,7 +31,7 @@ fn decision_text(d: &Decision) -> String {
 }
 
 /// Print the conflicts as human-readable text.
-pub fn print_text(source: Option<&str>, sessions: &[ConflictSession]) {
+pub fn print_text(source: Option<&str>, sessions: &[ConflictSession], missing: &[Vec<String>]) {
     if sessions.is_empty() {
         println!("No conflicts.");
         return;
@@ -42,6 +42,18 @@ pub fn print_text(source: Option<&str>, sessions: &[ConflictSession]) {
             println!();
         }
         println!("{}", style(&s.file.path).yellow().bold());
+        if let Some(m) = missing.get(i).filter(|m| !m.is_empty()) {
+            println!(
+                "  {} line(s) that {theirs_label} changed cleanly are not in your working file:",
+                m.len()
+            );
+            for l in m.iter().take(5) {
+                println!("    + {l}");
+            }
+            if m.len() > 5 {
+                println!("    … and {} more", m.len() - 5);
+            }
+        }
         let n = s.hunks.len();
         for (k, h) in s.hunks.iter().enumerate() {
             println!(
@@ -78,10 +90,17 @@ fn side(lines: &[String]) {
 }
 
 /// The conflicts as one JSON document.
-pub fn to_json(source: Option<&str>, sessions: &[ConflictSession]) -> Value {
+pub fn to_json(
+    source: Option<&str>,
+    sessions: &[ConflictSession],
+    missing: &[Vec<String>],
+) -> Value {
     let files: Vec<Value> = sessions
         .iter()
-        .map(|s| {
+        .enumerate()
+        .map(|(i, s)| {
+            let none = Vec::new();
+            let miss = missing.get(i).unwrap_or(&none);
             let hunks: Vec<Value> = s
                 .hunks
                 .iter()
@@ -104,6 +123,8 @@ pub fn to_json(source: Option<&str>, sessions: &[ConflictSession]) -> Value {
                 "ours": s.file.our_hash,
                 "theirs": s.file.their_hash,
                 "hunks": hunks,
+                "clean_changes_missing": miss.len(),
+                "clean_changes_missing_lines": miss,
             })
         })
         .collect();
@@ -111,9 +132,9 @@ pub fn to_json(source: Option<&str>, sessions: &[ConflictSession]) -> Value {
 }
 
 /// Print the conflicts as JSON.
-pub fn print_json(source: Option<&str>, sessions: &[ConflictSession]) {
+pub fn print_json(source: Option<&str>, sessions: &[ConflictSession], missing: &[Vec<String>]) {
     println!(
         "{}",
-        serde_json::to_string_pretty(&to_json(source, sessions)).unwrap_or_default()
+        serde_json::to_string_pretty(&to_json(source, sessions, missing)).unwrap_or_default()
     );
 }
