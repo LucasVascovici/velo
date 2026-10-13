@@ -114,6 +114,58 @@ fn untouched_file_lists_the_clean_lines() {
     assert!(missing.iter().any(|l| l == "carol"));
 }
 
+struct AlwaysConflict;
+impl velo_merge::MergeDriver for AlwaysConflict {
+    fn name(&self) -> &str {
+        "always-conflict"
+    }
+    fn merge(&self, a: &str, o: &str, t: &str) -> velo_merge::MergeResult {
+        velo_merge::MergeResult::Conflicted(velo_merge::whole_file_conflict(a, o, t))
+    }
+}
+
+/// A driver that conflicts over the whole file has no clean hunks to
+/// preserve, so nothing is "missing" and a hand edit is accepted.
+#[test]
+fn whole_file_driver_conflict_has_no_clean_changes_to_miss() {
+    let tmp = TempDir::new().unwrap();
+    commands::init::run(tmp.path()).unwrap();
+    let repo = Repo::open_and_migrate(tmp.path())
+        .unwrap()
+        .merging(crate::Drivers::new().with("r.txt", AlwaysConflict).unwrap());
+    let root = tmp.path();
+    write(root, "1\n2\n3\n4\n5\n");
+    save_as(&repo, "base");
+    {
+        let g = repo.write().unwrap();
+        switch::run(&g, "other", false).unwrap();
+    }
+    write(root, "one\n2\n3\n4\n5\n");
+    save_as(&repo, "other edit");
+    {
+        let g = repo.write().unwrap();
+        switch::run(&g, "main", true).unwrap();
+    }
+    write(root, "1\n2\n3\n4\nfive\n");
+    save_as(&repo, "main edit");
+    {
+        let g = repo.write().unwrap();
+        merge::run(&g, merge::Mode::Bring { source: "other" }).unwrap();
+    }
+    assert_eq!(resolve::conflict_count(&repo), 1);
+    let f = file(&repo);
+    write(root, "1\n2\n3\n4\nfive\n");
+    assert!(resolve::missing_clean_changes(&repo, &f)
+        .unwrap()
+        .is_empty());
+    // A real hand edit that still lacks the theirs-only first-line change.
+    write(root, "1\n2\n3\n4\nFIVE\n");
+    let g = repo.write().unwrap();
+    resolve::mark(&g, &f).unwrap();
+    drop(g);
+    assert_eq!(resolve::conflict_count(&repo), 0);
+}
+
 #[test]
 fn take_paths_keep_carol() {
     for side in [TakeOption::Ours, TakeOption::Theirs, TakeOption::Both] {
