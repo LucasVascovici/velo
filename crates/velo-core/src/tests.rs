@@ -12161,3 +12161,6 @@ mod gc_dry_run;
 
 #[cfg(test)]
 mod published_history;
+
+#[cfg(test)]
+mod undone_parent_recovery;

@@ -1,7 +1,7 @@
 //! Render an fsck [`Report`] for the terminal.
 
 use console::style;
-use velo_core::commands::fsck::{Report, Section};
+use velo_core::commands::fsck::{Problem, Report, Section};
 
 pub fn print(report: &Report) {
     println!("{}", style("Checking repository integrity…").bold());
@@ -37,6 +37,16 @@ pub fn print(report: &Report) {
         // error, and that error message already states the count.
         for problem in &report.problems {
             println!("  {} {}", style("✖").red().bold(), problem);
+        }
+        if report.problems.iter().any(|p| {
+            matches!(
+                p,
+                Problem::UndoneParent { .. } | Problem::UndoneMergeParent { .. }
+            )
+        }) {
+            println!(
+                "  velo redo on the named branch puts an undone snapshot back; fsck --repair cannot."
+            );
         }
     } else if report.has_cleanable_cruft() {
         println!(

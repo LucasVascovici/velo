@@ -41,6 +41,19 @@ pub enum Problem {
         snapshot: String,
         merge_parent: String,
     },
+    /// A snapshot's parent was shelved by `velo undo` (it is in the trash) while
+    /// this snapshot still built on it. `velo redo` on `branch` restores it.
+    UndoneParent {
+        snapshot: String,
+        parent: String,
+        branch: String,
+    },
+    /// As [`Problem::UndoneParent`], for a merge's second parent.
+    UndoneMergeParent {
+        snapshot: String,
+        merge_parent: String,
+        branch: String,
+    },
     /// A content-addressed snapshot id doesn't match what its content hashes to.
     IdMismatch {
         snapshot: String,
@@ -113,6 +126,24 @@ impl fmt::Display for Problem {
                 f,
                 "snapshot {} has merge parent {} which does not exist",
                 snapshot, merge_parent
+            ),
+            Problem::UndoneParent {
+                snapshot,
+                parent,
+                branch,
+            } => write!(
+                f,
+                "snapshot {} has parent {} which velo undo removed from branch '{}' — run velo switch {} then velo redo to restore it",
+                snapshot, parent, branch, branch
+            ),
+            Problem::UndoneMergeParent {
+                snapshot,
+                merge_parent,
+                branch,
+            } => write!(
+                f,
+                "snapshot {} has merge parent {} which velo undo removed from branch '{}' — run velo switch {} then velo redo to restore it",
+                snapshot, merge_parent, branch, branch
             ),
             Problem::IdMismatch {
                 snapshot,
@@ -541,19 +572,43 @@ fn check_snapshots(
         .collect();
     drop(stmt);
 
+    // Snapshots shelved by `velo undo`. A live snapshot that still builds on
+    // one is recoverable with `velo redo`, which is a better thing to tell the
+    // user than "does not exist".
+    let mut stmt = conn.prepare("SELECT hash, branch FROM trash")?;
+    let trash: std::collections::HashMap<String, String> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+
     let mut verified = 0usize;
     let mut legacy = 0usize;
     for (hash, message, branch, parent, merge_parent, created_at_ms) in &snaps {
         if !parent.is_empty() && !all_snaps.contains(parent) {
-            problems.push(Problem::MissingParent {
-                snapshot: hash.clone(),
-                parent: parent.clone(),
+            problems.push(match trash.get(parent) {
+                Some(b) => Problem::UndoneParent {
+                    snapshot: hash.clone(),
+                    parent: parent.clone(),
+                    branch: b.trim().to_string(),
+                },
+                None => Problem::MissingParent {
+                    snapshot: hash.clone(),
+                    parent: parent.clone(),
+                },
             });
         }
         if !merge_parent.is_empty() && !all_snaps.contains(merge_parent) {
-            problems.push(Problem::MissingMergeParent {
-                snapshot: hash.clone(),
-                merge_parent: merge_parent.clone(),
+            problems.push(match trash.get(merge_parent) {
+                Some(b) => Problem::UndoneMergeParent {
+                    snapshot: hash.clone(),
+                    merge_parent: merge_parent.clone(),
+                    branch: b.trim().to_string(),
+                },
+                None => Problem::MissingMergeParent {
+                    snapshot: hash.clone(),
+                    merge_parent: merge_parent.clone(),
+                },
             });
         }
 

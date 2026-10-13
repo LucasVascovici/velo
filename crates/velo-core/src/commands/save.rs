@@ -401,12 +401,22 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
 
     // New save invalidates the redo stack for this branch. Drop the shelved
     // tags belonging to those discarded snapshots too, so they don't linger.
+    // A trash row that a live snapshot still builds on is the only copy of
+    // that parent (a repository damaged by an older `undo`), so it stays for
+    // `velo redo` to restore.
     tx.execute(
         "DELETE FROM trash_tags WHERE snapshot_hash IN
-             (SELECT hash FROM trash WHERE branch = ?)",
+             (SELECT hash FROM trash WHERE branch = ?1
+                AND hash NOT IN (SELECT parent_hash FROM snapshots
+                UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> ''))",
         [branch.trim()],
     )?;
-    tx.execute("DELETE FROM trash WHERE branch = ?", [branch.trim()])?;
+    tx.execute(
+        "DELETE FROM trash WHERE branch = ?1
+           AND hash NOT IN (SELECT parent_hash FROM snapshots
+                UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> '')",
+        [branch.trim()],
+    )?;
     tx.commit()?;
     guard.repo().emit_saved_raw(
         snapshot_hash,
