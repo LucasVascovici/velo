@@ -2258,7 +2258,20 @@ fn run(cli: Cli) -> Result<Exit> {
                 }
             };
             let outcome = commands::merge::run(write(), mode)?;
-            render::merge::print(&outcome);
+            // A fast-forward records the source tip as its second parent, and the
+            // merge does not move the source, so its tip is that parent.
+            let second_parent = match (&outcome, branch.as_deref()) {
+                (commands::merge::Outcome::FastForwarded { .. }, Some(source)) => {
+                    commands::resolve_snapshot_id(&repo, source)
+                        .ok()
+                        .map(|id| (source, id.as_str().to_string()))
+                }
+                _ => None,
+            };
+            render::merge::print(
+                &outcome,
+                second_parent.as_ref().map(|(b, id)| (*b, id.as_str())),
+            );
             if let commands::merge::Outcome::Merged(result) = &outcome {
                 if !result.conflicts().is_empty() {
                     exit = Exit::Conflicts;

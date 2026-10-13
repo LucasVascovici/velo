@@ -7,10 +7,7 @@
 use crate::commands::moves::MovedBy;
 use std::fs;
 
-use rusqlite::params;
-
 use crate::commands::require_working_tree;
-use crate::commands::SnapshotIdentity;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
 use crate::storage;
@@ -383,37 +380,34 @@ fn do_fast_forward(
     target_hash: &str,
     target_branch: &str,
 ) -> Result<Outcome> {
+    use crate::tree::{SaveTree, TreeEntry};
     let msg = format!("Fast-forward merge from '{}'", target_branch);
+    let current = SnapshotId::from_stored(current_hash);
+    let target = SnapshotId::from_stored(target_hash);
+    let repo = guard.repo();
     // The fast-forward snapshot's tree is exactly the target's, modes included.
-    let tree = load_tree(guard.conn(), target_hash)?;
-    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
-    let new_hash = crate::commands::snapshot_id(SnapshotIdentity {
-        tree: &tree,
-        parent: current_hash,
-        merge_parent: "",
+    let entries: Vec<TreeEntry> = repo
+        .tree_at(&target)?
+        .into_iter()
+        .map(|f| TreeEntry::stored(f.path, f.object, f.kind))
+        .collect();
+    // velo keeps the branch as a column on each snapshot, so a ref cannot be
+    // moved. Recording the target as the merge parent keeps its history
+    // reachable from this branch, and its author is carried over because in a
+    // ref-moving system the new tip would be the feature's own commit.
+    let author = repo.snapshot_meta(&target)?.author();
+    let new_id = guard.save_tree(SaveTree {
+        branch: &BranchName::from_stored(head_branch),
+        parent: Some(&current),
+        merge_parent: Some(&target),
         message: &msg,
-        timestamp_ms,
-        meta: &SnapshotMeta::new(),
-    });
-
-    let tx = guard.transaction()?;
-    tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at_ms)
-         VALUES (?, ?, ?, ?, ?)",
-        params![new_hash, &msg, head_branch, current_hash, timestamp_ms],
-    )?;
-    {
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-        )?;
-        for (p, h, m) in &tree {
-            ins.execute(params![new_hash, p, h, m])?;
-        }
-    }
-    tx.commit()?;
-    guard
-        .repo()
-        .emit_saved_raw(&new_hash, head_branch, current_hash, "");
+        entries,
+        meta: SnapshotMeta::new(),
+        author: author.as_ref(),
+        renames: &[],
+        timestamp_ms: None,
+    })?;
+    let new_hash = new_id.as_str().to_string();
 
     // restore::run writes PARENT itself.
     crate::commands::restore::run(
@@ -905,18 +899,4 @@ fn lowest_common_ancestor(
             a_depth.cmp(b_depth).then_with(|| a_hash.cmp(b_hash))
         })
         .map(|(hash, _)| hash.clone())
-}
-
-// ─── Loaders ──────────────────────────────────────────────────────────────────
-
-fn load_tree(
-    conn: &rusqlite::Connection,
-    snapshot_hash: &str,
-) -> Result<Vec<(String, String, i64)>> {
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let tree: Vec<(String, String, i64)> = stmt
-        .query_map([snapshot_hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(tree)
 }
