@@ -1328,6 +1328,40 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             suggest(&mut lines, &options);
         }
+        VeloError::SnapshotHasDependents { branches, .. } => {
+            for (name, count) in branches {
+                let label = match name.as_str() {
+                    "_stash" => "a stash shelf".to_string(),
+                    other => match other.strip_prefix("_deleted_") {
+                        Some(gone) => format!("deleted branch '{}'", gone),
+                        None => format!("branch '{}'", other),
+                    },
+                };
+                lines.push(format!("  {} snapshot(s) on {}", count, label));
+            }
+            lines.push("  Instead:".into());
+            let first = branches
+                .iter()
+                .map(|(b, _)| b.as_str())
+                .find(|b| !b.starts_with('_'));
+            let mut options: Vec<(String, &str, Tone)> = vec![(
+                format!("velo restore {} && velo save \"<message>\"", "<parent>"),
+                "go back on this branch and keep the snapshot for the others",
+                Tone::Do,
+            )];
+            if let Some(b) = first {
+                options.push((
+                    format!("velo switch {}", b),
+                    "see the work that builds on it",
+                    Tone::Alt,
+                ));
+            }
+            let borrowed: Vec<(&str, &str, Tone)> = options
+                .iter()
+                .map(|(c, d, t)| (c.as_str(), *d, *t))
+                .collect();
+            suggest(&mut lines, &borrowed);
+        }
         VeloError::WouldOverwriteEdits { paths } => {
             list_paths(&mut lines, paths);
             lines.push("  Taking a side would replace those edits:".into());
@@ -1449,6 +1483,7 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
 }
 
 /// How prominently to render a suggested command.
+#[derive(Clone, Copy)]
 enum Tone {
     /// The usual next step.
     Do,
