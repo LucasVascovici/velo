@@ -873,7 +873,8 @@ pub fn merge_base(repo: &Repo, a: &SnapshotId, b: &SnapshotId) -> Result<Option<
 /// # "Lowest" here means nearest, and that is an approximation
 ///
 /// Of the common ancestors, this returns the one at the shortest distance from
-/// `current`, ties broken by id so the answer is stable.
+/// `current`. Among equally near ones it drops any that another of them builds
+/// on, then breaks the remaining tie by id so the answer is stable.
 ///
 /// In a tree that is exactly the merge base. In a DAG with criss-cross merges it
 /// need not be: the strict definition is a common ancestor with no *other*
@@ -893,10 +894,35 @@ fn lowest_common_ancestor(
     let ours = crate::commands::ancestors(conn, current).ok()?;
     let theirs = crate::commands::ancestors(conn, target).ok()?;
 
-    ours.iter()
+    let common: Vec<(&String, i64)> = ours
+        .iter()
         .filter(|(hash, _)| theirs.contains_key(*hash))
-        .min_by(|(a_hash, a_depth), (b_hash, b_depth)| {
-            a_depth.cmp(b_depth).then_with(|| a_hash.cmp(b_hash))
-        })
-        .map(|(hash, _)| hash.clone())
+        .map(|(hash, depth)| (hash, *depth))
+        .collect();
+    let nearest = common.iter().map(|(_, depth)| *depth).min()?;
+    let mut tied: Vec<&String> = common
+        .iter()
+        .filter(|(_, depth)| *depth == nearest)
+        .map(|(hash, _)| *hash)
+        .collect();
+    tied.sort();
+
+    // Equally near is not equally good: a fast-forward snapshot has the old tip
+    // and the target as parents, both at distance one, and the old tip is an
+    // ancestor of the target. Of the tied candidates, drop any that another
+    // one builds on, so the base is the newest of them whatever the ids are.
+    if tied.len() > 1 {
+        let mut dominated: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        for candidate in &tied {
+            if let Ok(below) = crate::commands::ancestors(conn, candidate) {
+                dominated.extend(
+                    tied.iter()
+                        .filter(|other| *other != candidate && below.contains_key(other.as_str()))
+                        .copied(),
+                );
+            }
+        }
+        tied.retain(|hash| !dominated.contains(hash));
+    }
+    tied.first().map(|hash| (*hash).clone())
 }

@@ -36,7 +36,8 @@ format change; public API changes in `velo-core` are additive.
 
 - **A fast-forward merge keeps the feature's history.** The snapshot it records
   has the target as its merge parent and carries the target's author, so
-  `history`, `blame` and the ahead/behind counts see the feature's snapshots.
+  `history`, `blame` and the ahead/behind counts see the feature's snapshots. The merge base after a
+  fast-forward is the feature tip, whatever the ids.
 
 - **`remotes/<remote>/<branch>` and `<remote>/<branch>` mean the same snapshot.**
   Both resolve through the remote-tracking refs, and `history --all` labels

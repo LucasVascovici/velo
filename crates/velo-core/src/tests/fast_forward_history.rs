@@ -167,6 +167,25 @@ fn merging_again_is_up_to_date_and_the_base_is_the_feature_tip() {
     assert_eq!(merge::merge_base(&repo, &m, &f).unwrap(), Some(f));
 }
 
+/// The fast-forward snapshot's two parents (the old tip and the feature tip) are
+/// equally near, and the old tip is an ancestor of the feature tip. Which of the
+/// two the base is must not depend on the ids, which change with every run.
+#[test]
+fn the_base_after_a_fast_forward_is_the_feature_tip_whatever_the_ids() {
+    for _ in 0..8 {
+        let r = repro();
+        let repo = Repo::open_and_migrate(&r.root).unwrap();
+        let feature: BranchName = "feature/x".parse().unwrap();
+        let main: BranchName = "main".parse().unwrap();
+        let (f, m) = (
+            repo.branch_tip(&feature).unwrap().unwrap(),
+            repo.branch_tip(&main).unwrap().unwrap(),
+        );
+        assert_eq!(merge::merge_base(&repo, &m, &f).unwrap(), Some(f.clone()));
+        assert_eq!(merge::merge_base(&repo, &f, &m).unwrap(), Some(f));
+    }
+}
+
 #[test]
 fn fsck_is_healthy_after_a_fast_forward() {
     let r = repro();
