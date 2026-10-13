@@ -6,6 +6,13 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 5.1.1
+
+Phase 16: fixes for what the second team simulation found. No repository
+format change; public API changes in `velo-core` are additive.
+
+### Fixed
+
 ## 5.1.0
 
 Phase 15: what the first team simulation found. Fixes for silent content loss
