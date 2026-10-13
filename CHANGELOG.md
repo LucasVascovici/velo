@@ -6,15 +6,13 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
-## 5.0.0
+## 5.1.0
 
-Phase 14: velo as a timeline engine. Language bindings (C, Python, Node, WASM),
-an MCP server, pluggable merge drivers, metadata queries, change events,
-chunked storage, compaction and retention, HTTP sync, git interchange and
-single-file repositories. A repository that stores a chunked object becomes
-format v3, which 4.0.0 refuses, and `velo-merge`'s public surface changed
-(`MergeDriver`); both are breaking, hence a major version. See the format
-section below.
+Phase 15: what the first team simulation found. Fixes for silent content loss
+in `save`, amend, `resolve` and stash; `resolve` that works without a terminal;
+lock holders that are named and waited for; faster restore, import, grep, save
+and merge; distinct exit codes and one reconcile recipe. No repository format
+change; new public API in `velo-core` is additive.
 
 ### Added
 
@@ -92,6 +90,18 @@ section below.
 
 - **`diff a..b` and the worktree diff skip hash-equal paths** without reading
   the object store, so the cost follows what changed, not the tree size.
+
+## 5.0.0
+
+Phase 14: velo as a timeline engine. Language bindings (C, Python, Node, WASM),
+an MCP server, pluggable merge drivers, metadata queries, change events,
+chunked storage, compaction and retention, HTTP sync, git interchange and
+single-file repositories. A repository that stores a chunked object becomes
+format v3, which 4.0.0 refuses, and `velo-merge`'s public surface changed
+(`MergeDriver`); both are breaking, hence a major version. See the format
+section below.
+
+### Added
 
 - **The Node binding covers history, blame, merge and branches.** `history`
   (from, branch, all, paths, limit, meta), `findSnapshots`, `blame` (with
