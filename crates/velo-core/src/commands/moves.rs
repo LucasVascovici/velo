@@ -15,8 +15,6 @@ use crate::error::Result;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MovedBy {
     Ours,
-    // 16.4-c: the mirror case, where their side moved and ours edited.
-    #[allow(dead_code)]
     Theirs,
 }
 
@@ -69,19 +67,26 @@ pub(crate) fn recorded_moves(
     Ok(moves)
 }
 
-/// Remap the base and their trees so a file we moved is merged at its new path.
+/// Remap the trees so a file one side moved is merged at its new path.
 ///
 /// For each of our recorded moves where the base has `from`, we lack it and
 /// have `to`, and they still have `from` and lack `to`, the base's and their
 /// entries move from `from` to `to`. Our tree is untouched, so it stays
 /// consistent with the working tree. The old path then exists in no tree and is
 /// never recreated.
+///
+/// The mirror case is a move recorded on their side while we still have the
+/// file at `from`: the base's and our entries move to `to`. Our working tree
+/// still holds the file at `from`, so the caller has to move it on disk (see
+/// `apply::reconcile_tree_moving`); the returned `Moved` says so.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn follow_moves(
     conn: &rusqlite::Connection,
     base: Option<&str>,
     ours: &str,
+    theirs: &str,
     base_tree: &mut apply::Tree,
-    our_tree: &apply::Tree,
+    our_tree: &mut apply::Tree,
     their_tree: &mut apply::Tree,
 ) -> Result<Vec<Moved>> {
     let mut done = Vec::new();
@@ -103,6 +108,26 @@ pub(crate) fn follow_moves(
                 from,
                 to,
                 by: MovedBy::Ours,
+            });
+        }
+    }
+    for (from, to) in recorded_moves(conn, base, theirs)? {
+        if base_tree.contains_key(&from)
+            && !base_tree.contains_key(&to)
+            && !their_tree.contains_key(&from)
+            && their_tree.contains_key(&to)
+            && our_tree.contains_key(&from)
+            && !our_tree.contains_key(&to)
+            && taken.insert(to.clone())
+        {
+            let b = base_tree.remove(&from).expect("checked above");
+            let o = our_tree.remove(&from).expect("checked above");
+            base_tree.insert(to.clone(), b);
+            our_tree.insert(to.clone(), o);
+            done.push(Moved {
+                from,
+                to,
+                by: MovedBy::Theirs,
             });
         }
     }

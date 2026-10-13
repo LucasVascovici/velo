@@ -4,6 +4,7 @@
 //! file's reconciliation decided, and which paths were left conflicted. Wording,
 //! colour and the "here's how to resolve it" guidance live in `velo-cli`.
 
+use crate::commands::moves::MovedBy;
 use std::fs;
 
 use rusqlite::params;
@@ -340,17 +341,18 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         Some(h) => apply::load_tree(conn, h)?,
         None => apply::Tree::new(),
     };
-    let our_tree = apply::load_tree(conn, &current_hash)?;
+    let mut our_tree = apply::load_tree(conn, &current_hash)?;
     let mut their_tree = apply::load_tree(conn, &target_hash)?;
-    crate::commands::moves::follow_moves(
+    let moves = crate::commands::moves::follow_moves(
         conn,
         ancestor_hash.as_deref(),
         &current_hash,
+        &target_hash,
         &mut base_tree,
-        &our_tree,
+        &mut our_tree,
         &mut their_tree,
     )?;
-    let applied = apply::reconcile_tree(guard, &base_tree, &our_tree, &their_tree)?;
+    let applied = apply::reconcile_tree_moving(guard, &base_tree, &our_tree, &their_tree, &moves)?;
 
     let result = ThreeWay {
         source: target_branch.to_string(),
@@ -546,14 +548,15 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
 
     let base = merge_base(repo, ours, theirs)?;
     let mut base_tree = apply::load_tree(conn, base.as_ref().map_or("", |b| b.as_str()))?;
-    let our_tree = apply::load_tree(conn, ours.as_str())?;
+    let mut our_tree = apply::load_tree(conn, ours.as_str())?;
     let mut their_tree = apply::load_tree(conn, theirs.as_str())?;
-    crate::commands::moves::follow_moves(
+    let moves = crate::commands::moves::follow_moves(
         conn,
         base.as_ref().map(|b| b.as_str()),
         ours.as_str(),
+        theirs.as_str(),
         &mut base_tree,
-        &our_tree,
+        &mut our_tree,
         &mut their_tree,
     )?;
 
@@ -567,6 +570,14 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
         .collect();
 
     let mut files = Vec::new();
+    // The old path of a move of theirs is deleted: ours' file lives at the new
+    // path now.
+    for m in moves.iter().filter(|m| m.by == MovedBy::Theirs) {
+        files.push(PlannedFile {
+            path: m.from.clone(),
+            change: PlannedChange::Delete,
+        });
+    }
     for path in all_paths {
         let side = |t: &apply::Tree| {
             t.get(path)
@@ -586,7 +597,22 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
             (their_h.as_str(), their_m),
             repo.drivers().for_path(path),
         )? {
-            crate::commands::Reconcile::Nothing => continue,
+            crate::commands::Reconcile::Nothing => {
+                // A pure move of theirs changes nothing at the new path in the
+                // trees, but the path is new relative to our tip's old name.
+                if moves
+                    .iter()
+                    .any(|m| m.by == MovedBy::Theirs && m.to == path)
+                {
+                    PlannedChange::Take {
+                        object: ObjectHash::from_stored(our_h.as_str()),
+                        mode: our_m,
+                        is_new: true,
+                    }
+                } else {
+                    continue;
+                }
+            }
             crate::commands::Reconcile::Delete => PlannedChange::Delete,
             crate::commands::Reconcile::TakeTheirs { hash, mode, is_new } => PlannedChange::Take {
                 object: ObjectHash::from_stored(hash),
@@ -609,6 +635,7 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
         });
     }
 
+    files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(MergePlan { base, files })
 }
 
@@ -716,21 +743,22 @@ pub fn commit(guard: &WriteGuard, spec: MergeCommit<'_>) -> Result<SnapshotId> {
         .collect();
     // Their side must carry the same move remap `plan` used, or a conflict
     // reported at the new path would find nothing of theirs there.
-    let theirs_tree: BTreeMap<String, crate::tree::TreeFile> = {
+    let (theirs_tree, their_moves): (BTreeMap<String, crate::tree::TreeFile>, Vec<_>) = {
         let base = merge_base(repo, spec.ours, spec.theirs)?;
         let mut base_tree =
             apply::load_tree(repo.conn(), base.as_ref().map_or("", |b| b.as_str()))?;
-        let our_tree = apply::load_tree(repo.conn(), spec.ours.as_str())?;
+        let mut our_tree = apply::load_tree(repo.conn(), spec.ours.as_str())?;
         let mut their_tree = apply::load_tree(repo.conn(), spec.theirs.as_str())?;
-        crate::commands::moves::follow_moves(
+        let moves = crate::commands::moves::follow_moves(
             repo.conn(),
             base.as_ref().map(|b| b.as_str()),
             spec.ours.as_str(),
+            spec.theirs.as_str(),
             &mut base_tree,
-            &our_tree,
+            &mut our_tree,
             &mut their_tree,
         )?;
-        their_tree
+        let tree = their_tree
             .into_iter()
             .map(|(p, (object, mode))| {
                 let file = crate::tree::TreeFile {
@@ -740,8 +768,17 @@ pub fn commit(guard: &WriteGuard, spec: MergeCommit<'_>) -> Result<SnapshotId> {
                 };
                 (p, file)
             })
-            .collect()
+            .collect();
+        (tree, moves)
     };
+    // Our side gets the same remap as in `plan`: a file they moved sits at its
+    // new path, so `Resolution::Ours` there keeps our content.
+    for m in their_moves.iter().filter(|m| m.by == MovedBy::Theirs) {
+        if let Some(mut entry) = tree.remove(&m.from) {
+            entry.path = m.to.clone();
+            tree.insert(m.to.clone(), entry);
+        }
+    }
 
     for file in &plan.files {
         let path = file.path.clone();

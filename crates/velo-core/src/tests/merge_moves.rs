@@ -285,3 +285,158 @@ fn commit_takes_their_content_at_the_new_path() {
         theirs_content.into_bytes()
     );
 }
+
+// ─── Their side moved the file, ours edited it ───────────────────────────────
+
+/// Their side moves `NOTES.txt` to `docs/notes.txt`, optionally editing it
+/// there; returns to main and gives back the side tip.
+fn side_move(root: &Path, edited: Option<&str>) -> String {
+    switch(root, "side", false);
+    mv(root, "NOTES.txt", "docs/notes.txt");
+    if let Some(content) = edited {
+        write(root, "docs/notes.txt", content);
+    }
+    let tip = save(root, "side move");
+    switch(root, "main", true);
+    tip
+}
+
+fn our_line() -> String {
+    format!("our line\n{BASE}")
+}
+
+#[test]
+fn our_edit_follows_their_move() {
+    let (_tmp, root, _) = setup();
+    side_move(&root, None);
+    write(&root, "NOTES.txt", &our_line());
+    save(&root, "edit");
+
+    let result = bring(&root, "side");
+    assert!(result.is_clean());
+    let files: Vec<_> = result
+        .files()
+        .iter()
+        .map(|f| (f.path.as_str(), f.action))
+        .collect();
+    assert_eq!(
+        files,
+        vec![
+            ("NOTES.txt", FileAction::Deleted),
+            ("docs/notes.txt", FileAction::Added)
+        ]
+    );
+    assert!(!result.applied_nothing());
+    assert!(!root.join("NOTES.txt").exists(), "the old path stayed");
+    assert_eq!(read(&root, "docs/notes.txt"), our_line());
+
+    let saved = save(&root, "merge");
+    let repo = Repo::open_and_migrate(&root).unwrap();
+    let tree = apply::load_tree(repo.conn(), &saved).unwrap();
+    assert!(!tree.contains_key("NOTES.txt"));
+    assert_eq!(
+        repo.read_file_at(&SnapshotId::from_stored(&saved), "docs/notes.txt")
+            .unwrap(),
+        our_line().into_bytes()
+    );
+}
+
+#[test]
+fn edits_on_both_sides_merge_at_the_new_path() {
+    let (_tmp, root, _) = setup();
+    side_move(&root, Some(&side_line()));
+    write(&root, "NOTES.txt", &our_line());
+    save(&root, "edit");
+
+    let result = bring(&root, "side");
+    assert!(result.is_clean());
+    assert!(!root.join("NOTES.txt").exists());
+    assert_eq!(
+        read(&root, "docs/notes.txt"),
+        format!("our line\n{BASE}side line\n")
+    );
+}
+
+#[test]
+fn overlapping_edits_conflict_at_their_new_path() {
+    let (_tmp, root, _) = setup();
+    side_move(&root, Some(&BASE.replace("three", "theirs")));
+    write(&root, "NOTES.txt", &BASE.replace("three", "ours"));
+    save(&root, "edit");
+
+    let result = bring(&root, "side");
+    assert_eq!(result.conflicts(), vec!["docs/notes.txt"]);
+    assert!(!root.join("NOTES.txt").exists());
+    assert_eq!(
+        read(&root, "docs/notes.txt"),
+        BASE.replace("three", "ours"),
+        "the conflicted file stays equal to ours"
+    );
+    let rows = resolve::list_conflicts(&Repo::open_and_migrate(&root).unwrap()).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].path, "docs/notes.txt");
+}
+
+#[test]
+fn abort_after_their_move_restores_the_old_path() {
+    let (_tmp, root, _) = setup();
+    side_move(&root, None);
+    write(&root, "NOTES.txt", &our_line());
+    save(&root, "edit");
+
+    bring(&root, "side");
+    assert!(root.join("docs/notes.txt").exists());
+    with_write(&root, |g| merge::run(g, merge::Mode::Abort)).unwrap();
+    assert_eq!(read(&root, "NOTES.txt"), our_line());
+    assert!(!root.join("docs").exists(), "docs/ should be gone");
+    let status = commands::status::run(&Repo::open_and_migrate(&root).unwrap(), &[]).unwrap();
+    assert!(status.modified.is_empty() && status.new_files.is_empty() && status.deleted.is_empty());
+}
+
+#[test]
+fn plan_and_commit_handle_their_move() {
+    let (_tmp, root, _) = setup();
+    let theirs = side_move(&root, Some(&BASE.replace("three", "theirs")));
+    write(&root, "NOTES.txt", &BASE.replace("three", "ours"));
+    let ours = save(&root, "edit");
+
+    let repo = Repo::open_and_migrate(&root).unwrap();
+    let (ours, theirs) = (
+        SnapshotId::from_stored(&ours),
+        SnapshotId::from_stored(&theirs),
+    );
+    let plan = merge::plan(&repo, &ours, &theirs).unwrap();
+    let paths: Vec<_> = plan.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(paths, vec!["NOTES.txt", "docs/notes.txt"]);
+    assert_eq!(plan.files[0].change, PlannedChange::Delete);
+    assert!(matches!(
+        plan.files[1].change,
+        PlannedChange::Conflict { .. }
+    ));
+
+    let main = branch("main");
+    let resolutions = [("docs/notes.txt".to_string(), Resolution::Ours)];
+    let merged = {
+        let guard = repo.write().unwrap();
+        merge::commit(
+            &guard,
+            MergeCommit {
+                branch: &main,
+                ours: &ours,
+                theirs: &theirs,
+                resolutions: &resolutions,
+                message: "merge",
+                meta: SnapshotMeta::new(),
+                author: None,
+                timestamp_ms: Some(10),
+            },
+        )
+        .unwrap()
+    };
+    let tree = apply::load_tree(repo.conn(), merged.as_str()).unwrap();
+    assert!(!tree.contains_key("NOTES.txt"));
+    assert_eq!(
+        repo.read_file_at(&merged, "docs/notes.txt").unwrap(),
+        BASE.replace("three", "ours").into_bytes()
+    );
+}
