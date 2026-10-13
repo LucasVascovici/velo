@@ -844,7 +844,8 @@ NOTES
 NOTES
     · Squash aborts if there are unsaved changes.
     · Any tags on squashed snapshots are moved to the new snapshot.
-    · The squashed objects remain in the store until `velo gc`."
+    · The originals stop being snapshots: their ids no longer resolve, and `velo undo` does not bring them back. File contents stay in the store until `velo gc`.
+    · `velo undo` after a squash removes the squash result and rewinds to the snapshot before the range; `velo redo` restores the squash result."
     )]
     Squash {
         /// Number of snapshots to collapse (must be ≥ 2).
