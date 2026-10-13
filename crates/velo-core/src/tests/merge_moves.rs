@@ -102,6 +102,24 @@ fn their_edit_lands_at_the_new_path() {
     assert_eq!(files, vec![("docs/notes.txt", FileAction::Updated)]);
     assert!(!root.join("NOTES.txt").exists(), "the old path came back");
     assert_eq!(read(&root, "docs/notes.txt"), side_line());
+
+    let status = commands::status::run(&Repo::open_and_migrate(&root).unwrap(), &[]).unwrap();
+    assert!(
+        status.merging.is_some(),
+        "the merge should still be pending"
+    );
+    assert!(status.conflicts.is_empty(), "{:?}", status.conflicts);
+    // The merged edit is unsaved relative to our tip, so the new path shows as
+    // modified; the old path must not appear anywhere.
+    assert_eq!(status.modified, vec!["docs/notes.txt"]);
+    assert!(status.new_files.is_empty(), "{:?}", status.new_files);
+    assert!(status.deleted.is_empty(), "{:?}", status.deleted);
+    assert!(!status
+        .modified
+        .iter()
+        .chain(&status.new_files)
+        .chain(&status.deleted)
+        .any(|p| p == "NOTES.txt"));
 }
 
 #[test]
@@ -220,6 +238,50 @@ fn plan_and_commit_agree_with_run() {
         .unwrap()
     };
     let tree = apply::load_tree(repo.conn(), merged.as_str()).unwrap();
-    assert!(tree.contains_key("docs/notes.txt"));
     assert!(!tree.contains_key("NOTES.txt"));
+    assert_eq!(
+        repo.read_file_at(&merged, "docs/notes.txt").unwrap(),
+        side_line().into_bytes()
+    );
+}
+
+#[test]
+fn commit_takes_their_content_at_the_new_path() {
+    let (_tmp, root, _) = setup();
+    let theirs_content = BASE.replace("three", "theirs");
+    let theirs = side_edit(&root, &theirs_content);
+    mv(&root, "NOTES.txt", "docs/notes.txt");
+    write(&root, "docs/notes.txt", &BASE.replace("three", "ours"));
+    let ours = save(&root, "move and edit");
+
+    let repo = Repo::open_and_migrate(&root).unwrap();
+    let (ours, theirs) = (
+        SnapshotId::from_stored(&ours),
+        SnapshotId::from_stored(&theirs),
+    );
+    let main = branch("main");
+    let resolutions = [("docs/notes.txt".to_string(), Resolution::Theirs)];
+    let merged = {
+        let guard = repo.write().unwrap();
+        merge::commit(
+            &guard,
+            MergeCommit {
+                branch: &main,
+                ours: &ours,
+                theirs: &theirs,
+                resolutions: &resolutions,
+                message: "merge",
+                meta: SnapshotMeta::new(),
+                author: None,
+                timestamp_ms: Some(10),
+            },
+        )
+        .unwrap()
+    };
+    let tree = apply::load_tree(repo.conn(), merged.as_str()).unwrap();
+    assert!(!tree.contains_key("NOTES.txt"));
+    assert_eq!(
+        repo.read_file_at(&merged, "docs/notes.txt").unwrap(),
+        theirs_content.into_bytes()
+    );
 }

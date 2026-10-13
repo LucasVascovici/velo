@@ -714,11 +714,34 @@ pub fn commit(guard: &WriteGuard, spec: MergeCommit<'_>) -> Result<SnapshotId> {
         .into_iter()
         .map(|f| (f.path.clone(), TreeEntry::stored(f.path, f.object, f.kind)))
         .collect();
-    let theirs_tree: BTreeMap<String, crate::tree::TreeFile> = repo
-        .tree_at(spec.theirs)?
-        .into_iter()
-        .map(|f| (f.path.clone(), f))
-        .collect();
+    // Their side must carry the same move remap `plan` used, or a conflict
+    // reported at the new path would find nothing of theirs there.
+    let theirs_tree: BTreeMap<String, crate::tree::TreeFile> = {
+        let base = merge_base(repo, spec.ours, spec.theirs)?;
+        let mut base_tree =
+            apply::load_tree(repo.conn(), base.as_ref().map_or("", |b| b.as_str()))?;
+        let our_tree = apply::load_tree(repo.conn(), spec.ours.as_str())?;
+        let mut their_tree = apply::load_tree(repo.conn(), spec.theirs.as_str())?;
+        crate::commands::moves::follow_moves(
+            repo.conn(),
+            base.as_ref().map(|b| b.as_str()),
+            spec.ours.as_str(),
+            &mut base_tree,
+            &our_tree,
+            &mut their_tree,
+        )?;
+        their_tree
+            .into_iter()
+            .map(|(p, (object, mode))| {
+                let file = crate::tree::TreeFile {
+                    path: p.clone(),
+                    object: crate::ids::ObjectHash::from_stored(object),
+                    kind: FileKind::from_mode(mode),
+                };
+                (p, file)
+            })
+            .collect()
+    };
 
     for file in &plan.files {
         let path = file.path.clone();
