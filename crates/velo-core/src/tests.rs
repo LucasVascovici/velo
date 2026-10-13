@@ -2439,6 +2439,18 @@ mod tests {
         assert_eq!(branch, "main");
         assert_eq!(parent(&root), to, "the position must move to the new tip");
         assert_eq!(read(&root, "f.txt"), "v2");
+        let repo = Repo::open_and_migrate(&root).unwrap();
+        let feature_tip = repo
+            .branch_tip(&"feature".parse().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            repo.snapshot(&SnapshotId::from_stored(to))
+                .unwrap()
+                .merge_parent,
+            Some(feature_tip),
+            "the fast-forward must record the feature tip as its merge parent"
+        );
     }
 
     #[test]
@@ -2482,7 +2494,7 @@ mod tests {
     }
 
     #[test]
-    fn merge_of_already_incorporated_work_applies_nothing() {
+    fn merge_of_already_fast_forwarded_work_is_up_to_date() {
         use commands::merge::Outcome;
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
@@ -2496,24 +2508,16 @@ mod tests {
         })
         .unwrap(); // fast-forward
 
-        // main's tip is now the fast-forward snapshot, so this is a real
-        // three-way merge — it just finds both trees already agree.
-        let Outcome::Merged(result) = with_write(&root, |vr| {
-            commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
-        })
-        .unwrap() else {
-            panic!("expected a three-way merge once main has its own tip");
-        };
-        assert!(result.is_clean());
-        assert!(
-            result.applied_nothing(),
-            "the work is already incorporated: {:?}",
-            result.files()
-        );
-        assert!(
-            !root.join(".velo/MERGE_HEAD").exists(),
-            "a no-op merge must not leave merge state behind"
-        );
+        // The fast-forward snapshot records the feature tip as its merge
+        // parent, so the feature is reachable and nothing is left to merge.
+        assert!(matches!(
+            with_write(&root, |vr| {
+                commands::merge::run(vr, commands::merge::Mode::Bring { source: "feature" })
+            })
+            .unwrap(),
+            Outcome::AlreadyUpToDate { .. }
+        ));
+        assert!(!root.join(".velo/MERGE_HEAD").exists());
     }
 
     #[test]
@@ -12161,3 +12165,30 @@ mod gc_dry_run;
 
 #[cfg(test)]
 mod published_history;
+
+#[cfg(test)]
+mod undone_parent_recovery;
+
+#[cfg(test)]
+mod undo_dependents;
+
+#[cfg(test)]
+mod resolve_mark_clean;
+
+#[cfg(test)]
+mod merge_equal_trees;
+
+#[cfg(test)]
+mod merge_abort_cleanup;
+
+#[cfg(test)]
+mod remote_ref_lookup;
+
+#[cfg(test)]
+mod switch_reposition;
+
+#[cfg(test)]
+mod merge_moves;
+
+#[cfg(test)]
+mod fast_forward_history;

@@ -597,11 +597,11 @@ NOTES
         #[arg(long, help = "Resolve all conflicts (requires --take)")]
         all: bool,
 
-        /// Replace hand edits to a conflicted file when taking a side.
+        /// With --take, replace hand edits; with --mark, accept an edit that
+        /// drops lines the other side changed cleanly.
         #[arg(
             long,
-            requires = "take",
-            help = "Replace hand edits when taking a side"
+            help = "With --take, replace hand edits; with --mark, accept an edit that drops clean changes"
         )]
         force: bool,
 
@@ -1328,6 +1328,40 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             suggest(&mut lines, &options);
         }
+        VeloError::SnapshotHasDependents { branches, .. } => {
+            for (name, count) in branches {
+                let label = match name.as_str() {
+                    "_stash" => "a stash shelf".to_string(),
+                    other => match other.strip_prefix("_deleted_") {
+                        Some(gone) => format!("deleted branch '{}'", gone),
+                        None => format!("branch '{}'", other),
+                    },
+                };
+                lines.push(format!("  {} snapshot(s) on {}", count, label));
+            }
+            lines.push("  Instead:".into());
+            let first = branches
+                .iter()
+                .map(|(b, _)| b.as_str())
+                .find(|b| !b.starts_with('_'));
+            let mut options: Vec<(String, &str, Tone)> = vec![(
+                format!("velo restore {} && velo save \"<message>\"", "<parent>"),
+                "go back on this branch and keep the snapshot for the others",
+                Tone::Do,
+            )];
+            if let Some(b) = first {
+                options.push((
+                    format!("velo switch {}", b),
+                    "see the work that builds on it",
+                    Tone::Alt,
+                ));
+            }
+            let borrowed: Vec<(&str, &str, Tone)> = options
+                .iter()
+                .map(|(c, d, t)| (c.as_str(), *d, *t))
+                .collect();
+            suggest(&mut lines, &borrowed);
+        }
         VeloError::WouldOverwriteEdits { paths } => {
             list_paths(&mut lines, paths);
             lines.push("  Taking a side would replace those edits:".into());
@@ -1344,6 +1378,35 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                     (&mark, "keep your edit as the resolution", Tone::Do),
                     (&diff, "see your edits", Tone::Do),
                     (&force, "replace them", Tone::Destructive),
+                ],
+            );
+        }
+        VeloError::MissingCleanChanges {
+            path,
+            missing,
+            sample,
+        } => {
+            lines.push("  Lines the other side changed cleanly are not in your file:".into());
+            for l in sample {
+                lines.push(format!("    + {l}"));
+            }
+            if *missing > sample.len() {
+                lines.push(format!("    … and {} more", missing - sample.len()));
+            }
+            let file = path.display().to_string();
+            let again = format!("velo resolve --mark {}", file);
+            let both = format!("velo resolve {} --take both --force", file);
+            let drop = format!("velo resolve --mark {} --force", file);
+            suggest(
+                &mut lines,
+                &[
+                    (&again, "add them and run this again", Tone::Do),
+                    (
+                        &both,
+                        "replace your edit with both sides plus the clean changes",
+                        Tone::Destructive,
+                    ),
+                    (&drop, "accept your edit and drop them", Tone::Destructive),
                 ],
             );
         }
@@ -1449,6 +1512,7 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
 }
 
 /// How prominently to render a suggested command.
+#[derive(Clone, Copy)]
 enum Tone {
     /// The usual next step.
     Do,
@@ -1628,7 +1692,7 @@ fn run_resolve(
 }
 
 /// `velo resolve --mark <file>`: accept the hand-edited file as the resolution.
-fn run_mark(guard: &velo_core::WriteGuard, file: &str) -> Result<()> {
+fn run_mark(guard: &velo_core::WriteGuard, file: &str, force: bool) -> Result<()> {
     use console::style;
     use velo_core::commands::resolve;
 
@@ -1639,7 +1703,12 @@ fn run_mark(guard: &velo_core::WriteGuard, file: &str) -> Result<()> {
         ));
     }
     let cf = resolve::get_conflict(repo, file)?;
-    let m = resolve::mark(guard, &cf)?;
+    let on_clean = if force {
+        resolve::OnCleanChanges::Drop
+    } else {
+        resolve::OnCleanChanges::Refuse
+    };
+    let m = resolve::mark_with(guard, &cf, on_clean)?;
     println!(
         "{} Accepted your edit of '{}' ({} lines; {} differ from ours, {} from theirs).",
         style("✔").green(),
@@ -1648,6 +1717,21 @@ fn run_mark(guard: &velo_core::WriteGuard, file: &str) -> Result<()> {
         m.differs_from_ours,
         m.differs_from_theirs
     );
+    if !m.dropped_clean_changes.is_empty() {
+        let source = resolve::merge_source(repo).unwrap_or_else(|| "incoming".into());
+        println!(
+            "  {} dropped {} line(s) from {} that merged cleanly:",
+            style("!").yellow().bold(),
+            m.dropped_clean_changes.len(),
+            source
+        );
+        for l in m.dropped_clean_changes.iter().take(5) {
+            println!("    {l}");
+        }
+        if m.dropped_clean_changes.len() > 5 {
+            println!("    … and {} more", m.dropped_clean_changes.len() - 5);
+        }
+    }
     report_remaining_conflicts(repo)
 }
 
@@ -1662,13 +1746,15 @@ fn run_conflicts(repo: &velo_core::Repo, file: Option<&str>, json: bool) -> Resu
     };
     let source = resolve::merge_source(repo);
     let mut sessions = Vec::with_capacity(targets.len());
+    let mut missing = Vec::with_capacity(targets.len());
     for cf in targets {
+        missing.push(resolve::missing_clean_changes(repo, &cf)?);
         sessions.push(resolve::open_session(repo, cf)?);
     }
     if json {
-        render::conflicts::print_json(source.as_deref(), &sessions);
+        render::conflicts::print_json(source.as_deref(), &sessions, &missing);
     } else {
-        render::conflicts::print_text(source.as_deref(), &sessions);
+        render::conflicts::print_text(source.as_deref(), &sessions, &missing);
     }
     Ok(())
 }
@@ -2172,10 +2258,43 @@ fn run(cli: Cli) -> Result<Exit> {
                 }
             };
             let outcome = commands::merge::run(write(), mode)?;
-            render::merge::print(&outcome);
+            // A fast-forward records the source tip as its second parent, and the
+            // merge does not move the source, so its tip is that parent.
+            let second_parent = match (&outcome, branch.as_deref()) {
+                (commands::merge::Outcome::FastForwarded { .. }, Some(source)) => {
+                    commands::resolve_snapshot_id(&repo, source)
+                        .ok()
+                        .map(|id| (source, id.as_str().to_string()))
+                }
+                _ => None,
+            };
+            render::merge::print(
+                &outcome,
+                second_parent.as_ref().map(|(b, id)| (*b, id.as_str())),
+            );
             if let commands::merge::Outcome::Merged(result) = &outcome {
                 if !result.conflicts().is_empty() {
                     exit = Exit::Conflicts;
+                } else if result.is_clean() && result.applied_nothing() {
+                    // The trees were already equal but the histories diverged:
+                    // there is nothing for a human to review, so record the
+                    // merge now. Otherwise the next push is refused again.
+                    let source = branch.as_deref().unwrap_or_default();
+                    let saved = commands::save::run(
+                        write(),
+                        Some(&format!("Merge {source}")),
+                        commands::save::Options {
+                            author: author::from_env()?.as_ref(),
+                            ..Default::default()
+                        },
+                    )?;
+                    if let Some(r) = saved.result() {
+                        println!(
+                            "{} Recorded merge {} with no content change — the trees were already equal, so this only joins the histories. velo push will now fast-forward.",
+                            console::style("✔").green(),
+                            console::style(render::id::short(&r.hash)).yellow()
+                        );
+                    }
                 }
             }
         }
@@ -2187,8 +2306,11 @@ fn run(cli: Cli) -> Result<Exit> {
             force,
             mark,
         } => {
+            if force && !mark && take.is_none() {
+                return Err(VeloError::invalid("--force needs --take or --mark"));
+            }
             if mark {
-                run_mark(write(), file.as_deref().unwrap_or_default())?;
+                run_mark(write(), file.as_deref().unwrap_or_default(), force)?;
             } else {
                 // Interactive resolve holds no guard here; the TUI takes the
                 // lock for one decision at a time.

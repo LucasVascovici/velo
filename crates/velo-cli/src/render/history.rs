@@ -93,6 +93,11 @@ fn decorate(history: &History, hash: &SnapshotId) -> String {
 fn refs_or_origin(history: &History, entry: &Entry) -> String {
     let refs = history.refs_at(&entry.hash);
     if refs.is_empty() {
+        // A `remotes/...` label is where a fetched snapshot arrived, not a ref
+        // that points anywhere now, so it is not shown as one.
+        if entry.branch.starts_with("remotes/") {
+            return String::new();
+        }
         style(format!("({})", entry.branch)).dim().to_string()
     } else {
         format!("({})", join_refs(refs))

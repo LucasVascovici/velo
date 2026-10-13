@@ -34,6 +34,58 @@ impl Outcome {
     }
 }
 
+/// Refuse when another live snapshot, on any branch, builds on `snapshot`.
+///
+/// Shelving it would leave those snapshots pointing at a parent that is no
+/// longer in the live set, which `fsck` reports as damage. The cheap
+/// direct-children probe runs first; the descendant count is only paid for on
+/// the refusal path. Internal labels (`_stash`, `_deleted_<name>`) count too,
+/// because `fsck` checks every row.
+fn refuse_if_depended_on(conn: &rusqlite::Connection, snapshot: &str) -> Result<()> {
+    let has_child: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM snapshots
+         WHERE hash <> ?1 AND (parent_hash = ?1 OR COALESCE(merge_parent,'') = ?1))",
+        [snapshot],
+        |r| r.get(0),
+    )?;
+    if !has_child {
+        return Ok(());
+    }
+    // UNION (not UNION ALL) so a hand-edited cycle terminates; the depth bound
+    // matches `commands::ancestors`.
+    let mut stmt = conn.prepare(
+        "WITH RECURSIVE down(hash, depth) AS (
+             SELECT hash, 1 FROM snapshots
+              WHERE hash <> ?1 AND (parent_hash = ?1 OR COALESCE(merge_parent,'') = ?1)
+             UNION
+             SELECT s.hash, down.depth + 1 FROM snapshots s, down
+              WHERE s.hash <> ?1
+                AND (s.parent_hash = down.hash OR COALESCE(s.merge_parent,'') = down.hash)
+                AND down.depth < ?2
+         )
+         SELECT s.branch, COUNT(*) FROM snapshots s
+          WHERE s.hash IN (SELECT hash FROM down)
+          GROUP BY s.branch ORDER BY s.branch",
+    )?;
+    let branches: Vec<(crate::BranchName, usize)> = stmt
+        .query_map(
+            rusqlite::params![snapshot, crate::commands::MAX_ANCESTRY_DEPTH],
+            |r| {
+                Ok((
+                    crate::BranchName::from_stored(r.get::<_, String>(0)?),
+                    r.get::<_, i64>(1)? as usize,
+                ))
+            },
+        )?
+        .collect::<std::result::Result<_, _>>()?;
+    let dependents = branches.iter().map(|(_, n)| n).sum();
+    Err(VeloError::SnapshotHasDependents {
+        snapshot: SnapshotId::from_stored(snapshot),
+        branches,
+        dependents,
+    })
+}
+
 /// Shelve the newest snapshot on the current branch.
 pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     require_working_tree(guard.repo(), "undo")?;
@@ -76,6 +128,8 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     let (snapshot, message, parent_hash) = snap.ok_or_else(|| {
         VeloError::invalid(format!("Nothing to undo on branch '{}'.", branch.trim()))
     })?;
+
+    refuse_if_depended_on(conn, &snapshot)?;
 
     // One transaction: the snapshot and its tags move together, and file_map is
     // deliberately left in place so redo can restore the tree.

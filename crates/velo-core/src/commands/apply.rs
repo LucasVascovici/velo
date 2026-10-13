@@ -137,6 +137,22 @@ pub fn reconcile_tree(
     ours: &Tree,
     theirs: &Tree,
 ) -> Result<Applied> {
+    reconcile_tree_moving(guard, ancestor, ours, theirs, &[])
+}
+
+/// [`reconcile_tree`] for trees already remapped around moves.
+///
+/// For a move their side made, `ours` holds our file at `to` but the working
+/// tree still has it at `from`, so it is renamed on disk before anything is
+/// written. Classification at `to` then matches the disk: a conflict leaves our
+/// content there, as it does for any conflicted file.
+pub(crate) fn reconcile_tree_moving(
+    guard: &WriteGuard,
+    ancestor: &Tree,
+    ours: &Tree,
+    theirs: &Tree,
+    moves: &[crate::commands::moves::Moved],
+) -> Result<Applied> {
     require_working_tree(guard.repo(), "apply")?;
     let root = guard.root();
     let objects = guard.repo().objects();
@@ -229,18 +245,41 @@ pub fn reconcile_tree(
     // before `a/b` can create its directory. Then wholesale takes read their
     // object in parallel and merged contents are written in parallel. Every
     // failure is reported.
-    let mut errors: Vec<String> = planned
-        .par_iter()
-        .filter_map(|p| {
-            let full = root.join(crate::db::db_to_path(p.path));
-            match p.decision.as_ref() {
-                Some(Reconcile::Delete) if full.exists() => fs::remove_file(&full)
-                    .err()
-                    .map(|e| format!("delete '{}': {e}", p.path)),
-                _ => None,
+    let mut errors: Vec<String> = Vec::new();
+    for m in moves
+        .iter()
+        .filter(|m| m.by == crate::commands::moves::MovedBy::Theirs)
+    {
+        let old = root.join(crate::db::db_to_path(&m.from));
+        let new = root.join(crate::db::db_to_path(&m.to));
+        let moved = (|| -> std::io::Result<()> {
+            if let Some(parent) = new.parent() {
+                fs::create_dir_all(parent)?;
             }
-        })
-        .collect();
+            fs::rename(&old, &new)?;
+            if let Some(parent) = old.parent() {
+                crate::commands::remove_empty_parents(parent, root);
+            }
+            Ok(())
+        })();
+        if let Err(e) = moved {
+            errors.push(format!("move '{}' to '{}': {e}", m.from, m.to));
+        }
+    }
+    errors.extend(
+        planned
+            .par_iter()
+            .filter_map(|p| {
+                let full = root.join(crate::db::db_to_path(p.path));
+                match p.decision.as_ref() {
+                    Some(Reconcile::Delete) if full.exists() => fs::remove_file(&full)
+                        .err()
+                        .map(|e| format!("delete '{}': {e}", p.path)),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<String>>(),
+    );
     let take_items: Vec<(&str, &str, i64)> = planned
         .iter()
         .filter_map(|p| match p.decision.as_ref() {
@@ -311,6 +350,29 @@ pub fn reconcile_tree(
             path: p.path.to_string(),
             action,
         });
+    }
+
+    // A move of theirs shows as the old path deleted and, when nothing else
+    // reported the new path, as added; `Nothing` never reaches `planned`.
+    let mut moved = false;
+    for m in moves
+        .iter()
+        .filter(|m| m.by == crate::commands::moves::MovedBy::Theirs)
+    {
+        moved = true;
+        files.push(FileOutcome {
+            path: m.from.clone(),
+            action: FileAction::Deleted,
+        });
+        if !files.iter().any(|f| f.path == m.to) {
+            files.push(FileOutcome {
+                path: m.to.clone(),
+                action: FileAction::Added,
+            });
+        }
+    }
+    if moved {
+        files.sort_by(|a, b| a.path.cmp(&b.path));
     }
 
     Ok(Applied { files, conflicts })

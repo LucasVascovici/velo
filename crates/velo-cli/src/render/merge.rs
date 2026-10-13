@@ -3,7 +3,9 @@
 use console::style;
 use velo_core::commands::merge::{Outcome, ThreeWay};
 
-pub fn print(outcome: &Outcome) {
+/// `second_parent` is the fast-forward snapshot's recorded merge parent, as
+/// `(source branch, id)`, looked up by the caller.
+pub fn print(outcome: &Outcome, second_parent: Option<(&str, &str)>) {
     match outcome {
         Outcome::Aborted {
             source,
@@ -18,7 +20,7 @@ pub fn print(outcome: &Outcome) {
         ),
 
         Outcome::AlreadyUpToDate { branch, other } => println!(
-            "{} Already up to date — '{}' and '{}' point at the same snapshot.",
+            "{} Already up to date — '{}' already has everything in '{}'.",
             style("✔").green(),
             branch,
             other
@@ -31,7 +33,17 @@ pub fn print(outcome: &Outcome) {
                 branch,
                 style(super::id::short(to)).yellow()
             );
-            println!("{} Fast-forward complete.", style("✔").green());
+            match second_parent {
+                Some((source, target)) => println!(
+                    "{} Fast-forwarded '{}' to {}: recorded with '{}' ({}) as its second parent, so its history and authors are kept.",
+                    style("✔").green(),
+                    branch,
+                    style(super::id::short(to)).yellow(),
+                    source,
+                    style(super::id::short(target)).yellow()
+                ),
+                None => println!("{} Fast-forward complete.", style("✔").green()),
+            }
         }
 
         Outcome::Merged(result) => print_three_way(result),
@@ -72,11 +84,8 @@ fn print_three_way(result: &ThreeWay) {
             &[("Once resolved:", "velo save \"Merge <branch>\"")],
         );
     } else if result.applied_nothing() {
-        println!(
-            "
-{} Already up to date — nothing to merge.",
-            style("✔").green()
-        );
+        // Equal trees on diverged histories: the caller records the merge and
+        // says so, so there is nothing to add here.
     } else {
         println!(
             "

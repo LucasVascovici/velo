@@ -13,6 +13,7 @@ pub mod history;
 pub mod import;
 pub mod init;
 pub mod merge;
+pub(crate) mod moves;
 pub mod mv;
 pub mod paths;
 pub mod rebase;
@@ -467,6 +468,22 @@ pub(crate) fn tracking_ref(conn: &rusqlite::Connection, branch: &str) -> Option<
 /// repository — fall back to the tip recorded in the `branches` table, which is
 /// the position the branch was created at.
 pub(crate) fn branch_tip(conn: &rusqlite::Connection, branch: &str) -> Option<String> {
+    // A `remotes/<remote>/<branch>` name is a remote-tracking ref, and
+    // `remote_refs` is the only authority for where those point. The
+    // `snapshots.branch` label of that spelling only records where a fetched
+    // snapshot arrived, and push never relabels it, so it can name an older tip.
+    if let Some((remote, rest)) = branch
+        .strip_prefix("remotes/")
+        .and_then(|r| r.split_once('/'))
+    {
+        return conn
+            .query_row(
+                "SELECT hash FROM remote_refs WHERE remote = ? AND branch = ?",
+                [remote, rest],
+                |r| r.get::<_, String>(0),
+            )
+            .ok();
+    }
     let derived = conn
         .query_row(
             "SELECT hash FROM snapshots WHERE branch = ? ORDER BY created_at_ms DESC, rowid DESC LIMIT 1",
@@ -936,12 +953,10 @@ pub(crate) fn classify(anc: FileRef, our: FileRef, thr: FileRef) -> Classified {
         return Done(Reconcile::KeepOurs); // theirs deleted, ours modified
     }
     if our.0.is_empty() {
-        // ours deleted, theirs modified — restore theirs
-        return Done(Reconcile::TakeTheirs {
-            hash: thr.0.to_string(),
-            mode: thr.1,
-            is_new: false,
-        });
+        // Ours deleted, theirs modified: a modify/delete conflict, not a silent
+        // resurrection. A file we moved is remapped before this point (see
+        // `moves::follow_moves`), so what reaches here has no rename edge.
+        return Done(Reconcile::Conflict);
     }
     // Same content, differing mode only → take theirs' mode (no content merge).
     if our.0 == thr.0 {

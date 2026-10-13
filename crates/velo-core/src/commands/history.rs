@@ -117,7 +117,9 @@ pub struct History {
     /// Newest first. Empty exactly when `empty` is set.
     pub entries: Vec<Entry>,
     /// Branch names pointing at each snapshot, checked-out branch first. Several
-    /// branches can label one snapshot, which is why this is a list.
+    /// branches can label one snapshot, which is why this is a list. Remote-
+    /// tracking refs follow the local branches, named `remotes/<remote>/<branch>`
+    /// and read from `remote_refs`; the prefix tells them apart from local ones.
     pub refs: HashMap<SnapshotId, Vec<BranchRef>>,
     /// Set when there is nothing to show, explaining which case it is.
     pub empty: Option<EmptyReason>,
@@ -559,6 +561,34 @@ fn branch_refs(conn: &rusqlite::Connection, head: &str) -> HashMap<SnapshotId, V
             entry.insert(0, r);
         } else {
             entry.push(r);
+        }
+    }
+    // Remote-tracking tips come from `remote_refs`, never from the label on a
+    // snapshot, which records only where a fetched snapshot arrived.
+    if let Ok(mut stmt) =
+        conn.prepare("SELECT remote, branch, hash FROM remote_refs ORDER BY remote, branch")
+    {
+        let rows: Vec<(String, String, String)> = stmt
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map(|rows| rows.flatten().collect())
+            .unwrap_or_default();
+        for (remote, branch, hash) in rows {
+            let exists = conn
+                .query_row(
+                    "SELECT 1 FROM snapshots WHERE hash = ?",
+                    [&hash],
+                    |_| Ok(()),
+                )
+                .is_ok();
+            if exists {
+                by_commit
+                    .entry(SnapshotId::from_stored(hash))
+                    .or_default()
+                    .push(BranchRef {
+                        name: BranchName::from_stored(format!("remotes/{remote}/{branch}")),
+                        is_head: false,
+                    });
+            }
         }
     }
     by_commit

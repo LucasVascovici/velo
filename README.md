@@ -471,7 +471,7 @@ velo pull
 | `velo resolve <file> --take ours` | Non-interactive: keep the current branch's version |
 | `velo resolve <file> --take theirs` | Non-interactive: take the incoming branch's version |
 | `velo resolve <file> --take both` | Non-interactive: keep both sides, ours then theirs, per hunk |
-| `velo resolve --mark <file>` | Accept your hand edit of the file as the resolution |
+| `velo resolve --mark <file>` | Accept your hand edit of the file as the resolution; refused if it drops lines the other side changed cleanly (`velo conflicts` lists them), unless you add `--force` |
 | `velo resolve --all --take <ours\|theirs\|both>` | Resolve all outstanding conflicts non-interactively |
 | `velo cherry-pick <target>` | Apply the diff from one snapshot onto the current branch |
 | `velo rebase <target>` | Replay current branch commits on top of another branch |
@@ -853,7 +853,7 @@ git:
 
 ```toml
 [dependencies]
-velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.1.0" }
+velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.1.1" }
 ```
 
 It produces no terminal output at all — every command returns data — which is

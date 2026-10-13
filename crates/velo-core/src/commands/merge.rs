@@ -4,12 +4,10 @@
 //! file's reconciliation decided, and which paths were left conflicted. Wording,
 //! colour and the "here's how to resolve it" guidance live in `velo-cli`.
 
+use crate::commands::moves::MovedBy;
 use std::fs;
 
-use rusqlite::params;
-
 use crate::commands::require_working_tree;
-use crate::commands::SnapshotIdentity;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, Result, VeloError};
 use crate::storage;
@@ -62,7 +60,8 @@ impl ThreeWay {
         self.applied.is_clean()
     }
 
-    /// Nothing was applied — the branches already agreed on every file.
+    /// Nothing was applied — the trees were already equal but the histories
+    /// diverged. `MERGE_HEAD` is written and the next save records the merge.
     pub fn applied_nothing(&self) -> bool {
         self.applied.applied_nothing()
     }
@@ -79,7 +78,7 @@ pub enum Outcome {
     },
     /// The current branch had no commits, so it simply starts at the source.
     StartedUnbornBranch { branch: String, at: String },
-    /// Both branches already point at the same snapshot.
+    /// HEAD already contains the other tip (the same snapshot, or an ancestor).
     AlreadyUpToDate { branch: String, other: String },
     /// Our tip was an ancestor of theirs, so no merge commit was needed.
     FastForwarded { branch: String, to: String },
@@ -140,6 +139,12 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
         .unwrap_or((merge_info, "(unknown)"));
     let source = source_branch.to_string();
 
+    let conflict_paths: Vec<String> = conn
+        .prepare("SELECT path FROM conflict_files")?
+        .query_map([], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .collect();
+
     conn.execute("DELETE FROM hunk_decisions", [])?;
     conn.execute("DELETE FROM conflict_files", [])?;
     let _ = fs::remove_file(&merge_head_path);
@@ -161,10 +166,61 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
             ..Default::default()
         },
     )?;
+    remove_merge_added(guard, pre_merge_hash, &source, &conflict_paths)?;
     Ok(Outcome::Aborted {
         source,
         restored_to: Some(pre_merge_hash.to_string()),
     })
+}
+
+/// Delete the files a merge wrote that the pre-merge snapshot does not have.
+///
+/// `restore` only rewrites paths that differ from the tree being left, and the
+/// tree being left is still the pre-merge snapshot, so a file the merge added
+/// is invisible to it. The candidates are the source's paths plus the conflict
+/// paths, minus the pre-merge tree. A candidate is deleted only if the dirty
+/// scan reports it as new: that skips ignored paths, and `do_merge` refuses a
+/// dirty tree, so no untracked file of the user's can sit at such a path.
+fn remove_merge_added(
+    guard: &WriteGuard,
+    pre_merge_hash: &str,
+    source: &str,
+    conflict_paths: &[String],
+) -> Result<()> {
+    let conn = guard.conn();
+    let source_hash = crate::commands::branch_tip(conn, source).or_else(|| {
+        let spec = source
+            .strip_prefix("cherry-pick/")
+            .or_else(|| source.strip_prefix("rebase/"))
+            .unwrap_or(source);
+        crate::commands::resolve_snapshot_id(guard.repo(), spec)
+            .ok()
+            .map(SnapshotId::into_string)
+    });
+    let pre_tree = apply::load_tree(conn, pre_merge_hash)?;
+    let mut candidates: std::collections::BTreeSet<String> =
+        conflict_paths.iter().cloned().collect();
+    if let Some(h) = source_hash {
+        candidates.extend(apply::load_tree(conn, &h)?.into_keys());
+    }
+    candidates.retain(|p| !pre_tree.contains_key(p));
+    if candidates.is_empty() {
+        return Ok(());
+    }
+    let root = guard.root();
+    let dirty = get_dirty_files(guard.repo());
+    for path in candidates {
+        if dirty.get(&path) != Some(&crate::commands::FileStatus::New) {
+            continue;
+        }
+        let full = root.join(&path);
+        if fs::remove_file(&full).is_ok() {
+            if let Some(parent) = full.parent() {
+                crate::commands::remove_empty_parents(parent, root);
+            }
+        }
+    }
+    Ok(())
 }
 
 // ─── Merge ───────────────────────────────────────────────────────────────────
@@ -252,7 +308,11 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         });
     }
 
-    if is_ancestor(conn, &target_hash, &current_hash) {
+    // Both parents count: a branch a previous merge joined in is an ancestor
+    // through its `merge_parent`, and following first parents alone would call
+    // it diverged.
+    let theirs_ancestry = crate::commands::ancestors(conn, &target_hash)?;
+    if theirs_ancestry.contains_key(&current_hash) {
         return do_fast_forward(
             guard,
             head_branch,
@@ -262,17 +322,34 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         );
     }
 
+    // HEAD already contains the other tip, so there is nothing to bring in. This
+    // is deliberately not true of diverged histories with equal trees: those
+    // fall through and record a merge.
+    if crate::commands::ancestors(conn, &current_hash)?.contains_key(&target_hash) {
+        return Ok(Outcome::AlreadyUpToDate {
+            branch: head_branch.to_string(),
+            other: target_branch.to_string(),
+        });
+    }
+
     let ancestor_hash = lowest_common_ancestor(conn, &current_hash, &target_hash);
 
-    let applied = apply::reconcile_tree(
-        guard,
-        &match &ancestor_hash {
-            Some(h) => apply::load_tree(conn, h)?,
-            None => apply::Tree::new(),
-        },
-        &apply::load_tree(conn, &current_hash)?,
-        &apply::load_tree(conn, &target_hash)?,
+    let mut base_tree = match &ancestor_hash {
+        Some(h) => apply::load_tree(conn, h)?,
+        None => apply::Tree::new(),
+    };
+    let mut our_tree = apply::load_tree(conn, &current_hash)?;
+    let mut their_tree = apply::load_tree(conn, &target_hash)?;
+    let moves = crate::commands::moves::follow_moves(
+        conn,
+        ancestor_hash.as_deref(),
+        &current_hash,
+        &target_hash,
+        &mut base_tree,
+        &mut our_tree,
+        &mut their_tree,
     )?;
+    let applied = apply::reconcile_tree_moving(guard, &base_tree, &our_tree, &their_tree, &moves)?;
 
     let result = ThreeWay {
         source: target_branch.to_string(),
@@ -284,13 +361,13 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
     // MERGE_HEAD is written for a clean merge too, not just a conflicted one: the
     // finalising `velo save` reads it to stamp the second parent. Without it a
     // conflict-free merge would collapse to a single-parent commit and
-    // `velo history --graph` would draw it as linear.
-    if !result.is_clean() || !result.applied_nothing() {
-        storage::write_atomic(
-            &root.join(".velo/MERGE_HEAD"),
-            format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
-        )?;
-    }
+    // `velo history --graph` would draw it as linear. Every `Merged` outcome
+    // means the histories diverged, so it is written even when the trees were
+    // already equal: the merge still has to be recorded to join the histories.
+    storage::write_atomic(
+        &root.join(".velo/MERGE_HEAD"),
+        format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
+    )?;
     result.applied.record_conflicts(conn)?;
 
     Ok(Outcome::Merged(result))
@@ -303,37 +380,34 @@ fn do_fast_forward(
     target_hash: &str,
     target_branch: &str,
 ) -> Result<Outcome> {
+    use crate::tree::{SaveTree, TreeEntry};
     let msg = format!("Fast-forward merge from '{}'", target_branch);
+    let current = SnapshotId::from_stored(current_hash);
+    let target = SnapshotId::from_stored(target_hash);
+    let repo = guard.repo();
     // The fast-forward snapshot's tree is exactly the target's, modes included.
-    let tree = load_tree(guard.conn(), target_hash)?;
-    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
-    let new_hash = crate::commands::snapshot_id(SnapshotIdentity {
-        tree: &tree,
-        parent: current_hash,
-        merge_parent: "",
+    let entries: Vec<TreeEntry> = repo
+        .tree_at(&target)?
+        .into_iter()
+        .map(|f| TreeEntry::stored(f.path, f.object, f.kind))
+        .collect();
+    // velo keeps the branch as a column on each snapshot, so a ref cannot be
+    // moved. Recording the target as the merge parent keeps its history
+    // reachable from this branch, and its author is carried over because in a
+    // ref-moving system the new tip would be the feature's own commit.
+    let author = repo.snapshot_meta(&target)?.author();
+    let new_id = guard.save_tree(SaveTree {
+        branch: &BranchName::from_stored(head_branch),
+        parent: Some(&current),
+        merge_parent: Some(&target),
         message: &msg,
-        timestamp_ms,
-        meta: &SnapshotMeta::new(),
-    });
-
-    let tx = guard.transaction()?;
-    tx.execute(
-        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at_ms)
-         VALUES (?, ?, ?, ?, ?)",
-        params![new_hash, &msg, head_branch, current_hash, timestamp_ms],
-    )?;
-    {
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-        )?;
-        for (p, h, m) in &tree {
-            ins.execute(params![new_hash, p, h, m])?;
-        }
-    }
-    tx.commit()?;
-    guard
-        .repo()
-        .emit_saved_raw(&new_hash, head_branch, current_hash, "");
+        entries,
+        meta: SnapshotMeta::new(),
+        author: author.as_ref(),
+        renames: &[],
+        timestamp_ms: None,
+    })?;
+    let new_hash = new_id.as_str().to_string();
 
     // restore::run writes PARENT itself.
     crate::commands::restore::run(
@@ -351,21 +425,6 @@ fn do_fast_forward(
 }
 
 // ─── Ancestry ─────────────────────────────────────────────────────────────────
-
-/// Is `candidate` an ancestor of `tip` (following first parents)?
-fn is_ancestor(conn: &rusqlite::Connection, tip: &str, candidate: &str) -> bool {
-    conn.query_row(
-        "WITH RECURSIVE anc(hash, parent_hash) AS (
-            SELECT hash, parent_hash FROM snapshots WHERE hash = ?1
-            UNION ALL
-            SELECT s.hash, s.parent_hash FROM snapshots s JOIN anc a ON s.hash = a.parent_hash
-         )
-         SELECT EXISTS(SELECT 1 FROM anc WHERE hash = ?2)",
-        params![tip, candidate],
-        |r| r.get(0),
-    )
-    .unwrap_or(false)
-}
 
 /// The nearest snapshot that is an ancestor of both tips.
 ///
@@ -431,7 +490,10 @@ pub struct MergePlan {
     /// added or conflicting.
     pub base: Option<SnapshotId>,
     /// Paths that would change, in path order. Untouched files are omitted, so
-    /// an empty list means the merge is a no-op.
+    /// an empty list means the merge changes no content. That is still a merge
+    /// to record when `base` is not `theirs`: diverged histories with equal
+    /// trees join into a two-parent snapshot. Only `base == Some(theirs)` means
+    /// there is nothing to merge.
     pub files: Vec<PlannedFile>,
 }
 
@@ -479,9 +541,18 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
     let objects = repo.objects();
 
     let base = merge_base(repo, ours, theirs)?;
-    let base_tree = apply::load_tree(conn, base.as_ref().map_or("", |b| b.as_str()))?;
-    let our_tree = apply::load_tree(conn, ours.as_str())?;
-    let their_tree = apply::load_tree(conn, theirs.as_str())?;
+    let mut base_tree = apply::load_tree(conn, base.as_ref().map_or("", |b| b.as_str()))?;
+    let mut our_tree = apply::load_tree(conn, ours.as_str())?;
+    let mut their_tree = apply::load_tree(conn, theirs.as_str())?;
+    let moves = crate::commands::moves::follow_moves(
+        conn,
+        base.as_ref().map(|b| b.as_str()),
+        ours.as_str(),
+        theirs.as_str(),
+        &mut base_tree,
+        &mut our_tree,
+        &mut their_tree,
+    )?;
 
     // Every path any side knows about, sorted, so a plan is the same on every
     // run rather than the hasher's order.
@@ -493,6 +564,14 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
         .collect();
 
     let mut files = Vec::new();
+    // The old path of a move of theirs is deleted: ours' file lives at the new
+    // path now.
+    for m in moves.iter().filter(|m| m.by == MovedBy::Theirs) {
+        files.push(PlannedFile {
+            path: m.from.clone(),
+            change: PlannedChange::Delete,
+        });
+    }
     for path in all_paths {
         let side = |t: &apply::Tree| {
             t.get(path)
@@ -512,7 +591,22 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
             (their_h.as_str(), their_m),
             repo.drivers().for_path(path),
         )? {
-            crate::commands::Reconcile::Nothing => continue,
+            crate::commands::Reconcile::Nothing => {
+                // A pure move of theirs changes nothing at the new path in the
+                // trees, but the path is new relative to our tip's old name.
+                if moves
+                    .iter()
+                    .any(|m| m.by == MovedBy::Theirs && m.to == path)
+                {
+                    PlannedChange::Take {
+                        object: ObjectHash::from_stored(our_h.as_str()),
+                        mode: our_m,
+                        is_new: true,
+                    }
+                } else {
+                    continue;
+                }
+            }
             crate::commands::Reconcile::Delete => PlannedChange::Delete,
             crate::commands::Reconcile::TakeTheirs { hash, mode, is_new } => PlannedChange::Take {
                 object: ObjectHash::from_stored(hash),
@@ -535,6 +629,7 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
         });
     }
 
+    files.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(MergePlan { base, files })
 }
 
@@ -640,11 +735,44 @@ pub fn commit(guard: &WriteGuard, spec: MergeCommit<'_>) -> Result<SnapshotId> {
         .into_iter()
         .map(|f| (f.path.clone(), TreeEntry::stored(f.path, f.object, f.kind)))
         .collect();
-    let theirs_tree: BTreeMap<String, crate::tree::TreeFile> = repo
-        .tree_at(spec.theirs)?
-        .into_iter()
-        .map(|f| (f.path.clone(), f))
-        .collect();
+    // Their side must carry the same move remap `plan` used, or a conflict
+    // reported at the new path would find nothing of theirs there.
+    let (theirs_tree, their_moves): (BTreeMap<String, crate::tree::TreeFile>, Vec<_>) = {
+        let base = merge_base(repo, spec.ours, spec.theirs)?;
+        let mut base_tree =
+            apply::load_tree(repo.conn(), base.as_ref().map_or("", |b| b.as_str()))?;
+        let mut our_tree = apply::load_tree(repo.conn(), spec.ours.as_str())?;
+        let mut their_tree = apply::load_tree(repo.conn(), spec.theirs.as_str())?;
+        let moves = crate::commands::moves::follow_moves(
+            repo.conn(),
+            base.as_ref().map(|b| b.as_str()),
+            spec.ours.as_str(),
+            spec.theirs.as_str(),
+            &mut base_tree,
+            &mut our_tree,
+            &mut their_tree,
+        )?;
+        let tree = their_tree
+            .into_iter()
+            .map(|(p, (object, mode))| {
+                let file = crate::tree::TreeFile {
+                    path: p.clone(),
+                    object: crate::ids::ObjectHash::from_stored(object),
+                    kind: FileKind::from_mode(mode),
+                };
+                (p, file)
+            })
+            .collect();
+        (tree, moves)
+    };
+    // Our side gets the same remap as in `plan`: a file they moved sits at its
+    // new path, so `Resolution::Ours` there keeps our content.
+    for m in their_moves.iter().filter(|m| m.by == MovedBy::Theirs) {
+        if let Some(mut entry) = tree.remove(&m.from) {
+            entry.path = m.to.clone();
+            tree.insert(m.to.clone(), entry);
+        }
+    }
 
     for file in &plan.files {
         let path = file.path.clone();
@@ -745,7 +873,8 @@ pub fn merge_base(repo: &Repo, a: &SnapshotId, b: &SnapshotId) -> Result<Option<
 /// # "Lowest" here means nearest, and that is an approximation
 ///
 /// Of the common ancestors, this returns the one at the shortest distance from
-/// `current`, ties broken by id so the answer is stable.
+/// `current`. Among equally near ones it drops any that another of them builds
+/// on, then breaks the remaining tie by id so the answer is stable.
 ///
 /// In a tree that is exactly the merge base. In a DAG with criss-cross merges it
 /// need not be: the strict definition is a common ancestor with no *other*
@@ -765,24 +894,35 @@ fn lowest_common_ancestor(
     let ours = crate::commands::ancestors(conn, current).ok()?;
     let theirs = crate::commands::ancestors(conn, target).ok()?;
 
-    ours.iter()
+    let common: Vec<(&String, i64)> = ours
+        .iter()
         .filter(|(hash, _)| theirs.contains_key(*hash))
-        .min_by(|(a_hash, a_depth), (b_hash, b_depth)| {
-            a_depth.cmp(b_depth).then_with(|| a_hash.cmp(b_hash))
-        })
-        .map(|(hash, _)| hash.clone())
-}
-
-// ─── Loaders ──────────────────────────────────────────────────────────────────
-
-fn load_tree(
-    conn: &rusqlite::Connection,
-    snapshot_hash: &str,
-) -> Result<Vec<(String, String, i64)>> {
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let tree: Vec<(String, String, i64)> = stmt
-        .query_map([snapshot_hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .filter_map(|r| r.ok())
+        .map(|(hash, depth)| (hash, *depth))
         .collect();
-    Ok(tree)
+    let nearest = common.iter().map(|(_, depth)| *depth).min()?;
+    let mut tied: Vec<&String> = common
+        .iter()
+        .filter(|(_, depth)| *depth == nearest)
+        .map(|(hash, _)| *hash)
+        .collect();
+    tied.sort();
+
+    // Equally near is not equally good: a fast-forward snapshot has the old tip
+    // and the target as parents, both at distance one, and the old tip is an
+    // ancestor of the target. Of the tied candidates, drop any that another
+    // one builds on, so the base is the newest of them whatever the ids are.
+    if tied.len() > 1 {
+        let mut dominated: std::collections::HashSet<&String> = std::collections::HashSet::new();
+        for candidate in &tied {
+            if let Ok(below) = crate::commands::ancestors(conn, candidate) {
+                dominated.extend(
+                    tied.iter()
+                        .filter(|other| *other != candidate && below.contains_key(other.as_str()))
+                        .copied(),
+                );
+            }
+        }
+        tied.retain(|hash| !dominated.contains(hash));
+    }
+    tied.first().map(|hash| (*hash).clone())
 }
