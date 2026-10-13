@@ -20,14 +20,22 @@ fn wait_budget() -> Duration {
     Duration::from_millis(ms)
 }
 
-/// A 10-50 ms sleep, jittered from the clock so contending processes do not
-/// retry in lockstep.
-fn backoff() -> Duration {
+/// The sleep before retry number `attempt` (0 for the first): a base that
+/// doubles from 10 ms up to 80 ms, plus up to a quarter of it taken from
+/// `jitter` so contending processes do not retry in lockstep. A pure function,
+/// so the schedule is unit-testable; the 3 s cap is applied by the caller.
+fn backoff_for(attempt: u32, jitter: u32) -> Duration {
+    let base_ms = (10u64 << attempt.min(3)).min(80);
+    let span = base_ms / 4 + 1;
+    Duration::from_millis(base_ms + u64::from(jitter) % span)
+}
+
+fn backoff(attempt: u32) -> Duration {
     let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.subsec_nanos())
         .unwrap_or(0);
-    Duration::from_millis(10 + u64::from(nanos % 41))
+    backoff_for(attempt, nanos)
 }
 
 /// Take the write lock, retrying for the configured budget. On timeout this
@@ -35,6 +43,7 @@ fn backoff() -> Duration {
 pub fn acquire(repo: &Repo) -> Result<WriteGuard<'_>> {
     let budget = wait_budget();
     let start = Instant::now();
+    let mut attempt = 0u32;
     loop {
         if let Some(g) = repo.try_write()? {
             return Ok(g);
@@ -43,7 +52,8 @@ pub fn acquire(repo: &Repo) -> Result<WriteGuard<'_>> {
         if left.is_zero() {
             return repo.write();
         }
-        std::thread::sleep(backoff().min(left));
+        std::thread::sleep(backoff(attempt).min(left));
+        attempt += 1;
     }
 }
 
@@ -121,4 +131,32 @@ pub fn pid_alive(pid: u32) -> Option<bool> {
 #[cfg(not(any(unix, windows)))]
 pub fn pid_alive(_pid: u32) -> Option<bool> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn backoff_grows_then_plateaus() {
+        let base = |a| backoff_for(a, 0).as_millis();
+        assert_eq!(
+            [base(0), base(1), base(2), base(3), base(4), base(1000)],
+            [10, 20, 40, 80, 80, 80]
+        );
+    }
+
+    #[test]
+    fn jitter_stays_within_a_quarter_of_the_base() {
+        for attempt in 0..8 {
+            let lo = backoff_for(attempt, 0);
+            for j in [1, 7, 999_999_999, u32::MAX] {
+                let d = backoff_for(attempt, j);
+                assert!(
+                    d >= lo && d <= lo + lo / 4,
+                    "attempt {attempt} jitter {j}: {d:?}"
+                );
+            }
+        }
+    }
 }
