@@ -13,6 +13,38 @@ format change; public API changes in `velo-core` are additive.
 
 ### Fixed
 
+- **`undo` no longer orphans another branch's history.** It refuses, naming the
+  branches (or the stash shelf) that build on the snapshot, instead of leaving
+  them with a missing parent that fails `fsck`. A repository already damaged
+  that way is recoverable with `velo redo`: `fsck` says so, and `save` and `gc`
+  keep the trash row such a snapshot needs.
+
+- **`resolve --mark` no longer drops the other side's clean changes.** A hand
+  edit that is missing lines the other side added outside every conflict is
+  refused, listing the lines; `--mark --force` accepts it and says what was
+  dropped. `velo conflicts` (text and `--json`) shows how many clean changes are
+  missing from each file's working copy.
+
+- **A merge of a diverged tip with equal content records a merge.** It no longer
+  prints "Already up to date" and leaves the branch diverged, so the push recipe
+  ends in a push. "Already up to date" is reserved for a tip that is an ancestor.
+
+- **Merges follow moves.** A file we moved and they edited is merged at its new
+  path, and the reverse; neither resurrects the old path, and modify/delete is a
+  conflict. `merge --abort` removes the files the merge added and the
+  directories that leaves empty.
+
+- **A fast-forward merge keeps the feature's history.** The snapshot it records
+  has the target as its merge parent and carries the target's author, so
+  `history`, `blame` and the ahead/behind counts see the feature's snapshots.
+
+- **`remotes/<remote>/<branch>` and `<remote>/<branch>` mean the same snapshot.**
+  Both resolve through the remote-tracking refs, and `history --all` labels
+  remote tips from them.
+
+- **`switch` to the current branch repositions a stale working position**, such
+  as the empty one `bundle apply` leaves, with the usual guard for unsaved work.
+
 ## 5.1.0
 
 Phase 15: what the first team simulation found. Fixes for silent content loss
