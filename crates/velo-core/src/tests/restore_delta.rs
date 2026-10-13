@@ -229,6 +229,52 @@ fn undo_of_one_file_among_fifty_writes_one() {
 }
 
 #[test]
+fn untracked_and_ignored_files_survive_restore_and_undo() {
+    let (_tmp, root) = setup();
+    write(
+        &root,
+        ".veloignore",
+        "*.log
+",
+    );
+    write(&root, "a.txt", "one");
+    let s1 = save(&root, "s1");
+    write(&root, "ghost.txt", "only in s2");
+    write(&root, "sub/ghost2.txt", "only in s2");
+    save(&root, "s2");
+    write(&root, "untracked.txt", "mine");
+    write(&root, "sub/untracked2.txt", "mine too");
+    write(&root, "noise.log", "ignored");
+
+    // Restore drops the tracked files the target lacks and nothing else.
+    let out = restore_with(&root, &s1, Strat::Delta);
+    assert!(matches!(
+        out,
+        Outcome::Restored {
+            ghosts_removed: 2,
+            ..
+        }
+    ));
+    assert!(!root.join("ghost.txt").exists());
+    assert!(!root.join("sub/ghost2.txt").exists());
+    for keep in ["untracked.txt", "sub/untracked2.txt", "noise.log"] {
+        assert!(root.join(keep).exists(), "{keep} was deleted by restore");
+    }
+
+    // The same through undo, which hands its own scan to the restore.
+    write(&root, "late.txt", "only in s3");
+    save(&root, "s3");
+    // Undo refuses a tree with untracked files, so only the ignored one is
+    // left to survive it.
+    with_write(&root, commands::undo::run).unwrap();
+    assert!(!root.join("late.txt").exists());
+    assert!(
+        root.join("noise.log").exists(),
+        "noise.log was deleted by undo"
+    );
+}
+
+#[test]
 fn force_overwrites_a_dirty_file_unchanged_between_the_trees() {
     let (_tmp, root) = setup();
     write(&root, "keep.txt", "original");

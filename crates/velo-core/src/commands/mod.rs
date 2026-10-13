@@ -718,6 +718,11 @@ pub(crate) struct DirtyScan {
     pub status: HashMap<String, FileStatus>,
     /// Current content hash per `New`/`Modified` path.
     pub hashes: HashMap<String, String>,
+    /// Mode of every file the walk saw, tracked or not. A restore reads it
+    /// instead of stat-ing each path again, and treats its key set as the
+    /// tracked files on disk (the walk skips ignored and out-of-scope paths),
+    /// which is what ghost removal needs without a second directory walk.
+    pub modes: HashMap<String, i64>,
 }
 
 /// One path as the joined query sees it: its hash in the snapshot (if it is
@@ -731,6 +736,7 @@ struct Joined {
 pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     let mut dirty = HashMap::new();
     let mut hashes = HashMap::new();
+    let mut modes = HashMap::new();
     let root = repo.root();
     let conn = repo.conn();
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
@@ -775,7 +781,7 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
 
     // ── 4. Parallel hash (cache-aware) ────────────────────────────────────────
     // Returns (rel_path, current_hash, mtime_ns, size, was_cache_miss)
-    let results: Vec<(String, String, i64, i64, bool)> = entries
+    let results: Vec<(String, String, i64, i64, bool, i64)> = entries
         .into_par_iter()
         .filter_map(|e| {
             // Skip paths that aren't under root or aren't valid UTF-8 rather
@@ -791,12 +797,12 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
             } else {
                 (crate::storage::hash_for(&e.path, e.mode), true)
             };
-            Some((rel, hash, e.mtime_ns, e.size, miss))
+            Some((rel, hash, e.mtime_ns, e.size, miss, e.mode))
         })
         .collect();
 
     // ── 5. Batch-write cache misses back to DB ────────────────────────────────
-    let misses: Vec<_> = results.iter().filter(|(_, _, _, _, miss)| *miss).collect();
+    let misses: Vec<_> = results.iter().filter(|r| r.4).collect();
 
     if !misses.is_empty() {
         if let Ok(tx) = conn.unchecked_transaction() {
@@ -804,7 +810,7 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
                 "INSERT OR REPLACE INTO index_cache (path, mtime_ns, size, hash)
                  VALUES (?, ?, ?, ?)",
             ) {
-                for (rel, hash, mtime, size, _) in &misses {
+                for (rel, hash, mtime, size, _, _) in &misses {
                     let _ = stmt.execute(rusqlite::params![rel, mtime, size, hash]);
                 }
             }
@@ -813,7 +819,8 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     }
 
     // ── 6. Compare hashes against snapshot ───────────────────────────────────
-    for (rel, hash, _, _, _) in results {
+    for (rel, hash, _, _, _, mode) in results {
+        modes.insert(rel.clone(), mode);
         match joined.remove(&rel).and_then(|j| j.snap) {
             Some(snap_hash) => {
                 if snap_hash != hash {
@@ -839,6 +846,7 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     DirtyScan {
         status: dirty,
         hashes,
+        modes,
     }
 }
 

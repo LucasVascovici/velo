@@ -13,7 +13,7 @@ use rayon::prelude::*;
 use rusqlite::params;
 
 use crate::commands::require_working_tree;
-use crate::commands::{get_dirty_files, get_tracked_files, remove_empty_parents, FileStatus};
+use crate::commands::{dirty_scan, remove_empty_parents, DirtyScan};
 use crate::error::{RefKind, Result, VeloError};
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard};
 use crate::storage;
@@ -100,7 +100,7 @@ pub(crate) fn run_with(
     snapshot: &SnapshotId,
     options: Options<'_>,
     strategy: Strategy,
-    dirty: Option<HashMap<String, FileStatus>>,
+    scan: Option<DirtyScan>,
 ) -> Result<Outcome> {
     require_working_tree(guard.repo(), "restore")?;
     let Options {
@@ -121,7 +121,11 @@ pub(crate) fn run_with(
     let partial = !paths.is_empty();
 
     // One scan serves the already-there check, the dirty check and the delta.
-    let dirty = dirty.unwrap_or_else(|| get_dirty_files(guard.repo()));
+    let DirtyScan {
+        status: dirty,
+        modes: walked,
+        ..
+    } = scan.unwrap_or_else(|| dirty_scan(guard.repo()));
 
     // Nothing to do when a full restore targets where we already are.
     if !partial {
@@ -186,7 +190,9 @@ pub(crate) fn run_with(
                 !(same_in_source
                     && !dirty.contains_key(rel)
                     && mode_matches(
-                        storage::capture_mode(&root.join(crate::db::db_to_path(rel))),
+                        walked.get(rel).copied().unwrap_or_else(|| {
+                            storage::capture_mode(&root.join(crate::db::db_to_path(rel)))
+                        }),
                         *mode,
                     ))
             })
@@ -197,7 +203,7 @@ pub(crate) fn run_with(
     let ghosts_removed = if partial {
         0
     } else {
-        remove_ghosts(root, guard.repo().scope(), conn, &snapshot_files)?
+        remove_ghosts(root, conn, &snapshot_files, &walked)?
     };
 
     {
@@ -269,35 +275,25 @@ fn mode_matches(on_disk: i64, target: i64) -> bool {
 /// files; Velo matches that.
 fn remove_ghosts(
     root: &Path,
-    scope: &crate::Scope,
     conn: &rusqlite::Connection,
     target: &[(String, String, i64)],
+    walked: &HashMap<String, i64>,
 ) -> Result<usize> {
     let source_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let source_set: HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
-        let set = stmt
-            .query_map([source_hash.trim()], |r| r.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .collect();
-        set
-    };
     let target_set: HashSet<&str> = target.iter().map(|(p, _, _)| p.as_str()).collect();
-
-    let ghosts: Vec<PathBuf> = get_tracked_files(root, scope)
-        .into_iter()
-        .filter(|p| {
-            let Some(rel) = p
-                .strip_prefix(root)
-                .ok()
-                .and_then(|r| r.to_str())
-                .map(crate::db::normalise)
-            else {
-                return false;
-            };
-            source_set.contains(&rel) && !target_set.contains(rel.as_str())
-        })
+    // The candidates come from the database (tracked at the left tree, absent
+    // from the target) and are then kept only if the dirty scan's walk saw them
+    // on disk. That walk skips ignored and out-of-scope paths exactly as the
+    // tracked-file walk this replaces did, so an ignored or untracked file is
+    // still never a ghost, and no second directory walk is paid for.
+    let mut stmt = conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
+    let ghosts: Vec<PathBuf> = stmt
+        .query_map([source_hash.trim()], |r| r.get::<_, String>(0))?
+        .filter_map(|r| r.ok())
+        .filter(|rel| walked.contains_key(rel) && !target_set.contains(rel.as_str()))
+        .map(|rel| root.join(crate::db::db_to_path(&rel)))
         .collect();
+    drop(stmt);
 
     if ghosts.is_empty() {
         return Ok(0);
