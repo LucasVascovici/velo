@@ -113,7 +113,7 @@ fn merge_of_an_absent_ref_refuses_then_works_after_fetch() {
     assert!(!copy.join(".velo/MERGE_HEAD").exists());
 
     fetch(&copy);
-    with_write(&copy, |g| {
+    let outcome = with_write(&copy, |g| {
         merge::run(
             g,
             merge::Mode::Bring {
@@ -122,6 +122,10 @@ fn merge_of_an_absent_ref_refuses_then_works_after_fetch() {
         )
     })
     .unwrap();
+    assert!(
+        matches!(outcome, merge::Outcome::Merged(ref tw) if tw.ancestor.is_some()),
+        "{outcome:?}"
+    );
     assert!(copy.join(".velo/MERGE_HEAD").exists());
     save(&copy, "other.txt", "other\n", "merge");
     push(&copy).unwrap();
