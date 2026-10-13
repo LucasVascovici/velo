@@ -12195,3 +12195,6 @@ mod fast_forward_history;
 
 #[cfg(test)]
 mod fetch_after_undo;
+
+#[cfg(test)]
+mod fsck_duplicate_rows;

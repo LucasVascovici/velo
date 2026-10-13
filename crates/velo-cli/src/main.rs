@@ -2492,6 +2492,12 @@ fn run(cli: Cli) -> Result<Exit> {
             // Corruption must be visible to scripts, so it sets the exit code.
             // Cruft alone does not — it is cleanable, not damage.
             if !report.is_healthy() {
+                if report.problems.iter().all(|p| p.is_remote_tracking()) {
+                    return Err(VeloError::invalid(format!(
+                        "{} problem(s), all in remote-tracking history (remotes/\u{2026}); your own branches are intact \u{2014} run velo fetch to refresh",
+                        report.problems.len()
+                    )));
+                }
                 return Err(VeloError::corrupt(format!(
                     "{} integrity problem(s) found",
                     report.problems.len()

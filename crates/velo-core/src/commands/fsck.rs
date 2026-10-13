@@ -85,6 +85,14 @@ pub enum Problem {
     RenameOnMissingSnapshot { snapshot: String },
 }
 
+impl Problem {
+    /// True for an id mismatch on a `remotes/...` snapshot: a copy a fetch
+    /// brought in, which a re-fetch refreshes, not damage to the user's work.
+    pub fn is_remote_tracking(&self) -> bool {
+        matches!(self, Problem::IdMismatch { branch, .. } if branch.starts_with("remotes/"))
+    }
+}
+
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -152,8 +160,16 @@ impl fmt::Display for Problem {
                 recomputed,
             } => write!(
                 f,
-                "snapshot {} (\"{}\", branch {}) does not match its content (recomputed {})",
-                snapshot, message, branch, recomputed
+                "snapshot {} (\"{}\", branch {}) does not match its content (recomputed {}){}",
+                snapshot,
+                message,
+                branch,
+                recomputed,
+                if self.is_remote_tracking() {
+                    " \u{2014} a remote-tracking copy from a fetch, not your own work; re-fetch to refresh"
+                } else {
+                    ""
+                }
             ),
             Problem::DanglingPosition { hash } => {
                 write!(f, "PARENT points to {} which does not exist", hash)
@@ -214,6 +230,10 @@ pub enum Cruft {
     OrphanRemoteRefs(usize),
     /// Chunk files no object's manifest names. Harmless; `gc` collects them too.
     UnreferencedChunks(usize),
+    /// `file_map` rows that exactly repeat another row of the same snapshot
+    /// (a 5.1.1 fetch re-imported an undone snapshot). The id check ignores
+    /// them; `--repair` removes the extras.
+    DuplicateFileMapRows(usize),
 }
 
 impl Cruft {
@@ -236,6 +256,10 @@ impl Cruft {
             Cruft::UnreferencedChunks(n) => {
                 format!("{} chunk file(s) no object references", n)
             }
+            Cruft::DuplicateFileMapRows(n) => format!(
+                "{} duplicate tree row(s) (a fetch re-imported an undone snapshot)",
+                n
+            ),
         }
     }
 
@@ -252,6 +276,7 @@ impl Cruft {
                 format!("pruned {} remote-tracking ref(s) for removed remote(s)", n)
             }
             Cruft::UnreferencedChunks(n) => format!("removed {} unreferenced chunk file(s)", n),
+            Cruft::DuplicateFileMapRows(n) => format!("removed {} duplicate tree row(s)", n),
         }
     }
 }
@@ -643,7 +668,8 @@ fn check_snapshots(
 
 /// Load a snapshot's tree (path, object hash, mode) for id verification.
 fn load_tree(conn: &rusqlite::Connection, snap: &str) -> Result<Vec<(String, String, i64)>> {
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+    let mut stmt =
+        conn.prepare("SELECT DISTINCT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let tree = stmt
         .query_map([snap], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
         .filter_map(|r| r.ok())
@@ -794,6 +820,16 @@ fn find_cruft(conn: &rusqlite::Connection, repo: &Repo) -> Vec<Cruft> {
         found.push(Cruft::OrphanRemoteRefs(orphan_remotes));
     }
 
+    let duplicates = count(
+        conn,
+        "SELECT COUNT(*) - (SELECT COUNT(*) FROM
+             (SELECT DISTINCT snapshot_hash, path, hash, mode FROM file_map))
+         FROM file_map",
+    );
+    if duplicates > 0 {
+        found.push(Cruft::DuplicateFileMapRows(duplicates));
+    }
+
     found
 }
 
@@ -851,6 +887,14 @@ fn repair_cruft(conn: &rusqlite::Connection, cruft: &[Cruft]) -> Result<()> {
             Cruft::OrphanRemoteRefs(_) => {
                 conn.execute(
                     "DELETE FROM remote_refs WHERE remote NOT IN (SELECT name FROM remotes)",
+                    [],
+                )?;
+            }
+            Cruft::DuplicateFileMapRows(_) => {
+                conn.execute(
+                    "DELETE FROM file_map WHERE rowid NOT IN
+                       (SELECT MIN(rowid) FROM file_map
+                        GROUP BY snapshot_hash, path, hash, mode)",
                     [],
                 )?;
             }

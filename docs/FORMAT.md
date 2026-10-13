@@ -168,7 +168,9 @@ A tree is the complete set of files in a snapshot — not a delta. Each entry is
 
 Storage is deduplicated at the object level: unchanged files across snapshots
 reference the same object. Trees themselves are stored row-per-entry in
-`file_map`, not as a separate hashed tree object.
+`file_map`, not as a separate hashed tree object. A snapshot has exactly one
+`file_map` row per path; `velo fsck --repair` removes exact duplicate rows (a data
+repair, not a format change).
 
 Mode semantics: the executable bit is only observable on Unix. On platforms that
 cannot observe it, an implementation must **carry the parent's mode forward**
