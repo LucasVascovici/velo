@@ -248,17 +248,34 @@ pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
     let our: Vec<&str> = session.ours.lines().collect();
     let thr: Vec<&str> = session.theirs.lines().collect();
 
-    let resolved = build_resolved_content(
-        &anc,
-        &our,
-        &thr,
-        &session.hunks,
-        session.ours.ends_with('\n'),
-    );
-    std::fs::write(
-        guard.root().join(db::db_to_path(&session.file.path)),
-        &resolved,
-    )?;
+    // Ours has no text on a modify/delete conflict; take the newline habit from
+    // whichever side does, but never turn "nothing" into a lone newline.
+    let trailing_newline = if session.ours.is_empty() {
+        session.theirs.ends_with('\n')
+    } else {
+        session.ours.ends_with('\n')
+    };
+    let mut resolved = build_resolved_content(&anc, &our, &thr, &session.hunks, false);
+    if trailing_newline && !resolved.is_empty() && !resolved.ends_with('\n') {
+        resolved.push('\n');
+    }
+    let full = guard.root().join(db::db_to_path(&session.file.path));
+    // A modify/delete conflict has an absent side; resolving to nothing on that
+    // side means the file stays deleted, not that it becomes a zero-byte file.
+    let absent = session.file.our_hash.is_empty() || session.file.their_hash.is_empty();
+    if resolved.is_empty() && absent {
+        if full.exists() {
+            std::fs::remove_file(&full)?;
+        }
+        if let Some(parent) = full.parent() {
+            crate::commands::remove_empty_parents(parent, guard.root());
+        }
+    } else {
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&full, &resolved)?;
+    }
     clear_conflict(guard, &session.file.path)
 }
 

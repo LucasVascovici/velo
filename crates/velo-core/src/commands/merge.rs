@@ -336,15 +336,21 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
 
     let ancestor_hash = lowest_common_ancestor(conn, &current_hash, &target_hash);
 
-    let applied = apply::reconcile_tree(
-        guard,
-        &match &ancestor_hash {
-            Some(h) => apply::load_tree(conn, h)?,
-            None => apply::Tree::new(),
-        },
-        &apply::load_tree(conn, &current_hash)?,
-        &apply::load_tree(conn, &target_hash)?,
+    let mut base_tree = match &ancestor_hash {
+        Some(h) => apply::load_tree(conn, h)?,
+        None => apply::Tree::new(),
+    };
+    let our_tree = apply::load_tree(conn, &current_hash)?;
+    let mut their_tree = apply::load_tree(conn, &target_hash)?;
+    crate::commands::moves::follow_moves(
+        conn,
+        ancestor_hash.as_deref(),
+        &current_hash,
+        &mut base_tree,
+        &our_tree,
+        &mut their_tree,
     )?;
+    let applied = apply::reconcile_tree(guard, &base_tree, &our_tree, &their_tree)?;
 
     let result = ThreeWay {
         source: target_branch.to_string(),
@@ -539,9 +545,17 @@ pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<Merge
     let objects = repo.objects();
 
     let base = merge_base(repo, ours, theirs)?;
-    let base_tree = apply::load_tree(conn, base.as_ref().map_or("", |b| b.as_str()))?;
+    let mut base_tree = apply::load_tree(conn, base.as_ref().map_or("", |b| b.as_str()))?;
     let our_tree = apply::load_tree(conn, ours.as_str())?;
-    let their_tree = apply::load_tree(conn, theirs.as_str())?;
+    let mut their_tree = apply::load_tree(conn, theirs.as_str())?;
+    crate::commands::moves::follow_moves(
+        conn,
+        base.as_ref().map(|b| b.as_str()),
+        ours.as_str(),
+        &mut base_tree,
+        &our_tree,
+        &mut their_tree,
+    )?;
 
     // Every path any side knows about, sorted, so a plan is the same on every
     // run rather than the hasher's order.

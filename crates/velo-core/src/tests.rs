@@ -12185,3 +12185,6 @@ mod remote_ref_lookup;
 
 #[cfg(test)]
 mod switch_reposition;
+
+#[cfg(test)]
+mod merge_moves;

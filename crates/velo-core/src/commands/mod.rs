@@ -13,6 +13,7 @@ pub mod history;
 pub mod import;
 pub mod init;
 pub mod merge;
+pub(crate) mod moves;
 pub mod mv;
 pub mod paths;
 pub mod rebase;
@@ -952,12 +953,10 @@ pub(crate) fn classify(anc: FileRef, our: FileRef, thr: FileRef) -> Classified {
         return Done(Reconcile::KeepOurs); // theirs deleted, ours modified
     }
     if our.0.is_empty() {
-        // ours deleted, theirs modified — restore theirs
-        return Done(Reconcile::TakeTheirs {
-            hash: thr.0.to_string(),
-            mode: thr.1,
-            is_new: false,
-        });
+        // Ours deleted, theirs modified: a modify/delete conflict, not a silent
+        // resurrection. A file we moved is remapped before this point (see
+        // `moves::follow_moves`), so what reaches here has no rename edge.
+        return Done(Reconcile::Conflict);
     }
     // Same content, differing mode only → take theirs' mode (no content merge).
     if our.0 == thr.0 {
