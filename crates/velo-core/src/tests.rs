@@ -43,7 +43,7 @@ mod tests {
             vec![resolve::get_conflict(&repo, file.expect("file or --all"))?]
         };
         for cf in &targets {
-            resolve::take_side(&guard, cf, side)?;
+            resolve::take_side(&guard, cf, side, resolve::OnEdits::Refuse)?;
         }
         Ok(())
     }
@@ -4062,7 +4062,9 @@ mod tests {
             pulled,
             Pulled::Diverged {
                 branch: "main".into(),
-                remote: "origin".into()
+                remote: "origin".into(),
+                ahead: 1,
+                behind: 1,
             }
         );
         // Our branch is left where it was; the remote's history waits under a
@@ -12064,7 +12066,10 @@ mod repo_api {
     #[test]
     fn errors_are_classifiable_without_string_matching() {
         // The point of typed errors: consumers branch on state.
-        let locked = Error::Locked { held_by: Some(42) };
+        let locked = Error::Locked {
+            held_by: Some(42),
+            holder: None,
+        };
         assert!(locked.is_transient());
         assert!(!locked.is_reconcile_needed());
 
@@ -12089,6 +12094,9 @@ mod meta_query;
 mod change_events;
 
 #[cfg(test)]
+mod sync_outcomes;
+
+#[cfg(test)]
 mod chunked_objects;
 
 #[cfg(test)]
@@ -12102,3 +12110,54 @@ mod database_objects;
 
 #[cfg(test)]
 mod driver_units;
+
+#[cfg(test)]
+mod lock_holder;
+
+#[cfg(test)]
+mod save_merge_safety;
+
+#[cfg(test)]
+mod restore_delta;
+
+#[cfg(test)]
+mod stash_fixes;
+
+#[cfg(test)]
+mod historical_binary;
+
+#[cfg(test)]
+mod grep_parallel;
+
+#[cfg(test)]
+mod resolve_edits;
+
+#[cfg(test)]
+mod resolve_noninteractive;
+
+#[cfg(test)]
+mod diff_shortcuts;
+
+#[cfg(test)]
+mod import_parallel;
+
+#[cfg(test)]
+mod metadata_growth;
+
+#[cfg(test)]
+mod save_hash_reuse;
+
+#[cfg(test)]
+mod apply_parallel;
+
+#[cfg(test)]
+mod resolve_revalidate;
+
+#[cfg(test)]
+mod redo_peek;
+
+#[cfg(test)]
+mod gc_dry_run;
+
+#[cfg(test)]
+mod published_history;

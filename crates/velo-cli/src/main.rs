@@ -4,6 +4,9 @@ use clap::{builder::styling, Parser, Subcommand};
 // layer — argument parsing, rendering, and exit codes.
 mod author;
 mod diffargs;
+#[cfg(test)]
+mod help_check;
+mod lockwait;
 mod render;
 
 use std::path::{Path, PathBuf};
@@ -19,6 +22,7 @@ use velo_core::commands::resolve::TakeOption;
 enum TakeArg {
     Ours,
     Theirs,
+    Both,
 }
 
 impl From<TakeArg> for TakeOption {
@@ -26,6 +30,7 @@ impl From<TakeArg> for TakeOption {
         match a {
             TakeArg::Ours => TakeOption::Ours,
             TakeArg::Theirs => TakeOption::Theirs,
+            TakeArg::Both => TakeOption::Both,
         }
     }
 }
@@ -59,7 +64,7 @@ and replaces what it gets wrong (staging area, cryptic commands, data loss).
 
 Key differences from Git
   · No staging area — what's on disk is what gets saved
-  · Conflict sidecars — your code stays valid during a merge
+  · Conflicts as data — your files stay valid during a merge
   · Undo/redo — remove or restore snapshots with one command
   · Stash shelves — named, not cryptic stash@{2} indices
   · True 3-way merges — no false conflicts on one-sided changes
@@ -69,7 +74,15 @@ Quick start
   velo save \"Initial commit\"
   velo status
   velo history",
-    after_help = "Run `velo help <COMMAND>` for detailed usage of any command.",
+    after_help = "Run `velo help <COMMAND>` for detailed usage of any command.
+
+EXIT CODES
+  0  success (including nothing to save, already up to date, nothing to pull)
+  1  error
+  2  command-line usage error
+  3  conflicts left to resolve (merge, cherry-pick or rebase stopped)
+  4  histories diverged (pull, or a push the remote refused)
+  5  repository locked by another velo process",
 )]
 struct Cli {
     #[command(subcommand)]
@@ -216,6 +229,7 @@ NOTES
     #[command(
         verbatim_doc_comment,
         name = "history",
+        alias = "log",
         after_help = "\
 NOTES
     · --file filters by any path prefix, so --file src/ matches all
@@ -230,10 +244,11 @@ NOTES
         /// Maximum number of snapshots to display.
         #[arg(
             short,
+            short_alias = 'n',
             long,
             default_value_t = 20,
             value_name = "N",
-            help = "Maximum number of entries to show [default: 20]"
+            help = "Maximum number of entries to show"
         )]
         limit: usize,
 
@@ -340,7 +355,7 @@ NOTES
     · Accepts a full hash, unique prefix, tag, branch, or remote ref (origin/main).
     · Binary files are detected automatically and their diffs are omitted.
     · Diff output uses unified format with 3 lines of context per hunk.
-    · To inspect merge conflicts, use `velo resolve <file>` (interactive TUI)."
+    · To inspect merge conflicts, use `velo conflicts <file>`."
     )]
     Diff {
         /// Snapshot(s) to compare, or a single file. At most two.
@@ -383,8 +398,8 @@ NOTES
     ///
     /// Uses 3-way merge logic: the snapshot's parent acts as the
     /// common ancestor.  Changes that only exist in the cherry-picked
-    /// snapshot are applied cleanly.  True conflicts produce .conflict
-    /// sidecars just like `velo merge`.
+    /// snapshot are applied cleanly.  True conflicts are recorded for
+    /// `velo resolve`, just like `velo merge`.
     ///
     /// When there are no conflicts, the result is auto-saved as a new
     /// snapshot so the command is self-contained.
@@ -505,7 +520,7 @@ NOTES
     /// ancestor (LCA) of the two branch tips.  A file modified only
     /// on one side since the ancestor is never flagged as a conflict.
     ///
-    /// Conflicts are written as .conflict sidecars — your code stays
+    /// Conflicts are recorded in the repository and your files are left
     /// valid and runnable during the resolution process.
     ///
     /// Examples
@@ -516,9 +531,9 @@ NOTES
         after_help = "\
 CONFLICT RESOLUTION WORKFLOW
     1. velo merge <branch>
-    2. velo diff <file> --conflict    # inspect each conflict
-    3. velo resolve <file> --take theirs|ours
-       — or edit the file manually, then `velo resolve <file>`
+    2. velo conflicts <file>          # see both sides of each conflict
+    3. velo resolve <file> --take ours|theirs|both
+       — or edit the file, then `velo resolve --mark <file>`
     4. velo save \"Merge <branch>\"
 
 NOTES
@@ -543,15 +558,16 @@ NOTES
 
     /// Resolve a merge conflict.
     ///
-    /// Conflict files (<file>.conflict) are created during a merge when
-    /// both branches modified the same file since their common ancestor.
-    /// Your version is kept as <file>; the incoming version is in
-    /// <file>.conflict.
+    /// A merge records a conflict when both branches modified the same
+    /// lines since their common ancestor. Your version stays in <file>,
+    /// valid and unmarked; see both sides with `velo conflicts <file>`.
     ///
     /// Examples
     ///   velo resolve src/auth.py --take theirs    # accept incoming version
     ///   velo resolve src/auth.py --take ours      # keep current version
-    ///   velo resolve src/auth.py                  # mark manually edited file as resolved
+    ///   velo resolve src/auth.py --take both      # ours then theirs, per hunk
+    ///   velo resolve --mark src/auth.py           # accept your own edit of the file
+    ///   velo resolve src/auth.py                  # step through each conflict hunk (needs a terminal)
     ///   velo resolve --all --take theirs          # resolve all conflicts at once
     #[command(
         verbatim_doc_comment,
@@ -573,13 +589,50 @@ NOTES
             long,
             value_enum,
             value_name = "VERSION",
-            help = "Which version to keep: ours or theirs"
+            help = "Which version to keep: ours, theirs, or both (ours then theirs, per hunk)"
         )]
         take: Option<TakeArg>,
 
         /// Resolve all outstanding conflict files at once.
         #[arg(long, help = "Resolve all conflicts (requires --take)")]
         all: bool,
+
+        /// Replace hand edits to a conflicted file when taking a side.
+        #[arg(
+            long,
+            requires = "take",
+            help = "Replace hand edits when taking a side"
+        )]
+        force: bool,
+
+        /// Accept your hand edit of the file as the resolution.
+        #[arg(
+            long,
+            requires = "file",
+            conflicts_with_all = ["take", "all"],
+            help = "Accept your edit of the file as the resolution"
+        )]
+        mark: bool,
+    },
+
+    /// Show both sides of each conflicting hunk.
+    ///
+    /// Read-only. Prints, for each conflicted file, every hunk with your
+    /// side, the incoming side and the lines around it.
+    ///
+    /// Examples
+    ///   velo conflicts                # every conflicted file
+    ///   velo conflicts src/auth.py    # one file
+    ///   velo conflicts --json         # as data, for scripts
+    #[command(verbatim_doc_comment)]
+    Conflicts {
+        /// File to show (omit for all conflicted files).
+        #[arg(value_name = "FILE", help = "File to show (omit for all)")]
+        file: Option<String>,
+
+        /// Print as JSON.
+        #[arg(long, help = "Print as JSON")]
+        json: bool,
     },
 
     /// Shelve and restore dirty working-tree state.
@@ -659,9 +712,9 @@ NOTES
     /// Velo has no staging area — the disk is the snapshot — but a rename is
     /// the one thing the disk cannot express: afterwards the tree looks
     /// exactly as it would if the old file had been deleted and a new one
-    /// written.  Recording it here is what lets `velo blame` follow the file
+    /// written.  Recording it here is what lets `velo blame <file>` follow the file
     /// across the move instead of crediting every line to it, and what lets
-    /// `velo history --file` reach past it.
+    /// `velo history --file <file>` reach past it.
     ///
     /// Using `mv` from your shell still works; the move simply reads as a
     /// delete and an add, because by then nothing knows any better.
@@ -669,7 +722,10 @@ NOTES
     /// Examples
     ///   velo mv notes.txt docs/notes.md
     ///   velo save "move the notes"
-    #[command(after_help = "The rename is recorded on the next 'velo save'.")]
+    #[command(
+        verbatim_doc_comment,
+        after_help = "The rename is recorded on the next 'velo save'."
+    )]
     Mv {
         /// Path to move.
         #[arg(value_name = "FROM")]
@@ -769,7 +825,7 @@ NOTES
             long = "context",
             default_value_t = 2,
             value_name = "N",
-            help = "Lines of context around each match [default: 2]"
+            help = "Lines of context around each match"
         )]
         context: usize,
     },
@@ -847,6 +903,7 @@ NOTES
     ///   velo gc                   # default: keep undo history for 30 days
     ///   velo gc --keep-days 0     # purge everything immediately
     ///   velo gc --keep-days 90    # keep undo history for 90 days
+    ///   velo gc --dry-run         # report what would be removed
     #[command(
         verbatim_doc_comment,
         after_help = "\
@@ -861,14 +918,17 @@ NOTES
     · The operation is idempotent — running it twice is harmless."
     )]
     Gc {
-        /// Keep undone snapshot history for this many days (default: 30).
+        /// Keep undone snapshot history for this many days.
         #[arg(
             long,
             default_value_t = 30,
             value_name = "DAYS",
-            help = "Retain undo history for N days [default: 30]"
+            help = "Retain undo history for N days"
         )]
         keep_days: u32,
+        /// Report what would be collected and remove nothing.
+        #[arg(long, help = "Report what would be collected, remove nothing")]
+        dry_run: bool,
     },
 
     /// Verify repository integrity (read-only).
@@ -979,7 +1039,7 @@ NOTES
         path: String,
     },
 
-    /// Serve a repository over HTTP, for `velo clone/push/pull http://...`.
+    /// Serve a repository over HTTP, for `velo clone http://...`, `velo push` and `velo pull`.
     ///
     /// A reference server: it handles one request at a time and has NO
     /// authentication and no TLS. Anyone who can reach the port can read
@@ -1118,6 +1178,20 @@ enum StashSub {
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
+/// A nudge for a command people type out of git habit, keyed on the first
+/// argument that is not a flag.
+fn git_habit_hint(args: impl Iterator<Item = String>) -> Option<&'static str> {
+    let word = args.into_iter().find(|a| !a.starts_with('-'))?;
+    Some(match word.as_str() {
+        "history-all" => "hint: velo history --all",
+        "diff-worktree" => "hint: velo diff",
+        "commit" => "hint: velo save \"<message>\"",
+        "add" => "hint: velo has no staging area — velo save records every change",
+        "checkout" => "hint: velo switch <branch>, or velo restore <snapshot>",
+        _ => return None,
+    })
+}
+
 fn main() {
     #[cfg(windows)]
     unsafe {
@@ -1128,17 +1202,67 @@ fn main() {
         SetConsoleOutputCP(65001);
     }
 
-    let cli = Cli::parse();
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(e) => {
+            let wrong_subcommand = e.kind() == clap::error::ErrorKind::InvalidSubcommand;
+            let _ = e.print();
+            if wrong_subcommand {
+                if let Some(hint) = git_habit_hint(std::env::args().skip(1)) {
+                    eprintln!("{hint}");
+                }
+            }
+            std::process::exit(e.exit_code());
+        }
+    };
     // The force-flag suggestion depends on which command was run, so it is
     // captured before `cli.command` is consumed.
     let force_form = force_form(&cli.command);
 
-    if let Err(e) = run(cli) {
-        eprintln!("{} {}", console::style("error:").red().bold(), e);
-        if let Some(hint) = hint_for(&e, force_form) {
-            eprintln!("{}", hint);
+    let code = match run(cli) {
+        Ok(exit) => exit.code(),
+        Err(e) => {
+            eprintln!("{} {}", console::style("error:").red().bold(), e);
+            if let Some(hint) = hint_for(&e, force_form) {
+                eprintln!("{}", hint);
+            }
+            error_code(&e)
         }
-        std::process::exit(1);
+    };
+    if code != 0 {
+        std::process::exit(code);
+    }
+}
+
+/// How a command that ran to the end finished. Anything other than `Success`
+/// is not an error — the output has already been printed — but a script needs
+/// to tell it apart from a clean run.
+enum Exit {
+    Success,
+    /// A merge, cherry-pick or rebase stopped on conflicts.
+    Conflicts,
+    /// Local and remote histories diverged.
+    Diverged,
+}
+
+impl Exit {
+    fn code(&self) -> i32 {
+        match self {
+            Exit::Success => 0,
+            Exit::Conflicts => 3,
+            Exit::Diverged => 4,
+        }
+    }
+}
+
+/// The CLI's mapping from a typed error to an exit code; documented in the
+/// EXIT CODES block of `velo --help`.
+fn error_code(e: &VeloError) -> i32 {
+    match e {
+        VeloError::Conflicts { .. } => 3,
+        VeloError::Diverged { .. } | VeloError::NotFastForward { .. } => 4,
+        VeloError::Locked { .. } => 5,
+        _ => 1,
     }
 }
 
@@ -1204,6 +1328,25 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             suggest(&mut lines, &options);
         }
+        VeloError::WouldOverwriteEdits { paths } => {
+            list_paths(&mut lines, paths);
+            lines.push("  Taking a side would replace those edits:".into());
+            let file = paths
+                .first()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "<file>".into());
+            let force = format!("velo resolve {} --take <side> --force", file);
+            let diff = format!("velo diff {}", file);
+            let mark = format!("velo resolve --mark {}", file);
+            suggest(
+                &mut lines,
+                &[
+                    (&mark, "keep your edit as the resolution", Tone::Do),
+                    (&diff, "see your edits", Tone::Do),
+                    (&force, "replace them", Tone::Destructive),
+                ],
+            );
+        }
         VeloError::FormatTooOld { found, .. } => {
             lines.push(format!(
                 "  This repository was written by Velo before format v2 (found v{}).",
@@ -1246,27 +1389,24 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 console::style(branch).cyan(),
                 console::style(remote).cyan()
             ));
-            suggest(
-                &mut lines,
-                &[
-                    (
-                        &format!("velo pull {}", remote),
-                        "bring their commits in first",
-                        Tone::Do,
-                    ),
-                    (
-                        &format!("velo push {}", remote),
-                        "then send yours",
-                        Tone::Alt,
-                    ),
-                ],
-            );
+            let recipe = render::sync::recipe(remote, branch);
+            let steps: Vec<(&str, &str, Tone)> = recipe
+                .iter()
+                .map(|(cmd, why)| (cmd.as_str(), *why, Tone::Do))
+                .collect();
+            suggest(&mut lines, &steps);
         }
         VeloError::Conflicts { paths } => {
             list_paths(&mut lines, paths);
             suggest(
                 &mut lines,
                 &[
+                    ("velo conflicts <file>", "see both sides", Tone::Do),
+                    (
+                        "velo resolve --mark <file>",
+                        "after editing it yourself",
+                        Tone::Alt,
+                    ),
                     (
                         "velo resolve <file>",
                         "walk through them hunk by hunk",
@@ -1280,6 +1420,26 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 ],
             );
         }
+        VeloError::Locked { holder, .. } => match holder {
+            Some(h) => {
+                let live = match lockwait::pid_alive(h.pid) {
+                    Some(true) => {
+                        "; that process is still running \u{2014} wait for it to finish".to_string()
+                    }
+                    Some(false) => format!(
+                        "; process {} is no longer running, so that record is stale \u{2014} retry",
+                        h.pid
+                    ),
+                    None => String::new(),
+                };
+                lines.push(format!(
+                    "  started {} ago{}",
+                    lockwait::age(h.started_at_ms),
+                    live
+                ));
+            }
+            None => lines.push("  another velo process is writing; retry in a moment".into()),
+        },
         _ => return None,
     }
     Some(lines.join(
@@ -1362,15 +1522,15 @@ fn not_a_repo_hint(cmd: &Commands) -> VeloError {
 /// `velo-tui` provides the interactive navigator. This wiring lives in the CLI so
 /// neither of those crates needs to know about the other.
 fn run_resolve(
-    guard: &velo_core::WriteGuard,
+    repo: &velo_core::Repo,
+    guard: Option<&velo_core::WriteGuard>,
     file: Option<&str>,
     take: Option<TakeOption>,
     all: bool,
+    force: bool,
 ) -> Result<()> {
     use console::style;
     use velo_core::commands::resolve;
-
-    let repo = guard.repo();
 
     if !resolve::merge_active(repo) {
         if all {
@@ -1401,24 +1561,116 @@ fn run_resolve(
 
     match take {
         Some(side) => {
-            for cf in &targets {
-                resolve::take_side(guard, cf, side)?;
+            let on_edits = if force {
+                resolve::OnEdits::Replace
+            } else {
+                resolve::OnEdits::Refuse
+            };
+            let guard = guard.expect("--take must hold the write guard");
+            let taken = resolve::take_all(guard, &targets, side, on_edits)?;
+            let root = guard.root();
+            let branch = std::fs::read_to_string(root.join(".velo/HEAD"))
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let source = std::fs::read_to_string(root.join(".velo/MERGE_HEAD"))
+                .ok()
+                .and_then(|s| s.trim().split_once(':').map(|(_, r)| r.trim().to_string()))
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| "incoming".to_string());
+            for t in &taken {
+                let (meaning, lost) = match t.side {
+                    TakeOption::Ours => {
+                        (format!("your last saved snapshot on {}", branch), "theirs")
+                    }
+                    TakeOption::Both => (format!("ours then {}", source), "neither side"),
+                    _ => (source.clone(), "ours"),
+                };
                 println!(
-                    "{} Resolved '{}' (took {}).",
+                    "{} Resolved '{}' — took {} ({})",
                     style("✔").green(),
-                    cf.path,
-                    side.as_str()
+                    t.path,
+                    t.side.as_str(),
+                    meaning
                 );
+                if t.dropped_lines > 0 {
+                    println!("  discarded {} line(s) from {}", t.dropped_lines, lost);
+                }
+                if t.replaced_edit_lines > 0 {
+                    println!(
+                        "  {} replaced your unsaved edits in {} ({} lines)",
+                        style("!").yellow().bold(),
+                        t.path,
+                        t.replaced_edit_lines
+                    );
+                }
             }
         }
         None => {
+            // The TUI needs a real terminal at both ends; without one it
+            // would hang on a key read. The check is the CLI's, so core stays
+            // free of environment reads. The session takes the write lock
+            // itself, one decision at a time.
+            use std::io::IsTerminal;
+            if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+                return Err(VeloError::invalid(
+                    "interactive resolve needs a terminal; use --take ours|theirs|both, \
+                     or edit the file and run velo resolve --mark <file>",
+                ));
+            }
             for cf in targets {
-                velo_tui::resolve_interactive(guard, cf)?;
+                velo_tui::resolve_interactive(repo, cf)?;
             }
         }
     }
 
     report_remaining_conflicts(repo)
+}
+
+/// `velo resolve --mark <file>`: accept the hand-edited file as the resolution.
+fn run_mark(guard: &velo_core::WriteGuard, file: &str) -> Result<()> {
+    use console::style;
+    use velo_core::commands::resolve;
+
+    let repo = guard.repo();
+    if !resolve::merge_active(repo) {
+        return Err(VeloError::invalid(
+            "No merge in progress. Nothing to resolve.",
+        ));
+    }
+    let cf = resolve::get_conflict(repo, file)?;
+    let m = resolve::mark(guard, &cf)?;
+    println!(
+        "{} Accepted your edit of '{}' ({} lines; {} differ from ours, {} from theirs).",
+        style("✔").green(),
+        m.path,
+        m.lines,
+        m.differs_from_ours,
+        m.differs_from_theirs
+    );
+    report_remaining_conflicts(repo)
+}
+
+/// `velo conflicts`: show both sides of each hunk, as text or JSON.
+fn run_conflicts(repo: &velo_core::Repo, file: Option<&str>, json: bool) -> Result<()> {
+    use velo_core::commands::resolve;
+
+    let targets = match file {
+        Some(f) if resolve::merge_active(repo) => vec![resolve::get_conflict(repo, f)?],
+        Some(_) => Vec::new(),
+        None => resolve::list_conflicts(repo)?,
+    };
+    let source = resolve::merge_source(repo);
+    let mut sessions = Vec::with_capacity(targets.len());
+    for cf in targets {
+        sessions.push(resolve::open_session(repo, cf)?);
+    }
+    if json {
+        render::conflicts::print_json(source.as_deref(), &sessions);
+    } else {
+        render::conflicts::print_text(source.as_deref(), &sessions);
+    }
+    Ok(())
 }
 
 /// After resolving, tell the user what is left and what to do next.
@@ -1452,6 +1704,67 @@ fn report_remaining_conflicts(repo: &velo_core::Repo) -> Result<()> {
     Ok(())
 }
 
+/// Warn, on stderr, when a history-rewriting command is about to replace
+/// snapshots that a remote-tracking ref already contains.
+///
+/// Advisory only: the command proceeds either way, and any failure to work it
+/// out (no snapshots yet, an unresolvable target) silently means no warning.
+fn warn_if_rewriting_pushed(repo: &velo_core::Repo, root: &Path, cmd: &Commands) {
+    let check = || -> Option<String> {
+        let parent_of = |id: &velo_core::SnapshotId| -> Option<velo_core::SnapshotId> {
+            commands::show::run(repo, id, &[]).ok()?.parent
+        };
+        let position = std::fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+        let position = position.trim();
+        let tip = if position.is_empty() {
+            let branch = std::fs::read_to_string(root.join(".velo/HEAD")).ok()?;
+            commands::resolve_snapshot_id(repo, branch.trim()).ok()?
+        } else {
+            commands::resolve_snapshot_id(repo, position).ok()?
+        };
+        let base = match cmd {
+            Commands::Save { amend: true, .. } | Commands::Undo => parent_of(&tip),
+            Commands::Squash { count, .. } => {
+                let mut base = Some(tip.clone());
+                for _ in 0..*count {
+                    base = parent_of(&base?);
+                }
+                base
+            }
+            Commands::Rebase {
+                target: Some(spec),
+                abort: false,
+                cont: false,
+            } => Some(commands::resolve_snapshot_id(repo, spec).ok()?),
+            _ => return None,
+        };
+        commands::sync::published(repo, &tip, base.as_ref())
+            .ok()
+            .flatten()
+    };
+    if let Some(label) = check() {
+        eprintln!(
+            "warning: this rewrites snapshot(s) already pushed to {label}; anyone who pulled them will diverge from you."
+        );
+    }
+}
+
+/// Does this command hold the repo lock for its whole run?
+///
+/// Interactive `resolve` does not: a human can leave the TUI open for an hour,
+/// so it takes the lock per decision instead.
+fn needs_write_guard(cmd: &Commands) -> bool {
+    !is_read_only(cmd)
+        && !matches!(
+            cmd,
+            Commands::Resolve {
+                take: None,
+                mark: false,
+                ..
+            }
+        )
+}
+
 /// Commands that never mutate the repository — they skip the repo lock so a
 /// long-running write (e.g. `gc`) never blocks a `status` or `history`.
 fn is_read_only(cmd: &Commands) -> bool {
@@ -1463,6 +1776,7 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Show { .. }
             | Commands::Blame { .. }
             | Commands::Grep { .. }
+            | Commands::Conflicts { .. }
             | Commands::ExportGit { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
@@ -1581,7 +1895,7 @@ fn serve_http(path: &str, listen: &str) -> Result<()> {
     Ok(())
 }
 
-fn run(cli: Cli) -> Result<()> {
+fn run(cli: Cli) -> Result<Exit> {
     let current_dir = std::env::current_dir().map_err(VeloError::Io)?;
 
     // Commands that don't require (or create) an enclosing repo run first.
@@ -1590,7 +1904,7 @@ fn run(cli: Cli) -> Result<()> {
     match &cli.command {
         Commands::Init => {
             render::init::print(&commands::init::run(&current_dir)?);
-            return Ok(());
+            return Ok(Exit::Success);
         }
         Commands::Clone { url, dir } => {
             let cloned = commands::sync::clone(
@@ -1605,11 +1919,13 @@ fn run(cli: Cli) -> Result<()> {
                 },
             )?;
             render::sync::print_cloned(&cloned);
-            return Ok(());
+            return Ok(Exit::Success);
         }
-        Commands::ServeUpload { path } => return serve::upload(path),
-        Commands::ServeReceive { path } => return serve::receive(path),
-        Commands::ServeHttp { path, listen } => return serve_http(path, listen),
+        Commands::ServeUpload { path } => return serve::upload(path).map(|()| Exit::Success),
+        Commands::ServeReceive { path } => return serve::receive(path).map(|()| Exit::Success),
+        Commands::ServeHttp { path, listen } => {
+            return serve_http(path, listen).map(|()| Exit::Success)
+        }
         _ => {}
     }
 
@@ -1621,7 +1937,9 @@ fn run(cli: Cli) -> Result<()> {
     // written by a newer Velo is refused instead of half-read.
     // Long operations report through this. Inert on a non-TTY, so piped output
     // stays clean.
+    let mut exit = Exit::Success;
     let repo = velo_core::Repo::open_and_migrate(&root)?
+        .lock_label(lockwait::command_label())
         .observing(render::progress::Bar::new())
         .merging(
             velo_core::Drivers::new()
@@ -1635,10 +1953,10 @@ fn run(cli: Cli) -> Result<()> {
     // commands skip the lock so they never block on a long-running mutation.
     // The guard is held until the command returns, and is what grants write
     // access to core at all.
-    let guard = if is_read_only(&cli.command) {
-        None
+    let guard = if needs_write_guard(&cli.command) {
+        Some(lockwait::acquire(&repo)?)
     } else {
-        Some(repo.write()?)
+        None
     };
     // Mutating arms need the guard; `is_read_only` above decides which is which,
     // so a mismatch here is a programming error rather than a user-visible one.
@@ -1647,6 +1965,8 @@ fn run(cli: Cli) -> Result<()> {
             .as_ref()
             .expect("a mutating command must hold the write guard")
     };
+
+    warn_if_rewriting_pushed(&repo, &root, &cli.command);
 
     match cli.command {
         Commands::Init
@@ -1676,6 +1996,15 @@ fn run(cli: Cli) -> Result<()> {
                 .trim()
                 .to_string();
             render::save::print(&outcome, &branch, amend);
+            if matches!(outcome, commands::save::Outcome::NothingToSave) {
+                if let Some(o) = commands::redo::peek(&repo)? {
+                    println!(
+                        "  Your last velo undo removed {} \"{}\" — velo redo brings it back.",
+                        console::style(render::id::short(&o.snapshot)).yellow(),
+                        o.message
+                    );
+                }
+            }
         }
 
         Commands::Restore {
@@ -1718,6 +2047,23 @@ fn run(cli: Cli) -> Result<()> {
             };
             // Parsed here, at the argv boundary, so a malformed branch name is
             // a clear error rather than a query that quietly matches nothing.
+            // A remote-tracking branch (`origin/main`, or `remotes/origin/main`
+            // as `--all` prints it) is not a local branch, so it is shown as
+            // the ancestry of the snapshot it points at.
+            let mut from = from;
+            let mut branch = branch;
+            if let Some(b) = branch.clone() {
+                let bare = b.strip_prefix("remotes/").unwrap_or(&b).to_string();
+                let is_local = commands::branches::list(&repo)?
+                    .iter()
+                    .any(|x| x.name.as_str() == b);
+                if !is_local && bare.contains('/') {
+                    if let Ok(id) = commands::resolve_snapshot_id(&repo, &bare) {
+                        from = Some(id.to_string());
+                        branch = None;
+                    }
+                }
+            }
             let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
             let from = from
                 .map(|t| commands::resolve_snapshot_id(&repo, t.as_str()))
@@ -1767,11 +2113,12 @@ fn run(cli: Cli) -> Result<()> {
 
         Commands::CherryPick { target } => {
             let target = commands::resolve_snapshot_id(&repo, &target)?;
-            render::cherry_pick::print(&commands::cherry_pick::run(
-                write(),
-                &target,
-                author::from_env()?.as_ref(),
-            )?);
+            let outcome =
+                commands::cherry_pick::run(write(), &target, author::from_env()?.as_ref())?;
+            render::cherry_pick::print(&outcome);
+            if !outcome.applied.conflicts().is_empty() {
+                exit = Exit::Conflicts;
+            }
         }
 
         Commands::Switch { name, force } => {
@@ -1824,11 +2171,41 @@ fn run(cli: Cli) -> Result<()> {
                     ))
                 }
             };
-            render::merge::print(&commands::merge::run(write(), mode)?);
+            let outcome = commands::merge::run(write(), mode)?;
+            render::merge::print(&outcome);
+            if let commands::merge::Outcome::Merged(result) = &outcome {
+                if !result.conflicts().is_empty() {
+                    exit = Exit::Conflicts;
+                }
+            }
         }
 
-        Commands::Resolve { file, take, all } => {
-            run_resolve(write(), file.as_deref(), take.map(Into::into), all)?;
+        Commands::Resolve {
+            file,
+            take,
+            all,
+            force,
+            mark,
+        } => {
+            if mark {
+                run_mark(write(), file.as_deref().unwrap_or_default())?;
+            } else {
+                // Interactive resolve holds no guard here; the TUI takes the
+                // lock for one decision at a time.
+                let guard = if take.is_some() { Some(write()) } else { None };
+                run_resolve(
+                    &repo,
+                    guard,
+                    file.as_deref(),
+                    take.map(Into::into),
+                    all,
+                    force,
+                )?;
+            }
+        }
+
+        Commands::Conflicts { file, json } => {
+            run_conflicts(&repo, file.as_deref(), json)?;
         }
 
         Commands::Stash { sub } => match sub {
@@ -1965,18 +2342,19 @@ fn run(cli: Cli) -> Result<()> {
                     ))
                 }
             };
-            render::rebase::print(&commands::rebase::run(
-                write(),
-                mode,
-                author::from_env()?.as_ref(),
-            )?);
+            let outcome = commands::rebase::run(write(), mode, author::from_env()?.as_ref())?;
+            render::rebase::print(&outcome);
+            if matches!(outcome, commands::rebase::Outcome::Paused { .. }) {
+                exit = Exit::Conflicts;
+            }
         }
 
-        Commands::Gc { keep_days } => {
+        Commands::Gc { keep_days, dry_run } => {
             render::gc::print(&commands::gc::run(
                 write(),
                 commands::gc::Options {
                     keep_days,
+                    dry_run,
                     ..Default::default()
                 },
             )?);
@@ -2034,12 +2412,12 @@ fn run(cli: Cli) -> Result<()> {
             )?);
         }
         Commands::Pull { remote } => {
-            render::sync::print_pulled(&commands::sync::pull(
-                write(),
-                &remote,
-                &spawn_config()?,
-                Default::default(),
-            )?);
+            let pulled =
+                commands::sync::pull(write(), &remote, &spawn_config()?, Default::default())?;
+            render::sync::print_pulled(&pulled);
+            if matches!(pulled, commands::sync::Pulled::Diverged { .. }) {
+                exit = Exit::Diverged;
+            }
         }
         Commands::Remote { cmd } => match cmd {
             None => render::remote::print_list(&commands::remote::list(&repo)?),
@@ -2053,7 +2431,7 @@ fn run(cli: Cli) -> Result<()> {
         },
     }
 
-    Ok(())
+    Ok(exit)
 }
 
 /// Parse `NS:KEY=VALUE` or `NS:KEY` into a metadata filter.

@@ -23,6 +23,7 @@ velo-tui.workspace = true
 chrono.workspace = true
 clap.workspace = true
 console.workspace = true
+serde_json.workspace = true
 similar.workspace = true
 tiny_http.workspace = true
 

@@ -51,6 +51,9 @@ pub struct Status {
     pub tracking: Tracking,
     /// Paths with unresolved merge conflicts.
     pub conflicts: Vec<String>,
+    /// The branch being merged in, while a merge awaits its `velo save`;
+    /// `None` when no merge is pending.
+    pub merging: Option<String>,
     /// Files added since `position`, sorted.
     pub new_files: Vec<String>,
     /// Files modified since `position`, sorted.
@@ -121,12 +124,24 @@ pub fn run(repo: &Repo, paths: &[String]) -> Result<Status> {
     modified.sort_unstable();
     deleted.sort_unstable();
 
+    let merging = std::fs::read_to_string(repo.root().join(".velo/MERGE_HEAD"))
+        .ok()
+        .map(|info| {
+            info.trim()
+                .split_once(':')
+                .map(|(_, b)| b)
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        });
+
     Ok(Status {
         branch,
         position,
         position_message,
         tracking,
         conflicts,
+        merging,
         new_files,
         modified,
         deleted,

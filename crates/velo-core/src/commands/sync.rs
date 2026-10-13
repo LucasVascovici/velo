@@ -83,6 +83,7 @@ pub enum Pushed {
 
 /// What `pull` did.
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Pulled {
     /// Local and remote already agree.
     AlreadyUpToDate { branch: String, remote: String },
@@ -94,7 +95,21 @@ pub enum Pulled {
     },
     /// Both sides have commits the other doesn't. The remote's history was
     /// imported under a tracking branch for the user to reconcile.
-    Diverged { branch: String, remote: String },
+    Diverged {
+        branch: String,
+        remote: String,
+        /// Snapshots only the local branch has.
+        ahead: usize,
+        /// Snapshots only the remote branch has.
+        behind: usize,
+    },
+    /// The remote's tip is already part of our history: there is nothing to
+    /// pull, and the local branch has `ahead` snapshots the remote lacks.
+    Ahead {
+        branch: String,
+        remote: String,
+        ahead: usize,
+    },
 }
 
 // ─── clone ────────────────────────────────────────────────────────────────────
@@ -329,7 +344,13 @@ pub fn push(
     // tell us whether we're creating the branch there for the first time.
     let created_branch = std::cell::Cell::new(false);
     let remote_was_empty = std::cell::Cell::new(false);
+    let advertised_tip: std::cell::Cell<Option<String>> = std::cell::Cell::new(None);
     let mut build = |refs: &[transport::RemoteRef]| -> Result<bundle::Bundle> {
+        advertised_tip.set(
+            refs.iter()
+                .find(|r| r.branch == branch)
+                .map(|r| r.hash.clone()),
+        );
         created_branch.set(!refs.iter().any(|r| r.branch == branch));
         remote_was_empty.set(refs.is_empty());
         let mut peer_has: HashSet<String> = HashSet::new();
@@ -393,10 +414,17 @@ pub fn push(
         // The remote has commits we don't. `NotFastForward` carries the branch
         // and remote, so the CLI can suggest the fix rather than each call site
         // embedding it in a message.
-        PushOutcome::Rejected(_) => Err(VeloError::NotFastForward {
-            branch,
-            remote: remote_name.to_string(),
-        }),
+        PushOutcome::Rejected(_) => {
+            // Refresh the tracking ref with what the remote just told us, so
+            // `status` stops advertising a push that will be refused.
+            if let Some(tip) = advertised_tip.take() {
+                remotemod::set_remote_ref(conn, remote_name, &branch, &tip)?;
+            }
+            Err(VeloError::NotFastForward {
+                branch,
+                remote: remote_name.to_string(),
+            })
+        }
     }
 }
 
@@ -449,6 +477,20 @@ pub fn pull(
         });
     }
 
+    // Is the remote's tip already part of our history? Then we are strictly
+    // ahead and there is nothing to bring in.
+    if let Some(lt) = &local_tip {
+        if transport::reaches(conn, &pack, lt, &remote_tip) {
+            remotemod::set_remote_ref(conn, remote_name, &branch, &remote_tip)?;
+            let ahead = crate::commands::ahead_behind(conn, lt, &remote_tip).0;
+            return Ok(Pulled::Ahead {
+                branch,
+                remote: remote_name.to_string(),
+                ahead,
+            });
+        }
+    }
+
     // Is the pull a fast-forward? i.e. is our tip an ancestor of the remote's?
     // The walk must span (pack ∪ local history): the pack omits commits we
     // already have, and a previous `velo fetch` may have already imported the
@@ -487,9 +529,15 @@ pub fn pull(
         let (snaps, _) = bundle::import_pack(guard, &pack)?;
         guard.repo().emit_imported(snaps);
         remotemod::set_remote_ref(conn, remote_name, &branch, &remote_tip)?;
+        let (ahead, behind) = match &local_tip {
+            Some(lt) => crate::commands::ahead_behind(conn, lt, &remote_tip),
+            None => (0, 0),
+        };
         Ok(Pulled::Diverged {
             branch,
             remote: remote_name.to_string(),
+            ahead,
+            behind,
         })
     }
 }
@@ -553,4 +601,49 @@ pub(crate) fn default_dir(url: &str) -> String {
         .filter(|s| !s.is_empty() && *s != "." && *s != "..")
         .unwrap_or("velo-clone")
         .to_string()
+}
+
+/// Whether rewriting the snapshots from `tip` down to (but excluding) `base`
+/// would replace history a remote-tracking ref already contains.
+///
+/// Returns the first `<remote>/<branch>` label, ordered by remote then branch,
+/// whose last-known tip has any of those snapshots in its ancestry. `base` of
+/// `None` means the whole history below `tip` is at stake. Read-only and
+/// offline: it trusts `remote_refs`, so it can be stale, which is acceptable
+/// for a warning.
+pub fn published(
+    repo: &Repo,
+    tip: &SnapshotId,
+    base: Option<&SnapshotId>,
+) -> Result<Option<String>> {
+    let conn = repo.conn();
+    let mut at_stake = bundle::reachable_ancestry(conn, tip.as_ref());
+    if let Some(base) = base {
+        for h in bundle::reachable_ancestry(conn, base.as_ref()) {
+            at_stake.remove(&h);
+        }
+    }
+    let mut stmt =
+        conn.prepare("SELECT remote, branch, hash FROM remote_refs ORDER BY remote, branch")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    for (remote, branch, hash) in rows {
+        if !snapshot_exists(conn, &hash) {
+            continue;
+        }
+        if bundle::reachable_ancestry(conn, &hash)
+            .iter()
+            .any(|h| at_stake.contains(h))
+        {
+            return Ok(Some(format!("{remote}/{branch}")));
+        }
+    }
+    Ok(None)
 }

@@ -109,12 +109,19 @@ pub enum Error {
     // ── Concurrency ──────────────────────────────────────────────────────────
     /// Another process holds the repository write lock.
     Locked {
+        /// Process id of the holder, when its record could be read.
         held_by: Option<u32>,
+        /// Everything recorded about the holder (pid, start time, command).
+        holder: Option<crate::lock::LockHolder>,
     },
 
     // ── Working-tree preconditions ───────────────────────────────────────────
     /// The operation would overwrite unsaved changes to these tracked files.
     DirtyWorkingTree {
+        paths: Vec<PathBuf>,
+    },
+    /// Taking a side would replace edits made by hand to these conflicted files.
+    WouldOverwriteEdits {
         paths: Vec<PathBuf>,
     },
     /// An operation is already underway; finish or abort it first.
@@ -228,7 +235,17 @@ impl fmt::Display for Error {
                 found, supported
             ),
             Error::Cancelled => f.write_str("the operation was cancelled"),
-            Error::Locked { held_by } => match held_by {
+            Error::Locked {
+                holder: Some(h), ..
+            } => match &h.command {
+                Some(cmd) => write!(
+                    f,
+                    "another Velo operation holds the lock (pid {}, '{}')",
+                    h.pid, cmd
+                ),
+                None => write!(f, "another Velo operation holds the lock (pid {})", h.pid),
+            },
+            Error::Locked { held_by, .. } => match held_by {
                 Some(pid) => write!(f, "repository is locked by process {}", pid),
                 None => write!(
                     f,
@@ -238,6 +255,11 @@ impl fmt::Display for Error {
             Error::DirtyWorkingTree { paths } => {
                 write!(f, "{} unsaved change(s) would be overwritten", paths.len())
             }
+            Error::WouldOverwriteEdits { paths } => write!(
+                f,
+                "{} conflicted file(s) were edited by hand; taking a side would replace those edits",
+                paths.len()
+            ),
             Error::OperationInProgress { what } => write!(f, "a {} is already in progress", what),
             Error::NoOperationInProgress { what } => write!(f, "no {} in progress", what),
             Error::Conflicts { paths } => {

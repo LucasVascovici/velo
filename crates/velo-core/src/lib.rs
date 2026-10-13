@@ -75,7 +75,7 @@
 //! # fn demo(repo: &Repo) {
 //! match repo.write() {
 //!     Ok(_guard) => { /* proceed */ }
-//!     Err(Error::Locked { held_by }) => eprintln!("busy: {:?}", held_by),
+//!     Err(Error::Locked { held_by, .. }) => eprintln!("busy: {:?}", held_by),
 //!     Err(e) if e.is_reconcile_needed() => eprintln!("pull first"),
 //!     Err(e) => eprintln!("{e}"),
 //! }
@@ -115,6 +115,7 @@ pub use drivers::Drivers;
 pub use error::{Error, Result};
 pub use events::{Event, Listener};
 pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
+pub use lock::LockHolder;
 pub use meta::{Author, SnapshotMeta};
 pub use repo::{Repo, WriteGuard};
 pub use scope::Scope;

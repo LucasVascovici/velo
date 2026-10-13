@@ -6,6 +6,91 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 5.1.0
+
+Phase 15: what the first team simulation found. Fixes for silent content loss
+in `save`, amend, `resolve` and stash; `resolve` that works without a terminal;
+lock holders that are named and waited for; faster restore, import, grep, save
+and merge; distinct exit codes and one reconcile recipe. No repository format
+change; new public API in `velo-core` is additive.
+
+### Added
+
+- **Interactive resolve takes the lock per decision; core revalidates the
+  conflict before writing.** The busy notice is now a status value that `draw()`
+  prints under the header after clearing the screen, so it is visible on a TTY.
+  It is dropped after the next key. A busy finalise says that pressing a key
+  retries the write.
+
+- **CLI: bounded lock wait with jittered backoff, and the holder is named.**
+  Mutating commands wait up to 3 s (`VELO_LOCK_WAIT_MS` overrides) with 10-50 ms
+  jittered sleeps before reporting `Locked`. The hint gives the holder's age and
+  whether its pid is alive. The `Repo` is opened with a "velo ARGS" lock label.
+
+- **CLI: distinct exit codes, one reconcile recipe everywhere, merge-aware
+  status.** The mid-merge status test now uses a diverged, fetched clone (pair,
+  pull exits 4, merge origin/main exits 3) and asserts "to finish merging" is
+  present and `velo pull` is absent. Test-only change.
+
+- **Discoverability.** `log` and `-n` aliases, git-habit hints for unknown
+  subcommands (exit code stays 2), and `history --branch origin/main` /
+  `remotes/origin/main`. Undo says "Working files rewound to", and "Nothing to
+  save" after an undo hints `velo redo` via the read-only `redo::peek`.
+  Duplicated `[default: N]` help text is removed and the `mv` Examples block
+  keeps its line breaks.
+
+- **`gc --dry-run`.** gc commits the prune transaction right after the
+  `referenced` query (a dry run drops it, which rolls it back). The commit after
+  the chunk pass is gone, so a real run makes its prunes durable before it
+  deletes any file.
+
+- **Warning before rewriting pushed history.** `sync::published` and a CLI
+  stderr warning for `save --amend`, `undo`, `squash` and `rebase` when the
+  replaced snapshots are already in a remote-tracking ref. The command still
+  runs and exits normally.
+
+- **Every `velo ...` command quoted in help text is tested to parse.**
+  `help_check.rs` walks each subcommand's long help, extracts quoted
+  invocations and parses each with clap, with a self-test that a bad example is
+  rejected. Three help lines it caught were fixed in `main.rs`.
+
+- **`resolve --take both`, `resolve --mark` and `velo conflicts [file] [--json]`.**
+  Core gains `TakeOption::Both` (ours then theirs, `Decision::BothOursFirst`;
+  `TakeOption` is now `#[non_exhaustive]`), `resolve::mark` and
+  `resolve::merge_source`. `mark` accepts a hand-edited file and refuses when it
+  is missing, equals ours or theirs, or still has conflict markers. `conflicts`
+  is read-only and prints both sides of each hunk. The help no longer promises a
+  sidecar file or `diff --conflict`, and the hints, the TTY refusal text and the
+  README are corrected.
+
+- **`restore` writes only paths that differ from the tree being left**, and
+  scans for dirty files once per command. A path is skipped only when `PARENT`
+  has the same hash and mode, it is not dirty and its on-disk mode matches.
+  `undo`, `redo` and `switch` pass their scan in. A property test holds the
+  result byte-identical to rewriting everything.
+
+- **Import is faster.** `bundle apply`, `clone` and fetch check for a held
+  object before decoding it, verify the rest and the snapshot ids in parallel,
+  and no longer rebuild a tree per snapshot. Errors and ids are unchanged.
+
+- **`save` reuses the dirty scan's hashes**, so each new object is read once,
+  and the scan loads the snapshot file map and index cache in one joined query.
+
+- **`merge` apply is parallel.** Deletes run first, then the merged and taken
+  files are written in parallel, so a file can become a directory.
+
+- **`file_map` growth is documented.** `docs/FORMAT.md` 11.4 lists who reads
+  `idx_filemap_path` and `idx_filemap_snap`; no format change.
+
+- **`resolve --take` refuses to replace hand edits.** Core checks every file
+  first and returns the typed `WouldOverwriteEdits` (paths sorted, nothing
+  written) unless the caller passes `OnEdits::Replace`. The CLI's `--force`
+  replaces, prints the replaced and discarded line counts, and says that "ours"
+  means your last saved snapshot.
+
+- **`diff a..b` and the worktree diff skip hash-equal paths** without reading
+  the object store, so the cost follows what changed, not the tree size.
+
 ## 5.0.0
 
 Phase 14: velo as a timeline engine. Language bindings (C, Python, Node, WASM),

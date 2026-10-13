@@ -114,8 +114,29 @@ pub struct SnapshotIdentity<'a> {
 /// change can shift an id. Metadata is hashed. And the result is returned at
 /// full width instead of truncated to 16 characters.
 pub fn snapshot_id(id: SnapshotIdentity<'_>) -> String {
-    let mut entries: Vec<&(String, String, i64)> = id.tree.iter().collect();
-    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    snapshot_id_of(
+        id.tree.iter().map(|(p, h, m)| (p.as_str(), h.as_str(), *m)),
+        id.parent,
+        id.merge_parent,
+        id.message,
+        id.timestamp_ms,
+        id.meta,
+    )
+}
+
+/// [`snapshot_id`] over borrowed rows, so a caller holding a tree in some
+/// other shape (a bundle's `file_map`) need not clone it into owned tuples.
+/// Sorts by path, then hashes exactly the bytes `snapshot_id` always has.
+pub(crate) fn snapshot_id_of<'a>(
+    tree: impl IntoIterator<Item = (&'a str, &'a str, i64)>,
+    parent: &str,
+    merge_parent: &str,
+    message: &str,
+    timestamp_ms: i64,
+    meta: &SnapshotMeta,
+) -> String {
+    let mut entries: Vec<(&str, &str, i64)> = tree.into_iter().collect();
+    entries.sort_by(|a, b| a.0.cmp(b.0));
 
     let mut h = blake3::Hasher::new();
     h.update(b"velo-snapshot-v2\n");
@@ -128,17 +149,17 @@ pub fn snapshot_id(id: SnapshotIdentity<'_>) -> String {
         h.update(b"\n");
     }
     h.update(b"parent\0");
-    h.update(id.parent.as_bytes());
+    h.update(parent.as_bytes());
     h.update(b"\nmerge\0");
-    h.update(id.merge_parent.as_bytes());
+    h.update(merge_parent.as_bytes());
     h.update(b"\nmessage\0");
-    h.update(id.message.as_bytes());
+    h.update(message.as_bytes());
     h.update(b"\ntime\0");
-    h.update(id.timestamp_ms.to_string().as_bytes());
+    h.update(timestamp_ms.to_string().as_bytes());
     // The marker is emitted even when there is no metadata, so "none" and
     // "absent" are the same thing rather than two different ids.
     h.update(b"\nmeta\0");
-    for (namespace, key, value) in id.meta.iter() {
+    for (namespace, key, value) in meta.iter() {
         h.update(namespace.as_bytes());
         h.update(b"\0");
         h.update(key.as_bytes());
@@ -634,61 +655,77 @@ fn walk_with_meta(root: &Path, scope: &crate::Scope) -> Vec<WalkEntry> {
 ///
 /// ### Performance strategy
 ///
-/// 1. **One DB round-trip** – load the snapshot's file map into a `HashMap`.
-/// 2. **One DB round-trip** – load the full `index_cache` into a `HashMap`.
-/// 3. **Parallel filesystem walk** – enumerate files + read metadata in
+/// 1. **One joined DB query** – the snapshot's file map and the `index_cache`
+///    come back together, keyed by path, so no second full map is built.
+/// 2. **Parallel filesystem walk** – enumerate files + read metadata in
 ///    parallel using `ignore`'s built-in parallel walker.
-/// 4. **Parallel hash phase** – rayon processes all walk entries; files whose
+/// 3. **Parallel hash phase** – rayon processes all walk entries; files whose
 ///    `(mtime_ns, size)` match the cache skip the disk read entirely.
-/// 5. **Batch cache write** – newly computed hashes are written back in one
+/// 4. **Batch cache write** – newly computed hashes are written back in one
 ///    transaction so the next call is even faster.
 ///
 /// On a clean working tree with a warm cache this is essentially:
 ///   N × stat()  +  1 DB read  (instead of N × read + N × hash)
 pub fn get_dirty_files(repo: &Repo) -> HashMap<String, FileStatus> {
+    dirty_scan(repo).status
+}
+
+/// The result of one dirty scan: what differs, and the content hash the scan
+/// already computed for each file that is present. `save` hands those hashes
+/// to the object store so it need not hash a changed file a second time.
+pub(crate) struct DirtyScan {
+    pub status: HashMap<String, FileStatus>,
+    /// Current content hash per `New`/`Modified` path.
+    pub hashes: HashMap<String, String>,
+}
+
+/// One path as the joined query sees it: its hash in the snapshot (if it is
+/// tracked there) and its cache row (if it has one).
+struct Joined {
+    snap: Option<String>,
+    cache: Option<CacheEntry>,
+}
+
+/// The dirty scan behind [`get_dirty_files`], also returning the hashes.
+pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     let mut dirty = HashMap::new();
+    let mut hashes = HashMap::new();
     let root = repo.root();
     let conn = repo.conn();
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
 
-    // ── 1. Load snapshot's file map ───────────────────────────────────────────
+    // ── 1. Load snapshot file map and index cache in one query ───────────────
     // Degrade gracefully: a transient DB error (e.g. a momentary lock) yields an
     // empty map rather than panicking the whole command.
-    let mut db_files: HashMap<String, String> = conn
-        .prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")
+    let mut joined: HashMap<String, Joined> = conn
+        .prepare(
+            "SELECT COALESCE(f.path, c.path), f.hash, c.mtime_ns, c.size, c.hash
+             FROM (SELECT path, hash FROM file_map WHERE snapshot_hash = ?1) f
+             FULL OUTER JOIN index_cache c ON c.path = f.path",
+        )
         .and_then(|mut stmt| {
             let rows = stmt.query_map([parent_hash.trim()], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-            })?;
-            Ok(rows.filter_map(|r| r.ok()).collect::<HashMap<_, _>>())
-        })
-        .unwrap_or_default();
-
-    // ── 2. Load index cache ───────────────────────────────────────────────────
-    let index: HashMap<String, CacheEntry> = conn
-        .prepare("SELECT path, mtime_ns, size, hash FROM index_cache")
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([], |r| {
+                let cache = match (
+                    r.get::<_, Option<i64>>(2)?,
+                    r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, Option<String>>(4)?,
+                ) {
+                    (Some(mtime_ns), Some(size), Some(hash)) => Some(CacheEntry {
+                        mtime_ns,
+                        size,
+                        hash,
+                    }),
+                    _ => None,
+                };
                 Ok((
                     r.get::<_, String>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, i64>(2)?,
-                    r.get::<_, String>(3)?,
+                    Joined {
+                        snap: r.get::<_, Option<String>>(1)?,
+                        cache,
+                    },
                 ))
             })?;
-            Ok(rows
-                .filter_map(|r| r.ok())
-                .map(|(p, m, s, h)| {
-                    (
-                        p,
-                        CacheEntry {
-                            mtime_ns: m,
-                            size: s,
-                            hash: h,
-                        },
-                    )
-                })
-                .collect::<HashMap<_, _>>())
+            Ok(rows.filter_map(|r| r.ok()).collect::<HashMap<_, _>>())
         })
         .unwrap_or_default();
 
@@ -703,7 +740,8 @@ pub fn get_dirty_files(repo: &Repo) -> HashMap<String, FileStatus> {
             // Skip paths that aren't under root or aren't valid UTF-8 rather
             // than panicking on the (rare) non-UTF-8 path.
             let rel = crate::db::normalise(e.path.strip_prefix(root).ok()?.to_str()?);
-            let (hash, miss) = if let Some(cached) = index.get(&rel) {
+            let (hash, miss) = if let Some(cached) = joined.get(&rel).and_then(|j| j.cache.as_ref())
+            {
                 if cached.mtime_ns == e.mtime_ns && cached.size == e.size {
                     (cached.hash.clone(), false) // cache hit — no disk read
                 } else {
@@ -735,21 +773,32 @@ pub fn get_dirty_files(repo: &Repo) -> HashMap<String, FileStatus> {
 
     // ── 6. Compare hashes against snapshot ───────────────────────────────────
     for (rel, hash, _, _, _) in results {
-        if let Some(snap_hash) = db_files.remove(&rel) {
-            if snap_hash != hash {
-                dirty.insert(rel, FileStatus::Modified);
+        match joined.remove(&rel).and_then(|j| j.snap) {
+            Some(snap_hash) => {
+                if snap_hash != hash {
+                    hashes.insert(rel.clone(), hash);
+                    dirty.insert(rel, FileStatus::Modified);
+                }
             }
-        } else {
-            dirty.insert(rel, FileStatus::New);
+            None => {
+                hashes.insert(rel.clone(), hash);
+                dirty.insert(rel, FileStatus::New);
+            }
         }
     }
 
-    // Anything left in db_files was deleted from disk
-    for rel in db_files.into_keys() {
-        dirty.insert(rel, FileStatus::Deleted);
+    // Anything tracked that the walk did not see was deleted from disk. Rows
+    // with no snapshot hash are only cache entries for files that are gone.
+    for (rel, j) in joined {
+        if j.snap.is_some() {
+            dirty.insert(rel, FileStatus::Deleted);
+        }
     }
 
-    dirty
+    DirtyScan {
+        status: dirty,
+        hashes,
+    }
 }
 
 /// Invalidate index_cache entries for a set of paths.
@@ -764,6 +813,25 @@ pub(crate) fn invalidate_cache_entries(repo: &Repo, paths: &[String]) {
         if let Ok(mut stmt) = tx.prepare("DELETE FROM index_cache WHERE path = ?") {
             for p in paths {
                 let _ = stmt.execute([p]);
+            }
+        }
+        let _ = tx.commit();
+    }
+}
+
+/// Seed index_cache rows for files whose hash is already known (just written
+/// by `restore`), so the next dirty check is warm. One transaction.
+pub(crate) fn seed_cache_entries(repo: &Repo, rows: &[(String, i64, i64, String)]) {
+    if rows.is_empty() {
+        return;
+    }
+    let conn = repo.conn();
+    if let Ok(tx) = conn.unchecked_transaction() {
+        if let Ok(mut stmt) = tx.prepare(
+            "INSERT OR REPLACE INTO index_cache (path, mtime_ns, size, hash) VALUES (?, ?, ?, ?)",
+        ) {
+            for (p, m, s, h) in rows {
+                let _ = stmt.execute(rusqlite::params![p, m, s, h]);
             }
         }
         let _ = tx.commit();
@@ -822,34 +890,38 @@ pub(crate) enum Reconcile {
     Conflict,
 }
 
-/// Decide how to reconcile one file across `anc` (ancestor), `our` (current),
-/// and `thr` (incoming), each a `(object-hash, mode)` pair.
+/// The cheap, pure part of reconciling one file: every outcome that needs no
+/// file content, or the news that content is needed.
+#[derive(Debug)]
+pub(crate) enum Classified {
+    /// Decided from hashes and modes alone.
+    Done(Reconcile),
+    /// Both sides changed to different non-empty, non-symlink content: the
+    /// three objects must be read and handed to [`merge_contents`].
+    NeedsContent,
+}
+
+/// Classify one file across `anc` (ancestor), `our` (current) and `thr`
+/// (incoming), each a `(object-hash, mode)` pair, without reading any object.
 ///
-/// This is the single source of truth for merge/cherry-pick/rebase file
-/// classification. Non-overlapping text changes on both sides are auto-merged
-/// via a real 3-way merge; overlapping edits, binary files, and symlinks (which
-/// can't be line-merged) become conflicts. A file's mode is part of its
-/// identity, so an executable-bit or file↔symlink change counts as a change.
-pub(crate) fn reconcile_file(
-    objects: &crate::storage::ObjectStore,
-    anc: FileRef,
-    our: FileRef,
-    thr: FileRef,
-    driver: &dyn velo_merge::MergeDriver,
-) -> Result<Reconcile> {
+/// A file's mode is part of its identity, so an executable-bit or
+/// file<->symlink change counts as a change. Symlinks can't be line-merged, so
+/// a symlink on both-changed ground is a conflict.
+pub(crate) fn classify(anc: FileRef, our: FileRef, thr: FileRef) -> Classified {
+    use Classified::Done;
     // Identical on both sides (content AND mode) — nothing to bring in.
     if thr == our {
-        return Ok(Reconcile::Nothing);
+        return Done(Reconcile::Nothing);
     }
     let thr_changed = thr != anc;
     let our_changed = our != anc;
 
     if !thr_changed {
-        return Ok(Reconcile::Nothing);
+        return Done(Reconcile::Nothing);
     }
     // Only theirs changed — apply it cleanly (content and/or mode).
     if !our_changed {
-        return Ok(if thr.0.is_empty() {
+        return Done(if thr.0.is_empty() {
             Reconcile::Delete
         } else {
             Reconcile::TakeTheirs {
@@ -861,11 +933,11 @@ pub(crate) fn reconcile_file(
     }
     // Both sides changed.
     if thr.0.is_empty() {
-        return Ok(Reconcile::KeepOurs); // theirs deleted, ours modified
+        return Done(Reconcile::KeepOurs); // theirs deleted, ours modified
     }
     if our.0.is_empty() {
         // ours deleted, theirs modified — restore theirs
-        return Ok(Reconcile::TakeTheirs {
+        return Done(Reconcile::TakeTheirs {
             hash: thr.0.to_string(),
             mode: thr.1,
             is_new: false,
@@ -873,7 +945,7 @@ pub(crate) fn reconcile_file(
     }
     // Same content, differing mode only → take theirs' mode (no content merge).
     if our.0 == thr.0 {
-        return Ok(Reconcile::TakeTheirs {
+        return Done(Reconcile::TakeTheirs {
             hash: thr.0.to_string(),
             mode: thr.1,
             is_new: false,
@@ -881,32 +953,65 @@ pub(crate) fn reconcile_file(
     }
     // Symlinks can't be line-merged.
     if our.1 == crate::storage::MODE_SYMLINK || thr.1 == crate::storage::MODE_SYMLINK {
-        return Ok(Reconcile::Conflict);
+        return Done(Reconcile::Conflict);
     }
+    Classified::NeedsContent
+}
 
-    // Both modified to different non-empty content → attempt a line-level merge.
-    let anc_bytes = if anc.0.is_empty() {
-        Vec::new()
-    } else {
-        objects.get(anc.0)?
-    };
-    let our_bytes = objects.get(our.0)?;
-    let thr_bytes = objects.get(thr.0)?;
-
-    if anc_bytes.contains(&0) || our_bytes.contains(&0) || thr_bytes.contains(&0) {
-        return Ok(Reconcile::Conflict); // binary — cannot auto-merge
+/// The content half of reconciliation, for a path [`classify`] answered
+/// `NeedsContent`: binary content is a conflict, otherwise the driver merges.
+/// `anc` is empty when the file did not exist in the ancestor.
+pub(crate) fn merge_contents(
+    anc: &[u8],
+    our: &[u8],
+    thr: &[u8],
+    thr_mode: i64,
+    driver: &dyn velo_merge::MergeDriver,
+) -> Reconcile {
+    if anc.contains(&0) || our.contains(&0) || thr.contains(&0) {
+        return Reconcile::Conflict; // binary — cannot auto-merge
     }
-
     match driver.merge(
-        &String::from_utf8_lossy(&anc_bytes),
-        &String::from_utf8_lossy(&our_bytes),
-        &String::from_utf8_lossy(&thr_bytes),
+        &String::from_utf8_lossy(anc),
+        &String::from_utf8_lossy(our),
+        &String::from_utf8_lossy(thr),
     ) {
-        velo_merge::MergeResult::Clean(merged) => Ok(Reconcile::AutoMerged {
+        velo_merge::MergeResult::Clean(merged) => Reconcile::AutoMerged {
             content: merged.into_bytes(),
-            mode: thr.1,
-        }),
-        _ => Ok(Reconcile::Conflict),
+            mode: thr_mode,
+        },
+        _ => Reconcile::Conflict,
+    }
+}
+
+/// Decide how to reconcile one file across `anc` (ancestor), `our` (current),
+/// and `thr` (incoming), each a `(object-hash, mode)` pair.
+///
+/// Built from [`classify`] and [`merge_contents`], which `apply::reconcile_tree`
+/// also uses, so merge planning and merge application cannot disagree.
+/// Non-overlapping text changes on both sides are auto-merged via a real 3-way
+/// merge; overlapping edits, binary files, and symlinks become conflicts.
+pub(crate) fn reconcile_file(
+    objects: &crate::storage::ObjectStore,
+    anc: FileRef,
+    our: FileRef,
+    thr: FileRef,
+    driver: &dyn velo_merge::MergeDriver,
+) -> Result<Reconcile> {
+    match classify(anc, our, thr) {
+        Classified::Done(r) => Ok(r),
+        Classified::NeedsContent => {
+            let anc_bytes = if anc.0.is_empty() {
+                Vec::new()
+            } else {
+                objects.get(anc.0)?
+            };
+            let our_bytes = objects.get(our.0)?;
+            let thr_bytes = objects.get(thr.0)?;
+            Ok(merge_contents(
+                &anc_bytes, &our_bytes, &thr_bytes, thr.1, driver,
+            ))
+        }
     }
 }
 

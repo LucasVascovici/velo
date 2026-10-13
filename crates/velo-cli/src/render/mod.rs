@@ -9,6 +9,7 @@ pub mod blame;
 pub mod branches;
 pub mod bundle;
 pub mod cherry_pick;
+pub mod conflicts;
 pub mod diff;
 pub mod fsck;
 pub mod gc;

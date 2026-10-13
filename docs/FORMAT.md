@@ -34,6 +34,7 @@ third-party tool — must conform to this document.
 ├── HEAD          current branch name (text, no trailing newline required)
 ├── PARENT        snapshot id the working tree is based on ("" if unborn)
 ├── lock          advisory lock file (fs2); held by mutating operations
+├── lock.holder   who holds the lock: pid, start time (ms), command; informational
 ├── MERGE_HEAD    present only mid-merge/cherry-pick: "<pre-merge-id>:<source>"
 └── REBASE_STATE  present only mid-rebase (with REBASE_ONTO, REBASE_ORIG_HEAD)
 ```
@@ -46,7 +47,7 @@ must tolerate a missing or empty `PARENT` (a repository with no commits).
 A repository may instead be **one SQLite file**, created by `Repo::create_file`. It has the same schema and the same format version as a directory repository, and its `settings` table holds `layout = single-file` and `objects = database`. Objects are rows of the `objects` table (section 2.5).
 
 - There is no `.velo` directory, no working tree, and no `HEAD` or `PARENT`: the default branch is `main` and nothing is checked out.
-- Writers lock `<file>.lock`, a sibling of the database, instead of `.velo/lock`.
+- Writers lock `<file>.lock`, a sibling of the database, instead of `.velo/lock`, and record the holder in `<file>.lock.holder`.
 - Only store-only operations apply; commands that read or write files refuse with `Unsupported`.
 - A database without `layout = single-file`, such as a directory repository's `velo.db`, is not opened as a single-file repository.
 
@@ -628,6 +629,77 @@ rewritten chain gets a new parent and therefore a new id (it is *re-minted*).
   and metadata (including the author). Its parent is the oldest member's
   parent. Rename edges are composed across the range.
 - `gc` never collects `compactions` rows.
+
+### 11.4 Open: tree metadata growth
+
+Every snapshot stores its whole tree in `file_map`, so rows grow as
+snapshots x files even when one file changed. Phase 15.9 measured this and
+changed nothing; the storage is as §7.2 describes. Reproduce with
+`cargo test -p velo-core metadata_growth -- --ignored --nocapture`.
+
+**Measured** (1000 files, 200 snapshots, one file changed per snapshot; Intel
+Core i7-1370P, Windows 11, release-less `cargo test` profile, SQLite via
+rusqlite, tempdir on NTFS; two runs):
+
+| Quantity | Run 1 | Run 2 |
+| --- | --- | --- |
+| `file_map` rows | 200,000 | 200,000 |
+| database size | 55,390,208 bytes | 55,390,208 bytes |
+| save, first 50 snapshots | 134.7 ms/save | 294.5 ms/save |
+| save, last 50 snapshots | 305.3 ms/save | 137.7 ms/save |
+| 1000-row `INSERT` loop (rolled back) | 15.3 ms | 5.4 ms |
+| `INSERT ... SELECT` of 999 rows + 1 insert (rolled back) | 46.1 ms | 13.8 ms |
+
+Reading the numbers: save latency shows no growth trend (the two runs disagree
+about which end is slower, so the spread is machine noise, not table size). A
+save is dominated by hashing and writing objects, not by the row insert. The
+row insert is 5-15 ms of a ~140-300 ms save. About 277 bytes of database per
+row, all in. The `INSERT ... SELECT` carry-forward was **not** faster here
+(2.5-3x slower): at 1000 rows the per-row Rust crossing is not the cost, and
+the select reads through `idx_filemap_snap` in non-insertion order. Its case
+rests on avoiding the in-Rust tree at larger sizes, which this run does not
+show.
+
+**Who uses `idx_filemap_path`** (from `EXPLAIN QUERY PLAN`; the plan depends on
+the planner's choice with no `ANALYZE` statistics, so re-run it before relying
+on this):
+
+- `blame.rs`: `WHERE snapshot_hash = ? AND path = ?` plans as `SEARCH ... USING
+  INDEX idx_filemap_path (path=?)`.
+- `tree.rs` `Repo::read_file_at` (public API): the same statement as
+  `blame.rs`, same plan.
+- `diff.rs` (stored hash of a path against `PARENT`): `WHERE path = ? AND
+  snapshot_hash = ?`, same plan.
+- `fsck.rs` (does a snapshot hold a path): same plan.
+
+Everything else uses `idx_filemap_snap` or scans: tree loads (`apply`,
+`compact`, `fsck`, `merge`, `restore`, `save`, `commands::mod`, `grep`,
+`diff` `load_file_map`, and `tree.rs` `Repo::tree_at`, whose `ORDER BY path`
+still plans through `idx_filemap_snap` plus a temp B-tree sort), `tracks_path`,
+`history --file` (both the parent comparison and the root-snapshot check, which
+plans through `idx_filemap_snap`), the `gc` orphan
+sweep, and the `gc` stale `index_cache` prune (its subquery is keyed on
+`snapshot_hash`, not path). `fsck`/`gc` `SELECT DISTINCT hash` and the bundle
+export scan the whole table. `mv.rs` and `paths.rs` do not read `file_map`.
+Dropping `idx_filemap_path` would therefore turn those four point lookups into
+a scan of the snapshot's rows via `idx_filemap_snap` (about one tree), not of
+the table; a composite `(snapshot_hash, path)` index would serve them better
+and is the `WITHOUT ROWID` option below.
+
+**Cheap, format-compatible options**, in order:
+
+1. Carry unchanged paths forward with one `INSERT ... SELECT`, so those rows
+   never cross into Rust. Measured gain at this size: none (see above).
+2. Store hashes as 32-byte blobs rather than 64-character hex.
+3. `WITHOUT ROWID` keyed on `(snapshot_hash, path)`.
+
+**Structural option:** a tree-object or delta model, where a snapshot names a
+tree object and unchanged subtrees are shared. That changes the format and
+bundles.
+
+**Decision:** open. This is the same decision as 14.1 and 14.5, so it belongs
+with those format decisions and is made there once. Nothing was changed in
+Phase 15: no schema, index or code path.
 
 ---
 

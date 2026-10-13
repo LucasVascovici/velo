@@ -30,7 +30,23 @@ the [project README](https://github.com/LucasVascovici/velo).
 
 ## A note on what this is
 
+Mutating commands wait up to 3 seconds for the repository write lock (retrying
+every 10-50 ms) before reporting that another velo operation holds it, naming
+its pid, command and age. Set `VELO_LOCK_WAIT_MS` to change the wait; `0`
+fails immediately. A lock dies with its process, so there is nothing to unlock.
+
 Velo was vibe-coded for fun — a real working tool, built as an experiment in a
 tight loop with an AI assistant, not as a production-grade Git replacement.
 
 MIT licensed.
+
+## Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
+| 1 | Error |
+| 2 | Command-line usage error |
+| 3 | Conflicts left to resolve (`merge`, `cherry-pick` or `rebase` stopped on conflicts) |
+| 4 | Histories diverged (`pull`, or a `push` the remote refused) |
+| 5 | Repository locked by another velo process |

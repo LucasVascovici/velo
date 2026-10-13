@@ -103,7 +103,7 @@ fn build(env: &Env, err: &Error) -> napi::Result<napi::Error> {
             obj.set("found", *found as f64)?;
             obj.set("supported", *supported as f64)?;
         }
-        Error::Locked { held_by } => obj.set("heldBy", held_by.map(f64::from))?,
+        Error::Locked { held_by, .. } => obj.set("heldBy", held_by.map(f64::from))?,
         Error::DirtyWorkingTree { paths: p } | Error::Conflicts { paths: p } => {
             obj.set("paths", paths(p))?
         }

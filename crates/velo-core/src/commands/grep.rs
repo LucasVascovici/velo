@@ -102,16 +102,22 @@ pub fn run(repo: &Repo, pattern: &str, options: Options<'_>) -> Result<GrepResul
     } = options;
     let re = build_regex(pattern, case_insensitive)?;
 
-    let (searched, files) = match snapshot {
+    let search = Search {
+        re: &re,
+        literal: literal_prefilter(pattern, case_insensitive),
+        names_only,
+        context,
+    };
+
+    let (searched, mut files) = match snapshot {
         Some(target) => {
-            let (snap, files) = grep_snapshot(repo, &re, target, names_only, context)?;
+            let (snap, files) = grep_snapshot(repo, &search, target)?;
             (Some(snap), files)
         }
-        None => (
-            None,
-            grep_working_tree(repo.root(), repo.scope(), &re, names_only, context),
-        ),
+        None => (None, grep_working_tree(repo.root(), repo.scope(), &search)),
     };
+    // Workers finish in any order; sorting here is what keeps the output stable.
+    files.sort_by(|a, b| a.path.cmp(&b.path));
 
     Ok(GrepResults {
         pattern: pattern.to_string(),
@@ -120,37 +126,55 @@ pub fn run(repo: &Repo, pattern: &str, options: Options<'_>) -> Result<GrepResul
     })
 }
 
-// ── Working tree search ────────────────────────────────────────────────────────
-
-fn grep_working_tree(
-    root: &Path,
-    scope: &crate::Scope,
-    re: &regex::Regex,
+/// What a worker needs to search one file. Borrowed and `Sync`: the compiled
+/// regex is shared, and no database handle is reachable from here.
+struct Search<'a> {
+    re: &'a regex::Regex,
+    /// A plain-text pattern, checked with `str::contains` before the regex runs.
+    literal: Option<&'a str>,
     names_only: bool,
     context: usize,
-) -> Vec<FileMatches> {
-    let mut out = Vec::new();
-    for entry in crate::commands::walk_with_meta(root, scope) {
-        let rel = db::normalise(entry.path.strip_prefix(root).unwrap().to_str().unwrap());
-        // Unreadable as text means binary; nothing to search.
-        let Ok(content) = std::fs::read_to_string(&entry.path) else {
-            continue;
-        };
-        if let Some(lines) = collect_matches(&content, re, names_only, context) {
-            out.push(FileMatches { path: rel, lines });
+}
+
+impl Search<'_> {
+    fn matches(&self, content: &str) -> Option<Vec<MatchLine>> {
+        if self.literal.is_some_and(|lit| !content.contains(lit)) {
+            return None;
         }
+        collect_matches(content, self.re, self.names_only, self.context)
     }
-    out
+}
+
+/// The pattern itself when it has no regex metacharacters and matching is
+/// case-sensitive, so a plain substring test is equivalent to the regex.
+fn literal_prefilter(pattern: &str, case_insensitive: bool) -> Option<&str> {
+    (!case_insensitive && regex::escape(pattern) == pattern).then_some(pattern)
+}
+
+// ── Working tree search ────────────────────────────────────────────────────────
+
+fn grep_working_tree(root: &Path, scope: &crate::Scope, search: &Search<'_>) -> Vec<FileMatches> {
+    use rayon::prelude::*;
+    let entries = crate::commands::walk_with_meta(root, scope);
+    entries
+        .par_iter()
+        .filter_map(|entry| {
+            let rel = db::normalise(entry.path.strip_prefix(root).ok()?.to_str()?);
+            // Unreadable as text means binary; nothing to search.
+            let content = std::fs::read_to_string(&entry.path).ok()?;
+            search
+                .matches(&content)
+                .map(|lines| FileMatches { path: rel, lines })
+        })
+        .collect()
 }
 
 // ── Snapshot search ────────────────────────────────────────────────────────────
 
 fn grep_snapshot(
     repo: &Repo,
-    re: &regex::Regex,
+    search: &Search<'_>,
     target: &str,
-    names_only: bool,
-    context: usize,
 ) -> Result<(SearchedSnapshot, Vec<FileMatches>)> {
     let conn = repo.conn();
     let objects = repo.objects();
@@ -171,18 +195,18 @@ fn grep_snapshot(
         .filter_map(|r| r.ok())
         .collect();
 
-    let mut out = Vec::new();
-    for (path, object) in files {
-        let Ok(bytes) = objects.get(&object) else {
-            continue;
-        };
-        let Ok(content) = String::from_utf8(bytes) else {
-            continue; // binary
-        };
-        if let Some(lines) = collect_matches(&content, re, names_only, context) {
-            out.push(FileMatches { path, lines });
-        }
-    }
+    // Rows are already read out of SQLite; workers see only owned data.
+    let out = objects.par_with_content(
+        &files,
+        |(_, object)| object.as_str(),
+        |(path, _), bytes| {
+            let content = String::from_utf8(bytes.ok()?).ok()?; // unreadable or binary
+            search.matches(&content).map(|lines| FileMatches {
+                path: path.clone(),
+                lines,
+            })
+        },
+    );
 
     Ok((SearchedSnapshot { hash, message }, out))
 }

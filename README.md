@@ -284,9 +284,11 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
-| See conflicts | `<<<<<<<` markers in file | Interactive TUI — `velo resolve <file>` |
+| See conflicts | `<<<<<<<` markers in file | `velo conflicts <file>` (text or `--json`); interactive TUI — `velo resolve <file>` |
 | Take our version | `git checkout --ours <file>` | `velo resolve <file> --take ours` |
 | Take their version | `git checkout --theirs <file>` | `velo resolve <file> --take theirs` |
+| Keep both sides | edit the markers by hand | `velo resolve <file> --take both` (ours then theirs, per hunk) |
+| Accept your own edit | delete markers, `git add` | `velo resolve --mark <file>` |
 | Resolve all at once | — | `velo resolve --all --take theirs` |
 | Code validity during merge | ❌ Markers break syntax | ✅ File untouched; TUI shows both sides |
 | Abort after resolving | ❌ `--abort` fails if you started editing | ✅ `--abort` works until `velo save` |
@@ -377,7 +379,7 @@ velo status
 velo diff
 
 # View history and time-travel
-velo history
+velo history              # also: velo log, velo history -n 5
 velo restore <hash>
 
 # Work on a feature branch
@@ -464,10 +466,13 @@ velo pull
 | :--- | :--- |
 | `velo merge <branch>` | 3-way merge `<branch>` into the current branch |
 | `velo merge --abort` | Restore the exact pre-merge state (works at any point before `velo save`) |
+| `velo conflicts [<file>] [--json]` | Show both sides of each conflicting hunk, as text or JSON |
 | `velo resolve <file>` | Interactive hunk-by-hunk conflict resolver |
 | `velo resolve <file> --take ours` | Non-interactive: keep the current branch's version |
 | `velo resolve <file> --take theirs` | Non-interactive: take the incoming branch's version |
-| `velo resolve --all --take <ours\|theirs>` | Resolve all outstanding conflicts non-interactively |
+| `velo resolve <file> --take both` | Non-interactive: keep both sides, ours then theirs, per hunk |
+| `velo resolve --mark <file>` | Accept your hand edit of the file as the resolution |
+| `velo resolve --all --take <ours\|theirs\|both>` | Resolve all outstanding conflicts non-interactively |
 | `velo cherry-pick <target>` | Apply the diff from one snapshot onto the current branch |
 | `velo rebase <target>` | Replay current branch commits on top of another branch |
 | `velo rebase --abort` | Abort the rebase and restore the original branch state |
@@ -507,6 +512,19 @@ velo pull
 
 Remote defaults to `origin`, and branch defaults to the current branch.
 
+### Exit codes
+
+Scripts can decide on the exit code:
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
+| 1 | Error |
+| 2 | Command-line usage error |
+| 3 | Conflicts left to resolve (`merge`, `cherry-pick` or `rebase` stopped on conflicts) |
+| 4 | Histories diverged (`pull`, or a `push` the remote refused) |
+| 5 | Repository locked by another velo process |
+
 To host a repository over HTTP, run `velo serve-http <path> [--listen <addr>]`
 (default `127.0.0.1:8417`); it prints `listening on http://<addr>/`. Then
 `velo clone http://<addr>/` and the usual `push` / `pull` work against it, with
@@ -531,6 +549,7 @@ can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 | Command | Description |
 | :--- | :--- |
 | `velo gc` | Remove orphaned objects and stale undo/conflict state |
+| `velo gc --dry-run` | Report what `gc` would collect and remove nothing |
 | `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
 | `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
 | `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
@@ -642,12 +661,13 @@ velo fetch
 
 ```
 Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
-  ↑ 1 ahead of origin/main — velo push to publish
+  ↑ 1 ahead of origin/main (as of last fetch) — velo push to publish
 ```
 ```
-  ↓ 1 behind origin/main — velo pull to catch up
-  ↕ diverged from origin/main (1 ahead, 1 behind) — velo pull then velo merge origin/main
-  ✔ up to date with origin/main
+  ↓ 1 behind origin/main (as of last fetch) — velo pull to catch up
+  ↕ diverged from origin/main (1 ahead, 1 behind, as of last fetch) — reconcile with:
+      velo pull, velo merge origin/main, velo save "Merge origin/main", velo push
+  ✔ up to date with origin/main (as of last fetch)
 ```
 
 #### When two people diverge
@@ -655,11 +675,11 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
 ```bash
 velo push
 # → Push rejected — 'main' has commits you don't have (non-fast-forward).
-#   Run 'velo pull origin' and reconcile, then push again.
+#   velo pull, velo merge origin/main, velo save "Merge origin/main", velo push   (exit code 4)
 
 velo pull
 # → ! 'main' and 'origin/main' have diverged.
-#     Reconcile with velo merge origin/main then velo save "Merge …"
+#     Reconcile with: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push   (exit code 4)
 
 velo merge origin/main     # the normal 3-way merge — auto-merges what it can
 velo save "Merge origin/main"
@@ -833,7 +853,7 @@ git:
 
 ```toml
 [dependencies]
-velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.0.0" }
+velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.1.0" }
 ```
 
 It produces no terminal output at all — every command returns data — which is

@@ -232,6 +232,20 @@ impl ObjectStore<'static> {
     }
 }
 
+/// Paths `put_paths_known` had to read, so a test can show that a file whose
+/// object already existed was not read at all. A list of paths rather than a
+/// counter, because tests run in parallel and each only looks at its own files.
+#[cfg(test)]
+pub(crate) static KNOWN_READS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+fn record_known_read(path: &Path) {
+    KNOWN_READS.lock().unwrap().push(path.to_path_buf());
+}
+
+#[cfg(not(test))]
+fn record_known_read(_path: &Path) {}
+
 /// Compress `content` as the database backend stores it: one zstd frame.
 fn frame_of(content: &[u8]) -> Result<Vec<u8>> {
     zstd::encode_all(content, 1).map_err(VeloError::Io)
@@ -306,6 +320,82 @@ impl ObjectStore<'_> {
                     .into_iter()
                     .map(|(rel, hash, frame, mode)| {
                         db_insert(c, &hash, &frame)?;
+                        Ok((rel, hash, mode))
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Like [`put_paths`](Self::put_paths), for callers that already know each
+    /// file's content hash (the dirty scan computed it). A hint naming an
+    /// object that exists is returned without touching the file. Anything
+    /// else is read once, hashed and stored under its *actual* hash: the hint
+    /// may be stale or racy, so it is never trusted for an object that is not
+    /// there. Symlinks ignore the hint and store their target as before.
+    pub(crate) fn put_paths_known(
+        &self,
+        root: &Path,
+        items: Vec<(String, Option<String>)>,
+        progress: &crate::progress::PhaseGuard<'_>,
+        check: impl Fn() -> Result<()> + Sync + Send,
+    ) -> Result<Vec<(String, String, i64)>> {
+        use rayon::prelude::*;
+        let locate = |rel: &str| root.join(crate::db::db_to_path(rel));
+        match self {
+            ObjectStore::Files(f) => items
+                .into_par_iter()
+                .inspect(|_| progress.tick())
+                .map(|(rel, hint)| {
+                    check()?;
+                    let full = locate(&rel);
+                    let mode = capture_mode(&full);
+                    let hash = if mode == MODE_SYMLINK {
+                        f.put(&read_symlink_target(&full)?)?
+                    } else {
+                        match hint {
+                            Some(h) if f.contains(&h) => h,
+                            _ => f.put_file_once(&full)?,
+                        }
+                    };
+                    Ok((rel, hash, mode))
+                })
+                .collect(),
+            ObjectStore::Database(c) => {
+                // The connection stays on this thread, so existence is checked
+                // here; the reads and compression then fan out.
+                let items: Vec<(String, Option<String>)> = items
+                    .into_iter()
+                    .map(|(rel, hint)| {
+                        let known = hint.filter(|h| db_contains(c, h).unwrap_or(false));
+                        (rel, known)
+                    })
+                    .collect();
+                let prepared: Vec<(String, String, Option<Vec<u8>>, i64)> = items
+                    .into_par_iter()
+                    .inspect(|_| progress.tick())
+                    .map(|(rel, known)| {
+                        check()?;
+                        let full = locate(&rel);
+                        let mode = capture_mode(&full);
+                        if mode == MODE_SYMLINK {
+                            let (hash, frame) = prepare_bytes(&read_symlink_target(&full)?)?;
+                            return Ok((rel, hash, Some(frame), mode));
+                        }
+                        if let Some(h) = known {
+                            return Ok((rel, h, None, mode));
+                        }
+                        record_known_read(&full);
+                        let (hash, frame) = prepare_file(&full)?;
+                        Ok((rel, hash, Some(frame), mode))
+                    })
+                    .collect::<Result<_>>()?;
+                prepared
+                    .into_iter()
+                    .map(|(rel, hash, frame, mode)| {
+                        if let Some(frame) = frame {
+                            db_insert(c, &hash, &frame)?;
+                        }
                         Ok((rel, hash, mode))
                     })
                     .collect()
@@ -412,21 +502,65 @@ impl ObjectStore<'_> {
         }
     }
 
-    pub(crate) fn import_compressed(&self, hash: &str, frame: &[u8]) -> Result<bool> {
+    /// Verify and store many received frames, returning how many were new.
+    ///
+    /// An object the store already holds is skipped before it is decoded: its
+    /// name is the proof, and decompressing it again would only re-verify what
+    /// is stored. The files backend verifies and writes from the pool; the
+    /// database backend cannot share its connection, so it filters on the
+    /// calling thread, verifies owned frames in parallel, and inserts serially.
+    /// The first error in input order is returned, so a bad bundle fails the
+    /// same way every time.
+    pub(crate) fn import_many(
+        &self,
+        items: &[(String, Vec<u8>)],
+        progress: &crate::progress::PhaseGuard<'_>,
+    ) -> Result<usize> {
+        use rayon::prelude::*;
         match self {
-            ObjectStore::Files(f) => f.import_compressed(hash, frame),
-            ObjectStore::Database(c) => {
-                let decompressed = zstd::decode_all(frame).map_err(|_| {
-                    VeloError::corrupt(format!("object {} could not be decompressed", hash))
-                })?;
-                let actual = blake3::hash(&decompressed).to_hex().to_string();
-                if actual != hash {
-                    return Err(VeloError::corrupt(format!(
-                        "object {} is corrupt (content hashes to {})",
-                        hash, actual
-                    )));
+            ObjectStore::Files(f) => {
+                let results: Vec<Result<bool>> = items
+                    .par_iter()
+                    .map(|(hash, frame)| {
+                        progress.tick();
+                        if f.contains(hash) {
+                            Ok(false)
+                        } else {
+                            f.import_compressed(hash, frame)
+                        }
+                    })
+                    .collect();
+                let mut new = 0;
+                for r in results {
+                    if r? {
+                        new += 1;
+                    }
                 }
-                db_insert(c, hash, frame)
+                Ok(new)
+            }
+            ObjectStore::Database(c) => {
+                let mut fresh: Vec<&(String, Vec<u8>)> = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                for it in items {
+                    if seen.insert(it.0.as_str()) && !db_contains(c, &it.0)? {
+                        fresh.push(it);
+                    }
+                    progress.tick();
+                }
+                let verified: Vec<Result<()>> = fresh
+                    .par_iter()
+                    .map(|(hash, frame)| verify_frame(hash, frame))
+                    .collect();
+                for r in verified {
+                    r?;
+                }
+                let mut new = 0;
+                for (hash, frame) in fresh {
+                    if db_insert(c, hash, frame)? {
+                        new += 1;
+                    }
+                }
+                Ok(new)
             }
         }
     }
@@ -512,6 +646,20 @@ impl ObjectStore<'_> {
             ObjectStore::Database(_) => Verified::Missing,
         }
     }
+}
+
+/// Check that a received frame decompresses and hashes to its own name.
+fn verify_frame(hash: &str, frame: &[u8]) -> Result<()> {
+    let decompressed = zstd::decode_all(frame)
+        .map_err(|_| VeloError::corrupt(format!("object {} could not be decompressed", hash)))?;
+    let actual = blake3::hash(&decompressed).to_hex().to_string();
+    if actual != hash {
+        return Err(VeloError::corrupt(format!(
+            "object {} is corrupt (content hashes to {})",
+            hash, actual
+        )));
+    }
+    Ok(())
 }
 
 fn db_contains(conn: &rusqlite::Connection, hash: &str) -> Result<bool> {
@@ -611,6 +759,23 @@ impl FileObjects {
         let hash = blake3::hash(normalised).to_hex().to_string();
         if !self.path(&hash).exists() {
             self.store(&hash, normalised)?;
+        }
+        Ok(hash)
+    }
+
+    /// Like [`put_file`](Self::put_file) but reads the file exactly once: the
+    /// bytes that are hashed are the bytes that get stored.
+    pub(crate) fn put_file_once(&self, file_path: &Path) -> Result<String> {
+        record_known_read(file_path);
+        let size = fs::metadata(file_path).map_err(VeloError::Io)?.len();
+        let data = normalise_crlf(if size >= MMAP_THRESHOLD {
+            read_mmap(file_path)?
+        } else {
+            fs::read(file_path).map_err(VeloError::Io)?
+        });
+        let hash = blake3::hash(&data).to_hex().to_string();
+        if !self.path(&hash).exists() {
+            self.store(&hash, &data)?;
         }
         Ok(hash)
     }

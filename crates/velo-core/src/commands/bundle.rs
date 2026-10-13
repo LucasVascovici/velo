@@ -46,7 +46,6 @@ use std::path::Path;
 
 use rusqlite::params;
 
-use crate::commands::SnapshotIdentity;
 use crate::error::{Result, VeloError};
 use crate::progress::Phase;
 use crate::Repo;
@@ -366,16 +365,10 @@ pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
 pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize, usize)> {
     // ── Write + verify objects (dedup by name) ────────────────────────────────
     let objects = guard.repo().objects();
-    let mut new_objects = 0usize;
     let progress = guard.phase(Phase::Importing, Some(bundle.objects.len() as u64));
-    for (hash, compressed) in &bundle.objects {
-        progress.tick();
-        // Verified on the way in: the frame must decompress and re-hash to its
-        // own name before it is stored.
-        if objects.import_compressed(hash, compressed)? {
-            new_objects += 1;
-        }
-    }
+    // Verified on the way in: each frame must decompress and re-hash to its
+    // own name before it is stored; objects already held are skipped undecoded.
+    let new_objects = objects.import_many(&bundle.objects, &progress)?;
 
     let existing: HashSet<String> = {
         let mut stmt = guard.conn().prepare("SELECT hash FROM snapshots")?;
@@ -404,6 +397,44 @@ pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize,
             .insert_stored(row.namespace.clone(), row.key.clone(), row.value.clone());
     }
 
+    // Verify every unseen snapshot's id in parallel, before the transaction
+    // opens: it needs only bundle data, and a bad id must import nothing.
+    {
+        use rayon::prelude::*;
+        let unseen: Vec<&_> = bundle
+            .snapshots
+            .iter()
+            .filter(|s| !existing.contains(&s.hash))
+            .collect();
+        let empty = SnapshotMeta::new();
+        let results: Vec<Result<()>> = unseen
+            .par_iter()
+            .map(|s| {
+                let rows = fm_by_snap.get(s.hash.as_str());
+                let recomputed = crate::commands::snapshot_id_of(
+                    rows.into_iter()
+                        .flatten()
+                        .map(|r| (r.path.as_str(), r.hash.as_str(), r.mode)),
+                    &s.parent_hash,
+                    &s.merge_parent,
+                    &s.message,
+                    s.created_at_ms,
+                    meta_by_snap.get(s.hash.as_str()).unwrap_or(&empty),
+                );
+                if recomputed != s.hash {
+                    return Err(VeloError::corrupt(format!(
+                        "snapshot {} does not match its content (recomputed {})",
+                        s.hash, recomputed
+                    )));
+                }
+                Ok(())
+            })
+            .collect();
+        for r in results {
+            r?;
+        }
+    }
+
     let tx = guard.transaction()?;
     let mut new_snaps = 0usize;
     {
@@ -419,31 +450,7 @@ pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize,
             if existing.contains(&s.hash) {
                 continue; // already have it — idempotent
             }
-            // Verify the snapshot id matches its content before trusting it.
-            let tree: Vec<(String, String, i64)> = fm_by_snap
-                .get(s.hash.as_str())
-                .map(|rows| {
-                    rows.iter()
-                        .map(|r| (r.path.clone(), r.hash.clone(), r.mode))
-                        .collect()
-                })
-                .unwrap_or_default();
-            let empty = SnapshotMeta::new();
-            let recomputed = crate::commands::snapshot_id(SnapshotIdentity {
-                tree: &tree,
-                parent: &s.parent_hash,
-                merge_parent: &s.merge_parent,
-                message: &s.message,
-                timestamp_ms: s.created_at_ms,
-                meta: meta_by_snap.get(s.hash.as_str()).unwrap_or(&empty),
-            });
-            if recomputed != s.hash {
-                return Err(VeloError::corrupt(format!(
-                    "snapshot {} does not match its content (recomputed {})",
-                    s.hash, recomputed
-                )));
-            }
-
+            // Its id was verified against its content before the transaction.
             ins_snap.execute(params![
                 s.hash,
                 s.message,

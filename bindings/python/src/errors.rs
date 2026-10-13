@@ -121,7 +121,7 @@ pub fn to_py(err: Error) -> PyErr {
                 raise!(FormatTooOld, "found" => *found, "supported" => *supported)
             }
             Error::Cancelled => raise!(Cancelled),
-            Error::Locked { held_by } => raise!(Locked, "held_by" => *held_by),
+            Error::Locked { held_by, .. } => raise!(Locked, "held_by" => *held_by),
             Error::DirtyWorkingTree { paths: p } => {
                 raise!(DirtyWorkingTree, "paths" => paths(p))
             }
