@@ -87,7 +87,7 @@ fn print_tracking(tracking: &Tracking) {
                 style("↓").yellow().bold(),
                 b,
                 style(&label).cyan(),
-                style("velo pull").cyan()
+                style("velo sync").cyan()
             ),
             (a, b) => {
                 println!(

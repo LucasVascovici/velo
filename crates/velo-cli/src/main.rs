@@ -1104,6 +1104,31 @@ NOTES
         remote: String,
     },
 
+    /// Fetch, merge if it is clean, and push: one step to share your work.
+    ///
+    /// Examples
+    ///   velo sync                 # origin, the current branch
+    ///   velo sync origin main
+    ///
+    /// Behind the remote it fast-forwards; ahead it pushes; diverged and clean
+    /// it merges, saves the merge and pushes it.
+    #[command(
+        verbatim_doc_comment,
+        after_help = "NOTES
+    · A merge with conflicts is never pushed: sync stops with exit code 3 and
+      leaves the merge as `velo merge` would. Run `velo resolve`, `velo save`,
+      then `velo sync` again.
+    · There is no --force: if the remote moves again mid-sync, it exits 4."
+    )]
+    Sync {
+        /// Remote name (default: origin).
+        #[arg(value_name = "REMOTE", default_value = "origin")]
+        remote: String,
+        /// Branch to sync (default: the current branch).
+        #[arg(value_name = "BRANCH")]
+        branch: Option<String>,
+    },
+
     /// Manage remotes (paths, or ssh://host/path URLs).
     ///
     /// Examples
@@ -1666,6 +1691,7 @@ fn not_a_repo_hint(cmd: &Commands) -> VeloError {
         Commands::Remote { .. }
         | Commands::Push { .. }
         | Commands::Pull { .. }
+        | Commands::Sync { .. }
         | Commands::Fetch { .. } => {
             "  Sync commands run inside a repository — this folder isn't one yet.\n  \
              · velo clone <url> [dir]   get a working copy of an existing repository\n  \
@@ -2795,6 +2821,21 @@ fn run(cli: Cli) -> Result<Exit> {
                     }
                     return Err(e);
                 }
+            }
+        }
+        Commands::Sync { remote, branch } => {
+            let author = author::from_env()?;
+            let synced =
+                commands::sync::sync(write(), &remote, branch.as_deref(), &spawn_config()?, {
+                    let options = commands::sync::SyncOptions::default();
+                    match author.as_ref() {
+                        Some(a) => options.author(a),
+                        None => options,
+                    }
+                })?;
+            render::sync::print_synced(&synced);
+            if matches!(synced, commands::sync::Synced::Conflicted { .. }) {
+                exit = Exit::Conflicts;
             }
         }
         Commands::Pull { remote } => {

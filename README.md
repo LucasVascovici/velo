@@ -512,6 +512,7 @@ velo pull
 | `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
 | `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work; merged side branches are published with it under their own names) |
 | `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
+| `velo sync [remote] [branch]` | Fetch, then fast-forward, push, or merge and push if the merge is clean; a conflict stops with exit 3 and the merge left in progress (`resolve`, `save`, `sync`). Never pushes a conflicted merge, never forces |
 
 Remote defaults to `origin`, and branch defaults to the current branch.
 
@@ -524,8 +525,8 @@ Scripts can decide on the exit code:
 | 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
 | 1 | Error |
 | 2 | Command-line usage error |
-| 3 | Conflicts left to resolve (`merge`, `cherry-pick` or `rebase` stopped on conflicts) |
-| 4 | Histories diverged (`pull`, or a `push` the remote refused) |
+| 3 | Conflicts left to resolve (`merge`, `cherry-pick`, `rebase` or `sync` stopped on conflicts) |
+| 4 | Histories diverged (`pull`, or a `push` or `sync` the remote refused) |
 | 5 | Repository locked by another velo process |
 
 To host a repository over HTTP, run `velo serve-http <path> [--listen <addr>]`
@@ -652,6 +653,7 @@ velo clone ssh://user@host/srv/project        # ssh://[user@]host[:port]/path
 velo save "Add login page"
 velo push                  # fast-forward only
 velo pull                  # fast-forward, or tells you it diverged
+velo sync                  # fetch, merge if clean, push
 
 # Remotes
 velo remote add origin /shared/project
@@ -670,9 +672,9 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
   ↑ 1 ahead of origin/main (as of last fetch) — velo push to publish
 ```
 ```
-  ↓ 1 behind origin/main (as of last fetch) — velo pull to catch up
+  ↓ 1 behind origin/main (as of last fetch) — velo sync to catch up
   ↕ diverged from origin/main (1 ahead, 1 behind, as of last fetch) — reconcile with:
-      velo pull, velo merge origin/main, velo save "Merge origin/main", velo push
+      velo sync   (or by hand: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push)
   ✔ up to date with origin/main (as of last fetch)
 ```
 
@@ -681,16 +683,19 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
 ```bash
 velo push
 # → Push rejected — 'main' has commits you don't have (non-fast-forward).
-#   velo pull, velo merge origin/main, velo save "Merge origin/main", velo push   (exit code 4)
+#   velo sync   (or by hand: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push)   (exit code 4)
 
-velo pull
-# → ! 'main' and 'origin/main' have diverged.
-#     Reconcile with: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push   (exit code 4)
-
-velo merge origin/main     # the normal 3-way merge — auto-merges what it can
+velo sync
+# fetches, merges what merges cleanly, saves the merge and pushes it.
+# On a conflict it stops with exit code 3 and the merge in progress, nothing pushed:
+velo resolve src/app.rs --take ours     # or edit it and `velo resolve --mark`
 velo save "Merge origin/main"
-velo push                  # now a fast-forward
+velo sync                  # now a fast-forward push
 ```
+
+`velo sync` never pushes a merge with conflicts and has no `--force`. If the
+remote moves again while it runs, it exits 4 and you run it again. The manual
+route (`velo pull`, `velo merge origin/main`, `velo save`, `velo push`) still works.
 
 Nothing is ever force-overwritten, and `pull` never rewrites your history behind
 your back.
