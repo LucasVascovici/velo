@@ -219,6 +219,18 @@ pub(crate) fn build_pack_excluding(
     snap_set: &HashSet<String>,
     peer_has: &HashSet<String>,
 ) -> Result<Bundle> {
+    // Nothing to send means nothing to scan: the scans below read whole tables
+    // (file_map alone is hundreds of thousands of rows) to keep zero rows.
+    if snap_set.is_empty() {
+        return Ok(Bundle {
+            snapshots: Vec::new(),
+            file_map: Vec::new(),
+            meta: Vec::new(),
+            tags: Vec::new(),
+            objects: Vec::new(),
+            renames: Vec::new(),
+        });
+    }
     let mut snapshots = Vec::new();
     {
         let mut stmt = conn.prepare(
@@ -241,27 +253,40 @@ pub(crate) fn build_pack_excluding(
         }
     }
 
-    // One pass over file_map: collect the rows we're sending, the objects they
-    // need, and (separately) the objects the peer already holds via `peer_has`.
+    // Probe `idx_filemap_snap` once per snapshot involved instead of reading the
+    // whole table: the rows we send give the objects they need, and the peer's
+    // snapshots give the objects it already holds via `peer_has`. A snapshot in
+    // both sets is sent, not treated as the peer's.
     let mut file_map = Vec::new();
     let mut object_hashes: HashSet<String> = HashSet::new();
     let mut peer_objects: HashSet<String> = HashSet::new();
     {
-        let mut stmt = conn.prepare("SELECT snapshot_hash, path, hash, mode FROM file_map")?;
-        let rows = stmt.query_map([], |r| {
-            Ok(FileMapRow {
-                snapshot_hash: r.get(0)?,
-                path: r.get(1)?,
-                hash: r.get(2)?,
-                mode: r.get(3)?,
-            })
-        })?;
-        for row in rows.flatten() {
-            if snap_set.contains(&row.snapshot_hash) {
+        let mut stmt = conn.prepare(
+            "SELECT snapshot_hash, path, hash, mode FROM file_map WHERE snapshot_hash = ?",
+        )?;
+        for snap in &snapshots {
+            let rows = stmt.query_map([&snap.hash], |r| {
+                Ok(FileMapRow {
+                    snapshot_hash: r.get(0)?,
+                    path: r.get(1)?,
+                    hash: r.get(2)?,
+                    mode: r.get(3)?,
+                })
+            })?;
+            for row in rows.flatten() {
                 object_hashes.insert(row.hash.clone());
                 file_map.push(row);
-            } else if peer_has.contains(&row.snapshot_hash) {
-                peer_objects.insert(row.hash);
+            }
+        }
+        // A snapshot named in `snap_set` but absent from `snapshots` has no rows
+        // to send, so the loop above already covers everything in `snap_set`.
+        let mut peer_stmt = conn.prepare("SELECT hash FROM file_map WHERE snapshot_hash = ?")?;
+        if !object_hashes.is_empty() {
+            for p in peer_has.iter().filter(|p| !snap_set.contains(*p)) {
+                let rows = peer_stmt.query_map([p], |r| r.get::<_, String>(0))?;
+                for h in rows.flatten() {
+                    peer_objects.insert(h);
+                }
             }
         }
     }
@@ -550,23 +575,26 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
 /// `merge_parent` to the root. Guarantees the resulting set is self-contained
 /// (every included snapshot's parents are also included).
 pub(crate) fn reachable_ancestry(conn: &rusqlite::Connection, tip: &str) -> HashSet<String> {
-    let mut seen = HashSet::new();
-    let mut stack = vec![tip.to_string()];
-    while let Some(h) = stack.pop() {
-        if h.is_empty() || seen.contains(&h) {
-            continue;
-        }
-        seen.insert(h.clone());
-        if let Ok((parent, merge)) = conn.query_row(
-            "SELECT parent_hash, merge_parent FROM snapshots WHERE hash = ?",
-            [&h],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
-        ) {
-            stack.push(parent);
-            stack.push(merge);
-        }
-    }
-    seen
+    // One recursive query instead of a round trip per snapshot. `UNION` (not
+    // `UNION ALL`) drops repeats, so merges and shared history terminate. The
+    // start hash is seeded directly so it is kept even when absent from
+    // `snapshots`; empty parent strings are filtered out at the end.
+    let run = || -> rusqlite::Result<HashSet<String>> {
+        let mut stmt = conn.prepare_cached(
+            "WITH RECURSIVE anc(hash) AS (
+                 SELECT ?1
+                 UNION
+                 SELECT CASE k.n WHEN 0 THEN s.parent_hash ELSE s.merge_parent END
+                   FROM anc a
+                   JOIN snapshots s ON s.hash = a.hash
+                   JOIN (SELECT 0 AS n UNION ALL SELECT 1) k
+             )
+             SELECT hash FROM anc WHERE hash <> ''",
+        )?;
+        let rows = stmt.query_map([tip], |r| r.get::<_, String>(0))?;
+        rows.collect()
+    };
+    run().unwrap_or_default()
 }
 
 // ─── Encoding ────────────────────────────────────────────────────────────────────

@@ -12228,3 +12228,6 @@ mod push_side_branches;
 
 #[cfg(test)]
 mod resolve_line_endings;
+
+#[cfg(test)]
+mod sync_pack_speed;

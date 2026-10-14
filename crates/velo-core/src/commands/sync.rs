@@ -294,7 +294,14 @@ pub fn fetch(
         s.branch = format!("remotes/{}/{}", remote_name, s.branch);
     }
     let conn = guard.conn();
-    let (snaps, objs) = bundle::import_pack(guard, &pack)?;
+    // Tags, meta and renames only travel with their snapshots, so a pack with no
+    // snapshots, objects or tags has nothing to import.
+    let (snaps, objs) =
+        if pack.snapshots.is_empty() && pack.objects.is_empty() && pack.tags.is_empty() {
+            (0, 0)
+        } else {
+            bundle::import_pack(guard, &pack)?
+        };
     guard.repo().emit_imported(snaps);
     for r in &refs {
         remotemod::set_remote_ref(conn, remote_name, &r.branch, &r.hash)?;
