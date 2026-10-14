@@ -160,7 +160,7 @@ pub fn open_with_token(url: &str, spawn: &Spawn, token: Option<&str>) -> Result<
     if url.starts_with("http://") || url.starts_with("https://") {
         if has_userinfo(url) {
             return Err(VeloError::invalid(
-                "An HTTP remote URL must not contain credentials. Supply a bearer token                  instead (VELO_TOKEN or VELO_TOKEN_<REMOTE> in the command line tool).",
+                "An HTTP remote URL must not contain credentials. Supply a bearer token instead (VELO_TOKEN or VELO_TOKEN_<REMOTE> in the command line tool).",
             ));
         }
         #[cfg(feature = "http")]

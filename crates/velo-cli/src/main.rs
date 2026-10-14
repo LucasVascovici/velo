@@ -1427,7 +1427,13 @@ fn spawn_config() -> Result<velo_core::transport::Spawn> {
 /// the environment: one stored in the repository would travel in backups, and
 /// one in a URL would land in shell history and `velo remote`'s output.
 fn token_for(remote_name: &str) -> Option<String> {
-    let mangled: String = remote_name
+    token_from(|k| std::env::var(k).ok(), remote_name)
+}
+
+/// The environment variable that holds the token for one remote: the name
+/// uppercased, every non-alphanumeric character replaced with `_`.
+fn token_var(name: &str) -> String {
+    let mangled: String = name
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {
@@ -1437,12 +1443,12 @@ fn token_for(remote_name: &str) -> Option<String> {
             }
         })
         .collect();
-    token_from(|k| std::env::var(k).ok(), &mangled)
+    format!("VELO_TOKEN_{mangled}")
 }
 
 /// The lookup behind [`token_for`], with the environment passed in.
-fn token_from(get: impl Fn(&str) -> Option<String>, mangled: &str) -> Option<String> {
-    get(&format!("VELO_TOKEN_{mangled}"))
+fn token_from(get: impl Fn(&str) -> Option<String>, name: &str) -> Option<String> {
+    get(&token_var(name))
         .filter(|t| !t.is_empty())
         .or_else(|| get("VELO_TOKEN").filter(|t| !t.is_empty()))
 }
@@ -1452,22 +1458,21 @@ mod token_tests {
     use super::*;
 
     #[test]
-    fn name_is_uppercased_and_mangled() {
-        let env = |k: &str| match k {
-            "VELO_TOKEN_MY_REMOTE_2" => Some("specific".to_string()),
-            "VELO_TOKEN" => Some("general".to_string()),
-            _ => None,
-        };
-        assert_eq!(token_from(env, "MY_REMOTE_2").as_deref(), Some("specific"));
-        assert_eq!(token_from(env, "OTHER").as_deref(), Some("general"));
-        assert_eq!(token_from(|_| None, "OTHER"), None);
+    fn token_var_uppercases_and_mangles() {
+        assert_eq!(token_var("origin"), "VELO_TOKEN_ORIGIN");
+        assert_eq!(token_var("my-remote.v2"), "VELO_TOKEN_MY_REMOTE_V2");
     }
 
     #[test]
-    fn token_for_mangles_non_alphanumerics() {
-        // No such variables exist in the test environment, so this only checks
-        // that odd names do not panic and fall through to None or VELO_TOKEN.
-        let _ = token_for("my-remote.v2");
+    fn token_from_prefers_the_specific_variable() {
+        let env = |k: &str| match k {
+            "VELO_TOKEN_MY_REMOTE_V2" => Some("specific".to_string()),
+            "VELO_TOKEN" => Some("general".to_string()),
+            _ => None,
+        };
+        assert_eq!(token_from(env, "my-remote.v2").as_deref(), Some("specific"));
+        assert_eq!(token_from(env, "other").as_deref(), Some("general"));
+        assert_eq!(token_from(|_| None, "other"), None);
     }
 }
 
