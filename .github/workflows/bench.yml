@@ -1,9 +1,14 @@
 name: bench
 
-# Manual only: the scale benchmark is slow and must not gate pushes or PRs.
+# Manual only: the benchmarks are slow and must not gate pushes or PRs.
 on:
   workflow_dispatch:
     inputs:
+      suite:
+        description: "Which benchmark to run"
+        type: choice
+        options: [scale, agent]
+        default: scale
       preset:
         description: "Benchmark preset (small, envelope-a, envelope-b)"
         type: choice
@@ -15,6 +20,7 @@ permissions:
 
 jobs:
   scale:
+    if: inputs.suite == 'scale'
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -31,3 +37,31 @@ jobs:
         with:
           name: scale-results-${{ inputs.preset }}
           path: results.json
+
+  # Agent-checkpointing benchmark against git, directory copies, a log and
+  # SQLite (bench/agent/README.md). Needs the Python binding, built release.
+  agent:
+    if: inputs.suite == 'agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/python
+      - name: Build the Python binding
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install maturin
+          .venv/bin/maturin develop --release --manifest-path bindings/python/Cargo.toml
+      - name: Run agent benchmark
+        run: |
+          .venv/bin/python bench/agent/agent_bench.py             --workdir "$RUNNER_TEMP/velo-agent-bench"             --out agent-results.json | tee "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agent-results
+          path: agent-results.json
