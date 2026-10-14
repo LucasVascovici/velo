@@ -678,16 +678,19 @@ on this):
 - `diff.rs` (stored hash of a path against `PARENT`): `WHERE path = ? AND
   snapshot_hash = ?`, same plan.
 - `fsck.rs` (does a snapshot hold a path): same plan.
+- `gc.rs` stale `index_cache` prune: `NOT EXISTS (... WHERE file_map.path =
+  index_cache.path ...)` is path-keyed on purpose and probes
+  `idx_filemap_path`.
 
 Everything else uses `idx_filemap_snap` or scans: tree loads (`apply`,
-`compact`, `fsck`, `merge`, `restore`, `save`, `commands::mod`, `grep`,
+`compact`, `merge`, `restore`, `save`, `commands::mod`, `grep`,
 `diff` `load_file_map`, and `tree.rs` `Repo::tree_at`, whose `ORDER BY path`
 still plans through `idx_filemap_snap` plus a temp B-tree sort), `tracks_path`,
 `history --file` (both the parent comparison and the root-snapshot check, which
 plans through `idx_filemap_snap`), the `gc` orphan
-sweep, and the `gc` stale `index_cache` prune (its subquery is keyed on
-`snapshot_hash`, not path). `fsck`/`gc` `SELECT DISTINCT hash` and the bundle
-export scan the whole table. `mv.rs` and `paths.rs` do not read `file_map`.
+sweep. `fsck` reads the whole table in one `ORDER BY snapshot_hash` scan
+(grouped per snapshot in Rust), `gc` runs `SELECT hash` and dedups in Rust, and
+the bundle export scans the whole table. `mv.rs` and `paths.rs` do not read `file_map`.
 Dropping `idx_filemap_path` would therefore turn those four point lookups into
 a scan of the snapshot's rows via `idx_filemap_snap` (about one tree), not of
 the table; a composite `(snapshot_hash, path)` index would serve them better
@@ -703,24 +706,6 @@ and is the `WITHOUT ROWID` option below.
 **Structural option:** a tree-object or delta model, where a snapshot names a
 tree object and unchanged subtrees are shared. That changes the format and
 bundles.
-
-**Decision:** open. This is the same decision as 14.1 and 14.5, so it belongs
-with those format decisions and is made there once. Nothing was changed in
-Phase 15: no schema, index or code path.
-
----
-
-## Non-goals
-
-- **No separate hashed tree object** (à la Git's tree objects). Trees are rows in
-  `file_map`. Revisit only if a real need for shared subtree identity appears.
-- **No delta/packfile encoding.** Objects stay whole-content addressed: a name
-  is always the hash of the full content. Storage-level chunking *below*
-  identity is decided as D6 (§11.2); it is not delta encoding and changes no id.
-- **No signing yet.** Content addressing gives tamper-*evidence*, not
-  authentication. Signatures are decided as D5 (§11.1), outside identity, and
-  not yet implemented.
-- **No downgrade path.** Migrations are forward-only.
 
 **Round three** (release build, 2,000 files x 300 snapshots, one file changed
 per snapshot, so about 600,000 `file_map` rows; run through the CLI on an idle
@@ -746,3 +731,21 @@ index or row layout was altered by this measurement; the schema is as section 7.
 describes. A change that stored a tree once and shared it between snapshots
 that did not touch it would cut the rows and the size, and would also change
 `fsck`, `gc`, bundles and sync, so it needs its own phase.
+
+**Decision:** open. This is the same decision as 14.1 and 14.5, so it belongs
+with those format decisions and is made there once. Nothing was changed in
+Phase 15: no schema, index or code path.
+
+---
+
+## Non-goals
+
+- **No separate hashed tree object** (à la Git's tree objects). Trees are rows in
+  `file_map`. Revisit only if a real need for shared subtree identity appears.
+- **No delta/packfile encoding.** Objects stay whole-content addressed: a name
+  is always the hash of the full content. Storage-level chunking *below*
+  identity is decided as D6 (§11.2); it is not delta encoding and changes no id.
+- **No signing yet.** Content addressing gives tamper-*evidence*, not
+  authentication. Signatures are decided as D5 (§11.1), outside identity, and
+  not yet implemented.
+- **No downgrade path.** Migrations are forward-only.
