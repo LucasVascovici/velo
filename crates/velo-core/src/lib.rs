@@ -96,6 +96,8 @@ pub mod db;
 pub mod drivers;
 pub mod error;
 pub mod events;
+#[doc(hidden)]
+pub mod failpoint;
 pub mod ids;
 pub mod limits;
 pub mod lock;

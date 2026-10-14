@@ -98,7 +98,9 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
         "DELETE FROM trash_tags WHERE snapshot_hash = ?",
         [&snapshot],
     )?;
+    crate::failpoint::hit("redo.before_commit");
     tx.commit()?;
+    crate::failpoint::hit("redo.after_commit");
     // The row came back from the trash, so it is a snapshot the repository did
     // not have a moment ago. Its branch and parents are read from the row itself.
     let row: Option<(String, Option<String>, Option<String>)> = guard

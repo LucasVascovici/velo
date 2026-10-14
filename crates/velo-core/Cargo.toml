@@ -29,6 +29,8 @@ http = ["dep:ureq"]
 json = ["velo-merge/json"]
 yaml = ["velo-merge/yaml"]
 toml = ["velo-merge/toml"]
+# Test-only crash points (`failpoint::set_handler`); compiled out when off.
+failpoints = []
 
 [dependencies]
 velo-merge.workspace = true
@@ -46,6 +48,10 @@ rusqlite.workspace = true
 similar.workspace = true
 ureq = { workspace = true, optional = true }
 zstd.workspace = true
+
+[[test]]
+name = "crash"
+required-features = ["failpoints"]
 
 [dev-dependencies]
 proptest.workspace = true

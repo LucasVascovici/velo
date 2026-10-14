@@ -214,6 +214,7 @@ pub(crate) fn run_with(
         )?;
     }
 
+    crate::failpoint::hit("restore.before_write");
     let ghosts_removed = if partial {
         0
     } else {
@@ -247,7 +248,9 @@ pub(crate) fn run_with(
     // A whole-tree rewrite lands a tree that no pending move describes, so the
     // moves are forgotten rather than attached to whatever gets saved next.
     crate::commands::mv::discard_pending(guard.conn())?;
+    crate::failpoint::hit("restore.before_parent");
     storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
+    crate::failpoint::hit("restore.after_parent");
     let message: String = conn
         .query_row(
             "SELECT message FROM snapshots WHERE hash = ?",
@@ -348,6 +351,9 @@ fn write_files(
     progress: &PhaseGuard<'_>,
     cancel: Option<&Cancel>,
 ) -> Result<()> {
+    // Only the first file to land reports the crash point; the workers race, so
+    // "first" means first in time, not first in the list.
+    let first_written = std::sync::atomic::AtomicBool::new(false);
     let results: Vec<std::result::Result<CacheRow, String>> = objects.par_with_content(
         files,
         |(_, hash, _)| hash.as_str(),
@@ -373,6 +379,9 @@ fn write_files(
             match content {
                 Ok(data) => match storage::apply_file(&full_path, *mode, &data) {
                     Ok(_) => {
+                        if !first_written.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            crate::failpoint::hit("restore.after_first_file");
+                        }
                         // A file that cannot be stat-ed is simply not seeded.
                         let meta = fs::symlink_metadata(&full_path).ok()?;
                         let mtime_ns = meta

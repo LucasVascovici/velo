@@ -136,7 +136,9 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
 
     let existing = crate::commands::branch_exists(conn, branch_name);
     crate::commands::register_branch(conn, branch_name, "")?;
+    crate::failpoint::hit("switch.before_head");
     crate::storage::write_atomic(&root.join(".velo/HEAD"), branch_name.as_bytes())?;
+    crate::failpoint::hit("switch.after_head");
 
     match target_tip {
         Some(at) => {
