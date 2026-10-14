@@ -184,3 +184,24 @@ jobs:
 
       - name: Check binding parity
         run: python bindings/parity/check.py
+
+  # ── Semver compatibility (blocking) ────────────────────────────────────────
+  # A breaking change to velo-core or velo-merge cannot land in a minor
+  # release by accident. The baseline is the previous released tag and MUST be
+  # bumped to the newest released tag at each release: otherwise the check
+  # compares against an ever-older API and stops catching breaks introduced
+  # since that tag.
+  semver:
+    name: Semver check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags must be present for baseline-rev
+
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: velo-core,velo-merge
+          baseline-rev: v5.1.2
+          feature-group: all-features
