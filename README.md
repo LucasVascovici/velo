@@ -882,6 +882,8 @@ see [Use it from your language](#use-it-from-your-language).
 | macOS Intel | `velo-x86_64-macos.tar.gz` |
 | Windows x86-64 | `velo-x86_64-windows.zip` |
 
+Each release also carries a CycloneDX software bill of materials for `velo-cli`, attached as `velo-<version>.cdx.json`. Release builds are checked for reproducibility by `.github/workflows/reproducible.yml`, which builds the Linux x86-64 musl binary twice from the same tag in different directories and fails if the hashes differ; no differences are known so far.
+
 ### Build from source
 
 Requires Rust 1.88 or later.

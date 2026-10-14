@@ -121,6 +121,18 @@ jobs:
       - name: Run tests
         run: cargo test --workspace --locked
 
+      # Reproducibility settings, identical to reproducible.yml. Set after the
+      # tests so the debug test build is unaffected. Any RUSTFLAGS already
+      # present is kept and the remaps are appended.
+      - name: Set reproducible build environment
+        shell: bash
+        run: |
+          {
+            echo "CARGO_INCREMENTAL=0"
+            echo "SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)"
+            echo "RUSTFLAGS=${RUSTFLAGS:+$RUSTFLAGS }--remap-path-prefix=${{ github.workspace }}=/build --remap-path-prefix=$HOME/.cargo=/cargo"
+          } >> "$GITHUB_ENV"
+
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
@@ -145,6 +157,39 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.package }}
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ── Software bill of materials (CycloneDX JSON) for velo-cli ──────────────
+  sbom:
+    name: SBOM
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+
+      - name: Generate SBOM
+        shell: bash
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          cargo cyclonedx --manifest-path crates/velo-cli/Cargo.toml --format json
+          SRC=$(ls crates/velo-cli/*.cdx.json | head -1)
+          mv "$SRC" "velo-${VERSION}.cdx.json"
+          echo "SBOM_FILE=velo-${VERSION}.cdx.json" >> "$GITHUB_ENV"
+
+      - name: Attach SBOM to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.SBOM_FILE }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
