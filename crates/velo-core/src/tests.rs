@@ -12248,3 +12248,6 @@ mod read_limits;
 
 #[cfg(test)]
 mod signed_bundles;
+
+#[cfg(test)]
+mod http_service;

@@ -525,6 +525,39 @@ a refs block followed by the pack; `POST receive` takes branch and new tip
 carrying `REJECT`, as over ssh; other non-2xx codes are failures.
 Fast-forward-only semantics are unchanged.
 
+**Addressing.** A server holding one repository answers at `<any prefix>/velo/v1/`.
+A server holding a directory of repositories answers at
+`/<repo path>/velo/v1/`, where `<repo path>` is a relative path under the
+served directory. The repository path follows the tree-path rule: no `..`,
+no `.velo` component, no empty segment, no absolute or backslash form, and no
+`%` at all (the server never percent-decodes). A violation is `400 bad-path`;
+a path that is safe but names no repository is `404 not-found`.
+
+**Authentication.** A request may carry `Authorization: Bearer <token>`; the
+scheme is case-insensitive. A server with tokens configured compares the token
+in constant time against every configured token. A read token permits `refs`
+and `upload`; a write token also permits `receive`. A host may replace this
+check with its own, deciding per repository and operation.
+
+**Refusals.** Every refusal is a one-line `text/plain` body,
+`velo: <kind>: <detail>\n`:
+
+| Status | Kind | Meaning |
+| :--- | :--- | :--- |
+| 400 | `bad-path` | unsafe or malformed repository path |
+| 401 | `unauthenticated` | no valid token; carries `WWW-Authenticate: Bearer` |
+| 403 | `forbidden` | valid token that does not permit the operation |
+| 403 | `read-only` | `receive` on a server that only serves fetch |
+| 404 | `not-found` | unknown endpoint or repository |
+| 405 | `method-not-allowed` | wrong method for the endpoint (`GET refs`, `POST upload`/`receive`) |
+| 413 | `too-large` | request body or a received object exceeds a limit |
+| 500 | `error` | any other server-side failure |
+| 503 | `busy` | the repository is locked by another writer |
+
+Checks run in the order route, repository, authorization, read-only, size, so
+an unauthenticated caller learns nothing about size limits. A refused push never
+changes the repository.
+
 ---
 
 ## 10. Decisions
