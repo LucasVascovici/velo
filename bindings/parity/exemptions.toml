@@ -32,11 +32,6 @@ bindings = ["python", "node"]
 reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
 
 [[exempt]]
-entry = "Repo::listening"
-bindings = ["python", "node"]
-reason = "pending: change events and merge drivers (18.8-c)"
-
-[[exempt]]
 entry = "Repo::lock_holder"
 bindings = ["python", "node"]
 reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
@@ -47,11 +42,6 @@ bindings = ["python", "node"]
 reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
 
 [[exempt]]
-entry = "Repo::merging"
-bindings = ["python", "node"]
-reason = "pending: change events and merge drivers (18.8-c)"
-
-[[exempt]]
 entry = "Repo::object_location"
 bindings = ["python", "node"]
 reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
@@ -59,7 +49,7 @@ reason = "lock and scope handling is internal to the binding handle; each bound 
 [[exempt]]
 entry = "Repo::observing"
 bindings = ["python", "node"]
-reason = "pending: change events and merge drivers (18.8-c)"
+reason = "progress observers are called from worker threads once per item; a Python or JS callback at that rate is not offered, while change events (on_event, onEvent) are"
 
 [[exempt]]
 entry = "Repo::open"

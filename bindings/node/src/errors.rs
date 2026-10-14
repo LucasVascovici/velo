@@ -67,6 +67,10 @@ fn code(err: &Error) -> &'static str {
         Error::Corrupt { .. } => "Corrupt",
         Error::MissingObject { .. } => "MissingObject",
         Error::UntrustedData { .. } => "UntrustedData",
+        Error::InvalidInput { detail } if detail == crate::callbacks::REENTRANT => "Reentrant",
+        Error::InvalidInput { detail } if detail.starts_with(crate::callbacks::DRIVER_FAILED) => {
+            "DriverFailed"
+        }
         Error::InvalidInput { .. } => "InvalidInput",
         Error::Unsupported { .. } => "Unsupported",
         Error::Io(_) => "Io",
@@ -89,8 +93,17 @@ pub fn to_js(env: &Env, err: Error) -> napi::Error {
 }
 
 fn build(env: &Env, err: &Error) -> napi::Result<napi::Error> {
+    // A refused re-entrant call and a failed JS driver travel as `InvalidInput`
+    // with a marked detail; their message is the detail itself.
+    let message = match err {
+        Error::InvalidInput { detail } if code(err) != "InvalidInput" => detail
+            .strip_prefix(crate::callbacks::DRIVER_FAILED)
+            .unwrap_or(detail)
+            .to_string(),
+        _ => err.to_string(),
+    };
     let mut obj: Object = env
-        .create_error(napi::Error::new(Status::GenericFailure, err.to_string()))?
+        .create_error(napi::Error::new(Status::GenericFailure, message))?
         .coerce_to_object()?;
     obj.set("code", code(err))?;
     match err {
@@ -139,8 +152,10 @@ fn build(env: &Env, err: &Error) -> napi::Result<napi::Error> {
         Error::MissingObject { hash } => obj.set("hash", hash.as_str())?,
         Error::Corrupt { detail }
         | Error::UntrustedData { detail }
-        | Error::InvalidInput { detail }
         | Error::Unsupported { detail } => obj.set("detail", detail.as_str())?,
+        Error::InvalidInput { detail } if code(err) == "InvalidInput" => {
+            obj.set("detail", detail.as_str())?
+        }
         _ => {}
     }
     Ok(napi::Error::from(obj.to_unknown()))

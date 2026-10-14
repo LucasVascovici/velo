@@ -11,6 +11,30 @@ export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-was
 
 /** An open velo repository. */
 export declare class Repo {
+  /**
+   * Call `callback(event)` for every change committed through this handle.
+   *
+   * `event.kind` is `'Saved'`, `'Merged'`, `'RefMoved'` or `'Imported'`,
+   * next to that event's fields. Callbacks run when the promise of the call
+   * that made the change resolves: after the core call has finished and
+   * released the repository, on the JS thread. Events are in-process only:
+   * this handle hears its own writes, not those of another handle or process.
+   */
+  onEvent(callback: (event: { kind: string; [field: string]: string | number | null }) => void): void
+  /**
+   * Merge files matching glob `pattern` with `driver`: `'json'`, `'yaml'`,
+   * `'toml'`, or a function `(ancestor, ours, theirs) => string | null`
+   * where `null` is a conflict. The first matching rule wins.
+   *
+   * A function runs inside the merge, under the repository lock, and must
+   * answer synchronously. Any call it makes on this handle rejects with
+   * `code: 'Reentrant'`. A throw (or a return that is not a string or
+   * `null`) makes `mergePlan` / `mergeCommit` reject with
+   * `code: 'DriverFailed'`, and nothing is committed.
+   */
+  setMergeDriver(pattern: string, driver: 'json' | 'yaml' | 'toml' | ((ancestor: string, ours: string, theirs: string) => string | null)): Promise<void>
+  /** Go back to line-based merging for every path. */
+  clearMergeDrivers(): Promise<void>
   /** Snapshots newest first, filtered by `options`. */
   history(options?: HistoryOptions | undefined | null): Promise<Array<SnapshotInfo>>
   /** Snapshots whose metadata satisfies every filter, newest first. */

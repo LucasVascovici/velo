@@ -39,6 +39,7 @@ from ._velo import (
     Unsupported,
     VeloIOError,
     DatabaseError,
+    ReentrantCall,
 )
 
 __all__ = [
@@ -50,5 +51,5 @@ __all__ = [
     "Conflicts", "Diverged", "NotFastForward", "UnbornBranch", "NotFound",
     "AmbiguousPrefix", "Compacted", "Corrupt", "MissingObject",
     "UntrustedData", "InvalidInput", "Unsupported", "VeloIOError",
-    "DatabaseError",
+    "DatabaseError", "ReentrantCall",
 ]

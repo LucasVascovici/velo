@@ -7,7 +7,8 @@
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use napi::bindgen_prelude::*;
 use napi::{Env, JsDate, ScopedTask, Task};
@@ -18,6 +19,7 @@ use velo_core::{
     SnapshotMeta,
 };
 
+use crate::callbacks::{self, Hooks};
 use crate::errors::to_js;
 
 pub(crate) type CoreResult<T> = std::result::Result<T, CoreError>;
@@ -54,9 +56,32 @@ pub(crate) fn branch_name(text: &str) -> CoreResult<BranchName> {
 
 type Work<T> = Box<dyn FnOnce(&CoreRepo) -> CoreResult<T> + Send>;
 
+/// The repository a task will lock, and whether the call that made the task
+/// was itself made by a merge driver, which is read on the JS thread when the
+/// task is created: only then is it a re-entrant call.
+#[derive(Clone)]
+pub struct Ticket {
+    repo: Shared,
+    pub(crate) hooks: Arc<Hooks>,
+    reentrant: bool,
+}
+
+impl Ticket {
+    /// Lock the repository, or the refusal to give it to a re-entrant call.
+    pub(crate) fn lock(&self) -> Result<CoreResult<MutexGuard<'_, CoreRepo>>> {
+        if self.reentrant {
+            return Ok(Err(callbacks::reentrant()));
+        }
+        self.repo
+            .lock()
+            .map(Ok)
+            .map_err(|_| napi::Error::from_reason("velo Repo is poisoned by an earlier panic"))
+    }
+}
+
 /// A velo call that runs on a libuv worker and resolves to `T`.
 pub struct Job<T> {
-    repo: Shared,
+    ticket: Ticket,
     run: Option<Work<T>>,
 }
 
@@ -69,14 +94,25 @@ impl<T: ToNapiValue + TypeName + Send + 'static> Task for Job<T> {
             .run
             .take()
             .ok_or_else(|| napi::Error::from_reason("velo job already ran"))?;
-        let repo = self
-            .repo
-            .lock()
-            .map_err(|_| napi::Error::from_reason("velo Repo is poisoned by an earlier panic"))?;
-        Ok(run(&repo))
+        let repo = match self.ticket.lock()? {
+            Ok(repo) => repo,
+            Err(refused) => return Ok(Err(refused)),
+        };
+        let hooks = &self.ticket.hooks;
+        hooks.reset_error();
+        let output = run(&repo);
+        drop(repo);
+        // A driver that threw left a conflict behind; the rejection says why.
+        Ok(match hooks.driver_error() {
+            Some(e) => Err(e),
+            None => output,
+        })
     }
 
     fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        // The core call is over and the lock is released: now it is safe to
+        // let `onEvent` callbacks run.
+        self.ticket.hooks.flush(&env);
         output.map_err(|e| to_js(&env, e))
     }
 }
@@ -85,6 +121,7 @@ impl<T: ToNapiValue + TypeName + Send + 'static> Task for Job<T> {
 pub struct OpenJob {
     path: PathBuf,
     init: bool,
+    hooks: Arc<Hooks>,
 }
 
 impl Task for OpenJob {
@@ -96,13 +133,15 @@ impl Task for OpenJob {
             CoreRepo::init(&self.path)
         } else {
             CoreRepo::open_and_migrate(&self.path)
-        })
+        }
+        .map(|r| r.listening(self.hooks.listener())))
     }
 
     fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
         output
             .map(|r| Repo {
                 inner: Arc::new(Mutex::new(r)),
+                hooks: self.hooks.clone(),
             })
             .map_err(|e| to_js(&env, e))
     }
@@ -184,7 +223,7 @@ impl SnapshotData {
 
 /// Like `Job`, but resolving to an object that holds a `Date`.
 pub struct SnapshotJob {
-    repo: Shared,
+    ticket: Ticket,
     id: String,
 }
 
@@ -193,10 +232,10 @@ impl<'task> ScopedTask<'task> for SnapshotJob {
     type JsValue = SnapshotInfo<'task>;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let repo = self
-            .repo
-            .lock()
-            .map_err(|_| napi::Error::from_reason("velo Repo is poisoned by an earlier panic"))?;
+        let repo = match self.ticket.lock()? {
+            Ok(repo) => repo,
+            Err(refused) => return Ok(Err(refused)),
+        };
         Ok(snapshot_data(&repo, &self.id))
     }
 
@@ -303,15 +342,24 @@ pub(crate) fn build_author(author: Option<AuthorInput>) -> CoreResult<Option<Cor
 #[napi]
 pub struct Repo {
     pub(crate) inner: Shared,
+    pub(crate) hooks: Arc<Hooks>,
 }
 
 impl Repo {
+    pub(crate) fn ticket(&self) -> Ticket {
+        Ticket {
+            repo: self.inner.clone(),
+            hooks: self.hooks.clone(),
+            reentrant: self.hooks.in_callback.load(Ordering::SeqCst),
+        }
+    }
+
     pub(crate) fn job<T: ToNapiValue + TypeName + Send + 'static>(
         &self,
         run: impl FnOnce(&CoreRepo) -> CoreResult<T> + Send + 'static,
     ) -> AsyncTask<Job<T>> {
         AsyncTask::new(Job {
-            repo: self.inner.clone(),
+            ticket: self.ticket(),
             run: Some(Box::new(run)),
         })
     }
@@ -322,6 +370,7 @@ impl Repo {
     #[napi(ts_return_type = "Promise<Repo>")]
     pub fn init(path: String) -> AsyncTask<OpenJob> {
         AsyncTask::new(OpenJob {
+            hooks: Arc::new(Hooks::new(path.as_ref())),
             path: path.into(),
             init: true,
         })
@@ -330,6 +379,7 @@ impl Repo {
     #[napi(ts_return_type = "Promise<Repo>")]
     pub fn open(path: String) -> AsyncTask<OpenJob> {
         AsyncTask::new(OpenJob {
+            hooks: Arc::new(Hooks::new(path.as_ref())),
             path: path.into(),
             init: false,
         })
@@ -434,7 +484,7 @@ impl Repo {
     #[napi(ts_return_type = "Promise<SnapshotInfo>")]
     pub fn snapshot(&self, id: String) -> AsyncTask<SnapshotJob> {
         AsyncTask::new(SnapshotJob {
-            repo: self.inner.clone(),
+            ticket: self.ticket(),
             id,
         })
     }

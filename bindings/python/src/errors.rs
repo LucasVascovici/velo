@@ -23,6 +23,7 @@ macro_rules! exceptions {
         pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
             m.add("VeloError", m.py().get_type::<VeloError>())?;
             $(m.add(stringify!($name), m.py().get_type::<$name>())?;)*
+            m.add("ReentrantCall", m.py().get_type::<ReentrantCall>())?;
             Ok(())
         }
     };
@@ -55,6 +56,17 @@ exceptions!(
     VeloIOError,
     DatabaseError,
 );
+
+create_exception!(
+    _velo,
+    ReentrantCall,
+    VeloError,
+    "A merge driver or event callback called back into the repository while it was busy."
+);
+
+/// The message of every refused re-entrant call.
+pub const REENTRANT: &str =
+    "a merge driver or event callback must not call back into the repository while it is busy";
 
 fn ref_kind(kind: &RefKind) -> &'static str {
     match kind {

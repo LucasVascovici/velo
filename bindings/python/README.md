@@ -21,7 +21,8 @@ Notes:
 
 - `Repo` is `unsendable`: using it from another thread raises `RuntimeError`.
   That is the binding enforcing velo's anti-goal on `Sync`.
-- Calls hold the GIL; `allow_threads` cannot borrow an unsendable `Repo`.
+- Calls hold the GIL, except `merge_plan` and `merge_commit`, which release it
+  so a merge driver can run on any thread (see below).
 - Every `velo_core::Error` variant is an exception subclass of `velo.VeloError`
   named after the variant (`Io` is `VeloIOError`, `Db` is `DatabaseError`), with
   the variant's fields as attributes (`NotFound.kind`, `Compacted.into`, ...).
@@ -44,3 +45,35 @@ repo.merge_commit(branch="main", ours=c, theirs=b, message="merge",
                   resolutions={"n.txt": b"two\nthree\n"})
 repo.create_branch("release", at=c)
 ```
+
+## Change events and merge drivers
+
+```python
+repo.on_event(lambda e: print(e["kind"], e.get("snapshot")))
+repo.set_merge_driver("*.json", "json")            # or "yaml", "toml"
+repo.set_merge_driver("*.txt", lambda ancestor, ours, theirs: ours + theirs)
+repo.clear_merge_drivers()
+```
+
+- `on_event(callback)` calls `callback(event)` for each change committed through
+  this handle. `event` is a dict with `kind` (`"Saved"`, `"Merged"`,
+  `"RefMoved"`, `"Imported"`) and that event's fields (`snapshot`, `branch`,
+  `parent`, `merge_parent`, `ours`, `theirs`, ...). Events are **in-process
+  only**: a handle hears its own writes, not those of another handle or
+  process (poll `head_token` for those).
+- Callbacks run **after** the call that made the change has returned, with the
+  repository lock released, on the calling thread. They may use the repository.
+  A callback that raises is reported through `sys.unraisablehook`; the write
+  has already committed and does not fail.
+- `set_merge_driver(pattern, driver)` picks a merge driver by path glob; the
+  first matching rule wins. `driver` is `"json"`, `"yaml"`, `"toml"` or a
+  function `(ancestor, ours, theirs) -> str | None`; `None` is a conflict.
+- A driver function runs **inside** the merge, under the repository lock, and
+  the GIL is released around `merge_plan` / `merge_commit` so it can run on any
+  worker thread. It must **not** call back into the repository: any method
+  called on the same handle while it is busy raises `velo.ReentrantCall`
+  (a `VeloError`) at once, rather than deadlocking.
+- An exception raised by a driver makes `merge_plan` / `merge_commit` raise that
+  same exception, and nothing is committed. With resolutions given, the merge
+  is planned first so the exception surfaces before any write; the driver then
+  runs twice.
