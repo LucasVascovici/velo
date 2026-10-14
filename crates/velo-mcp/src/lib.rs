@@ -5,6 +5,7 @@
 //! protocol testable in-process.
 
 pub mod protocol;
+mod store_tools;
 pub mod tools;
 
 use serde_json::{json, Value};
@@ -25,13 +26,17 @@ pub struct Server {
     run: String,
     client: Option<String>,
     author: Option<(String, Option<String>)>,
+    /// Set when the repository has no working tree.
+    store_only: bool,
 }
 
 impl Server {
     /// A server for `repo` that stamps writes with `run`.
     pub fn new(repo: Repo, run: String) -> Self {
+        let store_only = !repo.has_working_tree();
         Server {
             repo,
+            store_only,
             run,
             client: None,
             author: None,
@@ -72,7 +77,7 @@ impl Server {
                 protocol::result(&id, protocol::initialize_result(requested))
             }
             "ping" => protocol::result(&id, json!({})),
-            "tools/list" => protocol::result(&id, json!({"tools": tools::list()})),
+            "tools/list" => protocol::result(&id, json!({"tools": tools::list(self.store_only)})),
             "tools/call" => self.tools_call(&id, &params),
             other => protocol::error(
                 &id,
@@ -97,6 +102,7 @@ impl Server {
             run: &self.run,
             client,
             author: self.author.as_ref(),
+            store_only: self.store_only,
         };
         match tools::call(&ctx, name, args) {
             Ok(result) => {
@@ -226,7 +232,10 @@ mod tests {
                 "velo_branch",
                 "velo_merge_plan",
                 "velo_merge_apply",
-                "velo_blame"
+                "velo_blame",
+                "velo_save_tree",
+                "velo_tree_at",
+                "velo_read_file"
             ]
         );
     }

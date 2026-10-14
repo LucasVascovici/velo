@@ -60,5 +60,49 @@ apply; there is no single-call merge.
 6. `velo_blame {"path": "app.py"}`: each line's `origin.run` names the run that
    wrote it.
 
+## Store-only mode
+
+An agent that has no checkout can still use velo. Point the server at a
+single-file repository instead of a project directory:
+
+```json
+{"command": "velo-mcp", "args": ["--store", "/path/agent.velo", "--create"]}
+```
+
+`--create` makes the file when it is missing; without it the file must exist
+(and is migrated if it is older). `--store` conflicts with `--repo`. Store mode
+is chosen whenever the repository has no working tree, and nothing is ever
+written outside the database file (plus its `-wal`, `-shm` and `.lock` files).
+
+Content arrives in the call and trees come back by id:
+
+| Tool | What it does |
+| --- | --- |
+| `velo_save_tree` | Record a snapshot from `files` (`{path: content}`, `null` deletes a path). By default the files are laid over the tree of `base` (default: the parent), so only changes are sent; `replace: true` makes `files` the whole tree. `encoding` is `utf8` (default) or `base64` and applies to every value. `parent` defaults to the branch tip, a root snapshot on an unborn branch. |
+| `velo_tree_at` | The files of a snapshot as `{path, object, kind}`. |
+| `velo_read_file` | One file of a snapshot as `{content, encoding}`; non-UTF-8 content comes back base64. |
+
+These three are listed in both modes. In store mode `tools/list` omits the tools
+that need a working tree (`velo_save`, `velo_restore`, `velo_status`,
+`velo_diff`, `velo_merge_apply` and `velo_branch` `switch`); calling one returns
+an `isError: true` result that names `Unsupported` and the store tool to use.
+`velo_history`, `velo_metadata`, `velo_blame`, `velo_merge_plan` and branch
+`list` and `create` work as usual.
+
+Example session:
+
+1. `velo_save_tree {"branch": "attempt-1", "message": "start",
+   "files": {"app.py": "print(1)
+", "notes.md": "todo
+"}}` returns the
+   snapshot id.
+2. `velo_save_tree {"branch": "attempt-1", "message": "cache",
+   "files": {"app.py": "print(2)
+", "notes.md": null}}` carries the previous
+   tree forward, changes one file and deletes the other.
+3. `velo_read_file {"snapshot": "attempt-1", "path": "app.py"}` reads it back.
+4. `velo_history {"meta": [{"namespace": "mcp", "key": "run"}]}` lists both
+   snapshots with this run's identity.
+
 A velo error is a tool result with `isError: true`; protocol faults are JSON-RPC
 errors. Only protocol lines go to stdout; diagnostics go to stderr.

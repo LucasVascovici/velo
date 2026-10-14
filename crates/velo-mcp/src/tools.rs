@@ -7,6 +7,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::store_tools;
 use serde_json::{json, Map, Value};
 use velo_core::commands::{
     blame, branches, diff, history, merge, resolve_snapshot_id, restore, save, status, switch,
@@ -33,7 +34,7 @@ impl From<Error> for ToolError {
     }
 }
 
-fn bad(msg: impl Into<String>) -> ToolError {
+pub(crate) fn bad(msg: impl Into<String>) -> ToolError {
     ToolError::Params(msg.into())
 }
 
@@ -44,6 +45,8 @@ pub struct Context<'a> {
     pub client: &'a str,
     /// Author override from the environment, as `(name, email)`.
     pub author: Option<&'a (String, Option<String>)>,
+    /// The repository has no working tree: tools that need one are refused.
+    pub store_only: bool,
 }
 
 /// The variant name of a velo error, taken from its `Debug` form so that new
@@ -55,11 +58,17 @@ pub fn variant_name(e: &Error) -> String {
         .collect()
 }
 
-/// The `tools/list` payload.
-pub fn list() -> Value {
-    let obj = |props: Value, required: Value| json!({"type": "object", "properties": props, "required": required});
+/// An object schema with the given properties.
+pub(crate) fn obj_schema(props: Value, required: Value) -> Value {
+    json!({"type": "object", "properties": props, "required": required})
+}
+
+/// The `tools/list` payload. In store-only mode the tools that need a working
+/// tree are left out, so a client never offers the model a call that must fail.
+pub fn list(store_only: bool) -> Value {
+    let obj = obj_schema;
     let strs = json!({"type": "array", "items": {"type": "string"}});
-    json!([
+    let all = json!([
         {
             "name": "velo_save",
             "description": "Save a snapshot of the working tree. Records this run's identity in metadata.",
@@ -150,7 +159,18 @@ pub fn list() -> Value {
                 "end_line": {"type": "integer", "minimum": 1, "description": "Inclusive."}
             }), json!(["path"]))
         }
-    ])
+    ]);
+    let mut tools = all.as_array().cloned().unwrap_or_default();
+    if store_only {
+        tools.retain(|t| {
+            let name = t["name"].as_str().unwrap_or_default();
+            !store_tools::NEEDS_WORKING_TREE
+                .iter()
+                .any(|(n, _)| *n == name)
+        });
+    }
+    tools.extend(store_tools::list());
+    Value::Array(tools)
 }
 
 /// Dispatch one tool call.
@@ -158,7 +178,18 @@ pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolEr
     if !args.is_object() {
         return Err(bad("arguments must be an object"));
     }
+    if ctx.store_only {
+        if let Some((_, instead)) = store_tools::NEEDS_WORKING_TREE
+            .iter()
+            .find(|(n, _)| *n == name)
+        {
+            return Err(unsupported(name, instead));
+        }
+    }
     match name {
+        "velo_save_tree" => store_tools::save_tree_tool(ctx, args),
+        "velo_tree_at" => store_tools::tree_at_tool(ctx, args),
+        "velo_read_file" => store_tools::read_file_tool(ctx, args),
         "velo_save" => save_tool(ctx, args),
         "velo_restore" => restore_tool(ctx, args),
         "velo_status" => status_tool(ctx),
@@ -173,9 +204,16 @@ pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolEr
     }
 }
 
+/// The refusal for a tool that needs a working tree in a store-only session.
+fn unsupported(tool: &str, instead: &str) -> ToolError {
+    ToolError::Velo(Error::Unsupported {
+        detail: format!("{tool} needs a working tree and this server is store-only; use {instead}"),
+    })
+}
+
 // ── Argument helpers ─────────────────────────────────────────────────────────
 
-fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError> {
+pub(crate) fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s)),
@@ -183,7 +221,7 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError>
     }
 }
 
-fn req_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
+pub(crate) fn req_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     opt_str(args, key)?.ok_or_else(|| bad(format!("missing required argument '{key}'")))
 }
 
@@ -206,13 +244,13 @@ fn path_refs(paths: &[PathBuf]) -> Vec<&Path> {
     paths.iter().map(PathBuf::as_path).collect()
 }
 
-fn snapshot_arg(repo: &Repo, spec: &str) -> Result<SnapshotId, ToolError> {
+pub(crate) fn snapshot_arg(repo: &Repo, spec: &str) -> Result<SnapshotId, ToolError> {
     Ok(resolve_snapshot_id(repo, spec)?)
 }
 
 // ── Write-tool identity ──────────────────────────────────────────────────────
 
-fn author(ctx: &Context<'_>) -> Result<Author, ToolError> {
+pub(crate) fn author(ctx: &Context<'_>) -> Result<Author, ToolError> {
     Ok(match ctx.author {
         Some((name, Some(email))) => Author::with_email(name.clone(), email.clone())?,
         Some((name, None)) => Author::new(name.clone())?,
@@ -224,7 +262,11 @@ fn author(ctx: &Context<'_>) -> Result<Author, ToolError> {
 ///
 /// The refusal of `velo` and `mcp` happens here, before velo is called, so it
 /// reads as the caller's mistake (invalid params) rather than a velo failure.
-fn build_meta(ctx: &Context<'_>, tool: &str, args: &Value) -> Result<SnapshotMeta, ToolError> {
+pub(crate) fn build_meta(
+    ctx: &Context<'_>,
+    tool: &str,
+    args: &Value,
+) -> Result<SnapshotMeta, ToolError> {
     let mut meta = SnapshotMeta::new();
     match args.get("meta") {
         None | Some(Value::Null) => {}
@@ -553,6 +595,10 @@ fn branch_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             outcome?;
             Ok(json!({"created": name.as_str(), "at": at.as_ref().map(|a| a.as_str())}))
         }
+        "switch" if ctx.store_only => Err(unsupported(
+            "velo_branch switch",
+            "velo_save_tree with a branch name",
+        )),
         "switch" => {
             let name = need_name()?;
             let guard = ctx.repo.write()?;

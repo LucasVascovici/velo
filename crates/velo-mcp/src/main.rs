@@ -12,8 +12,14 @@ use velo_mcp::{resolve_run_id, Server};
 #[command(name = "velo-mcp", version)]
 struct Args {
     /// Repository to serve (discovered upward from here).
-    #[arg(long, default_value = ".")]
+    #[arg(long, default_value = ".", conflicts_with = "store")]
     repo: PathBuf,
+    /// Serve a single-file repository with no working tree (store-only mode).
+    #[arg(long, value_name = "FILE")]
+    store: Option<PathBuf>,
+    /// With --store, create the file when it is missing.
+    #[arg(long, requires = "store")]
+    create: bool,
     /// Run identity recorded on every write (else $VELO_MCP_RUN, else generated).
     #[arg(long)]
     run: Option<String>,
@@ -21,7 +27,12 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
-    let repo = match Repo::discover(&args.repo) {
+    let opened = match &args.store {
+        Some(file) if args.create && !file.exists() => Repo::create_file(file),
+        Some(file) => Repo::open_file_and_migrate(file),
+        None => Repo::discover(&args.repo),
+    };
+    let repo = match opened {
         Ok(r) => r,
         Err(e) => {
             eprintln!("velo-mcp: {e}");

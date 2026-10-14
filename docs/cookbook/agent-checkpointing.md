@@ -96,5 +96,10 @@ The tools map onto the steps above:
 6. `velo_blame {"path": "app.py"}`: `origin.run` names the run that wrote each
    line.
 
+An agent with no checkout can run `velo-mcp --store agent.velo --create`
+instead: content goes in the tool call (`velo_save_tree`), trees come back by
+id, and no working tree is ever written. See the "Store-only mode" section of
+the velo-mcp README.
+
 There is no force option: a dirty tree is an error result and nothing is
 overwritten. See [`crates/velo-mcp/README.md`](../../crates/velo-mcp/README.md).
