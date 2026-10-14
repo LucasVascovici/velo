@@ -742,6 +742,34 @@ describes. A change that stored a tree once and shared it between snapshots
 that did not touch it would cut the rows and the size, and would also change
 `fsck`, `gc`, bundles and sync, so it needs its own phase.
 
+**Round four: pack import (17.8-a).** `bundle apply` and `clone` at 2,000 files
+x 300 snapshots (about 600,000 rows, a 165 MB `velo.db`) spent their time as
+follows in `bundle::import`, release build, one run each, NTFS with Defender on:
+
+| Phase | Before | After |
+| --- | --- | --- |
+| objects: verify and write 2,600 files | 14-16 s | 5.6-6.7 s |
+| snapshot id verification | 0.1 s | 0.1 s |
+| `file_map` inserts with both indexes | 6.4-8 s | 6.4-8 s |
+| commit (WAL write and checkpoint) | 4-5 s | 4-5 s |
+
+The object phase was the avoidable part: many rayon threads creating small
+files at once took about 100 ms per file where one thread takes 2.5 ms, so the
+writes now run on the calling thread after the parallel verification. Four
+writer threads were measured and were no better than the full pool. That is
+about a 1.4x improvement of `bundle apply` (roughly 27 s to 20 s on a noisy
+machine), not the 2x aimed at.
+
+**The floor is SQLite.** Dropping `idx_filemap_snap` and `idx_filemap_path`
+for the bulk insert and recreating them in the same transaction made the
+inserts take 1.1 s but the index build 4-5 s, a wash (11 s against 11.5 s), so
+it was not kept. A 512 MB page cache saved about one second. What remains is
+writing 600,000 rows and two indexes over long repeated path strings, then
+checkpointing 165 MB. Going below it means fewer rows or smaller rows, which is
+the decision below: share trees between snapshots, store hashes as blobs, or
+key `file_map` on `(snapshot_hash, path)` `WITHOUT ROWID`. Nothing in the
+format changed.
+
 **Decision:** open. This is the same decision as 14.1 and 14.5, so it belongs
 with those format decisions and is made there once. Nothing was changed in
 Phase 15: no schema, index or code path.

@@ -125,7 +125,6 @@ fn cleanly_merged_crlf_file_is_restored() {
     save_as(&repo, "main other");
     merge_in(&repo);
     let f = tmp.path().join("F.md");
-    assert!(!fs::read(&f).unwrap().contains(&b'\r') || true);
     abort(&repo);
     assert_eq!(fs::read(&f).unwrap(), b"a\r\nb\r\nc\r\n");
     assert!(get_status_clean(&repo));

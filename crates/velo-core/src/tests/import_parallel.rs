@@ -125,3 +125,52 @@ fn mismatched_snapshot_id_is_still_corrupt() {
         assert_eq!(snapshot_count(&dest), 0);
     }
 }
+
+/// Every `file_map` row as a sorted set, plus the snapshot ids, so two
+/// repositories can be compared.
+type Row = (String, String, String, u32);
+
+fn dump(repo: &Repo) -> (Vec<Row>, Vec<String>) {
+    let conn = repo.conn();
+    let rows = conn
+        .prepare("SELECT snapshot_hash, path, hash, mode FROM file_map ORDER BY 1, 2, 3, 4")
+        .unwrap()
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let ids = conn
+        .prepare("SELECT hash FROM snapshots ORDER BY hash")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    (rows, ids)
+}
+
+/// Objects are verified in parallel but written one at a time (17.8-a); a
+/// multi-snapshot pack must still land exactly the rows, ids and objects it
+/// carried, and importing it twice must change nothing.
+#[test]
+fn multi_snapshot_pack_yields_the_same_rows_ids_and_objects() {
+    for loc in both() {
+        let (src_tmp, src) = setup(loc);
+        history(&src, src_tmp.path());
+        let file = src_tmp.path().join("out.velobundle");
+        bundle::create(&src, &file, None).unwrap();
+        let b = bundle::decode(&fs::read(&file).unwrap()).unwrap();
+
+        let (_tmp, dest) = setup(loc);
+        for _ in 0..2 {
+            let g = dest.write().unwrap();
+            bundle::import_pack(&g, &b).unwrap();
+        }
+
+        assert_eq!(dump(&src), dump(&dest));
+        for (name, _) in &b.objects {
+            assert!(dest.objects().contains(name), "object {name} missing");
+        }
+        assert!(fsck::check(&dest).unwrap().problems.is_empty());
+    }
+}
