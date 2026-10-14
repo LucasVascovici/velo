@@ -15,8 +15,18 @@ variant's fields (for example `paths`) attached.
 ```bash
 cargo install wasm-pack
 wasm-pack build bindings/wasm --target web      # or --target nodejs / bundler
-wasm-pack test --node bindings/wasm             # the test suite
+wasm-pack test --node bindings/wasm -- --test node   # in-memory suite under Node
+wasm-pack test --headless --chrome bindings/wasm -- --test browser --test browser_memory
+wasm-pack test --headless --firefox bindings/wasm -- --test browser --test browser_memory
 ```
+
+The browser tests run the cookbook scenario (three snapshots, a branch,
+history, a conflicting merge plan and resolved merge, `fsck`) inside a
+dedicated worker: once in memory, and once against a persistent OPFS
+repository that is dropped and reopened in the same worker to check the history
+survived. CI runs them in headless Chrome and headless Firefox. `--test`
+keeps the worker-configured files out of the Node run. Page-reload persistence
+is not tested yet.
 
 `zstd-sys` and the bundled SQLite compile C for wasm, so `clang` must be on
 `PATH` (see DEVELOPING.md).
@@ -66,8 +76,10 @@ releases it. After the VFS is installed it is the default, so do not mix
 
 `Repo`: `createInMemory`, `openInMemory`, `openPersistent` (async, static);
 `saveTree`, `treeAt`, `readFileAt`, `snapshot`, `snapshotMeta`, `history`,
-`blame`, `mergeBase`, `mergePlan`, `mergeCommit`, `branchTip`, `headToken`
-(a `bigint`). The input and result types are in the generated `.d.ts`.
+`blame`, `mergeBase`, `mergePlan`, `mergeCommit`, `fsck`, `branchTip`,
+`headToken` (a `bigint`). `fsck()` verifies the repository read-only and returns
+`{ok, problems: [{kind, detail}], cruft: [{kind, detail}]}`; `ok` is false only
+for integrity problems. The input and result types are in the generated `.d.ts`.
 
 ## Limits
 

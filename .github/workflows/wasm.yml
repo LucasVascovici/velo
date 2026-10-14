@@ -51,6 +51,16 @@ jobs:
           cargo clippy --manifest-path bindings/wasm/Cargo.toml
           --target wasm32-unknown-unknown --all-targets -- -D warnings
       - name: Test under Node
-        run: wasm-pack test --node bindings/wasm
+        # `--test node` keeps the browser-only test files (which configure a
+        # dedicated worker) from running under the wrong runner.
+        run: wasm-pack test --node bindings/wasm -- --test node
+      - name: Test in headless Chrome (dedicated worker, OPFS)
+        run: >
+          wasm-pack test --headless --chrome bindings/wasm --
+          --test browser --test browser_memory
+      - name: Test in headless Firefox (dedicated worker, OPFS)
+        run: >
+          wasm-pack test --headless --firefox bindings/wasm --
+          --test browser --test browser_memory
       - name: Build for the web
         run: wasm-pack build bindings/wasm --target web
