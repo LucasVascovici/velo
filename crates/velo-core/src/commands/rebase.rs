@@ -217,6 +217,7 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
     let discarded = discard_replayed(guard, &onto, &orig_head);
 
     let _ = fs::remove_file(root.join(".velo/MERGE_HEAD"));
+    let _ = fs::remove_file(root.join(".velo/MERGE_ORIG"));
     clear_state(guard.root());
 
     let restored_to = if orig_head.is_empty() {

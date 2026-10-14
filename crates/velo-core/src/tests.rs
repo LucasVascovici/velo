@@ -12219,3 +12219,6 @@ mod resolve_take_counts;
 
 #[cfg(test)]
 mod open_fast_path;
+
+#[cfg(test)]
+mod merge_abort_bytes;

@@ -36,11 +36,21 @@ third-party tool — must conform to this document.
 ├── lock          advisory lock file (fs2); held by mutating operations
 ├── lock.holder   who holds the lock: pid, start time (ms), command; informational
 ├── MERGE_HEAD    present only mid-merge/cherry-pick: "<pre-merge-id>:<source>"
+├── MERGE_ORIG    present only mid-merge: exact pre-merge bytes of CR-ending files the merge may rewrite
 └── REBASE_STATE  present only mid-rebase (with REBASE_ONTO, REBASE_ORIG_HEAD)
 ```
 
 `HEAD` and `PARENT` are refs written **atomically** (temp file + rename). A reader
 must tolerate a missing or empty `PARENT` (a repository with no commits).
+
+`MERGE_ORIG` is working state like `MERGE_HEAD`, not repository format. Stored
+text has its `\r` removed (§2.1), so `merge --abort` could only restore the LF
+form of a file the merge rewrote; `merge` therefore keeps the original bytes of
+every CR-ending, NUL-free text file it may rewrite or delete. It is a sequence
+of records: `u32` LE path length, path (UTF-8, repo-relative, `/` separators),
+`u32` LE data length, data. Abort writes a record back only if the restored file
+equals it with CRs removed. Older builds ignore the file; a stale one is removed
+by the next merge, abort or save.
 
 ### Single-file layout
 

@@ -451,6 +451,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     let merge_head = root.join(".velo/MERGE_HEAD");
     if merge_head.exists() {
         let _ = fs::remove_file(&merge_head);
+        let _ = fs::remove_file(root.join(".velo/MERGE_ORIG"));
     }
 
     Ok(Outcome::Saved(SaveResult {
