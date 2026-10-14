@@ -998,7 +998,13 @@ NOTES
     },
 
     /// Send a branch's commits to a remote (fast-forward only).
-    #[command(verbatim_doc_comment)]
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · Branches whose snapshots the pushed branch merged are published with
+      it, under their own names."
+    )]
     Push {
         /// Remote name (default: origin).
         #[arg(value_name = "REMOTE", default_value = "origin")]
@@ -2568,7 +2574,7 @@ fn run(cli: Cli) -> Result<Exit> {
             )?);
         }
         Commands::Push { remote, branch } => {
-            let pushed = commands::sync::push(
+            let pushed = commands::sync::push_report(
                 write(),
                 &remote,
                 branch.as_deref(),
@@ -2576,7 +2582,7 @@ fn run(cli: Cli) -> Result<Exit> {
                 Default::default(),
             );
             match pushed {
-                Ok(pushed) => render::sync::print_pushed(&pushed),
+                Ok(report) => render::sync::print_push_report(&report),
                 Err(e) => {
                     // The refused push has just refreshed the tracking ref to the
                     // advertised tip. If this repository no longer holds that
