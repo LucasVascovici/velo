@@ -195,6 +195,7 @@ fn crafted(source: &Repo, rows: &[&str], renames: Vec<RenameRow>) -> (Bundle, St
         tags: vec![],
         objects: vec![(object, frame)],
         renames,
+        signatures: vec![],
     };
     (bundle, id)
 }

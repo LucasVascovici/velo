@@ -27,6 +27,7 @@ fn empty() -> Bundle {
         tags: vec![],
         objects: vec![],
         renames: vec![],
+        signatures: vec![],
     }
 }
 
@@ -77,6 +78,7 @@ fn one_snapshot(source: &Repo, meta_value: &str) -> Bundle {
         tags: vec![],
         objects: vec![(object, frame)],
         renames: vec![],
+        signatures: vec![],
     }
 }
 

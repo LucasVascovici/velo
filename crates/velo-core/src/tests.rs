@@ -12245,3 +12245,6 @@ mod one_step_sync;
 
 #[cfg(test)]
 mod read_limits;
+
+#[cfg(test)]
+mod signed_bundles;

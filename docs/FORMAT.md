@@ -452,8 +452,8 @@ output.
 Little-endian. Strings are `u32` byte-length followed by UTF-8 bytes.
 
 ```
-magic      : 8 bytes  "VELOBND1"   (v1)  /  "VELOBND2"  (v2 and v3)
-version    : u32                    1 (v1) / 2 / 3
+magic      : 8 bytes  "VELOBND1"   (v1)  /  "VELOBND2"  (v2, v3 and v4)
+version    : u32                    1 (v1) / 2 / 3 / 4
 snapshots  : u32 count, then per row:
                hash, message, branch, parent_hash, merge_parent,
                created_at            (v1: string / v2: i64 epoch ms)
@@ -462,7 +462,9 @@ meta       : u32 count, then per row: snapshot_id, namespace, key, value   (v2+)
 tags       : u32 count, then per row: name, snapshot_hash
 objects    : u32 count, then per row: hash, u32 len, len bytes
                (the raw, already-Zstd-compressed object, verbatim)
-renames    : u32 count, then per row: snapshot_hash, from_path, to_path    (v3 only)
+renames    : u32 count, then per row: snapshot_hash, from_path, to_path    (v3+)
+signatures : u32 count, then per row: snapshot_hash, algorithm,
+               public_key, signature                                      (v4 only)
 ```
 
 Version 3 appends `renames` after `objects` and changes nothing before it, so a
@@ -478,6 +480,16 @@ belonging to whoever moved it. Silence, not an error, which is why they are
 carried. Edges naming snapshots the receiver does not hold are dropped on
 import: storing one would manufacture exactly the problem §7.4 has `fsck`
 report.
+
+Version 4 appends `signatures` (§11.1) after `renames` and changes nothing
+before it. It is written **exactly when the bundle carries at least one
+signature**; a bundle with none is version 3, byte for byte as before, so an
+unsigned repository's bundles stay readable by 5.1.x. A v3-only reader refuses a
+version-4 bundle, which is the point: it would otherwise import the history and
+silently drop the signatures. Rows for snapshots the receiver does not hold are
+dropped on import, as for renames. Sync packs send only the snapshots the peer
+lacks, so a countersignature added later to an already-shared snapshot is not
+re-sent by sync; a `bundle create` of that history carries it.
 
 Rules:
 
@@ -598,7 +610,7 @@ of D5 (§11.1), nothing in this section is written or read by the current code. 
 taken before any code exists, because each is cheap now and a format break
 later. Later work implements them to the letter.
 
-### 11.1 Signatures (D5) — storage implemented; transport pending
+### 11.1 Signatures (D5) — implemented
 
 - **What is signed:** the snapshot id. The signed message is the ASCII bytes
   `velo-signature-v1\n` followed by the 64-char lowercase hex id. Nothing else
@@ -630,9 +642,10 @@ later. Later work implements them to the letter.
   naming a snapshot in neither `snapshots` nor `trash` as cruft.
 - **Transport:** bundle wire version 4 appends a `signatures` section after
   `renames` (u32 count; per row: snapshot_hash, algorithm, public_key,
-  signature). Every writer that supports signatures writes version 4, so a
-  v3-only reader *refuses* the bundle instead of importing it and silently
-  dropping the signatures. Readers verify every signature before committing an
+  signature). Version 4 is written **only when the bundle carries at least one
+  signature**, so an unsigned repository's bundles stay version 3. A v3-only
+  reader still refuses any bundle that carries signatures, instead of importing
+  it and silently dropping them. Readers verify every signature before committing an
   import, and one invalid signature rejects the whole import (`UntrustedData`).
   Rows for snapshots the receiver does not hold are dropped, as for renames.
   Sync packs share the encoding.

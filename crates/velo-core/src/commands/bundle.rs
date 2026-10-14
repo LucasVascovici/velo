@@ -25,6 +25,8 @@
 //!            (the raw, already-zstd-compressed object file, verbatim)
 //! renames  : u32 count, then per row: 3 strings   (version 3 and later)
 //!            (snapshot_hash, from_path, to_path)
+//! signatures: u32 count, then per row: 4 strings  (version 4 only)
+//!            (snapshot_hash, algorithm, public_key, signature)
 //! ```
 //!
 //! Metadata has to travel: it is part of a snapshot's identity, so a receiver
@@ -59,7 +61,12 @@ const MAGIC: &[u8; 8] = b"VELOBND2";
 /// Wire format version. Tracks the repository format, but is its own constant
 /// because the two are free to diverge — a repository change that does not alter
 /// what crosses the wire should not invalidate every peer.
-const BUNDLE_VERSION: u32 = 3;
+const BUNDLE_VERSION: u32 = 4;
+
+/// The version written when a bundle carries no signatures. Writing 4 only when
+/// signatures are present keeps an unsigned repository's bundles readable by
+/// 5.1.x, which refuses 4 outright rather than import history and drop them.
+const UNSIGNED_VERSION: u32 = 3;
 
 /// The oldest version this build can read.
 ///
@@ -71,6 +78,9 @@ const MIN_BUNDLE_VERSION: u32 = 2;
 
 /// The version that first carried rename edges.
 const RENAMES_SINCE: u32 = 3;
+
+/// The version that first carried signatures.
+const SIGNATURES_SINCE: u32 = 4;
 
 // ─── In-memory bundle ──────────────────────────────────────────────────────────
 
@@ -105,6 +115,15 @@ pub struct RenameRow {
     pub to_path: String,
 }
 
+/// One `signatures` row in transit. The algorithm is a free string so a row
+/// from a newer writer survives a trip through this build, unverified.
+pub struct SignatureRow {
+    pub snapshot_hash: String,
+    pub algorithm: String,
+    pub public_key: String,
+    pub signature: String,
+}
+
 /// An in-memory pack of history: the interchange unit for bundles *and* for
 /// filesystem remotes (fetch/push build one from a source repo and import it
 /// into a destination repo).
@@ -115,6 +134,11 @@ pub struct Bundle {
     pub tags: Vec<(String, String)>,     // (name, snapshot_hash)
     pub objects: Vec<(String, Vec<u8>)>, // (hash, raw compressed bytes)
     pub renames: Vec<RenameRow>,
+    /// Signatures over the snapshots above. Hidden because `Bundle` is a
+    /// plain-fields type that crosses the public `Remote` trait; a field added
+    /// later must not become API by accident.
+    #[doc(hidden)]
+    pub signatures: Vec<SignatureRow>,
 }
 
 // ─── create ─────────────────────────────────────────────────────────────────────
@@ -230,6 +254,7 @@ pub(crate) fn build_pack_excluding(
             tags: Vec::new(),
             objects: Vec::new(),
             renames: Vec::new(),
+            signatures: Vec::new(),
         });
     }
     let mut snapshots = Vec::new();
@@ -356,6 +381,30 @@ pub(crate) fn build_pack_excluding(
         }
     }
 
+    // Signatures for the snapshots being sent. A repository that predates the
+    // table has none. Countersignatures added later to a snapshot the peer
+    // already holds are not re-sent: sync ships only snapshots the peer lacks.
+    let mut signatures = Vec::new();
+    if crate::sign::table_exists(conn)? {
+        let mut stmt = conn.prepare(
+            "SELECT snapshot_hash, algorithm, public_key, signature FROM signatures
+             ORDER BY snapshot_hash, public_key",
+        )?;
+        let rows = stmt.query_map([], |r| {
+            Ok(SignatureRow {
+                snapshot_hash: r.get(0)?,
+                algorithm: r.get(1)?,
+                public_key: r.get(2)?,
+                signature: r.get(3)?,
+            })
+        })?;
+        for row in rows.flatten() {
+            if snap_set.contains(&row.snapshot_hash) {
+                signatures.push(row);
+            }
+        }
+    }
+
     Ok(Bundle {
         snapshots,
         file_map,
@@ -363,6 +412,7 @@ pub(crate) fn build_pack_excluding(
         tags,
         objects,
         renames,
+        signatures,
     })
 }
 
@@ -444,6 +494,26 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
         for rename in &bundle.renames {
             crate::safe_path::check_named(&rename.from_path)?;
             crate::safe_path::check_named(&rename.to_path)?;
+        }
+    }
+
+    // ── Verify signatures before anything is committed ────────────────────────
+    // One bad signature rejects the whole import. Unknown algorithms are kept
+    // as they are and are never counted as valid.
+    for row in &bundle.signatures {
+        if crate::sign::check_row(
+            &row.snapshot_hash,
+            &row.algorithm,
+            &row.public_key,
+            &row.signature,
+        ) == crate::sign::RowCheck::Invalid
+        {
+            return Err(VeloError::UntrustedData {
+                detail: format!(
+                    "signature by {} on {} does not verify",
+                    row.public_key, row.snapshot_hash
+                ),
+            });
         }
     }
 
@@ -594,6 +664,32 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
         for r in &bundle.renames {
             ins_rename.execute(params![r.snapshot_hash, r.from_path, r.to_path])?;
         }
+
+        // Signatures, dropped for absent snapshots exactly as renames are. The
+        // table may be missing on a repository opened without migration.
+        if !bundle.signatures.is_empty() {
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS signatures (
+                    snapshot_hash TEXT NOT NULL,
+                    algorithm     TEXT NOT NULL,
+                    public_key    TEXT NOT NULL,
+                    signature     TEXT NOT NULL,
+                    PRIMARY KEY (snapshot_hash, public_key)
+                );",
+            )?;
+            let mut ins_sig = tx.prepare(
+                "INSERT OR IGNORE INTO signatures (snapshot_hash, algorithm, public_key, signature)
+                 SELECT ?1, ?2, ?3, ?4 WHERE EXISTS(SELECT 1 FROM snapshots WHERE hash = ?1)",
+            )?;
+            for r in &bundle.signatures {
+                ins_sig.execute(params![
+                    r.snapshot_hash,
+                    r.algorithm,
+                    r.public_key,
+                    r.signature
+                ])?;
+            }
+        }
     }
     tx.commit()?;
 
@@ -637,7 +733,14 @@ pub(crate) fn reachable_ancestry(conn: &rusqlite::Connection, tip: &str) -> Hash
 pub(crate) fn encode(b: &Bundle) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(MAGIC);
-    put_u32(&mut out, BUNDLE_VERSION);
+    put_u32(
+        &mut out,
+        if b.signatures.is_empty() {
+            UNSIGNED_VERSION
+        } else {
+            BUNDLE_VERSION
+        },
+    );
 
     put_u32(&mut out, b.snapshots.len() as u32);
     for s in &b.snapshots {
@@ -684,6 +787,16 @@ pub(crate) fn encode(b: &Bundle) -> Vec<u8> {
         put_str(&mut out, &r.from_path);
         put_str(&mut out, &r.to_path);
     }
+
+    if !b.signatures.is_empty() {
+        put_u32(&mut out, b.signatures.len() as u32);
+        for s in &b.signatures {
+            put_str(&mut out, &s.snapshot_hash);
+            put_str(&mut out, &s.algorithm);
+            put_str(&mut out, &s.public_key);
+            put_str(&mut out, &s.signature);
+        }
+    }
     out
 }
 
@@ -696,6 +809,7 @@ const MIN_META_ROW: usize = 4 * 4;
 const MIN_TAG_ROW: usize = 2 * 4;
 const MIN_OBJECT_ROW: usize = 4 + 4;
 const MIN_RENAME_ROW: usize = 3 * 4;
+const MIN_SIGNATURE_ROW: usize = 4 * 4;
 
 pub(crate) fn decode(data: &[u8], limits: &Limits) -> Result<Bundle> {
     if data.len() as u64 > limits.max_pack_bytes {
@@ -787,6 +901,20 @@ pub(crate) fn decode(data: &[u8], limits: &Limits) -> Result<Bundle> {
         }
     }
 
+    let mut signatures = Vec::new();
+    if version >= SIGNATURES_SINCE {
+        let n = r.count(MIN_SIGNATURE_ROW)?;
+        signatures.reserve(n);
+        for _ in 0..n {
+            signatures.push(SignatureRow {
+                snapshot_hash: r.string()?,
+                algorithm: r.string()?,
+                public_key: r.string()?,
+                signature: r.string()?,
+            });
+        }
+    }
+
     Ok(Bundle {
         snapshots,
         file_map,
@@ -794,6 +922,7 @@ pub(crate) fn decode(data: &[u8], limits: &Limits) -> Result<Bundle> {
         tags,
         objects,
         renames,
+        signatures,
     })
 }
 
