@@ -4,6 +4,7 @@
 //! data and applies decisions, this crate walks a human through them. A consumer
 //! with its own UI (an editor, a GUI) can ignore this crate entirely and call the
 //! core API directly.
+#![forbid(unsafe_code)]
 
 use console::{style, Key, Term};
 use std::time::Duration;

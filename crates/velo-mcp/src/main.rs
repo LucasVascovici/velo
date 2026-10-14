@@ -1,4 +1,5 @@
 //! `velo-mcp` binary: argument parsing and the stdio loop.
+#![forbid(unsafe_code)]
 
 use std::io::{BufRead, Write};
 use std::path::PathBuf;

@@ -23,11 +23,10 @@
 //! The C declarations live in `include/velo.h`; a test checks that every
 //! exported symbol is declared there.
 
-// Every exported function is `unsafe` because it takes raw pointers, and the
-// contract is the same for all of them and stated once, above and in the header:
-// pointers are NULL-checked, strings are NUL-terminated, and handles come from
-// this library and are not used after being freed.
-#![allow(clippy::missing_safety_doc)]
+// Every exported function is `unsafe` because it takes raw pointers; each carries
+// a `# Safety` section, and the contract is the one stated in `include/velo.h`.
+// `unsafe_op_in_unsafe_fn` is not denied: ~50 pointer operations sit in the
+// bodies of these functions and would each need a block that says the same thing.
 
 mod branches;
 pub mod error;
@@ -78,6 +77,11 @@ fn null_arg(name: &str) -> Failure {
 }
 
 /// A required string argument.
+///
+/// # Safety
+///
+/// `ptr` must be NULL or point to a valid value of the type for the whole of
+/// the returned borrow; strings must be NUL-terminated.
 pub(crate) unsafe fn str_arg<'a>(ptr: *const c_char, name: &str) -> Res<&'a str> {
     if ptr.is_null() {
         return Err(null_arg(name));
@@ -91,11 +95,21 @@ pub(crate) unsafe fn str_arg<'a>(ptr: *const c_char, name: &str) -> Res<&'a str>
 }
 
 /// A required handle argument.
+///
+/// # Safety
+///
+/// `ptr` must be NULL or point to a valid value of the type for the whole of
+/// the returned borrow; strings must be NUL-terminated.
 pub(crate) unsafe fn ref_arg<'a, T>(ptr: *const T, name: &str) -> Res<&'a T> {
     ptr.as_ref().ok_or_else(|| null_arg(name))
 }
 
 /// A required mutable handle argument.
+///
+/// # Safety
+///
+/// `ptr` must be NULL or point to a valid value of the type for the whole of
+/// the returned borrow; strings must be NUL-terminated.
 pub(crate) unsafe fn mut_arg<'a, T>(ptr: *mut T, name: &str) -> Res<&'a mut T> {
     ptr.as_mut().ok_or_else(|| null_arg(name))
 }
@@ -135,19 +149,29 @@ pub(crate) fn req_str<'a>(doc: &'a Map<String, Value>, key: &str) -> Res<&'a str
 
 /// A snapshot spec (tag, branch, id or prefix) taken from a C string.
 pub(crate) fn snapshot_arg(repo: &velo_core::Repo, spec: *const c_char) -> Res<SnapshotId> {
-    Ok(resolve_snapshot_id(repo, unsafe {
-        str_arg(spec, "spec")?
-    })?)
+    // SAFETY: `spec` is a C string from the exported caller, which promises it is
+    // NULL or NUL-terminated; `str_arg` rejects NULL.
+    let spec = unsafe { str_arg(spec, "spec")? };
+    Ok(resolve_snapshot_id(repo, spec)?)
 }
 
 /// Write a JSON result to the caller's out-parameter.
 pub(crate) fn emit(out: *mut *mut c_char, value: Value) -> Res<()> {
+    // SAFETY: `out` is the caller's out-parameter, NULL or writable; `mut_arg`
+    // rejects NULL.
     let out = unsafe { mut_arg(out, "out_json")? };
     *out = to_c_string(value.to_string())?;
     Ok(())
 }
 
 /// Free a string returned by this library. NULL is a no-op.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_string_free(text: *mut c_char) {
     if !text.is_null() {
@@ -157,6 +181,13 @@ pub unsafe extern "C" fn velo_string_free(text: *mut c_char) {
 
 /// Free a buffer returned by this library, given the length it came with.
 /// NULL is a no-op.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_bytes_free(data: *mut u8, len: usize) {
     if !data.is_null() {

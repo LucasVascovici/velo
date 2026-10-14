@@ -10,6 +10,7 @@
 //! let r = diff3("a\nb\nc\n", "A\nb\nc\n", "a\nb\nC\n");
 //! assert!(matches!(r, MergeResult::Clean(ref s) if s == "A\nb\nC\n"));
 //! ```
+#![forbid(unsafe_code)]
 
 use similar::{DiffOp, TextDiff};
 use std::ops::Range;

@@ -88,6 +88,8 @@
 //! Use one `Repo` per thread, or `Arc<Mutex<Repo>>`, and `spawn_blocking` from
 //! async contexts. The core is deliberately synchronous.
 #![deny(clippy::print_stdout, clippy::print_stderr)]
+// The one unsafe block is the read-only mmap in `storage.rs`, justified there.
+#![deny(unsafe_code)]
 
 pub mod commands;
 pub mod db;

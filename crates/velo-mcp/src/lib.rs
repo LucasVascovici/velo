@@ -3,6 +3,7 @@
 //! [`Server::handle`] takes one JSON-RPC line and returns the response line, if
 //! any. The binary only wires it to stdin and stdout, which keeps the whole
 //! protocol testable in-process.
+#![forbid(unsafe_code)]
 
 pub mod protocol;
 mod store_tools;

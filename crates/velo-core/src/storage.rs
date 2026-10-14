@@ -1161,8 +1161,15 @@ fn hash_mmap(path: &Path) -> Result<String> {
 #[cfg(not(target_family = "wasm"))]
 fn read_mmap(path: &Path) -> Result<Vec<u8>> {
     let file = fs::File::open(path).map_err(VeloError::Io)?;
-    // Safety: the file is read-only and we don't modify it during the map's
-    // lifetime.  This is the standard pattern for read-only mmaps.
+    // SAFETY: the file is opened read-only and the map is private to this
+    // function. velo never writes to a stored file in place (objects are written
+    // to a temporary name and renamed), so nothing in this process mutates the
+    // mapped bytes. The known mmap caveat is another process truncating the file
+    // while it is mapped, which raises SIGBUS on Unix or an access violation on
+    // Windows. velo narrows that to the instant of the copy: the bytes are
+    // copied into a `Vec` immediately and the map dropped, so no reference into
+    // the mapping outlives this function.
+    #[allow(unsafe_code)]
     let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(VeloError::Io)?;
     Ok(mmap.to_vec())
 }

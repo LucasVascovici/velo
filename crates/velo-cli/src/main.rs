@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 use clap::{builder::styling, Parser, Subcommand};
 
 // All repository logic lives in `velo-core`; this crate is the presentation
@@ -1203,7 +1205,11 @@ fn git_habit_hint(args: impl Iterator<Item = String>) -> Option<&'static str> {
 }
 
 fn main() {
+    // SAFETY: `SetConsoleOutputCP` takes a plain integer code page and touches no
+    // memory of ours; the declaration matches the kernel32 signature. Failure is
+    // harmless (output stays in the old code page), so the result is ignored.
     #[cfg(windows)]
+    #[allow(unsafe_code)]
     unsafe {
         #[link(name = "kernel32")]
         extern "system" {

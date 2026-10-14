@@ -111,6 +111,13 @@ fn empty_name(reason: &EmptyReason) -> &'static str {
 ///
 /// `empty` is `unborn_branch`, `no_snapshots`, `no_snapshots_touching`,
 /// `no_snapshots_matching` or `other`, and is null when entries were found.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_history(
     repo: *const VeloRepo,
@@ -177,6 +184,13 @@ pub unsafe extern "C" fn velo_history(
 /// Snapshots matching every metadata filter, newest first, as a JSON array of
 /// entries. `filters_json` is `[{"namespace","key","value"|null}, ...]`; an
 /// empty array is `VELO_ERR_INVALID_INPUT`, because it would match everything.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_find_snapshots(
     repo: *const VeloRepo,
@@ -208,6 +222,13 @@ pub unsafe extern "C" fn velo_find_snapshots(
 /// `options_json` is an object with optional `at` (a spec; default is the
 /// current branch tip), `start_line` and `end_line` (1-based, inclusive; a
 /// missing `end_line` runs to the end of the file).
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_blame(
     repo: *const VeloRepo,

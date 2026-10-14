@@ -205,3 +205,33 @@ jobs:
           package: velo-core,velo-merge
           baseline-rev: v5.1.2
           feature-group: all-features
+
+  # Licences, bans, sources and advisories against deny.toml for the root
+  # workspace. The bindings are separate workspaces whose manifests declare no
+  # licence yet, so they are not covered here.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  # RustSec advisories against Cargo.lock.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
