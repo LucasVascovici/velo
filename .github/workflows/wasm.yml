@@ -64,3 +64,35 @@ jobs:
           --test browser --test browser_memory
       - name: Build for the web
         run: wasm-pack build bindings/wasm --target web
+
+  reload:
+    name: velo-wasm · page-reload persistence (Playwright, Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bindings/wasm/e2e/package-lock.json
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Build the package for the web
+        run: wasm-pack build bindings/wasm --target web
+      - name: Install e2e dependencies
+        working-directory: bindings/wasm/e2e
+        run: npm ci
+      - name: Install Chromium
+        working-directory: bindings/wasm/e2e
+        run: npx playwright install --with-deps chromium
+      - name: Reload test
+        working-directory: bindings/wasm/e2e
+        run: npx playwright test --project chromium

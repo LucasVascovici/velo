@@ -29,8 +29,28 @@ Firefox; they have not been run locally, so the result of that job is the
 evidence, and a browser that fails there (for example Firefox if the OPFS
 `sahpool` VFS is unsupported) is to be removed from the job and documented
 here. `--test`
-keeps the worker-configured files out of the Node run. Page-reload persistence
-is not tested yet.
+keeps the worker-configured files out of the Node run.
+
+Page-reload persistence is tested end to end in `e2e/` with Playwright: a page
+starts a module dedicated worker that opens `reload-test.db` with
+`openPersistent`, saves a snapshot, the page is reloaded, and a fresh worker
+reads the same snapshot id and file text back.
+
+```bash
+wasm-pack build bindings/wasm --target web
+cd bindings/wasm/e2e && npm ci && npx playwright install --with-deps chromium
+npx playwright test --project chromium    # also: --project firefox | webkit
+```
+
+| Browser  | Reload test                                              |
+| -------- | -------------------------------------------------------- |
+| Chromium | run in the CI `reload` job (the result of that job is the evidence) |
+| Firefox  | project configured, not run in CI, not verified          |
+| WebKit   | project configured, not run in CI, not verified          |
+
+Only Chromium is claimed. Firefox and WebKit are listed in
+`e2e/playwright.config.mjs` so they can be tried with `--project`, but no result
+is recorded for them here.
 
 `zstd-sys` and the bundled SQLite compile C for wasm, so `clang` must be on
 `PATH` (see DEVELOPING.md).
@@ -75,6 +95,20 @@ thread, a shared worker, Node) it rejects with code `'Unsupported'`. Exactly one
 context can hold the pool at a time; a second tab's call fails until the first
 releases it. After the VFS is installed it is the default, so do not mix
 `createInMemory` with `openPersistent` in the same worker.
+
+### No IndexedDB fallback
+
+Persistence requires OPFS in a dedicated worker; there is no IndexedDB
+fallback, and `openPersistent` takes no backend option. `sqlite-wasm-vfs` does
+ship a `relaxed_idb` VFS, but it is not usable for a velo repository: it
+supports only `PRAGMA synchronous=off` while velo-core sets `WAL` and
+`synchronous=NORMAL`, it writes to IndexedDB asynchronously after SQLite's sync
+with no per-write completion the binding could await (so a reload right after a
+save can lose it), and its own documentation warns of corruption when more than
+one page opens the same database. Making it safe would need changes to velo-core
+and the single-file seam, which is out of scope. Where OPFS is unavailable,
+`openPersistent` rejects with `'Unsupported'`; use `createInMemory` and export
+through your own means.
 
 ## API
 
