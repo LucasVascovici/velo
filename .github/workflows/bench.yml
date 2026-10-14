@@ -1,0 +1,33 @@
+name: bench
+
+# Manual only: the scale benchmark is slow and must not gate pushes or PRs.
+on:
+  workflow_dispatch:
+    inputs:
+      preset:
+        description: "Benchmark preset (small, envelope-a, envelope-b)"
+        type: choice
+        options: [small, envelope-a, envelope-b]
+        default: small
+
+permissions:
+  contents: read
+
+jobs:
+  scale:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release CLI
+        run: cargo build --release -p velo-cli --locked
+      - name: Run scale benchmark
+        run: |
+          python3 bench/scale/scale.py --preset "${{ inputs.preset }}" \
+            --workdir "$RUNNER_TEMP/velo-bench" --out results.json | tee "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: scale-results-${{ inputs.preset }}
+          path: results.json
