@@ -99,7 +99,7 @@ pub fn scenario(repo: &Repo) -> Outcome {
     );
     let resolved = js(&format!(
         "{{branch: 'main', ours: {ours:?}, theirs: {theirs:?}, message: 'merge',
-           resolutions: {{'a.txt': 'merged\n'}}}}"
+           resolutions: {{'a.txt': 'merged\\n'}}}}"
     ));
     let merged = repo.merge_commit(resolved).unwrap();
     assert_eq!(

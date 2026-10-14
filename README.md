@@ -190,7 +190,8 @@ repo.blame('a.txt', { at: id });
 `Repo.openPersistent` stores the file in OPFS from a dedicated worker. See its
 README for the details and limits (no sync in the browser). The save, history,
 merge and `fsck` scenario, in memory and against a reopened OPFS repository,
-is tested in headless Chrome and Firefox in CI.
+is run in headless Chrome and Firefox by the CI `bindings` job; see the
+binding README for what is and is not yet confirmed.
 
 ### MCP server
 
