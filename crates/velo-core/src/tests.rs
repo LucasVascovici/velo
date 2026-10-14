@@ -12254,3 +12254,6 @@ mod http_service;
 
 #[cfg(test)]
 mod http_auth_client;
+
+#[cfg(test)]
+mod signed_protection;

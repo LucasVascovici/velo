@@ -221,6 +221,7 @@ pub fn apply(
 
     let published = compact::published(conn)?;
     let checked_out = compact::checked_out(guard.repo());
+    let signed = compact::signed(guard.repo())?;
 
     // Classify every chain member. `hard` ones cannot be rewritten at all.
     let mut protected: Vec<(SnapshotId, Protected)> = Vec::new();
@@ -229,14 +230,16 @@ pub fn apply(
     for (i, member) in chain.iter().enumerate() {
         let reason = if published.contains(&member.hash) {
             Some(Protected::Published)
+        } else if signed.contains(&member.hash) {
+            Some(Protected::Signed)
         } else if depended_on.contains(&member.hash) {
             Some(Protected::ParentOfOutside)
         } else {
-            compact::protection_in(conn, &checked_out, &published, &member.hash)
+            compact::protection_in(conn, &checked_out, &published, &signed, &member.hash)
         };
         let hard = matches!(
             reason,
-            Some(Protected::Published | Protected::ParentOfOutside)
+            Some(Protected::Published | Protected::ParentOfOutside | Protected::Signed)
         );
         if hard && blocker.is_none() {
             blocker = Some(i);

@@ -733,8 +733,20 @@ rewritten chain gets a new parent and therefore a new id (it is *re-minted*).
     must survive); a snapshot that is the parent or merge parent of a snapshot
     outside the rewrite; anything reachable from a remote-tracking ref; the
     snapshot `.velo/PARENT` names, unless it is the newest member of its range.
-  - Never squashed **or** re-minted: once signatures exist, signed snapshots,
-    because re-minting invalidates the signature.
+  - Never squashed **or** re-minted: signed snapshots, because re-minting
+    invalidates the signature. A compaction whose range contains a signed
+    snapshot, or whose rewrite would re-mint a signed descendant, is refused
+    and changes nothing. Retention treats a signed snapshot as a barrier like a
+    published one: only snapshots newer than the newest signed snapshot on the
+    chain are eligible, and it is reported as protected (`signed`).
+  - Other id-rewriting commands keep the same rule and refuse with
+    `InvalidInput` before writing anything: `squash` when a signed snapshot is
+    in the squashed range, `rebase` when it would replay a signed snapshot,
+    and `save --amend` when the tip is signed. `undo` does not rewrite, so it
+    stays allowed; `redo` restores the snapshot.
+  - `gc` never deletes `signatures` rows, and does not expire a trash entry
+    whose snapshot is signed, so an undone signed snapshot stays recoverable by
+    `redo`.
   - Tagged snapshots *may* be re-minted as descendants. The tag is retargeted to
     the new id and the move is recorded.
 - **The squashed snapshot** takes the newest member's tree, message, timestamp

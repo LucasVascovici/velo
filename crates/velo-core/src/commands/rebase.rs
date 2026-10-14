@@ -138,6 +138,17 @@ fn do_start(guard: &WriteGuard, target: &SnapshotId, author: Option<&Author>) ->
         return Ok(Outcome::AlreadyUpToDate);
     }
 
+    // Replaying re-mints every commit; a signed one cannot survive that. Refuse
+    // before anything is written.
+    let signed = crate::commands::compact::signed(guard.repo())?;
+    if let Some((hit, _)) = commits.iter().find(|(h, _)| signed.contains(h)) {
+        return Err(VeloError::invalid(format!(
+            "Cannot rebase: snapshot {} is signed and would be replayed; \
+             signatures cannot survive a rewrite.",
+            &hit[..16.min(hit.len())]
+        )));
+    }
+
     fs::write(root.join(".velo/REBASE_ONTO"), &onto_hash)?;
     fs::write(root.join(".velo/REBASE_ORIG_HEAD"), &head_hash)?;
 

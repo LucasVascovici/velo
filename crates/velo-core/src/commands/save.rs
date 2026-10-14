@@ -187,6 +187,16 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         .as_ref()
         .map(|(h, p, _, _)| (h.clone(), p.clone()));
 
+    // An amend replaces the tip under a new id, which a signature cannot survive.
+    if let Some((old, _)) = &amend_hash {
+        if crate::commands::compact::signed(guard.repo())?.contains(old) {
+            return Err(VeloError::invalid(format!(
+                "Cannot amend: snapshot {} is signed; signatures cannot survive a rewrite.",
+                &old[..16.min(old.len())]
+            )));
+        }
+    }
+
     // ── Resolve the message ───────────────────────────────────────────────────
     let message: String = match provided {
         Some(m) => m.to_string(),

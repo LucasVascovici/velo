@@ -125,6 +125,16 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
         }
     }
 
+    // A signed snapshot in the range would be deleted and replaced under a new
+    // id, which its signature cannot survive. Nothing has been written yet.
+    let signed = crate::commands::compact::signed(guard.repo())?;
+    if let Some(hit) = squashed_hashes.iter().find(|h| signed.contains(**h)) {
+        return Err(VeloError::invalid(format!(
+            "Cannot squash: snapshot {} is signed; signatures cannot survive a rewrite.",
+            &hit[..16.min(hit.len())]
+        )));
+    }
+
     // The squashed snapshot has the same tree as HEAD (the net result), a new
     // message, and the oldest squashed snapshot's parent. Capture HEAD's tree
     // before touching the DB, then content-address the new snapshot.
