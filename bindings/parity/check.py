@@ -28,12 +28,8 @@ EXTRA_MODULES: list[str] = []
 IMPL_RE = re.compile(r"^impl(?:<[^>]*>)?\s+(Repo|WriteGuard)\b(?!\s+for)")
 PUB_FN_RE = re.compile(r"^pub\s+(?:const\s+|async\s+|unsafe\s+)*fn\s+(\w+)")
 STRIP_RE = re.compile(
-    r"""//[^\n]*"""
-    r"""|/\*.*?\*/"""
-    r"""|r(\#*)".*?"\1"""
-    r""""(?:\.|[^"\])*\""""
-    r"""|'(?:\[^']*|[^\'])'""",
-    re.S | re.X,
+    r"""//[^\n]*|/\*.*?\*/|r(#*)".*?"\1|"(?:\\.|[^"\\])*"|'(?:\\[^']*|[^\\'])'""",
+    re.S,
 )
 
 
