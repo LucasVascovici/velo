@@ -27,3 +27,22 @@ sqlite-wasm-vfs = "0.2"
 
 [dev-dependencies]
 wasm-bindgen-test = "0.3"
+
+# Size is the budget here: a local-first app should not pay megabytes for a
+# history engine. These apply to the release build only, so `wasm-pack test`
+# (dev profile, unwinding) is unaffected. Nothing in velo-core or this crate
+# catches a panic, so `panic = "abort"` loses nothing and drops the unwinding
+# tables.
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# wasm-pack's bundled wasm-opt (binaryen 117) aborts in its Precompute pass on
+# the output of current rustc, so it is switched off rather than left to fail
+# every release build. Running a newer binaryen `-Oz` over the package saves a
+# further ~10% gzip; see the Size section of README.md.
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = false

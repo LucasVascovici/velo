@@ -63,7 +63,33 @@ jobs:
           wasm-pack test --headless --firefox bindings/wasm --
           --test browser --test browser_memory
       - name: Build for the web
-        run: wasm-pack build bindings/wasm --target web
+        run: wasm-pack build bindings/wasm --release --target web
+      - name: Package size budget
+        env:
+          # Budget for the gzip -9 size of the release .wasm, in bytes: the
+          # value measured when the budget was set (863812) plus 10%. To raise
+          # it deliberately, change this number in the same pull request as
+          # the change that grew the package, and say why in the description
+          # and in the Size section of bindings/wasm/README.md.
+          GZIP_BUDGET: "950000"
+        run: |
+          f=bindings/wasm/pkg/velo_wasm_bg.wasm
+          raw=$(stat -c%s "$f")
+          gz=$(gzip -9 -c "$f" | wc -c)
+          sudo apt-get install -y brotli
+          br=$(brotli -q 11 -c "$f" | wc -c)
+          js=$(stat -c%s bindings/wasm/pkg/velo_wasm.js)
+          echo "velo_wasm_bg.wasm raw=$raw gzip-9=$gz brotli-11=$br; velo_wasm.js=$js"
+          {
+            echo "### velo-wasm package size"
+            echo "| raw | gzip -9 | brotli -q 11 | JS glue | gzip budget |"
+            echo "| ---: | ---: | ---: | ---: | ---: |"
+            echo "| $raw | $gz | $br | $js | $GZIP_BUDGET |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$gz" -gt "$GZIP_BUDGET" ]; then
+            echo "::error::gzip size $gz exceeds the budget $GZIP_BUDGET"
+            exit 1
+          fi
 
   reload:
     name: velo-wasm · page-reload persistence (Playwright, Chromium)

@@ -110,6 +110,44 @@ and the single-file seam, which is out of scope. Where OPFS is unavailable,
 `openPersistent` rejects with `'Unsupported'`; use `createInMemory` and export
 through your own means.
 
+## Size
+
+Measured 2026-10-14 on the release package, built with
+`wasm-pack build bindings/wasm --release --target web`:
+
+| File | Raw | `gzip -9` | `brotli -q 11` |
+| :--- | ---: | ---: | ---: |
+| `pkg/velo_wasm_bg.wasm` | 2,414,425 | 863,812 | 663,391 |
+| `pkg/velo_wasm.js` (glue) | 48,339 | | |
+
+That is about 0.85 MB over the wire with gzip and 0.65 MB with brotli. The
+engine is SQLite plus zstd plus velo-core; the largest single items are the
+SQLite VDBE, zstd's compressors and the `fsck` inspector.
+
+What was done about it, and what was measured:
+
+- Before the release profile settings (opt-level 3, no LTO, names kept):
+  3,748,254 raw, 1,267,189 gzip, 889,811 brotli.
+- `[profile.release]` in `Cargo.toml` now sets `opt-level = "z"`, `lto = true`,
+  `codegen-units = 1`, `panic = "abort"` and `strip = true`. `"s"` was tried
+  and came out larger under gzip (1,014,689 against 1,004,646 at that point),
+  so `"z"` stays. Stripping the 472 KB function-name section was the largest
+  single win. The tests use the dev profile and are not affected.
+- Merge drivers are not in the build: velo-core is used with its default
+  features, which are none.
+- Git import and export are **not** gated out. With LTO nothing reachable from
+  the binding calls them, and `twiggy` shows no `commands::import` or
+  `commands::export` code in the binary, so a target cfg would save 0 bytes.
+- wasm-pack's bundled `wasm-opt` (binaryen 117) aborts on this module, so it is
+  disabled in `Cargo.toml`. A newer binaryen (npm `binaryen`, `wasm-opt -Oz
+  --all-features`) took the pre-LTO build from 1,267,189 to 1,147,159 gzip,
+  about 9.5%. It is not wired into the build yet.
+
+The numbers were taken with `zig cc` standing in for clang as the C compiler
+(the C parts are SQLite and zstd), so CI may differ by a little. CI prints the
+three sizes on every run and fails if the gzip size passes the budget set in
+`.github/workflows/wasm.yml`; the comment there says how to raise it.
+
 ## API
 
 `Repo`: `createInMemory`, `openInMemory`, `openPersistent` (async, static);
