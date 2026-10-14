@@ -88,13 +88,19 @@ fn print_labels(diff: &Diff) {
 
 // ─── velo show ────────────────────────────────────────────────────────────────
 
-pub fn print_snapshot(detail: &SnapshotDetail) {
+/// `signed` marks a snapshot that carries a signature; the caller looks it up.
+pub fn print_snapshot(detail: &SnapshotDetail, signed: bool) {
     println!(
-        "{} {}  {}  {}",
+        "{} {}  {}  {}{}",
         style("snapshot").dim(),
         style(super::id::short(&detail.hash)).yellow().bold(),
         style(&detail.branch).cyan(),
-        style(super::when::seconds(detail.created_at)).dim()
+        style(super::when::seconds(detail.created_at)).dim(),
+        if signed {
+            format!("  {}", super::sign::marker())
+        } else {
+            String::new()
+        }
     );
     println!("  {}", style(&detail.message).white().bold());
     match (&detail.parent, &detail.merge_parent) {

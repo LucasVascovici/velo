@@ -556,6 +556,9 @@ can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 | `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
 | `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
 | `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
+| `velo keygen --out <file>` | Write a new signing key (a secret) to `file` and print its public key |
+| `velo sign [snapshot] --key <file>` | Sign a snapshot (default: the current one) with a key file |
+| `velo verify [snapshot] --trust <file>` | Check a snapshot's signatures against a file of trusted public keys; exits 1 unless one is trusted |
 
 ---
 
@@ -752,6 +755,22 @@ Underneath, a few things protect your data:
 - **Verified imports.** Anything received from a bundle or a remote is fully
   verified — objects re-hashed, snapshot IDs recomputed — inside one transaction
   before it is trusted.
+
+#### Signing snapshots
+
+```bash
+velo keygen --out ~/.velo-key        # prints the public key; the file is a secret
+velo sign --key ~/.velo-key          # sign the snapshot you are on
+velo verify --trust trusted.keys     # exit 0 only if a trusted key signed it
+```
+
+A signature covers the snapshot's id, and the id covers the whole tree, the
+parents, the message, the time, the metadata and the author, so a valid
+signature vouches for all of them. `velo history` and `velo show` mark signed
+snapshots with `[signed]`. Trust is your own list: the trust file holds one
+public key per line (blank lines and `#` comments are allowed), and velo checks
+signatures against it. Velo does not store private keys, manage or revoke keys,
+or build a web of trust.
 
 ---
 

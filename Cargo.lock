@@ -1540,6 +1540,7 @@ dependencies = [
  "chrono",
  "clap",
  "console",
+ "getrandom 0.4.3",
  "serde_json",
  "similar",
  "tempfile",

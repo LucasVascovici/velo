@@ -24,6 +24,7 @@ pub mod rebase;
 pub mod remote;
 pub mod restore;
 pub mod save;
+pub mod sign;
 pub mod squash;
 pub mod stash;
 pub mod status;

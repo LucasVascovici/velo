@@ -396,6 +396,86 @@ NOTES
         paths: Vec<String>,
     },
 
+    /// Generate a signing key and print its public half.
+    ///
+    /// Writes a fresh 32-byte Ed25519 seed, as lowercase hex, to FILE and
+    /// prints the matching public key on stdout.  Works anywhere; it does
+    /// not need a repository.
+    ///
+    /// Examples
+    ///   velo keygen --out ~/.velo-signing-key
+    ///   velo keygen --out key.txt
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · FILE is a secret: velo never stores, uploads or manages it.
+      Keep it out of the repository and out of backups you share.
+    · An existing FILE is never overwritten.
+    · Give the public key to whoever should trust your signatures;
+      they put it in the trust file that velo verify reads."
+    )]
+    Keygen {
+        /// File to write the secret key to (created, mode 0600 on Unix).
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
+
+    /// Sign a snapshot with a key file.
+    ///
+    /// The signature covers the snapshot id, so it vouches for the whole
+    /// tree, the parents, the message, the time, the metadata and the
+    /// author.  Defaults to the snapshot you are on.
+    ///
+    /// Examples
+    ///   velo sign --key ~/.velo-signing-key
+    ///   velo sign v1.0 --key ~/.velo-signing-key
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · Create a key with velo keygen.
+    · Signing the same snapshot twice with the same key changes nothing.
+    · Signatures never change a snapshot's id."
+    )]
+    Sign {
+        /// Hash (or prefix), tag or branch to sign. Defaults to the current snapshot.
+        #[arg(value_name = "SNAPSHOT")]
+        snapshot: Option<String>,
+
+        /// Secret key file written by velo keygen.
+        #[arg(long, value_name = "FILE")]
+        key: PathBuf,
+    },
+
+    /// Check a snapshot's signatures against a list of trusted keys.
+    ///
+    /// The trust file holds one public key (64 hex characters) per line;
+    /// blank lines and lines starting with # are ignored.  Exits 0 when
+    /// a valid signature comes from a trusted key and none is invalid;
+    /// otherwise prints why and exits 1.
+    ///
+    /// Examples
+    ///   velo verify --trust trusted.keys
+    ///   velo verify v1.0 --trust trusted.keys
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · Velo verifies; you decide whom to trust.  There is no key
+      registry, revocation or web of trust.
+    · Nothing on disk is changed — verify is entirely read-only."
+    )]
+    Verify {
+        /// Hash (or prefix), tag or branch to check. Defaults to the current snapshot.
+        #[arg(value_name = "SNAPSHOT")]
+        snapshot: Option<String>,
+
+        /// File of trusted public keys, one per line.
+        #[arg(long, value_name = "FILE")]
+        trust: PathBuf,
+    },
+
     /// Apply the changes from one snapshot onto the current branch.
     ///
     /// Uses 3-way merge logic: the snapshot's parent acts as the
@@ -1259,6 +1339,8 @@ enum Exit {
     Conflicts,
     /// Local and remote histories diverged.
     Diverged,
+    /// `velo verify` found no trusted signature, or an invalid one.
+    Untrusted,
 }
 
 impl Exit {
@@ -1267,6 +1349,7 @@ impl Exit {
             Exit::Success => 0,
             Exit::Conflicts => 3,
             Exit::Diverged => 4,
+            Exit::Untrusted => 1,
         }
     }
 }
@@ -1906,9 +1989,87 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Grep { .. }
             | Commands::Conflicts { .. }
             | Commands::ExportGit { .. }
+            | Commands::Verify { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
     )
+}
+
+/// Write a fresh signing key to `out` and print the public half.
+///
+/// The randomness is the operating system's, read here because core takes no
+/// entropy source. The file is created exclusively, so an existing key is
+/// never overwritten, and with mode 0600 on Unix so it is never briefly
+/// readable by others.
+fn keygen(out: &Path) -> Result<()> {
+    use std::io::Write;
+
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed)
+        .map_err(|e| VeloError::Io(std::io::Error::other(format!("no system randomness: {e}"))))?;
+    let key = velo_core::sign::SigningKey::from_seed(seed);
+    let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(out).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            VeloError::invalid(format!(
+                "{} already exists; velo keygen will not overwrite a key. Choose another --out.",
+                out.display()
+            ))
+        } else {
+            VeloError::Io(e)
+        }
+    })?;
+    file.write_all(format!("{hex}\n").as_bytes())
+        .map_err(VeloError::Io)?;
+    file.sync_all().map_err(VeloError::Io)?;
+
+    render::sign::print_keygen(&key.public_key().to_string(), out);
+    Ok(())
+}
+
+/// The snapshot named on the command line, or the one the working tree is on.
+fn resolve_or_current(
+    repo: &velo_core::Repo,
+    root: &Path,
+    spec: Option<&str>,
+) -> Result<velo_core::SnapshotId> {
+    match spec {
+        Some(spec) => commands::resolve_snapshot_id(repo, spec),
+        None => {
+            let branch = std::fs::read_to_string(root.join(".velo/HEAD")).map_err(VeloError::Io)?;
+            commands::resolve_snapshot_id(repo, branch.trim())
+        }
+    }
+}
+
+fn read_signing_key(path: &Path) -> Result<velo_core::sign::SigningKey> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| VeloError::invalid(format!("cannot read key file {}: {e}", path.display())))?;
+    velo_core::sign::SigningKey::from_hex(text.trim())
+}
+
+/// A trust file: one public key per line, `#` comments and blank lines allowed.
+fn read_trust_file(path: &Path) -> Result<velo_core::sign::TrustedKeys> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        VeloError::invalid(format!("cannot read trust file {}: {e}", path.display()))
+    })?;
+    let mut keys = velo_core::sign::TrustedKeys::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        keys.insert(line.parse()?);
+    }
+    Ok(keys)
 }
 
 /// `N` or `N-M`, 1-based and inclusive, to a half-open range.
@@ -2049,6 +2210,10 @@ fn run(cli: Cli) -> Result<Exit> {
             render::sync::print_cloned(&cloned);
             return Ok(Exit::Success);
         }
+        Commands::Keygen { out } => {
+            keygen(out)?;
+            return Ok(Exit::Success);
+        }
         Commands::ServeUpload { path } => return serve::upload(path).map(|()| Exit::Success),
         Commands::ServeReceive { path } => return serve::receive(path).map(|()| Exit::Success),
         Commands::ServeHttp { path, listen } => {
@@ -2099,6 +2264,7 @@ fn run(cli: Cli) -> Result<Exit> {
     match cli.command {
         Commands::Init
         | Commands::Clone { .. }
+        | Commands::Keygen { .. }
         | Commands::ServeUpload { .. }
         | Commands::ServeReceive { .. }
         | Commands::ServeHttp { .. } => unreachable!(),
@@ -2212,7 +2378,8 @@ fn run(cli: Cli) -> Result<Exit> {
                     limit: Some(limit),
                 },
             )?;
-            render::history::print(&history, view);
+            let signed = velo_core::sign::signed_snapshots(&repo)?;
+            render::history::print(&history, view, &signed);
         }
 
         Commands::Mv { from, to } => {
@@ -2243,7 +2410,28 @@ fn run(cli: Cli) -> Result<Exit> {
         Commands::Show { target, paths } => {
             let id = commands::resolve_snapshot_id(&repo, &target)?;
             let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
-            render::diff::print_snapshot(&commands::show::run(&repo, &id, &paths)?);
+            let signed = velo_core::sign::signed_snapshots(&repo)?;
+            render::diff::print_snapshot(
+                &commands::show::run(&repo, &id, &paths)?,
+                signed.contains(&id),
+            );
+        }
+
+        Commands::Sign { snapshot, key } => {
+            let id = resolve_or_current(&repo, &root, snapshot.as_deref())?;
+            let key = read_signing_key(&key)?;
+            let sig = velo_core::sign::sign(write(), &id, &key)?;
+            render::sign::print_signed(&id, &sig.public_key);
+        }
+
+        Commands::Verify { snapshot, trust } => {
+            let id = resolve_or_current(&repo, &root, snapshot.as_deref())?;
+            let policy = read_trust_file(&trust)?;
+            let verification = velo_core::sign::verify(&repo, &id, &policy)?;
+            render::sign::print_verification(&verification);
+            if !verification.is_trusted() {
+                exit = Exit::Untrusted;
+            }
         }
 
         Commands::CherryPick { target } => {
