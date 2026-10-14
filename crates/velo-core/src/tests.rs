@@ -12237,3 +12237,6 @@ mod hostile_paths;
 
 #[cfg(test)]
 mod signatures;
+
+#[cfg(test)]
+mod one_step_sync;
