@@ -60,6 +60,11 @@ fn blanky(min: usize, max: usize) -> impl Strategy<Value = Vec<String>> {
 }
 
 proptest! {
+    #![proptest_config(ProptestConfig {
+        max_global_rejects: 16384,
+        ..ProptestConfig::default()
+    })]
+
     /// A single conflict region with no clean change either side resolves to
     /// exactly the chosen side, blank lines included.
     #[test]
@@ -74,6 +79,11 @@ proptest! {
         let (anc, ours, theirs) = (cat(&mid), cat(&mid_a), cat(&mid_b));
         let hunks = compute_conflict_hunks(&anc, &ours, &theirs);
         prop_assume!(hunks.len() == 1);
+        // The region is exactly the middle: a clean pure deletion outside it
+        // (which `clean_changes_theirs` does not report) would legitimately
+        // change the output.
+        prop_assume!(hunks[0].ancestor_start == prefix.len());
+        prop_assume!(hunks[0].ancestor_end == prefix.len() + mid.len());
         prop_assume!(clean_changes_theirs(&anc, &ours, &theirs).is_empty());
         prop_assume!(clean_changes_theirs(&anc, &theirs, &ours).is_empty());
         let a: Vec<&str> = anc.lines().collect();
