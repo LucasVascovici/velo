@@ -193,6 +193,9 @@ merge and `fsck` scenario, in memory and against a reopened OPFS repository,
 is run in headless Chrome and Firefox by the CI `bindings` job; see the
 binding README for what is and is not yet confirmed.
 
+The release `.wasm` is about 2.4 MB raw, 0.86 MB with gzip and 0.66 MB with
+brotli (measured 2026-10-14; method in the binding README, budget enforced in CI).
+
 ### MCP server
 
 [`crates/velo-mcp`](crates/velo-mcp) is a stdio Model Context Protocol server
