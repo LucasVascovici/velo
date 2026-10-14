@@ -3,5 +3,6 @@
 **/*.rs.bk
 *.py
 !tests/corpus/generate.py
+!bindings/parity/*.py
 /target-lane*
 
