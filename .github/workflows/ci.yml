@@ -269,7 +269,7 @@ jobs:
   # Golden corpus: every repository and bundle written by a released build
   # opens, migrates or is refused as recorded (crates/velo-core/tests/corpus.rs).
   corpus:
-    name: Corpus · ${{ matrix.os }}
+    name: Corpus Â· ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
