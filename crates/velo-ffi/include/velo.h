@@ -48,6 +48,8 @@ extern "C" {
 #define VELO_ERR_DB 24
 /* Snapshot squashed or re-minted by compaction; the message names the live id. */
 #define VELO_ERR_COMPACTED 25
+/* A path velo refuses to store or write (escapes the root, reserved name, ...). */
+#define VELO_ERR_UNSAFE_PATH 26
 /* Binding-level errors. */
 #define VELO_ERR_NULL_ARGUMENT 100
 #define VELO_ERR_INVALID_UTF8 101

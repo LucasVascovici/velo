@@ -39,6 +39,9 @@ pub const VELO_ERR_DB: i32 = 24;
 /// The snapshot was squashed or re-minted by compaction. The message names the
 /// live id that replaced it.
 pub const VELO_ERR_COMPACTED: i32 = 25;
+/// A path in a tree or bundle is one velo refuses to store or write (escapes the
+/// root, reserved name, file/directory collision, ...). The message names it.
+pub const VELO_ERR_UNSAFE_PATH: i32 = 26;
 
 /// A required pointer argument was NULL.
 pub const VELO_ERR_NULL_ARGUMENT: i32 = 100;
@@ -79,6 +82,7 @@ pub fn code_of(error: &Error) -> i32 {
         Error::NotFound { .. } => VELO_ERR_NOT_FOUND,
         Error::AmbiguousPrefix { .. } => VELO_ERR_AMBIGUOUS_PREFIX,
         Error::Compacted { .. } => VELO_ERR_COMPACTED,
+        Error::UnsafePath { .. } => VELO_ERR_UNSAFE_PATH,
         Error::Corrupt { .. } => VELO_ERR_CORRUPT,
         Error::MissingObject { .. } => VELO_ERR_MISSING_OBJECT,
         Error::UntrustedData { .. } => VELO_ERR_UNTRUSTED_DATA,
@@ -261,8 +265,15 @@ mod tests {
                 },
                 25,
             ),
+            (
+                Error::UnsafePath {
+                    path: s(),
+                    problem: velo_core::safe_path::PathProblem::Absolute,
+                },
+                26,
+            ),
         ];
-        assert_eq!(cases.len(), 25, "one case per variant");
+        assert_eq!(cases.len(), 26, "one case per variant");
         for (error, code) in cases {
             assert_eq!(code_of(&error), code, "{error:?}");
         }

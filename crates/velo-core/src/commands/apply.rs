@@ -240,6 +240,38 @@ pub(crate) fn reconcile_tree_moving(
     }
     drop(contents);
 
+    // Validate before pass 3 touches the disk. The incoming tree must be a
+    // sound tree on its own, and every path about to be written, deleted or
+    // moved must be one velo will write on this platform and must not reach
+    // the working tree through a symlink. A refusal leaves the tree untouched.
+    {
+        let writing: Vec<(&str, &str, i64)> = planned
+            .iter()
+            .filter_map(|p| match p.decision.as_ref() {
+                Some(Reconcile::TakeTheirs { hash, mode, .. }) => {
+                    Some((p.path, hash.as_str(), *mode))
+                }
+                Some(Reconcile::AutoMerged { .. }) | Some(Reconcile::Delete) => {
+                    Some((p.path, "", 0))
+                }
+                _ => None,
+            })
+            .collect();
+        crate::safe_path::validate_write_set(
+            root,
+            theirs.keys().map(String::as_str),
+            writing,
+            |h| objects.get(h),
+        )?;
+        for m in moves
+            .iter()
+            .filter(|m| m.by == crate::commands::moves::MovedBy::Theirs)
+        {
+            crate::safe_path::join_checked(root, &m.from)?;
+            crate::safe_path::join_checked(root, &m.to)?;
+        }
+    }
+
     // Pass 3: write. Deletes run first, as `restore` removes ghosts before
     // writing: an incoming change from file `a` to `a/b` must remove `a`
     // before `a/b` can create its directory. Then wholesale takes read their
@@ -250,8 +282,13 @@ pub(crate) fn reconcile_tree_moving(
         .iter()
         .filter(|m| m.by == crate::commands::moves::MovedBy::Theirs)
     {
-        let old = root.join(crate::db::db_to_path(&m.from));
-        let new = root.join(crate::db::db_to_path(&m.to));
+        let (Ok(old), Ok(new)) = (
+            crate::safe_path::join_checked(root, &m.from),
+            crate::safe_path::join_checked(root, &m.to),
+        ) else {
+            errors.push(format!("refused move '{}' to '{}'", m.from, m.to));
+            continue;
+        };
         let moved = (|| -> std::io::Result<()> {
             if let Some(parent) = new.parent() {
                 fs::create_dir_all(parent)?;
@@ -270,12 +307,18 @@ pub(crate) fn reconcile_tree_moving(
         planned
             .par_iter()
             .filter_map(|p| {
-                let full = root.join(crate::db::db_to_path(p.path));
-                match p.decision.as_ref() {
-                    Some(Reconcile::Delete) if full.exists() => fs::remove_file(&full)
+                if !matches!(p.decision.as_ref(), Some(Reconcile::Delete)) {
+                    return None;
+                }
+                let Ok(full) = crate::safe_path::join_checked(root, p.path) else {
+                    return Some(format!("refused path '{}'", p.path));
+                };
+                if full.exists() {
+                    fs::remove_file(&full)
                         .err()
-                        .map(|e| format!("delete '{}': {e}", p.path)),
-                    _ => None,
+                        .map(|e| format!("delete '{}': {e}", p.path))
+                } else {
+                    None
                 }
             })
             .collect::<Vec<String>>(),
@@ -291,7 +334,9 @@ pub(crate) fn reconcile_tree_moving(
         &take_items,
         |(_, hash, _)| hash,
         |(path, _, mode), content| {
-            let full = root.join(crate::db::db_to_path(path));
+            let Ok(full) = crate::safe_path::join_checked(root, path) else {
+                return Some(format!("refused path '{path}'"));
+            };
             match content {
                 Ok(data) => write_file(&full, *mode, &data)
                     .err()
@@ -303,16 +348,16 @@ pub(crate) fn reconcile_tree_moving(
     errors.extend(
         planned
             .par_iter()
-            .filter_map(|p| {
-                let full = root.join(crate::db::db_to_path(p.path));
-                match p.decision.as_ref() {
-                    Some(Reconcile::AutoMerged { content, mode }) => {
-                        write_file(&full, *mode, content)
-                            .err()
-                            .map(|e| format!("write '{}': {e}", p.path))
-                    }
-                    _ => None,
+            .filter_map(|p| match p.decision.as_ref() {
+                Some(Reconcile::AutoMerged { content, mode }) => {
+                    let Ok(full) = crate::safe_path::join_checked(root, p.path) else {
+                        return Some(format!("refused path '{}'", p.path));
+                    };
+                    write_file(&full, *mode, content)
+                        .err()
+                        .map(|e| format!("write '{}': {e}", p.path))
                 }
+                _ => None,
             })
             .collect::<Vec<String>>(),
     );

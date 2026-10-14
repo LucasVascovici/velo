@@ -12231,3 +12231,6 @@ mod resolve_line_endings;
 
 #[cfg(test)]
 mod sync_pack_speed;
+
+#[cfg(test)]
+mod hostile_paths;

@@ -213,6 +213,13 @@ pub enum Error {
     },
 
     // ── Caller error ─────────────────────────────────────────────────────────
+    /// A path in a tree, bundle or git stream is one velo will not store or
+    /// write to a working tree: it escapes the root, names `.velo`, is reserved
+    /// on this platform, or collides with a directory. Nothing was written.
+    UnsafePath {
+        path: String,
+        problem: crate::safe_path::PathProblem,
+    },
     /// The request itself was invalid (empty message, bad range, …). Prefer a
     /// specific variant; this is the residual case.
     InvalidInput {
@@ -351,6 +358,9 @@ impl fmt::Display for Error {
             }
             Error::UntrustedData { detail } => {
                 write!(f, "received data failed verification: {}", detail)
+            }
+            Error::UnsafePath { path, problem } => {
+                write!(f, "refusing path '{path}': {problem}")
             }
             Error::InvalidInput { detail } => f.write_str(detail),
             Error::Unsupported { detail } => f.write_str(detail),

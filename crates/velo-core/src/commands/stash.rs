@@ -343,13 +343,27 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
         .cloned()
         .collect();
 
+    // The shelf's tree is validated whole before anything is written, as a
+    // restore does: a shelf can arrive in a bundle like any other snapshot.
+    crate::safe_path::validate_write_set(
+        root,
+        files.iter().map(|(p, _, _)| p.as_str()),
+        to_write
+            .iter()
+            .map(|(p, h, m)| (p.as_str(), h.as_str(), *m)),
+        |h| objects.get(h),
+    )?;
+
     let progress = guard.phase(Phase::Writing, Some(to_write.len() as u64));
     let errors: Vec<String> = objects.par_with_content(
         &to_write,
         |(_, hash, _)| hash.as_str(),
         |(rel, _, mode), content| {
             progress.tick();
-            let full = root.join(db::db_to_path(rel));
+            let full = match crate::safe_path::join_checked(root, rel) {
+                Ok(p) => p,
+                Err(e) => return Some(format!("{}: {}", rel, e)),
+            };
             if let Some(parent) = full.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
                     return Some(format!("{}: {}", rel, e));
@@ -387,7 +401,9 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
         if shelved.contains_key(path.as_str()) {
             continue;
         }
-        let full = root.join(db::db_to_path(&path));
+        let Ok(full) = crate::safe_path::join_checked(root, &path) else {
+            continue;
+        };
         if full.exists() && fs::remove_file(&full).is_ok() {
             removed += 1;
             if let Some(parent) = full.parent() {

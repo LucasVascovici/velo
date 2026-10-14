@@ -187,6 +187,41 @@ cannot observe it, an implementation must **carry the parent's mode forward**
 rather than resetting to `0`. Symlink creation may fall back to writing a regular
 file containing the target text where the platform forbids symlinks.
 
+### 3.1 Paths
+
+A snapshot id commits to its rows whatever they say, so the id cannot vouch for
+a path. These rules are normative.
+
+**Store rule** (the same on every platform). A path is stored with forward
+slashes and is refused if it is empty; starts with `/`; has a first component
+of the form `X:` (a drive); has an empty, `.` or `..` component (so no
+trailing slash); contains a NUL byte; or has any component equal to `.velo`
+ignoring case and trailing dots or spaces.
+
+**Platform rule** (applied when a path is written to a working tree). The store
+rule, plus on Windows: the device names `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`
+and `LPT1`-`LPT9` in any case, with or without an extension; the characters
+`< > : " | ? *`, backslash and control characters 0x01-0x1F (`:` also covers
+alternate data streams); a component ending in a dot or a space; and the 8.3
+alias `velo~1`. A repository holding `aux.c` is therefore valid on Linux and is
+refused only when written out on Windows.
+
+**Exclusivity.** No path may be both a file in one entry and a directory
+prefix of another entry of the same tree (`a` and `a/b`).
+
+**Symlinks.** A symlink entry is refused if its target is absolute (`/x`,
+`C:/x`, a UNC path) or, resolved lexically from the link's own directory,
+climbs above the root. A working-tree write is refused if any existing
+directory on the way to the target is a symlink.
+
+**Where it is enforced.** Importers (`save_tree`, git import, bundle apply,
+fetch, pull, clone and the push receive side) must refuse an offending path
+with `UnsafePath` *before committing or storing anything*. Every writer of a
+working tree (restore, switch, undo, redo, merge, cherry-pick, rebase, stash,
+resolve, clone checkout) validates the whole target tree before writing the
+first file. A repository that already holds a refused path stays readable;
+only writing it out is refused.
+
 ---
 
 ## 4. Snapshot identity

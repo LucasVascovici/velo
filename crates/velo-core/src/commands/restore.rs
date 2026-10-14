@@ -200,6 +200,20 @@ pub(crate) fn run_with(
             .collect()
     };
 
+    // The whole target is validated before the first ghost is removed or file
+    // written: a refusal leaves the working tree exactly as it was.
+    {
+        let objects = guard.repo().objects();
+        crate::safe_path::validate_write_set(
+            root,
+            snapshot_files.iter().map(|(p, _, _)| p.as_str()),
+            to_write
+                .iter()
+                .map(|(p, h, m)| (p.as_str(), h.as_str(), *m)),
+            |h| objects.get(h),
+        )?;
+    }
+
     let ghosts_removed = if partial {
         0
     } else {
@@ -345,7 +359,12 @@ fn write_files(
             if cancel.is_some_and(Cancel::is_cancelled) {
                 return None;
             }
-            let full_path = root.join(crate::db::db_to_path(rel_path));
+            // Validated as a set before the first write; joined again through
+            // the checked path in case the directory changed in between.
+            let full_path = match crate::safe_path::join_checked(root, rel_path) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e.to_string())),
+            };
             if let Some(parent) = full_path.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
                     return Some(Err(format!("mkdir '{}': {}", rel_path, e)));

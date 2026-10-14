@@ -99,6 +99,7 @@ pub mod lock;
 pub mod meta;
 pub mod progress;
 pub mod repo;
+pub mod safe_path;
 pub mod scope;
 pub mod serve;
 pub mod storage;

@@ -342,11 +342,21 @@ impl WriteGuard<'_> {
         let mut tree: Vec<(String, String, i64)> = Vec::with_capacity(spec.entries.len());
         let mut seen = std::collections::HashSet::new();
 
-        for entry in spec.entries {
-            let path = db::normalise(&entry.path);
-            if path.is_empty() {
-                return Err(VeloError::invalid("a tree entry needs a path."));
-            }
+        // The whole path rule is applied before any object is written: every
+        // path, the file/directory exclusivity of the set, and both ends of
+        // every recorded rename. A refusal creates nothing.
+        let normalised: Vec<String> = spec
+            .entries
+            .iter()
+            .map(|e| db::normalise(&e.path))
+            .collect();
+        crate::safe_path::check_rows(normalised.iter().map(String::as_str))?;
+        for (from, to) in spec.renames {
+            crate::safe_path::check_named(&db::normalise(&from.to_string_lossy()))?;
+            crate::safe_path::check_named(&db::normalise(&to.to_string_lossy()))?;
+        }
+
+        for (entry, path) in spec.entries.into_iter().zip(normalised) {
             if !seen.insert(path.clone()) {
                 return Err(VeloError::invalid(format!(
                     "'{}' appears twice in the same tree.",

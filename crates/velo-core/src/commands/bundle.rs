@@ -412,6 +412,28 @@ pub(crate) struct Imported {
 /// The body of [`import_pack`], also reporting the tags it inserted so that
 /// `bundle apply` does not call a tag-only bundle "up to date".
 pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
+    // ── Refuse unsafe paths before anything is written ────────────────────────
+    // A snapshot id commits to its rows whatever they say, so a hostile bundle
+    // can carry a valid snapshot whose tree is `../escape`. Checked per
+    // snapshot, ahead of the objects, so a refusal imports nothing at all.
+    {
+        let mut per_snapshot: std::collections::HashMap<&str, Vec<&str>> =
+            std::collections::HashMap::new();
+        for row in &bundle.file_map {
+            per_snapshot
+                .entry(row.snapshot_hash.as_str())
+                .or_default()
+                .push(row.path.as_str());
+        }
+        for paths in per_snapshot.into_values() {
+            crate::safe_path::check_rows(paths)?;
+        }
+        for rename in &bundle.renames {
+            crate::safe_path::check_named(&rename.from_path)?;
+            crate::safe_path::check_named(&rename.to_path)?;
+        }
+    }
+
     // ── Write + verify objects (dedup by name) ────────────────────────────────
     let objects = guard.repo().objects();
     let progress = guard.phase(Phase::Importing, Some(bundle.objects.len() as u64));

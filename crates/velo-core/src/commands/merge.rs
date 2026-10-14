@@ -266,7 +266,11 @@ fn restore_orig_bytes(guard: &WriteGuard) {
     };
     let mut done = Vec::new();
     for (path, bytes) in read_orig_records(&data) {
-        let full = root.join(&path);
+        // The records come from a file under `.velo`, not from the store, but
+        // the path is still joined through the one rule.
+        let Ok(full) = crate::safe_path::join_checked(root, &path) else {
+            continue;
+        };
         let now = storage::hash_for(&full, storage::capture_mode(&full));
         let want = blake3::hash(&storage::normalise_crlf(bytes.clone()))
             .to_hex()
