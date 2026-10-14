@@ -1,0 +1,573 @@
+{
+ "branch_tips": [
+  [
+   "feature",
+   ""
+  ],
+  [
+   "main",
+   ""
+  ]
+ ],
+ "file_map": {
+  "0b7639218a7a0cbcd997358639e589a58a6d10f0bdc33f6216b608e868975b2c": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ],
+  "481c9e4443632838efb4ed4d6842298766afa5c08ad3d85ee31ae7a27d01d116": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "3284874c0a53c526084d2e5dd7e0d672bd2057474e0684728182de2dd30c272d",
+    "mode": 0,
+    "path": "src/meta.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   },
+   {
+    "hash": "c9773d7e715cba0bda066b0e71afb27ddf456599561bb5a1be07251e70898868",
+    "mode": 0,
+    "path": "src/undone.txt"
+   }
+  ],
+  "5dae5766b6b99281a1a5463bbb6253ef7880f5423f96c3a67a84a413933f6656": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "3284874c0a53c526084d2e5dd7e0d672bd2057474e0684728182de2dd30c272d",
+    "mode": 0,
+    "path": "src/meta.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   },
+   {
+    "hash": "f522d11ed192da434a59555e0148cb20660d386aaaa5d61b40fa33260cfeba7e",
+    "mode": 0,
+    "path": "src/wip.txt"
+   }
+  ],
+  "98e5f688a6043efaf6cbc6190981cf8645d2ff219935c1a96915744f84d6d245": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   }
+  ],
+  "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "3284874c0a53c526084d2e5dd7e0d672bd2057474e0684728182de2dd30c272d",
+    "mode": 0,
+    "path": "src/meta.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   }
+  ],
+  "ad49ce62d46e9b7df44bfeb82aad20b6357a88cb0c8ba3e855bc0f0547ca2926": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ],
+  "b1668d830c325dd99efee92730f3da4d9656c659ba253815d8f06014b09bcd08": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ],
+  "d292daf71d3ed30926ae97b34fe81431b577336936fd4208c3307254d6424da8": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   }
+  ],
+  "d7dfb9bc99466c3cee74ca98b1182975801bd11dc98e7a9b1cedd5509db7809b": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   }
+  ]
+ },
+ "lacks": [],
+ "renames": [
+  [
+   "98e5f688a6043efaf6cbc6190981cf8645d2ff219935c1a96915744f84d6d245",
+   "src/a.txt",
+   "src/renamed.txt"
+  ]
+ ],
+ "snapshot_meta": [
+  [
+   "0b7639218a7a0cbcd997358639e589a58a6d10f0bdc33f6216b608e868975b2c",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "0b7639218a7a0cbcd997358639e589a58a6d10f0bdc33f6216b608e868975b2c",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "481c9e4443632838efb4ed4d6842298766afa5c08ad3d85ee31ae7a27d01d116",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "481c9e4443632838efb4ed4d6842298766afa5c08ad3d85ee31ae7a27d01d116",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "98e5f688a6043efaf6cbc6190981cf8645d2ff219935c1a96915744f84d6d245",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "98e5f688a6043efaf6cbc6190981cf8645d2ff219935c1a96915744f84d6d245",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989",
+   "corpus",
+   "step",
+   "meta"
+  ],
+  [
+   "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989",
+   "mcp",
+   "client",
+   "corpus"
+  ],
+  [
+   "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989",
+   "mcp",
+   "run",
+   "corpus-run"
+  ],
+  [
+   "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989",
+   "mcp",
+   "tool",
+   "velo_save"
+  ],
+  [
+   "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989",
+   "mcp",
+   "tool_call_id",
+   "tc1"
+  ],
+  [
+   "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "ad49ce62d46e9b7df44bfeb82aad20b6357a88cb0c8ba3e855bc0f0547ca2926",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "ad49ce62d46e9b7df44bfeb82aad20b6357a88cb0c8ba3e855bc0f0547ca2926",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "b1668d830c325dd99efee92730f3da4d9656c659ba253815d8f06014b09bcd08",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "b1668d830c325dd99efee92730f3da4d9656c659ba253815d8f06014b09bcd08",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "d292daf71d3ed30926ae97b34fe81431b577336936fd4208c3307254d6424da8",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "d292daf71d3ed30926ae97b34fe81431b577336936fd4208c3307254d6424da8",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "d7dfb9bc99466c3cee74ca98b1182975801bd11dc98e7a9b1cedd5509db7809b",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "d7dfb9bc99466c3cee74ca98b1182975801bd11dc98e7a9b1cedd5509db7809b",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ]
+ ],
+ "snapshots": [
+  {
+   "branch": "main",
+   "created_at_ms": 1791981963641,
+   "hash": "0b7639218a7a0cbcd997358639e589a58a6d10f0bdc33f6216b608e868975b2c",
+   "merge_parent": "",
+   "message": "initial",
+   "parent_hash": ""
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981963759,
+   "hash": "ad49ce62d46e9b7df44bfeb82aad20b6357a88cb0c8ba3e855bc0f0547ca2926",
+   "merge_parent": "",
+   "message": "second",
+   "parent_hash": "0b7639218a7a0cbcd997358639e589a58a6d10f0bdc33f6216b608e868975b2c"
+  },
+  {
+   "branch": "feature",
+   "created_at_ms": 1791981963969,
+   "hash": "d7dfb9bc99466c3cee74ca98b1182975801bd11dc98e7a9b1cedd5509db7809b",
+   "merge_parent": "",
+   "message": "feature work",
+   "parent_hash": "ad49ce62d46e9b7df44bfeb82aad20b6357a88cb0c8ba3e855bc0f0547ca2926"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981964208,
+   "hash": "b1668d830c325dd99efee92730f3da4d9656c659ba253815d8f06014b09bcd08",
+   "merge_parent": "",
+   "message": "main work",
+   "parent_hash": "ad49ce62d46e9b7df44bfeb82aad20b6357a88cb0c8ba3e855bc0f0547ca2926"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981964392,
+   "hash": "d292daf71d3ed30926ae97b34fe81431b577336936fd4208c3307254d6424da8",
+   "merge_parent": "d7dfb9bc99466c3cee74ca98b1182975801bd11dc98e7a9b1cedd5509db7809b",
+   "message": "merge feature",
+   "parent_hash": "b1668d830c325dd99efee92730f3da4d9656c659ba253815d8f06014b09bcd08"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981964610,
+   "hash": "98e5f688a6043efaf6cbc6190981cf8645d2ff219935c1a96915744f84d6d245",
+   "merge_parent": "",
+   "message": "rename a",
+   "parent_hash": "d292daf71d3ed30926ae97b34fe81431b577336936fd4208c3307254d6424da8"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981968104,
+   "hash": "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989",
+   "merge_parent": "",
+   "message": "save with metadata",
+   "parent_hash": "98e5f688a6043efaf6cbc6190981cf8645d2ff219935c1a96915744f84d6d245"
+  },
+  {
+   "branch": "_stash",
+   "created_at_ms": 1791981968329,
+   "hash": "5dae5766b6b99281a1a5463bbb6253ef7880f5423f96c3a67a84a413933f6656",
+   "merge_parent": "",
+   "message": "stash: wip",
+   "parent_hash": "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989"
+  }
+ ],
+ "stash_names": [
+  "wip"
+ ],
+ "tag": "v5.0.0",
+ "tags": [
+  [
+   "v1",
+   "ac0c8683c3e299aa22b2c8773b6697500a646af78690d44a8935b31efa70b989"
+  ]
+ ],
+ "trash_ids": [
+  "481c9e4443632838efb4ed4d6842298766afa5c08ad3d85ee31ae7a27d01d116"
+ ],
+ "user_version": 3
+}

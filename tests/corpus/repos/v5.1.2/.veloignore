@@ -1,0 +1,29 @@
+# Velo ignore file — patterns here are excluded from tracking.
+# Syntax follows .gitignore rules.
+
+# Build artefacts
+target/
+dist/
+build/
+
+# Dependency directories
+node_modules/
+__pycache__/
+.venv/
+
+# Compiled bytecode
+*.pyc
+*.pyo
+
+# Logs & temporary files
+*.log
+*.tmp
+*.swp
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Environment secrets
+.env
+.env.*
