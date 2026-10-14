@@ -155,13 +155,15 @@ fn literal_prefilter(pattern: &str, case_insensitive: bool) -> Option<&str> {
 
 fn grep_working_tree(root: &Path, scope: &crate::Scope, search: &Search<'_>) -> Vec<FileMatches> {
     use rayon::prelude::*;
-    let entries = crate::commands::walk_with_meta(root, scope);
-    entries
+    // Grep needs no mtime, size or mode, so the metadata-free walk is used: it
+    // skips a stat and a mode capture per file, which was the largest stage.
+    let paths = crate::commands::walk_paths(root, scope);
+    paths
         .par_iter()
-        .filter_map(|entry| {
-            let rel = db::normalise(entry.path.strip_prefix(root).ok()?.to_str()?);
+        .filter_map(|path| {
+            let rel = db::normalise(path.strip_prefix(root).ok()?.to_str()?);
             // Unreadable as text means binary; nothing to search.
-            let content = std::fs::read_to_string(&entry.path).ok()?;
+            let content = std::fs::read_to_string(path).ok()?;
             search
                 .matches(&content)
                 .map(|lines| FileMatches { path: rel, lines })

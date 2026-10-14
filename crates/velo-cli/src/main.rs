@@ -844,7 +844,8 @@ NOTES
 NOTES
     · Squash aborts if there are unsaved changes.
     · Any tags on squashed snapshots are moved to the new snapshot.
-    · The squashed objects remain in the store until `velo gc`."
+    · The originals stop being snapshots: their ids no longer resolve, and `velo undo` does not bring them back. File contents stay in the store until `velo gc`.
+    · `velo undo` after a squash removes the squash result and rewinds to the snapshot before the range; `velo redo` restores the squash result."
     )]
     Squash {
         /// Number of snapshots to collapse (must be ≥ 2).
@@ -871,6 +872,9 @@ NOTES
         after_help = "\
 NOTES
     · Rebase rewrites history — the rebased commits get new hashes.
+    · Snapshots the target already contains, directly or through a merge,
+      are skipped. A merge snapshot on your branch is replayed as one
+      change against its first parent.
     · If a conflict occurs: resolve with `velo resolve`, save with
       `velo save`, then continue with `velo rebase --continue`.
     · `velo rebase --abort` restores the original branch state."
@@ -994,7 +998,13 @@ NOTES
     },
 
     /// Send a branch's commits to a remote (fast-forward only).
-    #[command(verbatim_doc_comment)]
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · Branches whose snapshots the pushed branch merged are published with
+      it, under their own names."
+    )]
     Push {
         /// Remote name (default: origin).
         #[arg(value_name = "REMOTE", default_value = "origin")]
@@ -1503,6 +1513,12 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             None => lines.push("  another velo process is writing; retry in a moment".into()),
         },
+        VeloError::RemoteRefAbsent { remote, .. } => {
+            lines.push(format!(
+                "  Run velo fetch {} to bring it back, then try again.",
+                remote
+            ));
+        }
         _ => return None,
     }
     Some(lines.join(
@@ -1643,22 +1659,42 @@ fn run_resolve(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "incoming".to_string());
             for t in &taken {
-                let (meaning, lost) = match t.side {
-                    TakeOption::Ours => {
-                        (format!("your last saved snapshot on {}", branch), "theirs")
-                    }
-                    TakeOption::Both => (format!("ours then {}", source), "neither side"),
-                    _ => (source.clone(), "ours"),
+                let (meaning, lost, other) = match t.side {
+                    TakeOption::Ours => (
+                        format!("your last saved snapshot on {}", branch),
+                        "theirs",
+                        source.as_str(),
+                    ),
+                    TakeOption::Both => (
+                        format!("ours then {}", source),
+                        "neither side",
+                        source.as_str(),
+                    ),
+                    _ => (source.clone(), "ours", "ours"),
                 };
                 println!(
-                    "{} Resolved '{}' — took {} ({})",
+                    "{} Resolved '{}' — took {} for {} conflict(s) ({})",
                     style("✔").green(),
                     t.path,
                     t.side.as_str(),
+                    t.conflicts,
                     meaning
                 );
+                let mut parts = Vec::new();
                 if t.dropped_lines > 0 {
-                    println!("  discarded {} line(s) from {}", t.dropped_lines, lost);
+                    parts.push(format!(
+                        "discarded {} line(s) from {}",
+                        t.dropped_lines, lost
+                    ));
+                }
+                if t.kept_clean_lines > 0 {
+                    parts.push(format!(
+                        "kept {} clean line(s) from {}",
+                        t.kept_clean_lines, other
+                    ));
+                }
+                if !parts.is_empty() {
+                    println!("  {}", parts.join(", "));
                 }
                 if t.replaced_edit_lines > 0 {
                     println!(
@@ -1710,7 +1746,7 @@ fn run_mark(guard: &velo_core::WriteGuard, file: &str, force: bool) -> Result<()
     };
     let m = resolve::mark_with(guard, &cf, on_clean)?;
     println!(
-        "{} Accepted your edit of '{}' ({} lines; {} differ from ours, {} from theirs).",
+        "{} Accepted your edit of '{}' ({} lines; {} line(s) added or removed vs ours, {} vs theirs).",
         style("✔").green(),
         m.path,
         m.lines,
@@ -2182,7 +2218,14 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::Undo => {
-            render::undo::print(&commands::undo::run(write())?);
+            let outcome = commands::undo::run(write())?;
+            // Undo leaves `remote_refs` alone, so a tracking ref may still name
+            // the snapshot just removed; say so rather than let it look gone.
+            let tracking = commands::sync::tracking_refs_at(
+                &repo,
+                &outcome.snapshot.parse::<velo_core::SnapshotId>()?,
+            )?;
+            render::undo::print(&outcome, &tracking);
         }
 
         Commands::Redo => render::undo::print_redo(&commands::redo::run(write())?),
@@ -2492,6 +2535,12 @@ fn run(cli: Cli) -> Result<Exit> {
             // Corruption must be visible to scripts, so it sets the exit code.
             // Cruft alone does not — it is cleanable, not damage.
             if !report.is_healthy() {
+                if report.problems.iter().all(|p| p.is_remote_tracking()) {
+                    return Err(VeloError::invalid(format!(
+                        "{} problem(s), all in remote-tracking history (remotes/\u{2026}); your own branches are intact \u{2014} run velo fetch to refresh",
+                        report.problems.len()
+                    )));
+                }
                 return Err(VeloError::corrupt(format!(
                     "{} integrity problem(s) found",
                     report.problems.len()
@@ -2525,13 +2574,34 @@ fn run(cli: Cli) -> Result<Exit> {
             )?);
         }
         Commands::Push { remote, branch } => {
-            render::sync::print_pushed(&commands::sync::push(
+            let pushed = commands::sync::push_report(
                 write(),
                 &remote,
                 branch.as_deref(),
                 &spawn_config()?,
                 Default::default(),
-            )?);
+            );
+            match pushed {
+                Ok(report) => render::sync::print_push_report(&report),
+                Err(e) => {
+                    // The refused push has just refreshed the tracking ref to the
+                    // advertised tip. If this repository no longer holds that
+                    // snapshot (undone here), a plain merge would fail; say how
+                    // to get it back.
+                    if let VeloError::NotFastForward { branch, remote } = &e {
+                        let spec = format!("{remote}/{branch}");
+                        if let Err(VeloError::RemoteRefAbsent { snapshot, .. }) =
+                            commands::resolve_snapshot_id(&repo, &spec)
+                        {
+                            eprintln!(
+                                "{spec} points at {}, which this repository no longer has (undone here?); velo fetch brings it back as remotes/{spec}, then velo merge {spec}",
+                                render::id::short(snapshot.as_str())
+                            );
+                        }
+                    }
+                    return Err(e);
+                }
+            }
         }
         Commands::Pull { remote } => {
             let pulled =

@@ -1,7 +1,7 @@
 //! Render sync outcomes for the terminal.
 
 use console::style;
-use velo_core::commands::sync::{BranchCreated, Cloned, Fetched, Pulled, Pushed};
+use velo_core::commands::sync::{BranchCreated, Cloned, Fetched, Pulled, PushReport, Pushed};
 
 /// The steps after a refused push, in order. One definition so `push`, `pull`
 /// and `status` can never give different advice. `pull` and `push` carry the
@@ -75,6 +75,19 @@ pub fn print_fetched(fetched: &Fetched) {
             style("note:").dim(),
             style("velo pull").cyan()
         );
+    }
+}
+
+pub fn print_push_report(report: &PushReport) {
+    print_pushed(&report.pushed);
+    if let Pushed::Sent { branch, .. } = &report.pushed {
+        if !report.also_published.is_empty() {
+            println!(
+                "  also published: {} (merged into {}); the remote now lists them as branches",
+                report.also_published.join(", "),
+                branch
+            );
+        }
     }
 }
 

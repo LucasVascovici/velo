@@ -26,4 +26,8 @@ pub fn print(outcome: &Outcome) {
         style(&outcome.snapshot).yellow(),
         outcome.message
     );
+    println!(
+        "  The {} originals are no longer snapshots. velo undo removes this one and rewinds to before them; it does not restore them.",
+        outcome.replaced.len()
+    );
 }

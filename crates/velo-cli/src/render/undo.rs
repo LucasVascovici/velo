@@ -7,7 +7,7 @@
 use console::style;
 use velo_core::commands::{redo, undo};
 
-pub fn print(outcome: &undo::Outcome) {
+pub fn print(outcome: &undo::Outcome, tracking: &[(String, String)]) {
     println!(
         "{} Removed snapshot {} — \"{}\"",
         style("✔").green().bold(),
@@ -23,6 +23,12 @@ pub fn print(outcome: &undo::Outcome) {
             "  {} That was the first snapshot, so the working tree is now empty.",
             style("!").yellow()
         ),
+    }
+    for (remote, branch) in tracking {
+        println!(
+            "  {remote}/{branch} still has it: the next {} brings it back as remotes/{remote}/{branch}",
+            style("velo fetch").cyan()
+        );
     }
     println!("  Bring it back with {}", style("velo redo").cyan());
 }

@@ -36,11 +36,21 @@ third-party tool — must conform to this document.
 ├── lock          advisory lock file (fs2); held by mutating operations
 ├── lock.holder   who holds the lock: pid, start time (ms), command; informational
 ├── MERGE_HEAD    present only mid-merge/cherry-pick: "<pre-merge-id>:<source>"
+├── MERGE_ORIG    present only mid-merge: exact pre-merge bytes of CR-ending files the merge may rewrite
 └── REBASE_STATE  present only mid-rebase (with REBASE_ONTO, REBASE_ORIG_HEAD)
 ```
 
 `HEAD` and `PARENT` are refs written **atomically** (temp file + rename). A reader
 must tolerate a missing or empty `PARENT` (a repository with no commits).
+
+`MERGE_ORIG` is working state like `MERGE_HEAD`, not repository format. Stored
+text has its `\r` removed (§2.1), so `merge --abort` could only restore the LF
+form of a file the merge rewrote; `merge` therefore keeps the original bytes of
+every CR-ending, NUL-free text file it may rewrite or delete. It is a sequence
+of records: `u32` LE path length, path (UTF-8, repo-relative, `/` separators),
+`u32` LE data length, data. Abort writes a record back only if the restored file
+equals it with CRs removed. Older builds ignore the file; a stale one is removed
+by the next merge, abort or save.
 
 ### Single-file layout
 
@@ -168,7 +178,9 @@ A tree is the complete set of files in a snapshot — not a delta. Each entry is
 
 Storage is deduplicated at the object level: unchanged files across snapshots
 reference the same object. Trees themselves are stored row-per-entry in
-`file_map`, not as a separate hashed tree object.
+`file_map`, not as a separate hashed tree object. A snapshot has exactly one
+`file_map` row per path; `velo fsck --repair` removes exact duplicate rows (a data
+repair, not a format change).
 
 Mode semantics: the executable bit is only observable on Unix. On platforms that
 cannot observe it, an implementation must **carry the parent's mode forward**
@@ -676,16 +688,19 @@ on this):
 - `diff.rs` (stored hash of a path against `PARENT`): `WHERE path = ? AND
   snapshot_hash = ?`, same plan.
 - `fsck.rs` (does a snapshot hold a path): same plan.
+- `gc.rs` stale `index_cache` prune: `NOT EXISTS (... WHERE file_map.path =
+  index_cache.path ...)` is path-keyed on purpose and probes
+  `idx_filemap_path`.
 
 Everything else uses `idx_filemap_snap` or scans: tree loads (`apply`,
-`compact`, `fsck`, `merge`, `restore`, `save`, `commands::mod`, `grep`,
+`compact`, `merge`, `restore`, `save`, `commands::mod`, `grep`,
 `diff` `load_file_map`, and `tree.rs` `Repo::tree_at`, whose `ORDER BY path`
 still plans through `idx_filemap_snap` plus a temp B-tree sort), `tracks_path`,
 `history --file` (both the parent comparison and the root-snapshot check, which
 plans through `idx_filemap_snap`), the `gc` orphan
-sweep, and the `gc` stale `index_cache` prune (its subquery is keyed on
-`snapshot_hash`, not path). `fsck`/`gc` `SELECT DISTINCT hash` and the bundle
-export scan the whole table. `mv.rs` and `paths.rs` do not read `file_map`.
+sweep. `fsck` reads the whole table in one `ORDER BY snapshot_hash` scan
+(grouped per snapshot in Rust), `gc` runs `SELECT hash` and dedups in Rust, and
+the bundle export scans the whole table. `mv.rs` and `paths.rs` do not read `file_map`.
 Dropping `idx_filemap_path` would therefore turn those four point lookups into
 a scan of the snapshot's rows via `idx_filemap_snap` (about one tree), not of
 the table; a composite `(snapshot_hash, path)` index would serve them better
@@ -701,6 +716,59 @@ and is the `WITHOUT ROWID` option below.
 **Structural option:** a tree-object or delta model, where a snapshot names a
 tree object and unchanged subtrees are shared. That changes the format and
 bundles.
+
+**Round three** (release build, 2,000 files x 300 snapshots, one file changed
+per snapshot, so about 600,000 `file_map` rows; run through the CLI on an idle
+machine):
+
+| Quantity | Round three |
+| --- | --- |
+| `file_map` rows | about 600,000 (2,000 x 300) |
+| `.velo` size | 174 MB, against 304 MB for the equivalent git repository |
+| `.velo` per snapshot | 0.58 MB, about twice round one's per-snapshot figure |
+| `fsck` before the 17.11 change | 2.65 s: objects 0.62 s, snapshot ids 1.0 s, duplicate-row count 0.95 s |
+| `fsck` after | 0.8-1.0 s: objects 0.34 s, snapshot ids 0.35 s, duplicate-row count 0 s |
+| `gc` before | 0.89 s: database statements 0.64 s |
+| `gc` after | 0.31 s: database statements 0.11 s |
+
+This run did not break the 174 MB down by table. The `fsck` and
+`gc` cost scales with the same rows: both read every one. Their fix was in how
+the rows are read (one ordered scan, parallel id hashing, no `DISTINCT` over
+the whole table), not in how they are stored.
+
+**The decision remains open and nothing changed in the format.** No column,
+index or row layout was altered by this measurement; the schema is as section 7.2
+describes. A change that stored a tree once and shared it between snapshots
+that did not touch it would cut the rows and the size, and would also change
+`fsck`, `gc`, bundles and sync, so it needs its own phase.
+
+**Round four: pack import (17.8-a).** `bundle apply` and `clone` at 2,000 files
+x 300 snapshots (about 600,000 rows, a 165 MB `velo.db`) spent their time as
+follows in `bundle::import`, release build, one run each, NTFS with Defender on:
+
+| Phase | Before | After |
+| --- | --- | --- |
+| objects: verify and write 2,600 files | 14-16 s | 5.6-6.7 s |
+| snapshot id verification | 0.1 s | 0.1 s |
+| `file_map` inserts with both indexes | 6.4-8 s | 6.4-8 s |
+| commit (WAL write and checkpoint) | 4-5 s | 4-5 s |
+
+The object phase was the avoidable part: many rayon threads creating small
+files at once took about 100 ms per file where one thread takes 2.5 ms, so the
+writes now run on the calling thread after the parallel verification. Four
+writer threads were measured and were no better than the full pool. That is
+about a 1.4x improvement of `bundle apply` (roughly 27 s to 20 s on a noisy
+machine), not the 2x aimed at.
+
+**The floor is SQLite.** Dropping `idx_filemap_snap` and `idx_filemap_path`
+for the bulk insert and recreating them in the same transaction made the
+inserts take 1.1 s but the index build 4-5 s, a wash (11 s against 11.5 s), so
+it was not kept. A 512 MB page cache saved about one second. What remains is
+writing 600,000 rows and two indexes over long repeated path strings, then
+checkpointing 165 MB. Going below it means fewer rows or smaller rows, which is
+the decision below: share trees between snapshots, store hashes as blobs, or
+key `file_map` on `(snapshot_hash, path)` `WITHOUT ROWID`. Nothing in the
+format changed.
 
 **Decision:** open. This is the same decision as 14.1 and 14.5, so it belongs
 with those format decisions and is made there once. Nothing was changed in

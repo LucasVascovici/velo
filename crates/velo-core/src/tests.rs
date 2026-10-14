@@ -12192,3 +12192,42 @@ mod merge_moves;
 
 #[cfg(test)]
 mod fast_forward_history;
+
+#[cfg(test)]
+mod fetch_after_undo;
+
+#[cfg(test)]
+mod fsck_duplicate_rows;
+
+#[cfg(test)]
+mod rebase_merged_history;
+
+#[cfg(test)]
+mod deep_history_reads;
+
+#[cfg(test)]
+mod absent_tracking_ref;
+
+#[cfg(test)]
+mod bundle_tags;
+
+#[cfg(test)]
+mod fsck_parallel;
+
+#[cfg(test)]
+mod resolve_take_counts;
+
+#[cfg(test)]
+mod open_fast_path;
+
+#[cfg(test)]
+mod merge_abort_bytes;
+
+#[cfg(test)]
+mod push_side_branches;
+
+#[cfg(test)]
+mod resolve_line_endings;
+
+#[cfg(test)]
+mod sync_pack_speed;

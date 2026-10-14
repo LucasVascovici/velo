@@ -9,7 +9,7 @@ use std::fs;
 
 use crate::commands::require_working_tree;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
-use crate::error::{InProgress, Result, VeloError};
+use crate::error::{InProgress, RefKind, Result, VeloError};
 use crate::storage;
 use crate::{Author, BranchName, ObjectHash, Repo, SnapshotId, SnapshotMeta, WriteGuard};
 
@@ -118,6 +118,21 @@ pub fn run(guard: &WriteGuard, mode: Mode<'_>) -> Result<Outcome> {
 // ─── Abort ───────────────────────────────────────────────────────────────────
 
 fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
+    let out = abort_inner(guard);
+    // Whatever happened above, the saved bytes are consumed: a stale
+    // MERGE_ORIG must not survive into the next merge.
+    if let Ok(Outcome::Aborted {
+        restored_to: Some(_),
+        ..
+    }) = &out
+    {
+        restore_orig_bytes(guard);
+    }
+    let _ = fs::remove_file(guard.root().join(MERGE_ORIG));
+    out
+}
+
+fn abort_inner(guard: &WriteGuard) -> Result<Outcome> {
     let root = guard.root();
     let merge_head_path = root.join(".velo/MERGE_HEAD");
     let conn = guard.conn();
@@ -171,6 +186,96 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
         source,
         restored_to: Some(pre_merge_hash.to_string()),
     })
+}
+
+/// Transient file holding the exact bytes of CR-ending files a merge may rewrite.
+const MERGE_ORIG: &str = ".velo/MERGE_ORIG";
+
+/// Save the pre-merge bytes of every CR-ending text file the merge could
+/// rewrite or delete.
+///
+/// The object store keeps text with every `\r` removed (FORMAT.md 2.1), so a
+/// restore can only write the LF form. Without this copy `merge --abort` after
+/// a rewrite would hand back `a\nb\n` for a file that was `a\r\nb\r\n`. The
+/// tree is clean here (`do_merge` refuses a dirty one), so the working bytes
+/// are the pre-merge bytes. LF and binary files already round-trip exactly and
+/// are not recorded.
+fn save_orig_bytes(root: &std::path::Path, our: &apply::Tree, theirs: &apply::Tree) {
+    let mut out: Vec<u8> = Vec::new();
+    let mut paths: Vec<&String> = our
+        .iter()
+        .filter(|(p, e)| theirs.get(*p) != Some(*e))
+        .map(|(p, _)| p)
+        .collect();
+    paths.sort();
+    for path in paths {
+        let full = root.join(path);
+        let is_link = fs::symlink_metadata(&full).is_ok_and(|m| m.file_type().is_symlink());
+        if is_link {
+            continue;
+        }
+        let Ok(bytes) = fs::read(&full) else { continue };
+        if !bytes.contains(&b'\r') || bytes.contains(&0u8) {
+            continue;
+        }
+        out.extend_from_slice(&(path.len() as u32).to_le_bytes());
+        out.extend_from_slice(path.as_bytes());
+        out.extend_from_slice(&(bytes.len() as u32).to_le_bytes());
+        out.extend_from_slice(&bytes);
+    }
+    if !out.is_empty() {
+        let _ = storage::write_atomic(&root.join(MERGE_ORIG), &out);
+    }
+}
+
+/// Parse `MERGE_ORIG` into `(path, bytes)` records, stopping at a truncated one.
+fn read_orig_records(data: &[u8]) -> Vec<(String, Vec<u8>)> {
+    fn take<'a>(d: &mut &'a [u8]) -> Option<&'a [u8]> {
+        let (len, rest) = d.split_first_chunk::<4>()?;
+        let n = u32::from_le_bytes(*len) as usize;
+        if rest.len() < n {
+            return None;
+        }
+        let (body, rest) = rest.split_at(n);
+        *d = rest;
+        Some(body)
+    }
+    let mut d = data;
+    let mut out = Vec::new();
+    while !d.is_empty() {
+        let (Some(p), Some(b)) = (take(&mut d), take(&mut d)) else {
+            break;
+        };
+        let Ok(p) = String::from_utf8(p.to_vec()) else {
+            continue;
+        };
+        out.push((p, b.to_vec()));
+    }
+    out
+}
+
+/// Put the saved CR bytes back over the restored LF files.
+///
+/// A record is applied only when the file now on disk hashes to the saved
+/// content with its CRs removed, i.e. restore really did bring back the
+/// pre-merge content. Anything else is left as restore wrote it.
+fn restore_orig_bytes(guard: &WriteGuard) {
+    let root = guard.root();
+    let Ok(data) = fs::read(root.join(MERGE_ORIG)) else {
+        return;
+    };
+    let mut done = Vec::new();
+    for (path, bytes) in read_orig_records(&data) {
+        let full = root.join(&path);
+        let now = storage::hash_for(&full, storage::capture_mode(&full));
+        let want = blake3::hash(&storage::normalise_crlf(bytes.clone()))
+            .to_hex()
+            .to_string();
+        if now == want && fs::write(&full, &bytes).is_ok() {
+            done.push(path);
+        }
+    }
+    crate::commands::invalidate_cache_entries(guard.repo(), &done);
 }
 
 /// Delete the files a merge wrote that the pre-merge snapshot does not have.
@@ -260,16 +365,41 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
     // Resolve the merge source first, so an unborn current branch can adopt it.
     // An exact local-branch tip wins over a hash prefix, so a short branch name
     // can't be mis-read as one; tags and remote refs fall out of the fallback.
+    let mut absent_ref: Option<VeloError> = None;
     let target_probe = crate::commands::branch_tip(conn, target_branch).or_else(|| {
-        crate::commands::resolve_snapshot_id(guard.repo(), target_branch)
-            .ok()
-            .map(SnapshotId::into_string)
+        match crate::commands::resolve_snapshot_id(guard.repo(), target_branch) {
+            Ok(id) => Some(id.into_string()),
+            // Kept so the caller hears "fetch it", not a generic "not found".
+            Err(e @ VeloError::RemoteRefAbsent { .. }) => {
+                absent_ref = Some(e);
+                None
+            }
+            Err(_) => None,
+        }
     });
-    let not_found = || {
-        VeloError::invalid(format!(
-            "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
-            target_branch
-        ))
+    let target_hash: String = match target_probe {
+        Some(h) => {
+            // Checked before anything is written: a merge must never record a
+            // parent that is not a live snapshot (an undone one a tracking ref
+            // still names, say).
+            if !crate::commands::snapshot_is_live(conn, &h) {
+                return Err(
+                    match crate::commands::resolve_snapshot_id(guard.repo(), target_branch) {
+                        Err(e @ VeloError::RemoteRefAbsent { .. }) => e,
+                        _ => VeloError::not_found(RefKind::Snapshot, h),
+                    },
+                );
+            }
+            h
+        }
+        None => {
+            return Err(absent_ref.unwrap_or_else(|| {
+                VeloError::invalid(format!(
+                    "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
+                    target_branch
+                ))
+            }))
+        }
     };
 
     let current_hash: String = match crate::commands::branch_tip(conn, head_branch) {
@@ -277,7 +407,6 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         None => {
             // Merging into a branch with no commits just starts it at the source
             // (Git does the same) — there is nothing of ours to reconcile.
-            let target_hash = target_probe.ok_or_else(not_found)?;
             crate::commands::set_branch_tip(conn, head_branch, &target_hash)?;
             // The tree often already matches, having just branched from it; only
             // touch it when it genuinely differs.
@@ -297,8 +426,6 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
             });
         }
     };
-
-    let target_hash: String = target_probe.ok_or_else(not_found)?;
 
     // Common right after branching, before either side has diverged.
     if current_hash == target_hash {
@@ -349,6 +476,8 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         &mut our_tree,
         &mut their_tree,
     )?;
+    let _ = fs::remove_file(root.join(MERGE_ORIG));
+    save_orig_bytes(root, &our_tree, &their_tree);
     let applied = apply::reconcile_tree_moving(guard, &base_tree, &our_tree, &their_tree, &moves)?;
 
     let result = ThreeWay {
@@ -538,6 +667,11 @@ impl MergePlan {
 /// ```
 pub fn plan(repo: &Repo, ours: &SnapshotId, theirs: &SnapshotId) -> Result<MergePlan> {
     let conn = repo.conn();
+    for id in [ours, theirs] {
+        if !crate::commands::snapshot_is_live(conn, id.as_str()) {
+            return Err(VeloError::not_found(RefKind::Snapshot, id.as_str()));
+        }
+    }
     let objects = repo.objects();
 
     let base = merge_base(repo, ours, theirs)?;

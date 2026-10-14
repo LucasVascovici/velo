@@ -8,7 +8,7 @@ use std::fs;
 
 use rusqlite::OptionalExtension;
 
-use crate::commands::get_dirty_files;
+use crate::commands::dirty_scan;
 use crate::commands::require_working_tree;
 use crate::error::{InProgress, Result, VeloError};
 use crate::events::{Event, Ref};
@@ -104,7 +104,8 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
         });
     }
 
-    let dirty = get_dirty_files(guard.repo());
+    let scan = dirty_scan(guard.repo());
+    let dirty = &scan.status;
     if !dirty.is_empty() {
         let mut paths: Vec<std::path::PathBuf> =
             dirty.keys().map(std::path::PathBuf::from).collect();
@@ -178,7 +179,7 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
             ..Default::default()
         },
         crate::commands::restore::Strategy::Delta,
-        Some(dirty),
+        Some(scan),
     )?;
     Ok(Outcome {
         snapshot,

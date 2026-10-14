@@ -105,14 +105,13 @@ pub fn run_with(root: &Path, options: InitOptions) -> Result<Initialised> {
         fs::create_dir_all(velo_dir.join("objects"))?;
         fs::create_dir_all(velo_dir.join("chunks"))?;
     }
-    crate::db::init_db_at_path(&velo_dir.join("velo.db"))?;
+    let conn = crate::db::create_at_path(&velo_dir.join("velo.db"))?;
     fs::write(velo_dir.join("HEAD"), "main")?;
     fs::write(velo_dir.join("PARENT"), "")?;
 
     // 'main' exists from the moment the repository does, even before the first
     // save — so switching away and back, or merging into it, behaves sanely.
     {
-        let conn = crate::db::get_conn_at_path(&velo_dir.join("velo.db"))?;
         crate::commands::register_branch(&conn, "main", "")?;
         if options.objects != crate::ObjectLocation::Files {
             conn.execute(

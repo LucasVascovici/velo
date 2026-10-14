@@ -123,11 +123,16 @@ fn do_start(guard: &WriteGuard, target: &SnapshotId, author: Option<&Author>) ->
     // only `onto == head` was too narrow: after a successful rebase the branch
     // *contains* onto without equalling it, so re-running the same rebase
     // replayed every commit again onto fresh hashes, duplicating the branch.
-    if ancestry(conn, &head_hash).contains(&onto_hash) {
+    //
+    // Both parents are followed: a snapshot the target reaches only through a
+    // merge's second parent is just as much "already in the target".
+    if crate::commands::ancestors(conn, &head_hash)?.contains_key(&onto_hash) {
         return Ok(Outcome::AlreadyUpToDate);
     }
 
-    let onto_ancestors = ancestry(conn, &onto_hash);
+    let onto_ancestors: HashSet<String> = crate::commands::ancestors(conn, &onto_hash)?
+        .into_keys()
+        .collect();
     let commits = branch_linear_history(conn, &head_hash, &onto_ancestors);
     if commits.is_empty() {
         return Ok(Outcome::AlreadyUpToDate);
@@ -212,6 +217,7 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
     let discarded = discard_replayed(guard, &onto, &orig_head);
 
     let _ = fs::remove_file(root.join(".velo/MERGE_HEAD"));
+    let _ = fs::remove_file(root.join(".velo/MERGE_ORIG"));
     clear_state(guard.root());
 
     let restored_to = if orig_head.is_empty() {
@@ -426,6 +432,10 @@ fn conflict_paths(repo: &Repo) -> Vec<std::path::PathBuf> {
 
 /// Walk history back from `start`, stopping at anything in `stop_set`.
 /// Returns commits in replay order, oldest first.
+///
+/// Only first parents are walked. Everything the target reaches has all its
+/// own ancestors in the stop set too, so stopping at the first member skips
+/// exactly what the target already contains.
 fn branch_linear_history(
     conn: &rusqlite::Connection,
     start: &str,
@@ -451,23 +461,4 @@ fn branch_linear_history(
     }
     result.reverse();
     result
-}
-
-/// Every ancestor of `hash`, including itself.
-fn ancestry(conn: &rusqlite::Connection, hash: &str) -> HashSet<String> {
-    let mut set = HashSet::new();
-    let mut stack = vec![hash.to_string()];
-    while let Some(h) = stack.pop() {
-        if h.is_empty() || !set.insert(h.clone()) {
-            continue;
-        }
-        if let Ok(parent) = conn.query_row(
-            "SELECT parent_hash FROM snapshots WHERE hash = ?",
-            [&h],
-            |r| r.get::<_, String>(0),
-        ) {
-            stack.push(parent);
-        }
-    }
-    set
 }

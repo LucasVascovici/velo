@@ -294,7 +294,14 @@ pub fn fetch(
         s.branch = format!("remotes/{}/{}", remote_name, s.branch);
     }
     let conn = guard.conn();
-    let (snaps, objs) = bundle::import_pack(guard, &pack)?;
+    // Tags, meta and renames only travel with their snapshots, so a pack with no
+    // snapshots, objects or tags has nothing to import.
+    let (snaps, objs) =
+        if pack.snapshots.is_empty() && pack.objects.is_empty() && pack.tags.is_empty() {
+            (0, 0)
+        } else {
+            bundle::import_pack(guard, &pack)?
+        };
     guard.repo().emit_imported(snaps);
     for r in &refs {
         remotemod::set_remote_ref(conn, remote_name, &r.branch, &r.hash)?;
@@ -316,6 +323,23 @@ pub fn fetch(
 
 // ─── push ─────────────────────────────────────────────────────────────────────
 
+/// What a push did, plus the side branches its history published.
+///
+/// A branch is a label stored on each snapshot and the remote derives its
+/// branch tips from those labels, so pushing a branch that merged a scratch
+/// branch also publishes the scratch branch under its own name. Relabelling
+/// would risk moving the remote's tip of the pushed branch and would change
+/// what older clients see, so the push says so instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct PushReport {
+    /// The outcome of the push itself.
+    pub pushed: Pushed,
+    /// Branch labels other than the pushed branch carried by the snapshots
+    /// that were sent, sorted and deduplicated. Empty unless snapshots were sent.
+    pub also_published: Vec<String>,
+}
+
 /// Send a branch to a remote. Fast-forward only — the remote enforces it.
 pub fn push(
     guard: &WriteGuard,
@@ -324,6 +348,17 @@ pub fn push(
     spawn: &transport::Spawn,
     options: Options<'_>,
 ) -> Result<Pushed> {
+    push_report(guard, remote_name, branch, spawn, options).map(|r| r.pushed)
+}
+
+/// Like [`push`], but also reports the side branches the push published.
+pub fn push_report(
+    guard: &WriteGuard,
+    remote_name: &str,
+    branch: Option<&str>,
+    spawn: &transport::Spawn,
+    options: Options<'_>,
+) -> Result<PushReport> {
     let conn = guard.conn();
     let branch = branch
         .map(String::from)
@@ -345,6 +380,7 @@ pub fn push(
     let created_branch = std::cell::Cell::new(false);
     let remote_was_empty = std::cell::Cell::new(false);
     let advertised_tip: std::cell::Cell<Option<String>> = std::cell::Cell::new(None);
+    let side: std::cell::RefCell<std::collections::BTreeSet<String>> = Default::default();
     let mut build = |refs: &[transport::RemoteRef]| -> Result<bundle::Bundle> {
         advertised_tip.set(
             refs.iter()
@@ -376,6 +412,10 @@ pub fn push(
                     s.branch = original.to_string();
                 }
             }
+            // Internal labels (`_stash`, `_deleted_*`) are not branches.
+            if s.branch != branch && !s.branch.starts_with('_') {
+                side.borrow_mut().insert(s.branch.clone());
+            }
         }
         Ok(pack)
     };
@@ -391,9 +431,12 @@ pub fn push(
         } => {
             remotemod::set_remote_ref(conn, remote_name, &branch, &local_tip)?;
             if new_snapshots == 0 && new_objects == 0 {
-                return Ok(Pushed::AlreadyUpToDate {
-                    branch,
-                    remote: remote_name.to_string(),
+                return Ok(PushReport {
+                    pushed: Pushed::AlreadyUpToDate {
+                        branch,
+                        remote: remote_name.to_string(),
+                    },
+                    also_published: Vec::new(),
                 });
             }
             let created = created_branch.get().then(|| {
@@ -403,12 +446,15 @@ pub fn push(
                     BranchCreated::BranchWasMissing
                 }
             });
-            Ok(Pushed::Sent {
-                branch,
-                remote: remote_name.to_string(),
-                snapshots: new_snapshots,
-                objects: new_objects,
-                created,
+            Ok(PushReport {
+                pushed: Pushed::Sent {
+                    branch,
+                    remote: remote_name.to_string(),
+                    snapshots: new_snapshots,
+                    objects: new_objects,
+                    created,
+                },
+                also_published: side.take().into_iter().collect(),
             })
         }
         // The remote has commits we don't. `NotFastForward` carries the branch
@@ -601,6 +647,24 @@ pub(crate) fn default_dir(url: &str) -> String {
         .filter(|s| !s.is_empty() && *s != "." && *s != "..")
         .unwrap_or("velo-clone")
         .to_string()
+}
+
+/// The `(remote, branch)` tracking refs that point at exactly `snapshot`,
+/// ordered by remote then branch.
+///
+/// `undo` does not touch `remote_refs`, so after one a tracking ref can still
+/// name the snapshot it removed; a caller uses this to say the remote still has
+/// it and that a later `fetch` brings it back.
+pub fn tracking_refs_at(repo: &Repo, snapshot: &SnapshotId) -> Result<Vec<(String, String)>> {
+    let mut stmt = repo
+        .conn()
+        .prepare("SELECT remote, branch FROM remote_refs WHERE hash = ? ORDER BY remote, branch")?;
+    let rows = stmt
+        .query_map([snapshot.as_str()], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(rows)
 }
 
 /// Whether rewriting the snapshots from `tip` down to (but excluding) `base`

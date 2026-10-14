@@ -519,20 +519,35 @@ impl ObjectStore<'_> {
         use rayon::prelude::*;
         match self {
             ObjectStore::Files(f) => {
-                let results: Vec<Result<bool>> = items
+                // Decoding and hashing are CPU work and scale with threads;
+                // creating files does not. Dozens of threads creating small
+                // files at once serialise inside the filesystem (and, on
+                // Windows, the virus scanner) and each create then takes
+                // tens of times longer than it does alone, so the writes below
+                // run on the calling thread, after every frame is verified.
+                let checked: Vec<Result<Option<bool>>> = items
                     .par_iter()
                     .map(|(hash, frame)| {
                         progress.tick();
                         if f.contains(hash) {
-                            Ok(false)
+                            Ok(None)
                         } else {
-                            f.import_compressed(hash, frame)
+                            f.verify_incoming(hash, frame).map(Some)
                         }
                     })
                     .collect();
+                let mut pending = Vec::new();
+                for (item, r) in items.iter().zip(checked) {
+                    if let Some(large) = r? {
+                        pending.push((item, large));
+                    }
+                }
+                // A bundle may name an object twice; the second is a no-op.
+                let mut seen = std::collections::HashSet::new();
+                pending.retain(|((hash, _), _)| seen.insert(hash.as_str()));
                 let mut new = 0;
-                for r in results {
-                    if r? {
+                for ((hash, frame), large) in pending {
+                    if f.store_verified(hash, frame, large)? {
                         new += 1;
                     }
                 }
@@ -623,6 +638,41 @@ impl ObjectStore<'_> {
         match self {
             ObjectStore::Files(f) => f.chunks_of(hash),
             ObjectStore::Database(_) => Ok(None),
+        }
+    }
+
+    /// [`ObjectStore::verify`] for every hash, in input order, hashing on the
+    /// pool where the backend allows. Loose files are independent, so they
+    /// verify in parallel; the database backend reads through one connection
+    /// and stays on the calling thread.
+    pub(crate) fn par_verify(&self, hashes: &[String]) -> Vec<Verified> {
+        use rayon::prelude::*;
+        match self {
+            ObjectStore::Files(f) => hashes.par_iter().map(|h| f.verify(h)).collect(),
+            ObjectStore::Database(_) => hashes.iter().map(|h| self.verify(h)).collect(),
+        }
+    }
+
+    /// [`ObjectStore::chunks_of`] for every hash, in input order. An error
+    /// (absent or malformed manifest) reads as `None`: the caller's `verify`
+    /// reports it with a better name.
+    pub(crate) fn par_chunks_of(&self, hashes: &[String]) -> Vec<Option<Vec<String>>> {
+        use rayon::prelude::*;
+        match self {
+            ObjectStore::Files(f) => hashes
+                .par_iter()
+                .map(|h| f.chunks_of(h).ok().flatten())
+                .collect(),
+            ObjectStore::Database(_) => hashes.iter().map(|_| None).collect(),
+        }
+    }
+
+    /// [`ObjectStore::verify_chunk`] for every chunk, in input order.
+    pub(crate) fn par_verify_chunks(&self, chunks: &[String]) -> Vec<Verified> {
+        use rayon::prelude::*;
+        match self {
+            ObjectStore::Files(f) => chunks.par_iter().map(|c| f.verify_chunk(c)).collect(),
+            ObjectStore::Database(_) => chunks.iter().map(|c| self.verify_chunk(c)).collect(),
         }
     }
 
@@ -931,9 +981,10 @@ impl FileObjects {
         Ok(raw)
     }
 
-    /// Verify a received frame decompresses and hashes to `hash`, then store
-    /// it. `Ok(true)` if the object was new.
-    pub(crate) fn import_compressed(&self, hash: &str, frame: &[u8]) -> Result<bool> {
+    /// The checking half of importing a received frame: it must decompress and hash to `hash`. Returns whether the
+    /// object is big enough to be stored as chunks, which the writing half
+    /// needs and which would otherwise mean decoding it a second time.
+    pub(crate) fn verify_incoming(&self, hash: &str, frame: &[u8]) -> Result<bool> {
         let decompressed = zstd::decode_all(frame).map_err(|_| {
             VeloError::corrupt(format!("object {} could not be decompressed", hash))
         })?;
@@ -944,10 +995,17 @@ impl FileObjects {
                 hash, actual
             )));
         }
+        Ok(decompressed.len() >= CHUNK_THRESHOLD)
+    }
+
+    /// The writing half: store a frame [`verify_incoming`](Self::verify_incoming)
+    /// accepted. `Ok(true)` if the object was new.
+    pub(crate) fn store_verified(&self, hash: &str, frame: &[u8], large: bool) -> Result<bool> {
         if self.path(hash).exists() {
             return Ok(false);
         }
-        if decompressed.len() >= CHUNK_THRESHOLD {
+        if large {
+            let decompressed = zstd::decode_all(frame).map_err(VeloError::Io)?;
             self.store(hash, &decompressed)?;
         } else {
             write_atomic(&self.path(hash), frame)?;
@@ -1168,7 +1226,7 @@ mod tests {
         let (_d, s) = store();
         let frame = zstd::encode_all(&b"content"[..], 1).unwrap();
         let wrong = blake3::hash(b"other").to_hex().to_string();
-        let err = s.import_compressed(&wrong, &frame).unwrap_err();
+        let err = s.verify_incoming(&wrong, &frame).unwrap_err();
         assert!(matches!(err, VeloError::Corrupt { .. }));
 
         let h = s.put(b"original").unwrap();

@@ -274,9 +274,38 @@ pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&full, &resolved)?;
+        // The store keeps text LF-normalised, so `resolved` is LF. A working
+        // file that is consistently CRLF gets its endings back; anything else
+        // (LF, mixed, absent) is written as LF, as before.
+        let crlf = std::fs::read(&full).is_ok_and(|b| uses_crlf(&b));
+        if crlf {
+            std::fs::write(&full, resolved.replace('\n', "\r\n"))?;
+        } else {
+            std::fs::write(&full, &resolved)?;
+        }
     }
     clear_conflict(guard, &session.file.path)
+}
+
+/// Whether a working file is consistently CRLF: text (no NUL), at least one
+/// `\r\n`, and no `\n` that is not preceded by `\r`.
+///
+/// Mixed-ending files return false on purpose; rewriting them uniformly would
+/// change lines the user never touched.
+pub(crate) fn uses_crlf(bytes: &[u8]) -> bool {
+    if bytes.contains(&0) {
+        return false;
+    }
+    let mut seen = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            if i == 0 || bytes[i - 1] != b'\r' {
+                return false;
+            }
+            seen = true;
+        }
+    }
+    seen
 }
 
 /// What to do when the working copy of a conflicted file holds edits made by
@@ -303,6 +332,11 @@ pub struct Taken {
     pub replaced_edit_lines: usize,
     /// Lines of the losing side's conflicting hunks that were discarded.
     pub dropped_lines: usize,
+    /// Conflict hunks the take decided.
+    pub conflicts: usize,
+    /// Lines of the other side's clean (non-conflicting) changes that the
+    /// result keeps; 0 for a whole-file driver conflict.
+    pub kept_clean_lines: usize,
 }
 
 /// Has the working copy of `file` been edited by hand?
@@ -317,10 +351,7 @@ pub fn edits(repo: &Repo, file: &ConflictFile) -> Result<Option<usize>> {
         return Ok(None);
     }
     let ours = read_text(&repo.objects(), &file.our_hash)?;
-    let working = match std::fs::read(&full) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(_) => String::new(),
-    };
+    let working = read_working_lf(&full);
     let n = similar::TextDiff::from_lines(&ours, &working)
         .iter_all_changes()
         .filter(|c| c.tag() != similar::ChangeTag::Equal)
@@ -337,6 +368,15 @@ fn working_hash(repo: &Repo, file: &ConflictFile) -> (std::path::PathBuf, String
         String::new()
     };
     (full, hash)
+}
+
+/// The working file as text with CR removed (binary is left as is), so it
+/// compares against the LF-stored objects line for line.
+fn read_working_lf(full: &std::path::Path) -> String {
+    match std::fs::read(full) {
+        Ok(bytes) => String::from_utf8_lossy(&crate::storage::normalise_crlf(bytes)).into_owned(),
+        Err(_) => String::new(),
+    }
 }
 
 /// Inserted plus deleted lines between two texts.
@@ -477,11 +517,12 @@ pub fn mark_with(
     }
     let ours = read_text(&repo.objects(), &file.our_hash)?;
     let theirs = read_text(&repo.objects(), &file.their_hash)?;
+    let working_lf = read_working_lf(&full);
     let marked = Marked {
         path: file.path.clone(),
         lines: working.lines().count(),
-        differs_from_ours: changed_lines(&ours, &working),
-        differs_from_theirs: changed_lines(&theirs, &working),
+        differs_from_ours: changed_lines(&ours, &working_lf),
+        differs_from_theirs: changed_lines(&theirs, &working_lf),
         dropped_clean_changes,
     };
     clear_conflict(guard, &file.path)?;
@@ -538,6 +579,20 @@ pub fn take_all(
                 TakeOption::Both => 0,
             })
             .sum();
+        let conflicts = session.hunks.len();
+        let kept_clean_lines = if conflicts == 0 {
+            0
+        } else {
+            let objects = guard.repo().objects();
+            let ancestor = read_text(&objects, &file.ancestor_hash)?;
+            let ours = read_text(&objects, &file.our_hash)?;
+            let theirs = read_text(&objects, &file.their_hash)?;
+            let changes = match side {
+                TakeOption::Theirs => velo_merge::clean_changes_theirs(&ancestor, &theirs, &ours),
+                _ => velo_merge::clean_changes_theirs(&ancestor, &ours, &theirs),
+            };
+            changes.iter().map(|c| c.lines.len()).sum()
+        };
         for h in &mut session.hunks {
             h.decision = Some(decision.clone());
         }
@@ -550,6 +605,8 @@ pub fn take_all(
             side,
             replaced_edit_lines: edit.unwrap_or(0),
             dropped_lines,
+            conflicts,
+            kept_clean_lines,
         });
     }
     Ok(out)

@@ -175,11 +175,18 @@ const SCHEMA: &str = "
 /// `user_version = 0`, and `0` means "v1, unversioned" — so a brand-new repo
 /// would be indistinguishable from one this build must refuse.
 pub fn init_db_at_path(path: &Path) -> Result<()> {
+    create_at_path(path).map(|_| ())
+}
+
+/// Create the database file, schema and version marker, and hand back the open
+/// connection so `init` need not reopen and re-run the schema to register
+/// `main`.
+pub fn create_at_path(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
     apply_pragmas(&conn)?;
     conn.execute_batch(SCHEMA)?;
     set_format_version(&conn, crate::FORMAT_VERSION)?;
-    Ok(())
+    Ok(conn)
 }
 
 /// Open a connection and apply pragmas, **without** migrating.
@@ -244,9 +251,33 @@ fn set_format_version(conn: &Connection, version: u32) -> Result<()> {
 /// recomputing and silently stamping v2 over v1 rows would corrupt the
 /// repository in a way `fsck` could only report after the fact.
 pub fn migrate(conn: &Connection) -> Result<()> {
+    if schema_is_current(conn)? {
+        return Ok(());
+    }
     conn.execute_batch(SCHEMA)?;
     set_format_version(conn, crate::FORMAT_VERSION)?;
     Ok(())
+}
+
+/// Whether the version marker is current **and** every table and index the
+/// `SCHEMA` script declares exists, so re-running it would change nothing.
+///
+/// The version alone is not enough: a repository written by an older v3 build
+/// carries `user_version = 3` yet lacks tables added since (`compactions`),
+/// and those must still appear on open. The expected count is derived from
+/// `SCHEMA` itself so it cannot drift from the script.
+fn schema_is_current(conn: &Connection) -> Result<bool> {
+    if format_version(conn)? != crate::FORMAT_VERSION {
+        return Ok(false);
+    }
+    let expected = SCHEMA.matches("CREATE TABLE IF NOT EXISTS").count()
+        + SCHEMA.matches("CREATE INDEX IF NOT EXISTS").count();
+    let present: i64 = conn.query_row(
+        "SELECT count(*) FROM sqlite_master          WHERE type IN ('table','index') AND name NOT LIKE 'sqlite_%'",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(present as usize == expected)
 }
 
 /// Open and migrate in one step. Retained for call sites that predate the

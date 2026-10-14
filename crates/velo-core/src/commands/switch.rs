@@ -7,7 +7,7 @@
 use std::fs;
 
 use crate::commands::require_working_tree;
-use crate::commands::{get_dirty_files, FileStatus};
+use crate::commands::{dirty_scan, FileStatus};
 use crate::error::{Result, VeloError};
 use crate::SnapshotId;
 use crate::WriteGuard;
@@ -61,7 +61,8 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
             });
         };
 
-        let mut dirty = get_dirty_files(guard.repo());
+        let mut scan = dirty_scan(guard.repo());
+        let dirty = &mut scan.status;
         if position.is_empty() {
             // With no position every file reads as New, which the normal rule
             // treats as safe. Here the tip is about to be written over them, so a
@@ -97,7 +98,7 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
                 ..Default::default()
             },
             crate::commands::restore::Strategy::Delta,
-            Some(dirty),
+            Some(scan),
         )?;
         crate::commands::mv::discard_pending(guard.conn())?;
         return Ok(Outcome::Switched {
@@ -117,9 +118,10 @@ pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome
     // blocking on them (and then deleting them under --force) was both surprising
     // and destructive. Creating a branch that inherits the current position
     // restores nothing, so it never blocks.
-    let dirty = target_tip.is_some().then(|| get_dirty_files(guard.repo()));
+    let dirty = target_tip.is_some().then(|| dirty_scan(guard.repo()));
     if let (Some(dirty), false) = (&dirty, force) {
         let mut at_risk: Vec<std::path::PathBuf> = dirty
+            .status
             .iter()
             .filter(|(_, status)| **status != FileStatus::New)
             .map(|(path, _)| std::path::PathBuf::from(path))

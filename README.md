@@ -342,7 +342,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 **Branch names resolve everywhere.** Any command that accepts a hash or tag (`show`, `cherry-pick`, `restore`) also accepts a branch name — it resolves to the branch tip automatically. Remote-tracking refs work too: `velo merge origin/main`, `velo show origin/main`.
 
-**Sync that refuses to surprise you.** `velo push` is fast-forward-only: if the remote has commits you don't, the push is refused with the exact commands to fix it — there is no `--force` footgun. `velo pull` either fast-forwards or stops and tells you the branches diverged; it never silently merges or rewrites your history. Reconciliation is always an explicit `velo merge origin/<branch>` or `velo rebase origin/<branch>`.
+**Sync that refuses to surprise you.** `velo push` is fast-forward-only: if the remote has commits you don't, the push is refused with the exact commands to fix it — there is no `--force` footgun. `velo pull` either fast-forwards or stops and tells you the branches diverged; it never silently merges or rewrites your history. Reconciliation is always an explicit `velo merge origin/<branch>` or `velo rebase origin/<branch>`. Branches whose snapshots the pushed branch merged are published with it, under their own names.
 
 **Verifiable snapshots.** A snapshot's ID is a BLAKE3 hash of its *content* — the full file tree (paths, object hashes, and modes) plus its parents, message, timestamp, and any attached metadata. That means a snapshot can be checked against what it claims to contain, which is exactly what `velo fsck` does, and what makes importing history from another machine safe: every object is re-hashed and every snapshot ID recomputed on arrival before anything is trusted.
 
@@ -507,7 +507,7 @@ velo pull
 | `velo remote` | List configured remotes |
 | `velo remote remove <name>` | Remove a remote and its tracking refs |
 | `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
-| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work) |
+| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work; merged side branches are published with it under their own names) |
 | `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
 
 Remote defaults to `origin`, and branch defaults to the current branch.
@@ -853,7 +853,7 @@ git:
 
 ```toml
 [dependencies]
-velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.1.1" }
+velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.1.2" }
 ```
 
 It produces no terminal output at all — every command returns data — which is

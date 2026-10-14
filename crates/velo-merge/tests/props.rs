@@ -7,7 +7,10 @@
 
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseResult;
-use velo_merge::{diff3, try_auto_merge, MergeResult};
+use velo_merge::{
+    build_resolved_content, clean_changes_theirs, compute_conflict_hunks, diff3, try_auto_merge,
+    Decision, MergeResult,
+};
 
 /// "Merged cleanly, here is the text" — `None` when a human has to decide.
 ///
@@ -50,7 +53,49 @@ fn cat(a: &[String], b: &[String], c: &[String]) -> Vec<String> {
     v
 }
 
+/// Lines from a small alphabet that includes the blank line.
+fn blanky(min: usize, max: usize) -> impl Strategy<Value = Vec<String>> {
+    prop::collection::vec(prop::sample::select(vec!["", "a", "b", "c"]), min..max)
+        .prop_map(|v| v.into_iter().map(String::from).collect())
+}
+
 proptest! {
+    #![proptest_config(ProptestConfig {
+        max_global_rejects: 16384,
+        ..ProptestConfig::default()
+    })]
+
+    /// A single conflict region with no clean change either side resolves to
+    /// exactly the chosen side, blank lines included.
+    #[test]
+    fn single_region_decisions_match_sides(
+        prefix in blanky(1, 4),
+        mid in blanky(1, 4),
+        mid_a in blanky(0, 4),
+        mid_b in blanky(0, 4),
+        suffix in blanky(1, 4),
+    ) {
+        let cat = |m: &[String]| body(&[prefix.clone(), m.to_vec(), suffix.clone()].concat());
+        let (anc, ours, theirs) = (cat(&mid), cat(&mid_a), cat(&mid_b));
+        let hunks = compute_conflict_hunks(&anc, &ours, &theirs);
+        prop_assume!(hunks.len() == 1);
+        // The region is exactly the middle: a clean pure deletion outside it
+        // (which `clean_changes_theirs` does not report) would legitimately
+        // change the output.
+        prop_assume!(hunks[0].ancestor_start == prefix.len());
+        prop_assume!(hunks[0].ancestor_end == prefix.len() + mid.len());
+        prop_assume!(clean_changes_theirs(&anc, &ours, &theirs).is_empty());
+        prop_assume!(clean_changes_theirs(&anc, &theirs, &ours).is_empty());
+        let a: Vec<&str> = anc.lines().collect();
+        let o: Vec<&str> = ours.lines().collect();
+        let t: Vec<&str> = theirs.lines().collect();
+        for (decision, want) in [(Decision::Ours, &ours), (Decision::Theirs, &theirs)] {
+            let mut hs = hunks.clone();
+            hs[0].decision = Some(decision);
+            prop_assert_eq!(&build_resolved_content(&a, &o, &t, &hs, true), want);
+        }
+    }
+
     /// If our side made no change, the merge must equal theirs exactly.
     #[test]
     fn ours_unchanged_yields_theirs(anc in lines(), theirs in lines()) {
