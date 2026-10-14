@@ -12234,3 +12234,6 @@ mod sync_pack_speed;
 
 #[cfg(test)]
 mod hostile_paths;
+
+#[cfg(test)]
+mod signatures;

@@ -102,6 +102,7 @@ pub mod repo;
 pub mod safe_path;
 pub mod scope;
 pub mod serve;
+pub mod sign;
 pub mod storage;
 pub mod transport;
 pub mod tree;

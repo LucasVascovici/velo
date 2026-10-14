@@ -382,6 +382,7 @@ Present in v1 and v2 (v2 additions marked):
 | `settings` | **v3, additive** — `key`(PK) → `value`. The one key today is `objects`: `database` when objects live in the `objects` table (§2.5). A missing row, or a missing table, means files, which is every repository created before the setting existed. Written once at creation |
 | `objects` | **v3, additive** — `hash`(PK), `data` BLOB: one Zstd frame of the full object content (§2.5). Empty unless `settings.objects` is `database` |
 | `compactions` | **v3, additive** — `old_hash`(PK) → `new_hash`, `compacted_at_ms`: one row per snapshot id that compaction removed or re-minted (§11.3); **local only**, never collected by `gc`, not in bundles |
+| `signatures` | **v3, additive** — `(snapshot_hash, public_key)`(PK), `algorithm`, `signature`: Ed25519 signatures over snapshot ids, hex (§11.1). Outside identity; a missing table means no signatures. `fsck` verifies every row |
 
 Indexes are performance-only and may be rebuilt: `idx_filemap_snap`,
 `idx_filemap_path`, `idx_snap_branch`, `idx_trash_branch`, `idx_stash_name`,
@@ -582,12 +583,12 @@ stays in the files location.
 
 ## 11. Decided, not yet implemented
 
-Apart from D6 (§11.2) and D7 (§11.3), both now implemented, nothing in this
-section is written or read by the current code. These are decisions
+Apart from D6 (§11.2) and D7 (§11.3), both implemented, and the storage half
+of D5 (§11.1), nothing in this section is written or read by the current code. These are decisions
 taken before any code exists, because each is cheap now and a format break
 later. Later work implements them to the letter.
 
-### 11.1 Signatures (D5)
+### 11.1 Signatures (D5) — storage implemented; transport pending
 
 - **What is signed:** the snapshot id. The signed message is the ASCII bytes
   `velo-signature-v1\n` followed by the 64-char lowercase hex id. Nothing else
@@ -601,7 +602,7 @@ later. Later work implements them to the letter.
 - **Outside identity, like rename edges (§7.3).** A countersignature adds a row
   and never mints a new snapshot. The consequence is the same as for rename
   edges: a dropped signature cannot be detected from the id.
-- **Storage, when implemented:**
+- **Storage (implemented, `velo_core::sign`):**
 
   ```sql
   signatures (
@@ -613,7 +614,10 @@ later. Later work implements them to the letter.
   )
   ```
 
-  The table is additive and changes no id.
+  The table is additive and changes no id. A reader of a repository without
+  the table treats it as empty; `fsck` reports a row that fails strict
+  verification as corruption, ignores unknown-algorithm rows, and treats a row
+  naming a snapshot in neither `snapshots` nor `trash` as cruft.
 - **Transport:** bundle wire version 4 appends a `signatures` section after
   `renames` (u32 count; per row: snapshot_hash, algorithm, public_key,
   signature). Every writer that supports signatures writes version 4, so a
@@ -818,7 +822,7 @@ Phase 15: no schema, index or code path.
 - **No delta/packfile encoding.** Objects stay whole-content addressed: a name
   is always the hash of the full content. Storage-level chunking *below*
   identity is decided as D6 (§11.2); it is not delta encoding and changes no id.
-- **No signing yet.** Content addressing gives tamper-*evidence*, not
-  authentication. Signatures are decided as D5 (§11.1), outside identity, and
-  not yet implemented.
+- **No built-in trust.** Content addressing gives tamper-*evidence*, not
+  authentication. Signatures (§11.1) are stored outside identity and verified
+  against keys the caller trusts; velo makes no trust decision of its own.
 - **No downgrade path.** Migrations are forward-only.

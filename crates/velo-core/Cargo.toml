@@ -36,6 +36,7 @@ velo-merge.workspace = true
 blake3.workspace = true
 fastcdc.workspace = true
 chrono.workspace = true
+ed25519-dalek.workspace = true
 globset.workspace = true
 ignore.workspace = true
 parking_lot.workspace = true

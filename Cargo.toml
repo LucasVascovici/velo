@@ -36,6 +36,7 @@ blake3 = { version = "1.8", features = ["rayon"] }
 chrono = "0.4"
 clap = { version = "4.6", features = ["derive"] }
 console = "0.16"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 fs2 = "0.4"
 fastcdc = "3"
 globset = "0.4"
