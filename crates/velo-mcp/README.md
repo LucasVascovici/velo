@@ -91,15 +91,12 @@ an `isError: true` result that names `Unsupported` and the store tool to use.
 
 Example session:
 
-1. `velo_save_tree {"branch": "attempt-1", "message": "start",
-   "files": {"app.py": "print(1)
-", "notes.md": "todo
-"}}` returns the
-   snapshot id.
-2. `velo_save_tree {"branch": "attempt-1", "message": "cache",
-   "files": {"app.py": "print(2)
-", "notes.md": null}}` carries the previous
-   tree forward, changes one file and deletes the other.
+1. Create the first snapshot (the whole call is one line):
+   `velo_save_tree {"branch": "attempt-1", "message": "start", "files": {"app.py": "print(1)\n", "notes.md": "todo\n"}}`
+   returns the snapshot id.
+2. Change one file and delete the other:
+   `velo_save_tree {"branch": "attempt-1", "message": "cache", "files": {"app.py": "print(2)\n", "notes.md": null}}`
+   carries the previous tree forward.
 3. `velo_read_file {"snapshot": "attempt-1", "path": "app.py"}` reads it back.
 4. `velo_history {"meta": [{"namespace": "mcp", "key": "run"}]}` lists both
    snapshots with this run's identity.
