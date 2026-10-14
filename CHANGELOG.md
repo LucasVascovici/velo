@@ -6,6 +6,10 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 5.2.0
+
+Phase 18: hostile-input hardening, crash safety, a format-compatibility corpus, an authenticated HTTP remote, signed snapshots, `velo sync`, and binding/MCP/WASM work. Public API changes in `velo-core` are additive; one additive table (`signatures`); bundle wire version 4 is written only when a bundle carries signatures.
+
 ## 5.1.2
 
 Phase 17: fixes for what the third team simulation found. No repository
