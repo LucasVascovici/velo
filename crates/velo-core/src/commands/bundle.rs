@@ -135,12 +135,14 @@ pub struct Created {
 pub struct Applied {
     pub snapshots: usize,
     pub objects: usize,
+    /// Tags inserted. A tag whose name already exists locally is not counted.
+    pub tags: usize,
 }
 
 impl Applied {
     /// The bundle held nothing this repository didn't already have.
     pub fn is_empty(&self) -> bool {
-        self.snapshots == 0 && self.objects == 0
+        self.snapshots == 0 && self.objects == 0 && self.tags == 0
     }
 }
 
@@ -348,12 +350,13 @@ pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
     })?;
     let bundle = decode(&raw)?;
 
-    let (new_snaps, new_objects) = import_pack(guard, &bundle)?;
-    guard.repo().emit_imported(new_snaps);
+    let imported = import(guard, &bundle)?;
+    guard.repo().emit_imported(imported.snapshots);
 
     Ok(Applied {
-        snapshots: new_snaps,
-        objects: new_objects,
+        snapshots: imported.snapshots,
+        objects: imported.objects,
+        tags: imported.tags,
     })
 }
 
@@ -369,6 +372,21 @@ pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
 /// rewritten from the bundle, whose rows were verified against the id, so the
 /// stored tree is exactly what the id commits to.
 pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize, usize)> {
+    let imported = import(guard, bundle)?;
+    Ok((imported.snapshots, imported.objects))
+}
+
+/// What [`import`] actually inserted.
+pub(crate) struct Imported {
+    pub snapshots: usize,
+    pub objects: usize,
+    /// Tag rows inserted; `INSERT OR IGNORE` reports 0 for a name already held.
+    pub tags: usize,
+}
+
+/// The body of [`import_pack`], also reporting the tags it inserted so that
+/// `bundle apply` does not call a tag-only bundle "up to date".
+pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
     // ── Write + verify objects (dedup by name) ────────────────────────────────
     let objects = guard.repo().objects();
     let progress = guard.phase(Phase::Importing, Some(bundle.objects.len() as u64));
@@ -443,6 +461,7 @@ pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize,
 
     let tx = guard.transaction()?;
     let mut new_snaps = 0usize;
+    let mut new_tags = 0usize;
     {
         let mut ins_snap = tx.prepare(
             "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
@@ -496,7 +515,7 @@ pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize,
         let mut ins_tag =
             tx.prepare("INSERT OR IGNORE INTO tags (name, snapshot_hash) VALUES (?, ?)")?;
         for (name, hash) in &bundle.tags {
-            ins_tag.execute(params![name, hash])?;
+            new_tags += ins_tag.execute(params![name, hash])?;
         }
 
         // Rename edges, for the snapshots this repository actually has. Ignoring
@@ -518,7 +537,11 @@ pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize,
     }
     tx.commit()?;
 
-    Ok((new_snaps, new_objects))
+    Ok(Imported {
+        snapshots: new_snaps,
+        objects: new_objects,
+        tags: new_tags,
+    })
 }
 
 // ─── Reachability ────────────────────────────────────────────────────────────────

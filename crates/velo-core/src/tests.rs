@@ -12207,3 +12207,6 @@ mod deep_history_reads;
 
 #[cfg(test)]
 mod absent_tracking_ref;
+
+#[cfg(test)]
+mod bundle_tags;
