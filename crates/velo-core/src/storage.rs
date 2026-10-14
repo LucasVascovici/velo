@@ -626,6 +626,41 @@ impl ObjectStore<'_> {
         }
     }
 
+    /// [`ObjectStore::verify`] for every hash, in input order, hashing on the
+    /// pool where the backend allows. Loose files are independent, so they
+    /// verify in parallel; the database backend reads through one connection
+    /// and stays on the calling thread.
+    pub(crate) fn par_verify(&self, hashes: &[String]) -> Vec<Verified> {
+        use rayon::prelude::*;
+        match self {
+            ObjectStore::Files(f) => hashes.par_iter().map(|h| f.verify(h)).collect(),
+            ObjectStore::Database(_) => hashes.iter().map(|h| self.verify(h)).collect(),
+        }
+    }
+
+    /// [`ObjectStore::chunks_of`] for every hash, in input order. An error
+    /// (absent or malformed manifest) reads as `None`: the caller's `verify`
+    /// reports it with a better name.
+    pub(crate) fn par_chunks_of(&self, hashes: &[String]) -> Vec<Option<Vec<String>>> {
+        use rayon::prelude::*;
+        match self {
+            ObjectStore::Files(f) => hashes
+                .par_iter()
+                .map(|h| f.chunks_of(h).ok().flatten())
+                .collect(),
+            ObjectStore::Database(_) => hashes.iter().map(|_| None).collect(),
+        }
+    }
+
+    /// [`ObjectStore::verify_chunk`] for every chunk, in input order.
+    pub(crate) fn par_verify_chunks(&self, chunks: &[String]) -> Vec<Verified> {
+        use rayon::prelude::*;
+        match self {
+            ObjectStore::Files(f) => chunks.par_iter().map(|c| f.verify_chunk(c)).collect(),
+            ObjectStore::Database(_) => chunks.iter().map(|c| self.verify_chunk(c)).collect(),
+        }
+    }
+
     pub(crate) fn list_chunks(&self) -> Result<Vec<(String, u64)>> {
         match self {
             ObjectStore::Files(f) => f.list_chunks(),

@@ -378,75 +378,13 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     let mut sections: Vec<Section> = Vec::new();
 
     // ── 1. Objects: referenced ones exist and re-hash to their own name ───────
-    let referenced = referenced_objects(conn)?;
-    let mut verified = 0usize;
+    // Sorted, so the order problems are reported in does not depend on hash-set
+    // iteration order, which varied from run to run.
+    let mut referenced: Vec<String> = referenced_objects(conn)?.into_iter().collect();
+    referenced.sort_unstable();
     let before = problems.len();
     let progress = repo.phase(Phase::Verifying, Some(referenced.len() as u64));
-    // Chunks are shared between objects, so each is checked once.
-    let mut chunk_ok: HashMap<String, ChunkState> = HashMap::new();
-    for hash in &referenced {
-        progress.tick();
-        let before_object = problems.len();
-        // A manifest's chunks are checked first so a damaged one is named
-        // precisely rather than surfacing as a vague reassembly failure. Any
-        // error here (absent or malformed manifest) is left to `verify` below.
-        if let Ok(Some(chunks)) = objects.chunks_of(hash) {
-            for chunk in chunks {
-                match chunk_ok.get(&chunk) {
-                    Some(ChunkState::Good) | Some(ChunkState::Reported) => continue,
-                    // Reported once per object that needs it.
-                    Some(ChunkState::Missing) => {
-                        problems.push(Problem::MissingChunk {
-                            object: hash.clone(),
-                            chunk,
-                        });
-                        continue;
-                    }
-                    None => {}
-                }
-                match objects.verify_chunk(&chunk) {
-                    Verified::Ok => {
-                        chunk_ok.insert(chunk, ChunkState::Good);
-                    }
-                    Verified::Missing => {
-                        problems.push(Problem::MissingChunk {
-                            object: hash.clone(),
-                            chunk: chunk.clone(),
-                        });
-                        chunk_ok.insert(chunk, ChunkState::Missing);
-                    }
-                    Verified::Undecodable => {
-                        problems.push(Problem::CorruptChunk {
-                            chunk: chunk.clone(),
-                            actual: "undecodable".into(),
-                        });
-                        chunk_ok.insert(chunk, ChunkState::Reported);
-                    }
-                    Verified::Mismatch { actual } => {
-                        problems.push(Problem::CorruptChunk {
-                            chunk: chunk.clone(),
-                            actual,
-                        });
-                        chunk_ok.insert(chunk, ChunkState::Reported);
-                    }
-                }
-            }
-            if problems.len() > before_object {
-                continue; // reassembly would only repeat the chunk findings
-            }
-        }
-        match objects.verify(hash) {
-            Verified::Ok => verified += 1,
-            Verified::Missing => problems.push(Problem::MissingObject { hash: hash.clone() }),
-            Verified::Undecodable => {
-                problems.push(Problem::UndecodableObject { hash: hash.clone() })
-            }
-            Verified::Mismatch { actual } => problems.push(Problem::CorruptObject {
-                hash: hash.clone(),
-                actual,
-            }),
-        }
-    }
+    let verified = check_objects(&objects, &referenced, &progress, &mut problems);
     sections.push(Section::Objects {
         referenced: referenced.len(),
         verified,
@@ -456,7 +394,8 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     // ── 2. Snapshots: parents resolve; content-addressed ids recompute ────────
     let all_snaps = all_snapshots(conn)?;
     let before = problems.len();
-    let (ids_verified, ids_legacy) = check_snapshots(conn, &all_snaps, &mut problems)?;
+    let (ids_verified, ids_legacy, duplicate_rows) =
+        check_snapshots(conn, &all_snaps, &mut problems)?;
     sections.push(Section::Snapshots {
         checked: all_snaps.len(),
         ids_verified,
@@ -488,7 +427,7 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     });
 
     // ── 5. Cruft, and optionally its removal ─────────────────────────────────
-    let mut found = find_cruft(conn, repo);
+    let mut found = find_cruft(conn, repo, duplicate_rows);
     let orphan_chunks = unreferenced_chunks(&objects)?;
     if !orphan_chunks.is_empty() {
         found.push(Cruft::UnreferencedChunks(orphan_chunks.len()));
@@ -522,12 +461,84 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     })
 }
 
-/// What fsck already learnt about a chunk, so a shared one is read once.
-enum ChunkState {
-    Good,
-    Missing,
-    /// Corrupt and already reported.
-    Reported,
+/// Check every referenced object, and the chunks its manifest names.
+/// Returns how many objects verified.
+///
+/// The hashing is the cost, so it runs on the pool: manifests, then each
+/// distinct chunk once, then every object. The findings are then replayed
+/// sequentially in `referenced` order, which keeps the report identical to a
+/// single-threaded walk: a shared chunk is named once when corrupt and once per
+/// object when missing, and an object with a damaged chunk is not also
+/// reported as unreadable. Objects behind a damaged chunk are verified anyway
+/// and their result discarded; that only costs time on a repository that is
+/// already reporting damage.
+fn check_objects(
+    objects: &crate::storage::ObjectStore,
+    referenced: &[String],
+    progress: &crate::progress::PhaseGuard<'_>,
+    problems: &mut Vec<Problem>,
+) -> usize {
+    let manifests = objects.par_chunks_of(referenced);
+    let mut chunk_index: HashMap<&str, usize> = HashMap::new();
+    let mut chunk_names: Vec<String> = Vec::new();
+    for chunk in manifests.iter().flatten().flatten() {
+        if !chunk_index.contains_key(chunk.as_str()) {
+            chunk_index.insert(chunk.as_str(), chunk_names.len());
+            chunk_names.push(chunk.clone());
+        }
+    }
+    let chunk_state = objects.par_verify_chunks(&chunk_names);
+    let object_state = objects.par_verify(referenced);
+
+    let mut verified = 0usize;
+    let mut chunk_seen = vec![false; chunk_names.len()];
+    for (i, hash) in referenced.iter().enumerate() {
+        progress.tick();
+        let before_object = problems.len();
+        // A manifest's chunks are named precisely rather than surfacing as a
+        // vague reassembly failure.
+        if let Some(chunks) = &manifests[i] {
+            for chunk in chunks {
+                let at = chunk_index[chunk.as_str()];
+                let first = !std::mem::replace(&mut chunk_seen[at], true);
+                match &chunk_state[at] {
+                    Verified::Ok => {}
+                    // Reported once per object that needs it.
+                    Verified::Missing => problems.push(Problem::MissingChunk {
+                        object: hash.clone(),
+                        chunk: chunk.clone(),
+                    }),
+                    // Corrupt: reported once, however many objects share it.
+                    Verified::Undecodable if first => problems.push(Problem::CorruptChunk {
+                        chunk: chunk.clone(),
+                        actual: "undecodable".into(),
+                    }),
+                    Verified::Mismatch { actual } if first => {
+                        problems.push(Problem::CorruptChunk {
+                            chunk: chunk.clone(),
+                            actual: actual.clone(),
+                        })
+                    }
+                    Verified::Undecodable | Verified::Mismatch { .. } => {}
+                }
+            }
+            if problems.len() > before_object {
+                continue; // reassembly would only repeat the chunk findings
+            }
+        }
+        match &object_state[i] {
+            Verified::Ok => verified += 1,
+            Verified::Missing => problems.push(Problem::MissingObject { hash: hash.clone() }),
+            Verified::Undecodable => {
+                problems.push(Problem::UndecodableObject { hash: hash.clone() })
+            }
+            Verified::Mismatch { actual } => problems.push(Problem::CorruptObject {
+                hash: hash.clone(),
+                actual: actual.clone(),
+            }),
+        }
+    }
+    verified
 }
 
 // ─── Object and snapshot checks ───────────────────────────────────────────────
@@ -572,17 +583,43 @@ fn all_snapshots(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
     Ok(set)
 }
 
+/// How many snapshots' trees go to the pool at once. Bounds memory: only this
+/// many are held while the ordered scan of `file_map` carries on.
+const ID_BATCH: usize = 64;
+
+/// One snapshot's tree, read from the ordered scan of `file_map`.
+struct TreeRows {
+    /// Index into the snapshot list when its id can be recomputed.
+    wanted: Option<usize>,
+    rows: Vec<TreeRow>,
+}
+
+/// `(path, object hash, mode)`.
+type TreeRow = (String, String, i64);
+
+type SnapRow = (String, String, String, String, String, i64);
+/// Per tree: exact-duplicate rows dropped, and (snapshot index, recomputed id)
+/// when the recomputed id differs from the stored one.
+type TreeVerdict = (usize, Option<(usize, String)>);
+
 /// Check parent links and recompute content-addressed ids.
-/// Returns (ids verified, ids too old to verify).
+/// Returns (ids verified, ids too old to verify, exact-duplicate `file_map` rows).
+///
+/// Every `file_map` row is read once, in `snapshot_hash` order, rather than
+/// once per snapshot; each snapshot's tree is then de-duplicated and hashed on
+/// the pool. Problems are still emitted in `snapshots` table order, so the
+/// report does not depend on which thread finished first.
 fn check_snapshots(
     conn: &rusqlite::Connection,
     all_snaps: &HashSet<String>,
     problems: &mut Vec<Problem>,
-) -> Result<(usize, usize)> {
+) -> Result<(usize, usize, usize)> {
+    use rayon::prelude::*;
+
     let mut stmt = conn.prepare(
         "SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms FROM snapshots",
     )?;
-    let snaps: Vec<(String, String, String, String, String, i64)> = stmt
+    let snaps: Vec<SnapRow> = stmt
         .query_map([], |r| {
             Ok((
                 r.get(0)?,
@@ -607,9 +644,134 @@ fn check_snapshots(
         .collect();
     drop(stmt);
 
+    // Metadata is part of the identity. It is small, so it is read whole.
+    let mut metas: HashMap<String, crate::meta::SnapshotMeta> = HashMap::new();
+    let mut stmt = conn.prepare(
+        "SELECT snapshot_id, namespace, key, value FROM snapshot_meta
+         ORDER BY snapshot_id, namespace, key",
+    )?;
+    let meta_rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in meta_rows {
+        let (snapshot, namespace, key, value) = row?;
+        metas
+            .entry(snapshot)
+            .or_default()
+            .insert_stored(namespace, key, value);
+    }
+    drop(stmt);
+    let no_meta = crate::meta::SnapshotMeta::new();
+
+    // Only ids from the content-addressed scheme can be recomputed.
+    let wanted: HashMap<&str, usize> = snaps
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.0.len() == crate::commands::SNAP_ID_LEN)
+        .map(|(i, s)| (s.0.as_str(), i))
+        .collect();
+
+    // Exact repeats are dropped before hashing (a 5.1.1 fetch could import an
+    // undone snapshot twice). Returns, per tree, the repeats removed and, for
+    // a snapshot whose id can be checked, the id it recomputes to when wrong.
+    let process = |batch: &mut Vec<TreeRows>| -> Vec<TreeVerdict> {
+        let verdicts = batch
+            .par_iter_mut()
+            .map(|t| {
+                let total = t.rows.len();
+                t.rows.sort_unstable();
+                t.rows.dedup();
+                let repeats = total - t.rows.len();
+                let verdict = t.wanted.and_then(|i| {
+                    let (hash, message, _, parent, merge_parent, created_at_ms) = &snaps[i];
+                    let recomputed =
+                        crate::commands::snapshot_id(crate::commands::SnapshotIdentity {
+                            tree: &t.rows,
+                            parent,
+                            merge_parent,
+                            message,
+                            timestamp_ms: *created_at_ms,
+                            meta: metas.get(hash).unwrap_or(&no_meta),
+                        });
+                    (&recomputed != hash).then_some((i, recomputed))
+                });
+                (repeats, verdict)
+            })
+            .collect();
+        batch.clear();
+        verdicts
+    };
+
+    // Per snapshot index: the recomputed id when it differs from the stored one.
+    let mut mismatch: HashMap<usize, String> = HashMap::new();
+    let mut duplicate_rows = 0usize;
+    let mut absorb = |verdicts: Vec<TreeVerdict>| {
+        for (repeats, verdict) in verdicts {
+            duplicate_rows += repeats;
+            if let Some((i, recomputed)) = verdict {
+                mismatch.insert(i, recomputed);
+            }
+        }
+    };
+
+    let mut seen: HashSet<usize> = HashSet::new();
+    let mut stmt = conn
+        .prepare("SELECT snapshot_hash, path, hash, mode FROM file_map ORDER BY snapshot_hash")?;
+    let mut scan = stmt.query([])?;
+    let mut batch: Vec<TreeRows> = Vec::with_capacity(ID_BATCH);
+    let mut current: Option<(String, Vec<TreeRow>)> = None;
+    while let Some(row) = scan.next()? {
+        let (Ok(snap), Ok(path), Ok(hash), Ok(mode)) = (
+            row.get::<_, String>(0),
+            row.get::<_, String>(1),
+            row.get::<_, String>(2),
+            row.get::<_, i64>(3),
+        ) else {
+            continue;
+        };
+        if current.as_ref().is_some_and(|(s, _)| *s != snap) {
+            if let Some((done, rows)) = current.take() {
+                let want = wanted.get(done.as_str()).copied();
+                seen.extend(want);
+                batch.push(TreeRows { wanted: want, rows });
+            }
+            if batch.len() >= ID_BATCH {
+                absorb(process(&mut batch));
+            }
+        }
+        match &mut current {
+            Some((_, rows)) => rows.push((path, hash, mode)),
+            None => current = Some((snap, vec![(path, hash, mode)])),
+        }
+    }
+    if let Some((done, rows)) = current.take() {
+        let want = wanted.get(done.as_str()).copied();
+        seen.extend(want);
+        batch.push(TreeRows { wanted: want, rows });
+    }
+    absorb(process(&mut batch));
+    drop(scan);
+    drop(stmt);
+
+    // A snapshot with no rows at all still has an id to check: the empty tree's.
+    let mut empty: Vec<TreeRows> = wanted
+        .values()
+        .filter(|i| !seen.contains(i))
+        .map(|&i| TreeRows {
+            wanted: Some(i),
+            rows: Vec::new(),
+        })
+        .collect();
+    absorb(process(&mut empty));
+
     let mut verified = 0usize;
     let mut legacy = 0usize;
-    for (hash, message, branch, parent, merge_parent, created_at_ms) in &snaps {
+    for (i, (hash, message, branch, parent, merge_parent, _)) in snaps.iter().enumerate() {
         if !parent.is_empty() && !all_snaps.contains(parent) {
             problems.push(match trash.get(parent) {
                 Some(b) => Problem::UndoneParent {
@@ -637,44 +799,21 @@ fn check_snapshots(
             });
         }
 
-        // Only ids from the content-addressed scheme can be recomputed.
-        if hash.len() == crate::commands::SNAP_ID_LEN {
-            let tree = load_tree(conn, hash)?;
-            let meta = crate::commands::load_snapshot_meta(conn, hash)?;
-            let recomputed = crate::commands::snapshot_id(crate::commands::SnapshotIdentity {
-                tree: &tree,
-                parent,
-                merge_parent,
-                message,
-                timestamp_ms: *created_at_ms,
-                meta: &meta,
-            });
-            if &recomputed == hash {
-                verified += 1;
-            } else {
-                problems.push(Problem::IdMismatch {
+        if wanted.contains_key(hash.as_str()) {
+            match mismatch.remove(&i) {
+                None => verified += 1,
+                Some(recomputed) => problems.push(Problem::IdMismatch {
                     snapshot: hash.clone(),
                     message: message.clone(),
                     branch: branch.clone(),
                     recomputed,
-                });
+                }),
             }
         } else {
             legacy += 1;
         }
     }
-    Ok((verified, legacy))
-}
-
-/// Load a snapshot's tree (path, object hash, mode) for id verification.
-fn load_tree(conn: &rusqlite::Connection, snap: &str) -> Result<Vec<(String, String, i64)>> {
-    let mut stmt =
-        conn.prepare("SELECT DISTINCT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let tree = stmt
-        .query_map([snap], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(tree)
+    Ok((verified, legacy, duplicate_rows))
 }
 
 /// Verify every `snapshot_hash` in `table` points at a live snapshot.
@@ -775,7 +914,7 @@ fn count(conn: &rusqlite::Connection, sql: &str) -> usize {
         .max(0) as usize
 }
 
-fn find_cruft(conn: &rusqlite::Connection, repo: &Repo) -> Vec<Cruft> {
+fn find_cruft(conn: &rusqlite::Connection, repo: &Repo, duplicate_rows: usize) -> Vec<Cruft> {
     let mut found = Vec::new();
 
     let orphan_hunks = count(
@@ -820,14 +959,10 @@ fn find_cruft(conn: &rusqlite::Connection, repo: &Repo) -> Vec<Cruft> {
         found.push(Cruft::OrphanRemoteRefs(orphan_remotes));
     }
 
-    let duplicates = count(
-        conn,
-        "SELECT COUNT(*) - (SELECT COUNT(*) FROM
-             (SELECT DISTINCT snapshot_hash, path, hash, mode FROM file_map))
-         FROM file_map",
-    );
-    if duplicates > 0 {
-        found.push(Cruft::DuplicateFileMapRows(duplicates));
+    // Counted while the snapshot stage had every row in hand: asking SQLite for
+    // `COUNT(*) - COUNT(DISTINCT ...)` re-sorted all of `file_map` a second time.
+    if duplicate_rows > 0 {
+        found.push(Cruft::DuplicateFileMapRows(duplicate_rows));
     }
 
     found

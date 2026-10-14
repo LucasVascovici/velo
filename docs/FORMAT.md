@@ -721,3 +721,28 @@ Phase 15: no schema, index or code path.
   authentication. Signatures are decided as D5 (§11.1), outside identity, and
   not yet implemented.
 - **No downgrade path.** Migrations are forward-only.
+
+**Round three** (release build, 2,000 files x 300 snapshots, one file changed
+per snapshot, so about 600,000 `file_map` rows; run through the CLI on an idle
+machine):
+
+| Quantity | Round three |
+| --- | --- |
+| `file_map` rows | about 600,000 (2,000 x 300) |
+| `.velo` size | 174 MB, against 304 MB for the equivalent git repository |
+| `.velo` per snapshot | 0.58 MB, about twice round one's per-snapshot figure |
+| `fsck` before the 17.11 change | 2.65 s: objects 0.62 s, snapshot ids 1.0 s, duplicate-row count 0.95 s |
+| `fsck` after | 0.8-1.0 s: objects 0.34 s, snapshot ids 0.35 s, duplicate-row count 0 s |
+| `gc` before | 0.89 s: database statements 0.64 s |
+| `gc` after | 0.31 s: database statements 0.11 s |
+
+This run did not break the 174 MB down by table. The `fsck` and
+`gc` cost scales with the same rows: both read every one. Their fix was in how
+the rows are read (one ordered scan, parallel id hashing, no `DISTINCT` over
+the whole table), not in how they are stored.
+
+**The decision remains open and nothing changed in the format.** No column,
+index or row layout was altered by this measurement; the schema is as section 7.2
+describes. A change that stored a tree once and shared it between snapshots
+that did not touch it would cut the rows and the size, and would also change
+`fsck`, `gc`, bundles and sync, so it needs its own phase.

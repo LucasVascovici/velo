@@ -12210,3 +12210,6 @@ mod absent_tracking_ref;
 
 #[cfg(test)]
 mod bundle_tags;
+
+#[cfg(test)]
+mod fsck_parallel;
