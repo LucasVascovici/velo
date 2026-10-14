@@ -63,5 +63,6 @@ fn a_clean_take_says_what_ours_means() {
     let (out, ok) = velo(d, &["resolve", "f.txt", "--take", "ours"]);
     assert!(ok, "{out}");
     assert!(out.contains("your last saved snapshot"), "{out}");
+    assert!(out.contains("took ours for 1 conflict(s)"), "{out}");
     assert!(out.contains("discarded 1 line(s) from theirs"), "{out}");
 }

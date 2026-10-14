@@ -1653,22 +1653,42 @@ fn run_resolve(
                 .filter(|s| !s.is_empty())
                 .unwrap_or_else(|| "incoming".to_string());
             for t in &taken {
-                let (meaning, lost) = match t.side {
-                    TakeOption::Ours => {
-                        (format!("your last saved snapshot on {}", branch), "theirs")
-                    }
-                    TakeOption::Both => (format!("ours then {}", source), "neither side"),
-                    _ => (source.clone(), "ours"),
+                let (meaning, lost, other) = match t.side {
+                    TakeOption::Ours => (
+                        format!("your last saved snapshot on {}", branch),
+                        "theirs",
+                        source.as_str(),
+                    ),
+                    TakeOption::Both => (
+                        format!("ours then {}", source),
+                        "neither side",
+                        source.as_str(),
+                    ),
+                    _ => (source.clone(), "ours", "ours"),
                 };
                 println!(
-                    "{} Resolved '{}' — took {} ({})",
+                    "{} Resolved '{}' — took {} for {} conflict(s) ({})",
                     style("✔").green(),
                     t.path,
                     t.side.as_str(),
+                    t.conflicts,
                     meaning
                 );
+                let mut parts = Vec::new();
                 if t.dropped_lines > 0 {
-                    println!("  discarded {} line(s) from {}", t.dropped_lines, lost);
+                    parts.push(format!(
+                        "discarded {} line(s) from {}",
+                        t.dropped_lines, lost
+                    ));
+                }
+                if t.kept_clean_lines > 0 {
+                    parts.push(format!(
+                        "kept {} clean line(s) from {}",
+                        t.kept_clean_lines, other
+                    ));
+                }
+                if !parts.is_empty() {
+                    println!("  {}", parts.join(", "));
                 }
                 if t.replaced_edit_lines > 0 {
                     println!(
@@ -1720,7 +1740,7 @@ fn run_mark(guard: &velo_core::WriteGuard, file: &str, force: bool) -> Result<()
     };
     let m = resolve::mark_with(guard, &cf, on_clean)?;
     println!(
-        "{} Accepted your edit of '{}' ({} lines; {} differ from ours, {} from theirs).",
+        "{} Accepted your edit of '{}' ({} lines; {} line(s) added or removed vs ours, {} vs theirs).",
         style("✔").green(),
         m.path,
         m.lines,

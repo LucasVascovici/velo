@@ -12213,3 +12213,6 @@ mod bundle_tags;
 
 #[cfg(test)]
 mod fsck_parallel;
+
+#[cfg(test)]
+mod resolve_take_counts;
