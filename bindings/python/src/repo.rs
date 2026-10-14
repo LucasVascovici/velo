@@ -265,7 +265,7 @@ impl Repo {
         }
     }
 
-    fn core(&self) -> PyResult<MutexGuard<'_, velo_core::Repo>> {
+    pub(crate) fn core(&self) -> PyResult<MutexGuard<'_, velo_core::Repo>> {
         if std::thread::current().id() != self.owner {
             return Err(PyRuntimeError::new_err(
                 "velo.Repo is unsendable: it can only be used on the thread that created it",

@@ -1,6 +1,6 @@
 import datetime
 import os
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 class VeloError(Exception): ...
 class NotARepo(VeloError):
@@ -135,6 +135,11 @@ class MergePlan:
     is_clean: bool
     conflicts: List[PlannedFile]
 
+class Tag:
+    name: str
+    snapshot: str
+    message: Optional[str]
+
 class Repo:
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> Repo: ...
@@ -196,3 +201,22 @@ class Repo:
     def branches(self) -> List[Branch]: ...
     def create_branch(self, name: str, at: Optional[str] = None) -> None: ...
     def set_branch_tip(self, name: str, to: str) -> None: ...
+    def retention(
+        self,
+        branch: str,
+        tiers: Optional[List[Tuple[int, int]]] = None,
+        now_ms: Optional[int] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]: ...
+    def compact(
+        self,
+        branch: str,
+        ranges: List[Tuple[str, str]],
+        dry_run: bool = False,
+    ) -> Dict[str, Any]: ...
+    def tags(self) -> List[Tag]: ...
+    def create_tag(
+        self, name: str, at: Optional[str] = None, force: bool = False
+    ) -> str: ...
+    def delete_tag(self, name: str) -> None: ...
+    def fsck(self, repair: bool = False) -> Dict[str, List[Dict[str, str]]]: ...

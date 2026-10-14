@@ -7,3 +7,4 @@ mod errors;
 mod history;
 mod merge;
 mod repo;
+mod store;

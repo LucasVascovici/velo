@@ -8,10 +8,12 @@ mod errors;
 mod history;
 mod merge;
 mod repo;
+mod store;
 
 #[pymodule]
 fn _velo(m: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::register(m)?;
     repo::register(m)?;
+    store::register(m)?;
     Ok(())
 }

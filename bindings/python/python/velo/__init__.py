@@ -10,6 +10,7 @@ from ._velo import (
     MergePlan,
     PlannedFile,
     Repo,
+    Tag,
     TreeEntry,
     TreeFile,
     VeloError,
@@ -42,7 +43,7 @@ from ._velo import (
 
 __all__ = [
     "Author", "Blame", "BlameLine", "Branch", "Entry", "LineOrigin",
-    "MergePlan", "PlannedFile", "Repo", "TreeEntry", "TreeFile", "VeloError",
+    "MergePlan", "PlannedFile", "Repo", "Tag", "TreeEntry", "TreeFile", "VeloError",
     "NotARepo", "AlreadyInitialized", "NestedRepo", "SchemaTooNew",
     "MigrationRequired", "FormatTooOld", "Cancelled", "Locked",
     "DirtyWorkingTree", "OperationInProgress", "NoOperationInProgress",

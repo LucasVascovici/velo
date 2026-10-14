@@ -132,11 +132,6 @@ bindings = ["python", "node"]
 reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
 
 [[exempt]]
-entry = "commands::compact::run"
-bindings = ["python", "node"]
-reason = "pending: retention, compaction and gc (18.8-b)"
-
-[[exempt]]
 entry = "commands::diff::between"
 bindings = ["python", "node"]
 reason = "pending: metadata queries (diff output types, 18.8-b)"
@@ -165,16 +160,6 @@ reason = "git interchange is a CLI workflow; no embedder demand, revisit with sy
 entry = "commands::find_repo_root"
 bindings = ["python", "node"]
 reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
-
-[[exempt]]
-entry = "commands::fsck::check"
-bindings = ["python", "node"]
-reason = "pending: metadata queries, tags and fsck (18.8-b)"
-
-[[exempt]]
-entry = "commands::fsck::repair"
-bindings = ["python", "node"]
-reason = "pending: metadata queries, tags and fsck (18.8-b)"
 
 [[exempt]]
 entry = "commands::gc::run"
@@ -352,11 +337,6 @@ bindings = ["python", "node"]
 reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
 
 [[exempt]]
-entry = "commands::retention::apply"
-bindings = ["python", "node"]
-reason = "pending: retention, compaction and gc (18.8-b)"
-
-[[exempt]]
 entry = "commands::save::run"
 bindings = ["python", "node"]
 reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
@@ -450,21 +430,6 @@ reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
 entry = "commands::sync::tracking_refs_at"
 bindings = ["python", "node"]
 reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
-
-[[exempt]]
-entry = "commands::tag::create"
-bindings = ["python", "node"]
-reason = "pending: metadata queries, tags and fsck (18.8-b)"
-
-[[exempt]]
-entry = "commands::tag::delete"
-bindings = ["python", "node"]
-reason = "pending: metadata queries, tags and fsck (18.8-b)"
-
-[[exempt]]
-entry = "commands::tag::list"
-bindings = ["python", "node"]
-reason = "pending: metadata queries, tags and fsck (18.8-b)"
 
 [[exempt]]
 entry = "commands::timestamp_from_ms"

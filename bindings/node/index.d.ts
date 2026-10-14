@@ -45,6 +45,27 @@ export declare class Repo {
   resolve(spec: string): Promise<string>
   branchTip(branch: string): Promise<string | null>
   headToken(): Promise<bigint>
+  /** Thin `branch` by a retention policy. With `dryRun` nothing is written. */
+  retention(branch: string, options?: RetentionOptions | undefined | null): Promise<RetentionReport>
+  /**
+   * Squash each range of `branch`'s first-parent chain. Afterwards an old id
+   * rejects with `code: 'Compacted'` and an `into` naming its replacement.
+   */
+  compact(branch: string, ranges: Array<RangeInput>, dryRun?: boolean | undefined | null): Promise<CompactionInfo>
+  /** Every tag, ordered by name. */
+  tags(): Promise<Array<TagInfo>>
+  /**
+   * Tag snapshot `at` (a name, id or prefix), or the current position when
+   * absent, and resolve to the tagged id. Fails if the name is taken unless
+   * `force`.
+   */
+  createTag(name: string, at?: string | undefined | null, force?: boolean | undefined | null): Promise<string>
+  deleteTag(name: string): Promise<void>
+  /**
+   * Verify the repository. With `repair`, cruft is cleaned up; damage is
+   * only ever reported.
+   */
+  fsck(repair?: boolean | undefined | null): Promise<FsckReport>
 }
 
 /** The author of a snapshot. */
@@ -94,6 +115,13 @@ export interface BranchInfo {
   tip: string | null
 }
 
+export interface CompactionInfo {
+  branch: string
+  dryRun: boolean
+  squashed: Array<SquashInfo>
+  rewritten: Array<RewrittenInfo>
+}
+
 /** One file of a tree to save. Exactly one of `data` and `object` is given. */
 export interface EntryInput {
   path: string
@@ -103,6 +131,21 @@ export interface EntryInput {
   object?: string
   /** `'regular'` (default), `'executable'` or `'symlink'`. */
   kind?: string
+}
+
+/** One fsck finding: a variant name and a sentence. */
+export interface Finding {
+  kind: string
+  detail: string
+}
+
+export interface FsckReport {
+  /** Damage. Non-empty means the repository is corrupt. */
+  problems: Array<Finding>
+  /** Harmless leftovers that `repair` cleans up. */
+  cruft: Array<Finding>
+  /** What `repair` cleaned up. */
+  repaired: Array<Finding>
 }
 
 /** What `history` filters on. Every field is optional. */
@@ -183,6 +226,44 @@ export interface PlannedFileInfo {
   theirs?: string
 }
 
+/** A snapshot retention would not touch. */
+export interface ProtectedInfo {
+  id: string
+  /** `'tagged'`, `'merge'`, `'parent_of_outside'`, `'published'` or `'checked_out'`. */
+  reason: string
+}
+
+/** One range of a branch's first-parent chain, `oldest..=newest`. */
+export interface RangeInput {
+  oldest: string
+  newest: string
+}
+
+export interface RetentionOptions {
+  /** Ascending by age. Absent means the default policy. */
+  tiers?: Array<TierInput>
+  /** The clock, in epoch milliseconds. Defaults to now. */
+  nowMs?: number
+  /** Compute the report and write nothing. */
+  dryRun?: boolean
+}
+
+export interface RetentionReport {
+  branch: string
+  examined: number
+  removed: number
+  dryRun: boolean
+  squashed: Array<SquashInfo>
+  rewritten: Array<RewrittenInfo>
+  protected: Array<ProtectedInfo>
+}
+
+/** A snapshot re-minted because an ancestor changed. */
+export interface RewrittenInfo {
+  old: string
+  new: string
+}
+
 export interface SaveTreeInput {
   branch: string
   message: string
@@ -206,6 +287,30 @@ export interface SnapshotInfo {
   parent: string | null
   mergeParent: string | null
   tag: string | null
+}
+
+/** A range that became one snapshot. */
+export interface SquashInfo {
+  into: string
+  /** Every snapshot of the range, oldest first. All stopped existing. */
+  removed: Array<string>
+}
+
+/** A tag and what it points at. */
+export interface TagInfo {
+  name: string
+  snapshot: string
+  /** The tagged snapshot's message, absent once that snapshot is gone. */
+  message?: string
+}
+
+/**
+ * One retention tier: snapshots older than `olderThanMs` keep one per
+ * `keepOnePerMs` bucket.
+ */
+export interface TierInput {
+  olderThanMs: number
+  keepOnePerMs: number
 }
 
 /** A file as recorded in a saved tree. */
