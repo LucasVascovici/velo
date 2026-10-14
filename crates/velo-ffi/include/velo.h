@@ -52,6 +52,8 @@ extern "C" {
 #define VELO_ERR_UNSAFE_PATH 26
 /* Received data would exceed a configured read limit (object, pack or string size). */
 #define VELO_ERR_LIMIT_EXCEEDED 27
+/* A remote refused access (missing/invalid token, read-only server). */
+#define VELO_ERR_ACCESS_DENIED 28
 /* Binding-level errors. */
 #define VELO_ERR_NULL_ARGUMENT 100
 #define VELO_ERR_INVALID_UTF8 101

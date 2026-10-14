@@ -47,6 +47,10 @@ pub const VELO_ERR_UNSAFE_PATH: i32 = 26;
 /// size). Nothing was imported.
 pub const VELO_ERR_LIMIT_EXCEEDED: i32 = 27;
 
+/// A remote refused access: missing or invalid bearer token, or a read-only
+/// server. The message carries the server's reason, never the token.
+pub const VELO_ERR_ACCESS_DENIED: i32 = 28;
+
 /// A required pointer argument was NULL.
 pub const VELO_ERR_NULL_ARGUMENT: i32 = 100;
 /// A string argument was not valid UTF-8.
@@ -88,6 +92,7 @@ pub fn code_of(error: &Error) -> i32 {
         Error::Compacted { .. } => VELO_ERR_COMPACTED,
         Error::UnsafePath { .. } => VELO_ERR_UNSAFE_PATH,
         Error::LimitExceeded { .. } => VELO_ERR_LIMIT_EXCEEDED,
+        Error::AccessDenied { .. } => VELO_ERR_ACCESS_DENIED,
         Error::Corrupt { .. } => VELO_ERR_CORRUPT,
         Error::MissingObject { .. } => VELO_ERR_MISSING_OBJECT,
         Error::UntrustedData { .. } => VELO_ERR_UNTRUSTED_DATA,
@@ -179,7 +184,7 @@ mod tests {
         let p = || PathBuf::from("x");
         let s = || "x".to_string();
         let live: velo_core::SnapshotId = "a".repeat(64).parse().expect("a valid id");
-        let cases: Vec<(Error, i32)> = vec![
+        let mut cases: Vec<(Error, i32)> = vec![
             (Error::NotARepo { searched_from: p() }, 1),
             (Error::AlreadyInitialized { at: p() }, 2),
             (Error::NestedRepo { outer: p() }, 3),
@@ -286,7 +291,14 @@ mod tests {
                 27,
             ),
         ];
-        assert_eq!(cases.len(), 27, "one case per variant");
+        cases.push((
+            Error::AccessDenied {
+                remote: s(),
+                detail: s(),
+            },
+            28,
+        ));
+        assert_eq!(cases.len(), 28, "one case per variant");
         for (error, code) in cases {
             assert_eq!(code_of(&error), code, "{error:?}");
         }

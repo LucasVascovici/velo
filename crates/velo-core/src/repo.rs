@@ -43,7 +43,13 @@ pub struct Repo {
     /// Ceilings on what this handle will allocate for data received from
     /// elsewhere. Set via [`Repo::limited`].
     limits: crate::Limits,
+    /// Where bearer tokens for HTTP remotes come from, given a remote's URL.
+    /// `None` sends no credentials. Set via [`Repo::credentials`].
+    credentials: Option<Credentials>,
 }
+
+/// A callback mapping a remote URL to the bearer token to present to it.
+type Credentials = Box<dyn Fn(&str) -> Option<String> + Send>;
 
 /// How a repository sits on disk.
 #[derive(Clone, Debug)]
@@ -160,6 +166,7 @@ impl Repo {
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
+            credentials: None,
             listeners: Vec::new(),
             object_location,
             lock_label: None,
@@ -210,6 +217,7 @@ impl Repo {
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
+            credentials: None,
             listeners: Vec::new(),
             object_location,
             lock_label: None,
@@ -306,6 +314,7 @@ impl Repo {
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
+            credentials: None,
             listeners: Vec::new(),
             object_location,
             lock_label: None,
@@ -537,6 +546,34 @@ impl Repo {
     pub fn merging(mut self, drivers: crate::Drivers) -> Self {
         self.drivers = drivers;
         self
+    }
+
+    /// Supply bearer tokens for HTTP remotes.
+    ///
+    /// The provider is given a remote's URL and returns the token to send as
+    /// `Authorization: Bearer <token>`, or `None` for no credentials. Core reads
+    /// no environment, so the caller decides where tokens come from; they never
+    /// belong in the URL itself, which `transport::open` refuses. Tokens are
+    /// never stored in the repository and never appear in errors.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// let repo = velo_core::Repo::discover(std::path::Path::new("."))?
+    ///     .credentials(|_url| std::env::var("VELO_TOKEN").ok());
+    /// # let _ = repo;
+    /// # Ok(()) }
+    /// ```
+    pub fn credentials(
+        mut self,
+        provider: impl Fn(&str) -> Option<String> + Send + 'static,
+    ) -> Self {
+        self.credentials = Some(Box::new(provider));
+        self
+    }
+
+    /// The bearer token configured for a remote URL, if any.
+    pub(crate) fn token_for_url(&self, url: &str) -> Option<String> {
+        self.credentials.as_ref().and_then(|f| f(url))
     }
 
     /// Set the ceilings on what this handle allocates when reading data that

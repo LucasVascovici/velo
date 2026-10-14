@@ -149,6 +149,17 @@ pub struct CloneOptions<'a> {
 /// # Ok(()) }
 /// ```
 pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> Result<Cloned> {
+    clone_with_token(url, spawn, options, None)
+}
+
+/// [`clone`] with a bearer token for an HTTP(S) source. The token comes from
+/// the caller (never the URL) and is ignored by other transports.
+pub fn clone_with_token(
+    url: &str,
+    spawn: &transport::Spawn,
+    options: CloneOptions<'_>,
+    token: Option<&str>,
+) -> Result<Cloned> {
     let CloneOptions {
         dir,
         observer,
@@ -163,7 +174,7 @@ pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> 
     }
 
     // Pull everything from the remote (empty have-set = send it all).
-    let mut remote = transport::open(url, spawn)?;
+    let mut remote = transport::open_with_token(url, spawn, token)?;
     let (refs, pack) = {
         // No repository exists yet, so the phase is driven from the observer the
         // caller handed us rather than from a `Repo`.
@@ -282,7 +293,8 @@ pub fn fetch(
     options: Options<'_>,
 ) -> Result<Fetched> {
     let url = remote_url(guard.repo(), remote_name)?;
-    let mut remote = transport::open(&url, spawn)?;
+    let token = guard.repo().token_for_url(&url);
+    let mut remote = transport::open_with_token(&url, spawn, token.as_deref())?;
     let have = local_snapshots(guard.repo())?;
     let (refs, mut pack) = {
         let transfer = options.phase(guard, Phase::Transferring);
@@ -374,7 +386,8 @@ pub fn push_report(
 
     let url = remote_url(guard.repo(), remote_name)?;
     let objects = guard.repo().objects();
-    let mut remote = transport::open(&url, spawn)?;
+    let token = guard.repo().token_for_url(&url);
+    let mut remote = transport::open_with_token(&url, spawn, token.as_deref())?;
 
     // Build the pack once the remote has told us what it already has, so we
     // send only new commits and only objects it lacks. The advertised refs also
@@ -496,7 +509,8 @@ pub fn pull(
     let branch = guard.repo().head_branch().into_string();
     let url = remote_url(guard.repo(), remote_name)?;
 
-    let mut remote = transport::open(&url, spawn)?;
+    let token = guard.repo().token_for_url(&url);
+    let mut remote = transport::open_with_token(&url, spawn, token.as_deref())?;
     let have = local_snapshots(guard.repo())?;
     let (refs, pack) = {
         let transfer = options.phase(guard, Phase::Transferring);

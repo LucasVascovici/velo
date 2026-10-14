@@ -149,9 +149,27 @@ impl Spawn {
 /// subprocess; `http://` and `https://` go over HTTP (feature `http`); anything
 /// else is treated as a local filesystem path.
 pub fn open(url: &str, spawn: &Spawn) -> Result<Box<dyn Remote>> {
+    open_with_token(url, spawn, None)
+}
+
+/// [`open`] with a bearer token for an HTTP(S) remote. The token is supplied by
+/// the caller and is ignored by every other transport. A URL that embeds
+/// credentials (`https://user:secret@host/...`) is refused: they would land in
+/// shell history and in `velo remote`'s output.
+pub fn open_with_token(url: &str, spawn: &Spawn, token: Option<&str>) -> Result<Box<dyn Remote>> {
     if url.starts_with("http://") || url.starts_with("https://") {
+        if has_userinfo(url) {
+            return Err(VeloError::invalid(
+                "An HTTP remote URL must not contain credentials. Supply a bearer token                  instead (VELO_TOKEN or VELO_TOKEN_<REMOTE> in the command line tool).",
+            ));
+        }
         #[cfg(feature = "http")]
-        return Ok(Box::new(HttpRemote::new(url)));
+        return Ok(Box::new(match token {
+            Some(t) => HttpRemote::new(url).with_token(t),
+            None => HttpRemote::new(url),
+        }));
+        #[cfg(not(feature = "http"))]
+        let _ = token;
         #[cfg(not(feature = "http"))]
         return Err(VeloError::unsupported(
             "HTTP remotes are not available: velo-core was built without the `http` feature.",
@@ -167,6 +185,13 @@ pub fn open(url: &str, spawn: &Spawn) -> Result<Box<dyn Remote>> {
             root: crate::commands::remote::resolve_remote_root(url)?,
         }))
     }
+}
+
+/// Whether an http(s) URL carries `user[:password]@` before its host.
+fn has_userinfo(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    authority.contains('@')
 }
 
 // ─── Local (direct DB) transport ──────────────────────────────────────────────
@@ -338,12 +363,29 @@ fn join_url(base: &str, endpoint: &str) -> String {
 #[cfg(feature = "http")]
 pub struct HttpRemote {
     base: String,
+    token: Option<String>,
 }
 
 #[cfg(feature = "http")]
 impl HttpRemote {
     pub fn new(base: impl Into<String>) -> Self {
-        HttpRemote { base: base.into() }
+        HttpRemote {
+            base: base.into(),
+            token: None,
+        }
+    }
+
+    /// Send `Authorization: Bearer <token>` on every request. The token is
+    /// held only in memory and is deliberately absent from `Debug` output and
+    /// errors.
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
+        self
+    }
+
+    /// The `Authorization` header value, if a token is set.
+    fn auth(&self) -> Option<String> {
+        self.token.as_ref().map(|t| format!("Bearer {t}"))
     }
 
     fn agent() -> ureq::Agent {
@@ -356,13 +398,47 @@ impl HttpRemote {
     }
 
     /// Turn a response into its body, or into the error a non-2xx status means.
-    fn checked(resp: ureq::http::Response<ureq::Body>) -> Result<ureq::Body> {
+    ///
+    /// The server's refusals arrive as typed errors: 401 and 403 become
+    /// `AccessDenied`, 404 `NotFound`, 503 an I/O error carrying its reason,
+    /// and 413 `LimitExceeded` with `max` 0, because the server's ceiling is
+    /// not known on this side.
+    fn checked(&self, resp: ureq::http::Response<ureq::Body>) -> Result<ureq::Body> {
         let code = resp.status();
         let mut body = resp.into_body();
         if code.is_success() {
             return Ok(body);
         }
         let text = body.read_to_string().unwrap_or_default();
+        let detail = text
+            .trim()
+            .strip_prefix("velo: ")
+            .map(|r| r.split_once(": ").map_or(r, |(_, d)| d))
+            .unwrap_or(text.trim())
+            .to_string();
+        match code.as_u16() {
+            401 | 403 => {
+                return Err(VeloError::AccessDenied {
+                    remote: self.base.clone(),
+                    detail,
+                })
+            }
+            413 => {
+                return Err(VeloError::LimitExceeded {
+                    limit: crate::limits::Limit::PackBytes,
+                    max: 0,
+                    found: None,
+                })
+            }
+            404 => {
+                return Err(VeloError::not_found(
+                    crate::error::RefKind::Remote,
+                    self.base.clone(),
+                ))
+            }
+            503 => return Err(VeloError::Io(std::io::Error::other(detail))),
+            _ => {}
+        }
         Err(VeloError::invalid(format!(
             "remote returned HTTP {}: {}",
             code.as_u16(),
@@ -415,12 +491,14 @@ impl Remote for HttpRemote {
         for h in have {
             write_string(&mut body, h)?;
         }
-        let resp = Self::agent()
+        let mut req = Self::agent()
             .post(&join_url(&self.base, "velo/v1/upload"))
-            .header("Content-Type", "application/octet-stream")
-            .send(&body[..])
-            .map_err(Self::net)?;
-        let mut reader = Self::checked(resp)?.into_reader();
+            .header("Content-Type", "application/octet-stream");
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let resp = req.send(&body[..]).map_err(Self::net)?;
+        let mut reader = self.checked(resp)?.into_reader();
 
         let mut bytes = Vec::new();
         let mut buf = vec![0u8; CHUNK];
@@ -452,11 +530,12 @@ impl Remote for HttpRemote {
         progress: &PhaseGuard,
     ) -> Result<PushOutcome> {
         let agent = Self::agent();
-        let resp = agent
-            .get(&join_url(&self.base, "velo/v1/refs"))
-            .call()
-            .map_err(Self::net)?;
-        let mut reader = Self::checked(resp)?.into_reader();
+        let mut req = agent.get(&join_url(&self.base, "velo/v1/refs"));
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let resp = req.call().map_err(Self::net)?;
+        let mut reader = self.checked(resp)?.into_reader();
         let refs = read_refs(&mut reader)?;
         let pack = build(&refs)?;
 
@@ -469,17 +548,20 @@ impl Remote for HttpRemote {
             data: &payload,
             progress,
         };
-        let sent = agent
+        let mut req = agent
             .post(&join_url(&self.base, "velo/v1/receive"))
             .header("Content-Type", "application/octet-stream")
-            .header("Content-Length", payload.len().to_string())
-            .send(ureq::SendBody::from_reader(&mut source));
+            .header("Content-Length", payload.len().to_string());
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let sent = req.send(ureq::SendBody::from_reader(&mut source));
         let resp = match sent {
             Ok(r) => r,
             Err(_) if progress.is_cancelled() => return Err(VeloError::Cancelled),
             Err(e) => return Err(Self::net(e)),
         };
-        let mut reader = Self::checked(resp)?.into_reader();
+        let mut reader = self.checked(resp)?.into_reader();
         let status = read_string(&mut reader, crate::Limits::default().max_string_bytes)?;
         parse_status(&status)
     }

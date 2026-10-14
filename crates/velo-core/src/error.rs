@@ -228,6 +228,13 @@ pub enum Error {
         max: u64,
         found: Option<u64>,
     },
+    /// A remote refused the request for lack of (valid) credentials or
+    /// permission. `detail` is the server's explanation and never contains a
+    /// token.
+    AccessDenied {
+        remote: String,
+        detail: String,
+    },
     /// The request itself was invalid (empty message, bad range, …). Prefer a
     /// specific variant; this is the residual case.
     InvalidInput {
@@ -374,6 +381,9 @@ impl fmt::Display for Error {
                 Some(n) => write!(f, "{limit} of {n} exceeds the limit of {max}"),
                 None => write!(f, "{limit} exceeds the limit of {max}"),
             },
+            Error::AccessDenied { remote, detail } => {
+                write!(f, "'{}' refused access: {}", remote, detail)
+            }
             Error::InvalidInput { detail } => f.write_str(detail),
             Error::Unsupported { detail } => f.write_str(detail),
             Error::Io(e) => write!(f, "I/O error: {}", e),

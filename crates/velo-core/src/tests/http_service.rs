@@ -56,9 +56,9 @@ fn assert_refusal(r: &crate::serve::http::Response, status: u16, kind: &str) {
     assert_eq!(r.status, status, "{}", text(r));
     assert_eq!(r.content_type, "text/plain");
     assert!(
-        text(&r).starts_with(&format!("velo: {kind}: ")) && text(&r).ends_with('\n'),
+        text(r).starts_with(&format!("velo: {kind}: ")) && text(r).ends_with('\n'),
         "{}",
-        text(&r)
+        text(r)
     );
 }
 

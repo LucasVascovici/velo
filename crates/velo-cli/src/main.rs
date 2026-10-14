@@ -1421,6 +1421,56 @@ fn spawn_config() -> Result<velo_core::transport::Spawn> {
     Ok(spawn)
 }
 
+/// The bearer token for a remote, from the environment: `VELO_TOKEN_<NAME>`
+/// (the name uppercased, every non-alphanumeric character as `_`), then the
+/// general `VELO_TOKEN`. Empty values count as unset. Tokens are read only from
+/// the environment: one stored in the repository would travel in backups, and
+/// one in a URL would land in shell history and `velo remote`'s output.
+fn token_for(remote_name: &str) -> Option<String> {
+    let mangled: String = remote_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    token_from(|k| std::env::var(k).ok(), &mangled)
+}
+
+/// The lookup behind [`token_for`], with the environment passed in.
+fn token_from(get: impl Fn(&str) -> Option<String>, mangled: &str) -> Option<String> {
+    get(&format!("VELO_TOKEN_{mangled}"))
+        .filter(|t| !t.is_empty())
+        .or_else(|| get("VELO_TOKEN").filter(|t| !t.is_empty()))
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    #[test]
+    fn name_is_uppercased_and_mangled() {
+        let env = |k: &str| match k {
+            "VELO_TOKEN_MY_REMOTE_2" => Some("specific".to_string()),
+            "VELO_TOKEN" => Some("general".to_string()),
+            _ => None,
+        };
+        assert_eq!(token_from(env, "MY_REMOTE_2").as_deref(), Some("specific"));
+        assert_eq!(token_from(env, "OTHER").as_deref(), Some("general"));
+        assert_eq!(token_from(|_| None, "OTHER"), None);
+    }
+
+    #[test]
+    fn token_for_mangles_non_alphanumerics() {
+        // No such variables exist in the test environment, so this only checks
+        // that odd names do not panic and fall through to None or VELO_TOKEN.
+        let _ = token_for("my-remote.v2");
+    }
+}
+
 /// What to do about an error, for the kinds that have an obvious next step.
 ///
 /// Core states what went wrong and carries the details; deciding what to suggest
@@ -1632,6 +1682,13 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 "  Run velo fetch {} to bring it back, then try again.",
                 remote
             ));
+        }
+        VeloError::AccessDenied { .. } => {
+            lines.push(
+                "  Set VELO_TOKEN_<REMOTE> (the remote's name, uppercased) or VELO_TOKEN to a bearer token for it."
+                    .into(),
+            );
+            lines.push("  Never put the token in the URL.".into());
         }
         _ => return None,
     }
@@ -2222,7 +2279,7 @@ fn run(cli: Cli) -> Result<Exit> {
             return Ok(Exit::Success);
         }
         Commands::Clone { url, dir } => {
-            let cloned = commands::sync::clone(
+            let cloned = commands::sync::clone_with_token(
                 url,
                 &spawn_config()?,
                 commands::sync::CloneOptions {
@@ -2232,6 +2289,7 @@ fn run(cli: Cli) -> Result<Exit> {
                     // is for an embedder whose user closes a window instead.
                     ..Default::default()
                 },
+                token_for("origin").as_deref(),
             )?;
             render::sync::print_cloned(&cloned);
             return Ok(Exit::Success);
@@ -2267,6 +2325,17 @@ fn run(cli: Cli) -> Result<Exit> {
                 .with("*.yml", velo_merge::YamlDriver)?
                 .with("*.toml", velo_merge::TomlDriver)?,
         );
+    // Bearer tokens for HTTP remotes come from the environment, looked up by
+    // the remote's name. The provider is handed a URL, so map URLs to names once.
+    let remote_names: Vec<(String, String)> = commands::remote::list(&repo)
+        .map(|l| l.into_iter().map(|r| (r.url, r.name)).collect())
+        .unwrap_or_default();
+    let repo = repo.credentials(move |url| {
+        remote_names
+            .iter()
+            .find(|(u, _)| u == url)
+            .and_then(|(_, name)| token_for(name))
+    });
 
     // Serialise mutating commands against other velo processes. Read-only
     // commands skip the lock so they never block on a long-running mutation.

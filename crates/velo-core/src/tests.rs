@@ -12251,3 +12251,6 @@ mod signed_bundles;
 
 #[cfg(test)]
 mod http_service;
+
+#[cfg(test)]
+mod http_auth_client;

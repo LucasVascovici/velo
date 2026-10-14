@@ -667,6 +667,15 @@ velo remote remove origin
 velo fetch
 ```
 
+An HTTP remote that needs a bearer token reads it from the environment:
+`VELO_TOKEN_<REMOTE>` (the remote's name, uppercased, with every character that
+is not a letter or digit written as `_`; `VELO_TOKEN_ORIGIN` for `origin`), then
+the general `VELO_TOKEN`. `velo clone` uses the `origin` variable. A URL such as
+`https://user:secret@host/` is refused, because a credential in a URL lands in
+shell history and in `velo remote`'s output. Tokens are never stored in the
+repository database either, since it travels in backups. A refused request
+shows as "refused access".
+
 `velo status` tells you where you stand relative to the last-fetched remote state
 (no network access needed):
 
