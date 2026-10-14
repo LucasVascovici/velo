@@ -12216,3 +12216,6 @@ mod fsck_parallel;
 
 #[cfg(test)]
 mod resolve_take_counts;
+
+#[cfg(test)]
+mod open_fast_path;
