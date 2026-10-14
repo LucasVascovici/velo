@@ -12225,3 +12225,6 @@ mod merge_abort_bytes;
 
 #[cfg(test)]
 mod push_side_branches;
+
+#[cfg(test)]
+mod resolve_line_endings;

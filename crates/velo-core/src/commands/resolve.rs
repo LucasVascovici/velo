@@ -274,9 +274,38 @@ pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
         if let Some(parent) = full.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::fs::write(&full, &resolved)?;
+        // The store keeps text LF-normalised, so `resolved` is LF. A working
+        // file that is consistently CRLF gets its endings back; anything else
+        // (LF, mixed, absent) is written as LF, as before.
+        let crlf = std::fs::read(&full).is_ok_and(|b| uses_crlf(&b));
+        if crlf {
+            std::fs::write(&full, resolved.replace('\n', "\r\n"))?;
+        } else {
+            std::fs::write(&full, &resolved)?;
+        }
     }
     clear_conflict(guard, &session.file.path)
+}
+
+/// Whether a working file is consistently CRLF: text (no NUL), at least one
+/// `\r\n`, and no `\n` that is not preceded by `\r`.
+///
+/// Mixed-ending files return false on purpose; rewriting them uniformly would
+/// change lines the user never touched.
+pub(crate) fn uses_crlf(bytes: &[u8]) -> bool {
+    if bytes.contains(&0) {
+        return false;
+    }
+    let mut seen = false;
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'\n' {
+            if i == 0 || bytes[i - 1] != b'\r' {
+                return false;
+            }
+            seen = true;
+        }
+    }
+    seen
 }
 
 /// What to do when the working copy of a conflicted file holds edits made by
