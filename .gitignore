@@ -4,5 +4,6 @@
 *.py
 !tests/corpus/generate.py
 !bindings/parity/*.py
+!bench/scale/*.py
 /target-lane*
 
