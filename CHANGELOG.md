@@ -13,6 +13,36 @@ format change; public API changes in `velo-core` are additive.
 
 ### Fixed
 
+- **`fetch` no longer doubles an undone snapshot's tree, and `merge` refuses a
+  tracking ref whose snapshot is gone.** Import clears leftover file rows before
+  rewriting them, `redo` adopts a snapshot a fetch brought back, and `fsck`
+  repairs duplicate rows and says to re-fetch on a tracking mismatch. A merge of
+  an absent ref is a typed error instead of a parentless merge.
+
+- **`rebase` skips snapshots the target already reaches through a merge's second
+  parent**, so it no longer replays them as spurious conflicts.
+
+- **`merge --abort` restores the exact bytes of files with CR line endings**
+  (saved in a transient `.velo/MERGE_ORIG`), and `resolve` keeps a CRLF file CRLF
+  when it writes the resolution.
+
+- **`resolve --take` no longer leaks the other side's lines** when the ancestor
+  ends in a blank line. It reports the conflicts taken and the clean lines kept,
+  and `--mark` counts ignore CR.
+
+- **`push` names the side branches its history publishes**, `bundle apply` counts
+  the tags it imports, and squash help and output say the originals are not
+  restorable.
+
+### Performance
+
+- Pack import writes objects serially after parallel verification; `fetch` with
+  nothing new no longer scans the database; `init` opens the database once.
+- Working-tree `grep` walks without per-file metadata; `undo` and `restore` reuse
+  the dirty scan's walk; `history --file` answers from one path lookup.
+- `fsck` and `gc` read file rows once and hash on the pool; lock-wait backoff is
+  a pure schedule.
+
 ## 5.1.1
 
 Phase 16: fixes for what the second team simulation found. No repository
