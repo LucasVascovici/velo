@@ -491,6 +491,16 @@ Rules:
   **transactional**.
 - Packs used for sync share this encoding but may legitimately omit objects the
   peer already holds. Only `bundle create` guarantees self-containment.
+- A reader **must** bound every allocation it makes on the strength of a number
+  in the data: a section count must fit in the bytes that remain (at least 28,
+  20, 16, 8, 8 and 12 bytes per snapshot, file_map, meta, tag, object and rename
+  row), a string length and a decompressed object size must stay under explicit
+  ceilings, and the whole bundle must too. `velo-core` defaults to 16 MiB per
+  string, 1 GiB per decompressed object and 16 GiB per bundle, all configurable
+  on the handle (`Repo::limited`). Refusal is the typed `LimitExceeded` error
+  (a count that cannot fit is reported as a truncated bundle). The ceilings are
+  a reader's policy and are **not part of the format**: another implementation
+  may choose other values.
 
 ### 9.1 Packs over HTTP
 

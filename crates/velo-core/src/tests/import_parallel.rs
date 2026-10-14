@@ -38,7 +38,7 @@ fn source_bundle(location: ObjectLocation) -> (TempDir, Bundle) {
     history(&repo, tmp.path());
     let file = tmp.path().join("out.velobundle");
     bundle::create(&repo, &file, None).unwrap();
-    let b = bundle::decode(&fs::read(&file).unwrap()).unwrap();
+    let b = bundle::decode(&fs::read(&file).unwrap(), &crate::Limits::default()).unwrap();
     (tmp, b)
 }
 
@@ -159,7 +159,7 @@ fn multi_snapshot_pack_yields_the_same_rows_ids_and_objects() {
         history(&src, src_tmp.path());
         let file = src_tmp.path().join("out.velobundle");
         bundle::create(&src, &file, None).unwrap();
-        let b = bundle::decode(&fs::read(&file).unwrap()).unwrap();
+        let b = bundle::decode(&fs::read(&file).unwrap(), &crate::Limits::default()).unwrap();
 
         let (_tmp, dest) = setup(loc);
         for _ in 0..2 {

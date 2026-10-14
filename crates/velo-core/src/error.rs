@@ -220,6 +220,14 @@ pub enum Error {
         path: String,
         problem: crate::safe_path::PathProblem,
     },
+    /// Received data would need more memory than a configured ceiling allows.
+    /// `found` is `None` when the overrun was noticed while streaming. Nothing
+    /// was imported. See [`crate::Limits`].
+    LimitExceeded {
+        limit: crate::limits::Limit,
+        max: u64,
+        found: Option<u64>,
+    },
     /// The request itself was invalid (empty message, bad range, …). Prefer a
     /// specific variant; this is the residual case.
     InvalidInput {
@@ -362,6 +370,10 @@ impl fmt::Display for Error {
             Error::UnsafePath { path, problem } => {
                 write!(f, "refusing path '{path}': {problem}")
             }
+            Error::LimitExceeded { limit, max, found } => match found {
+                Some(n) => write!(f, "{limit} of {n} exceeds the limit of {max}"),
+                None => write!(f, "{limit} exceeds the limit of {max}"),
+            },
             Error::InvalidInput { detail } => f.write_str(detail),
             Error::Unsupported { detail } => f.write_str(detail),
             Error::Io(e) => write!(f, "I/O error: {}", e),

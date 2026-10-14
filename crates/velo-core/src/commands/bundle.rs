@@ -47,6 +47,7 @@ use std::path::Path;
 use rusqlite::params;
 
 use crate::error::{Result, VeloError};
+use crate::limits::{Limit, Limits};
 use crate::progress::Phase;
 use crate::Repo;
 use crate::SnapshotId;
@@ -370,10 +371,22 @@ pub(crate) fn build_pack_excluding(
 /// Import a bundle into this repository. Idempotent.
 /// Import a bundle written by [`create`].
 pub fn apply(guard: &WriteGuard, file: &Path) -> Result<Applied> {
-    let raw = fs::read(file).map_err(|e| {
+    let limits = guard.repo().limits();
+    let unreadable = |e: std::io::Error| {
         VeloError::invalid(format!("Cannot read bundle '{}': {}", file.display(), e))
-    })?;
-    let bundle = decode(&raw)?;
+    };
+    // Check the size before reading: `fs::read` of a huge file is itself the
+    // allocation the limit exists to prevent.
+    let size = fs::metadata(file).map_err(unreadable)?.len();
+    if size > limits.max_pack_bytes {
+        return Err(VeloError::LimitExceeded {
+            limit: Limit::PackBytes,
+            max: limits.max_pack_bytes,
+            found: Some(size),
+        });
+    }
+    let raw = fs::read(file).map_err(unreadable)?;
+    let bundle = decode(&raw, limits)?;
 
     let imported = import(guard, &bundle)?;
     guard.repo().emit_imported(imported.snapshots);
@@ -439,7 +452,7 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
     let progress = guard.phase(Phase::Importing, Some(bundle.objects.len() as u64));
     // Verified on the way in: each frame must decompress and re-hash to its
     // own name before it is stored; objects already held are skipped undecoded.
-    let new_objects = objects.import_many(&bundle.objects, &progress)?;
+    let new_objects = objects.import_many(&bundle.objects, &progress, guard.repo().limits())?;
 
     let existing: HashSet<String> = {
         let mut stmt = guard.conn().prepare("SELECT hash FROM snapshots")?;
@@ -674,8 +687,29 @@ pub(crate) fn encode(b: &Bundle) -> Vec<u8> {
     out
 }
 
-pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
-    let mut r = Reader { data, pos: 0 };
+/// Smallest encoded size of one row of each section: every string costs its
+/// 4-byte length prefix, every integer its width. A count that cannot fit in
+/// the bytes left is a lie, and is refused before anything is reserved.
+const MIN_SNAPSHOT_ROW: usize = 5 * 4 + 8;
+const MIN_FILE_MAP_ROW: usize = 3 * 4 + 8;
+const MIN_META_ROW: usize = 4 * 4;
+const MIN_TAG_ROW: usize = 2 * 4;
+const MIN_OBJECT_ROW: usize = 4 + 4;
+const MIN_RENAME_ROW: usize = 3 * 4;
+
+pub(crate) fn decode(data: &[u8], limits: &Limits) -> Result<Bundle> {
+    if data.len() as u64 > limits.max_pack_bytes {
+        return Err(VeloError::LimitExceeded {
+            limit: Limit::PackBytes,
+            max: limits.max_pack_bytes,
+            found: Some(data.len() as u64),
+        });
+    }
+    let mut r = Reader {
+        data,
+        pos: 0,
+        max_string: limits.max_string_bytes,
+    };
     let magic = r.bytes(8)?;
     if magic != MAGIC {
         return Err(VeloError::invalid("Not a Velo bundle (bad magic)."));
@@ -688,8 +722,8 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
         )));
     }
 
-    let n = r.u32()?;
-    let mut snapshots = Vec::with_capacity(n as usize);
+    let n = r.count(MIN_SNAPSHOT_ROW)?;
+    let mut snapshots = Vec::with_capacity(n);
     for _ in 0..n {
         snapshots.push(SnapshotRow {
             hash: r.string()?,
@@ -701,8 +735,8 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
         });
     }
 
-    let n = r.u32()?;
-    let mut file_map = Vec::with_capacity(n as usize);
+    let n = r.count(MIN_FILE_MAP_ROW)?;
+    let mut file_map = Vec::with_capacity(n);
     for _ in 0..n {
         file_map.push(FileMapRow {
             snapshot_hash: r.string()?,
@@ -712,8 +746,8 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
         });
     }
 
-    let n = r.u32()?;
-    let mut meta = Vec::with_capacity(n as usize);
+    let n = r.count(MIN_META_ROW)?;
+    let mut meta = Vec::with_capacity(n);
     for _ in 0..n {
         meta.push(MetaRow {
             snapshot_id: r.string()?,
@@ -723,14 +757,14 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
         });
     }
 
-    let n = r.u32()?;
-    let mut tags = Vec::with_capacity(n as usize);
+    let n = r.count(MIN_TAG_ROW)?;
+    let mut tags = Vec::with_capacity(n);
     for _ in 0..n {
         tags.push((r.string()?, r.string()?));
     }
 
-    let n = r.u32()?;
-    let mut objects = Vec::with_capacity(n as usize);
+    let n = r.count(MIN_OBJECT_ROW)?;
+    let mut objects = Vec::with_capacity(n);
     for _ in 0..n {
         let hash = r.string()?;
         let len = r.u32()? as usize;
@@ -742,8 +776,8 @@ pub(crate) fn decode(data: &[u8]) -> Result<Bundle> {
     // then recorded no moves.
     let mut renames = Vec::new();
     if version >= RENAMES_SINCE {
-        let n = r.u32()?;
-        renames.reserve(n as usize);
+        let n = r.count(MIN_RENAME_ROW)?;
+        renames.reserve(n);
         for _ in 0..n {
             renames.push(RenameRow {
                 snapshot_hash: r.string()?,
@@ -775,9 +809,21 @@ fn put_str(out: &mut Vec<u8>, s: &str) {
 struct Reader<'a> {
     data: &'a [u8],
     pos: usize,
+    /// [`Limits::max_string_bytes`], checked before a string is allocated.
+    max_string: u32,
 }
 
 impl<'a> Reader<'a> {
+    /// Read a section's row count and refuse one the rest of the data cannot
+    /// hold, so a four-byte lie never becomes a four-billion-row reservation.
+    fn count(&mut self, min_row: usize) -> Result<usize> {
+        let n = self.u32()? as usize;
+        let remaining = self.data.len() - self.pos;
+        if n > remaining / min_row {
+            return Err(truncated());
+        }
+        Ok(n)
+    }
     fn bytes(&mut self, len: usize) -> Result<&'a [u8]> {
         let end = self.pos.checked_add(len).ok_or_else(truncated)?;
         if end > self.data.len() {
@@ -798,8 +844,15 @@ impl<'a> Reader<'a> {
         Ok(i64::from_le_bytes(arr))
     }
     fn string(&mut self) -> Result<String> {
-        let len = self.u32()? as usize;
-        let b = self.bytes(len)?;
+        let len = self.u32()?;
+        if len > self.max_string {
+            return Err(VeloError::LimitExceeded {
+                limit: Limit::StringBytes,
+                max: u64::from(self.max_string),
+                found: Some(u64::from(len)),
+            });
+        }
+        let b = self.bytes(len as usize)?;
         String::from_utf8(b.to_vec())
             .map_err(|_| VeloError::invalid("Bundle contains invalid UTF-8."))
     }

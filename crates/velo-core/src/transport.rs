@@ -410,6 +410,7 @@ impl Remote for HttpRemote {
         if progress.is_cancelled() {
             return Err(VeloError::Cancelled);
         }
+        let limits = crate::Limits::default();
         let mut body = Vec::new();
         for h in have {
             write_string(&mut body, h)?;
@@ -432,12 +433,15 @@ impl Remote for HttpRemote {
                 break;
             }
             bytes.extend_from_slice(&buf[..n]);
+            if bytes.len() as u64 > limits.max_pack_bytes {
+                return Err(pack_overrun(limits.max_pack_bytes));
+            }
             progress.advance(n as u64);
         }
         let mut cur = std::io::Cursor::new(&bytes[..]);
         let refs = read_refs(&mut cur)?;
         let at = cur.position() as usize;
-        Ok((refs, bundle::decode(&bytes[at..])?))
+        Ok((refs, bundle::decode(&bytes[at..], &limits)?))
     }
 
     fn push(
@@ -476,7 +480,7 @@ impl Remote for HttpRemote {
             Err(e) => return Err(Self::net(e)),
         };
         let mut reader = Self::checked(resp)?.into_reader();
-        let status = read_string(&mut reader)?;
+        let status = read_string(&mut reader, crate::Limits::default().max_string_bytes)?;
         parse_status(&status)
     }
 }
@@ -508,6 +512,7 @@ impl Remote for StreamRemote {
         drop(stdin);
         // S→C pack, in chunks so the caller sees it arriving. Read to EOF: the
         // sender does not announce a length, so there is no total to report.
+        let limits = crate::Limits::default();
         let mut packbytes = Vec::new();
         let mut buf = vec![0u8; CHUNK];
         loop {
@@ -525,10 +530,15 @@ impl Remote for StreamRemote {
                 break;
             }
             packbytes.extend_from_slice(&buf[..n]);
+            if packbytes.len() as u64 > limits.max_pack_bytes {
+                child.kill().ok();
+                child.wait().ok();
+                return Err(pack_overrun(limits.max_pack_bytes));
+            }
             progress.advance(n as u64);
         }
         finish(child)?;
-        let bundle = bundle::decode(&packbytes)?;
+        let bundle = bundle::decode(&packbytes, &limits)?;
         Ok((refs, bundle))
     }
 
@@ -567,7 +577,7 @@ impl Remote for StreamRemote {
         stdin.flush().ok();
         drop(stdin);
         // S→C status
-        let status = read_string(&mut stdout)?;
+        let status = read_string(&mut stdout, crate::Limits::default().max_string_bytes)?;
         finish(child)?;
         parse_status(&status)
     }
@@ -685,14 +695,25 @@ fn fill<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<usize> {
 }
 
 /// Read a length-prefixed string, or `None` at a clean stream EOF.
-pub(crate) fn read_string_opt<R: Read>(r: &mut R) -> Result<Option<String>> {
+///
+/// `max` bounds the length prefix, checked before anything is allocated: the
+/// prefix is the sender's claim, and four billion bytes is not a string.
+pub(crate) fn read_string_opt<R: Read>(r: &mut R, max: u32) -> Result<Option<String>> {
     let mut lenb = [0u8; 4];
     match fill(r, &mut lenb)? {
         0 => return Ok(None),
         4 => {}
         _ => return Err(proto_err()),
     }
-    let len = u32::from_le_bytes(lenb) as usize;
+    let claimed = u32::from_le_bytes(lenb);
+    if claimed > max {
+        return Err(VeloError::LimitExceeded {
+            limit: crate::limits::Limit::StringBytes,
+            max: u64::from(max),
+            found: Some(u64::from(claimed)),
+        });
+    }
+    let len = claimed as usize;
     let mut buf = vec![0u8; len];
     if fill(r, &mut buf)? != len {
         return Err(proto_err());
@@ -700,8 +721,8 @@ pub(crate) fn read_string_opt<R: Read>(r: &mut R) -> Result<Option<String>> {
     Ok(Some(String::from_utf8(buf).map_err(|_| proto_err())?))
 }
 
-pub(crate) fn read_string<R: Read>(r: &mut R) -> Result<String> {
-    read_string_opt(r)?.ok_or_else(proto_err)
+pub(crate) fn read_string<R: Read>(r: &mut R, max: u32) -> Result<String> {
+    read_string_opt(r, max)?.ok_or_else(proto_err)
 }
 
 pub(crate) fn write_refs<W: Write>(w: &mut W, refs: &[(String, String)]) -> Result<()> {
@@ -720,13 +741,26 @@ pub(crate) fn read_refs<R: Read>(r: &mut R) -> Result<Vec<RemoteRef>> {
         return Err(proto_err());
     }
     let count = u32::from_le_bytes(lenb);
-    let mut out = Vec::with_capacity(count as usize);
+    // The count is the sender's claim too: reserve a little, and let the
+    // vector grow only as rows actually arrive.
+    let max = crate::Limits::default().max_string_bytes;
+    let mut out = Vec::with_capacity(count.min(1024) as usize);
     for _ in 0..count {
-        let branch = read_string(r)?;
-        let hash = read_string(r)?;
+        let branch = read_string(r, max)?;
+        let hash = read_string(r, max)?;
         out.push(RemoteRef { branch, hash });
     }
     Ok(out)
+}
+
+/// A pack that kept arriving past the ceiling; the overrun was found while
+/// streaming, so there is no total to report.
+fn pack_overrun(max: u64) -> VeloError {
+    VeloError::LimitExceeded {
+        limit: crate::limits::Limit::PackBytes,
+        max,
+        found: None,
+    }
 }
 
 fn proto_err() -> VeloError {

@@ -40,6 +40,9 @@ pub struct Repo {
     /// What this handle writes into the lock's holder record, so a refused
     /// writer can say what is running. Set via [`Repo::lock_label`].
     lock_label: Option<String>,
+    /// Ceilings on what this handle will allocate for data received from
+    /// elsewhere. Set via [`Repo::limited`].
+    limits: crate::Limits,
 }
 
 /// How a repository sits on disk.
@@ -160,6 +163,7 @@ impl Repo {
             listeners: Vec::new(),
             object_location,
             lock_label: None,
+            limits: crate::Limits::default(),
         })
     }
 
@@ -209,6 +213,7 @@ impl Repo {
             listeners: Vec::new(),
             object_location,
             lock_label: None,
+            limits: crate::Limits::default(),
         })
     }
 
@@ -304,6 +309,7 @@ impl Repo {
             listeners: Vec::new(),
             object_location,
             lock_label: None,
+            limits: crate::Limits::default(),
         })
     }
 
@@ -531,6 +537,32 @@ impl Repo {
     pub fn merging(mut self, drivers: crate::Drivers) -> Self {
         self.drivers = drivers;
         self
+    }
+
+    /// Set the ceilings on what this handle allocates when reading data that
+    /// came from another machine (bundles, packs, git streams).
+    ///
+    /// Like [`Repo::scoped`], this belongs to the handle: it is a property of
+    /// how much the application trusts its sources, not of one call. Hitting a
+    /// ceiling is [`Error::LimitExceeded`](crate::Error::LimitExceeded).
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// use velo_core::{Limits, Repo};
+    ///
+    /// let repo = Repo::discover(std::path::Path::new("."))?
+    ///     .limited(Limits::default().with_max_object_bytes(64 << 20));
+    /// # let _ = repo;
+    /// # Ok(()) }
+    /// ```
+    pub fn limited(mut self, limits: crate::Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// The handle's read limits.
+    pub fn limits(&self) -> &crate::Limits {
+        &self.limits
     }
 
     /// The handle's merge drivers.

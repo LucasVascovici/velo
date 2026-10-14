@@ -3768,7 +3768,7 @@ mod tests {
     }
 
     fn status_of(resp: &[u8]) -> String {
-        crate::transport::read_string(&mut std::io::Cursor::new(resp)).unwrap()
+        crate::transport::read_string(&mut std::io::Cursor::new(resp), u32::MAX).unwrap()
     }
 
     #[test]
@@ -3791,7 +3791,9 @@ mod tests {
         let mut cur = std::io::Cursor::new(&bytes[..]);
         let refs = crate::transport::read_refs(&mut cur).unwrap();
         assert_eq!(refs[0].hash, second);
-        let pack = commands::bundle::decode(&bytes[cur.position() as usize..]).unwrap();
+        let pack =
+            commands::bundle::decode(&bytes[cur.position() as usize..], &crate::Limits::default())
+                .unwrap();
         assert_eq!(pack.snapshots.len(), 2);
 
         let fresh = TempDir::new().unwrap();
@@ -12240,3 +12242,6 @@ mod signatures;
 
 #[cfg(test)]
 mod one_step_sync;
+
+#[cfg(test)]
+mod read_limits;

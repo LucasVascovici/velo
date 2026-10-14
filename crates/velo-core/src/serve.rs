@@ -93,7 +93,8 @@ pub fn upload(path: &str) -> Result<()> {
     let stdin = io::stdin();
     let mut inp = stdin.lock();
     let mut have: HashSet<String> = HashSet::new();
-    while let Some(h) = transport::read_string_opt(&mut inp)? {
+    let max_string = repo.limits().max_string_bytes;
+    while let Some(h) = transport::read_string_opt(&mut inp, max_string)? {
         have.insert(h);
     }
 
@@ -124,11 +125,24 @@ pub fn receive(path: &str) -> Result<()> {
     out.flush().map_err(VeloError::Io)?;
 
     // C→S branch, new_tip, then the pack to EOF.
-    let branch = transport::read_string(&mut inp)?;
-    let new_tip = transport::read_string(&mut inp)?;
+    let limits = guard.repo().limits();
+    let branch = transport::read_string(&mut inp, limits.max_string_bytes)?;
+    let new_tip = transport::read_string(&mut inp, limits.max_string_bytes)?;
+    // One byte past the ceiling is the proof of overrun; stdin is the sender's
+    // to make as long as it likes.
     let mut packbytes = Vec::new();
-    inp.read_to_end(&mut packbytes).map_err(VeloError::Io)?;
-    let pack = bundle::decode(&packbytes)?;
+    (&mut inp)
+        .take(limits.max_pack_bytes.saturating_add(1))
+        .read_to_end(&mut packbytes)
+        .map_err(VeloError::Io)?;
+    if packbytes.len() as u64 > limits.max_pack_bytes {
+        return Err(VeloError::LimitExceeded {
+            limit: crate::limits::Limit::PackBytes,
+            max: limits.max_pack_bytes,
+            found: None,
+        });
+    }
+    let pack = bundle::decode(&packbytes, limits)?;
 
     let status = apply_push(&guard, &branch, &new_tip, &pack)?;
     transport::write_string(&mut out, &status)?;
@@ -180,7 +194,8 @@ pub mod http {
 
         let mut inp = Cursor::new(body);
         let mut have: HashSet<String> = HashSet::new();
-        while let Some(h) = transport::read_string_opt(&mut inp)? {
+        let max_string = repo.limits().max_string_bytes;
+        while let Some(h) = transport::read_string_opt(&mut inp, max_string)? {
             have.insert(h);
         }
 
@@ -203,10 +218,11 @@ pub mod http {
         let guard = repo.write()?;
 
         let mut inp = Cursor::new(body);
-        let branch = transport::read_string(&mut inp)?;
-        let new_tip = transport::read_string(&mut inp)?;
+        let limits = guard.repo().limits();
+        let branch = transport::read_string(&mut inp, limits.max_string_bytes)?;
+        let new_tip = transport::read_string(&mut inp, limits.max_string_bytes)?;
         let at = inp.position() as usize;
-        let pack = bundle::decode(&body[at..])?;
+        let pack = bundle::decode(&body[at..], limits)?;
 
         let status = apply_push(&guard, &branch, &new_tip, &pack)?;
         let mut out = Vec::new();

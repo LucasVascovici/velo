@@ -49,6 +49,7 @@ crate is not published to crates.io.
 | 24 | `VELO_ERR_DB` | Database error |
 | 25 | `VELO_ERR_COMPACTED` | Snapshot squashed by compaction; the message names the live id |
 | 26 | `VELO_ERR_UNSAFE_PATH` | A tree or bundle holds a path velo refuses to store or write; the message names it |
+| 27 | `VELO_ERR_LIMIT_EXCEEDED` | Received data would exceed a read limit (object, pack or string size); nothing was imported |
 | 100 | `VELO_ERR_NULL_ARGUMENT` | A required pointer was NULL |
 | 101 | `VELO_ERR_INVALID_UTF8` | A string was not UTF-8 |
 | 102 | `VELO_ERR_PANIC` | Rust panicked inside the call |

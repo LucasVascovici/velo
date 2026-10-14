@@ -43,6 +43,10 @@ pub const VELO_ERR_COMPACTED: i32 = 25;
 /// root, reserved name, file/directory collision, ...). The message names it.
 pub const VELO_ERR_UNSAFE_PATH: i32 = 26;
 
+/// Received data would exceed a configured read limit (object, pack or string
+/// size). Nothing was imported.
+pub const VELO_ERR_LIMIT_EXCEEDED: i32 = 27;
+
 /// A required pointer argument was NULL.
 pub const VELO_ERR_NULL_ARGUMENT: i32 = 100;
 /// A string argument was not valid UTF-8.
@@ -83,6 +87,7 @@ pub fn code_of(error: &Error) -> i32 {
         Error::AmbiguousPrefix { .. } => VELO_ERR_AMBIGUOUS_PREFIX,
         Error::Compacted { .. } => VELO_ERR_COMPACTED,
         Error::UnsafePath { .. } => VELO_ERR_UNSAFE_PATH,
+        Error::LimitExceeded { .. } => VELO_ERR_LIMIT_EXCEEDED,
         Error::Corrupt { .. } => VELO_ERR_CORRUPT,
         Error::MissingObject { .. } => VELO_ERR_MISSING_OBJECT,
         Error::UntrustedData { .. } => VELO_ERR_UNTRUSTED_DATA,
@@ -272,8 +277,16 @@ mod tests {
                 },
                 26,
             ),
+            (
+                Error::LimitExceeded {
+                    limit: velo_core::limits::Limit::StringBytes,
+                    max: 1,
+                    found: None,
+                },
+                27,
+            ),
         ];
-        assert_eq!(cases.len(), 26, "one case per variant");
+        assert_eq!(cases.len(), 27, "one case per variant");
         for (error, code) in cases {
             assert_eq!(code_of(&error), code, "{error:?}");
         }
