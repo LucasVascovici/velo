@@ -16,7 +16,7 @@ not a language binding, so it is not limited to the embeddable half.
 ## Client configuration
 
 ```json
-{"command": "velo-mcp", "args": ["--repo", "/path"]}
+{"command": "velo-mcp", "args": ["--repo", "/path", "--lock-wait", "5"]}
 ```
 
 ## Run identity
@@ -40,9 +40,16 @@ the `velo` or `mcp` namespaces themselves. The author is the client name, or
 | `velo_branch` | `list`, `create` (does not switch) or `switch` (creates the branch if missing, as the CLI does; refuses on a dirty tree). |
 | `velo_merge_plan` | What merging `source` into the current branch would do, with conflict texts and an `apply_hint`. Writes nothing. |
 | `velo_merge_apply` | Record the merge as a two-parent snapshot and move the tree to it. Needs a clean tree and a resolution for every conflict. |
-| `velo_blame` | Per-line origin; `origin.run` is the run that saved the line. |
+| `velo_blame` | Per-line origin; `origin.run` is the run that saved the line. `start_line` and `end_line` (1-based, inclusive) return only that slice; an inverted range or one past the end of the file is an invalid-params error. |
+| `velo_undo` | Undo the last snapshot on the current branch (shelved, not destroyed). Needs a working tree. |
+| `velo_redo` | Bring back what the last `velo_undo` shelved. Needs a working tree. |
+| `velo_tag` | `list`, `create` (refuses a taken name) or `delete` tags. Works in store-only mode. |
+| `velo_conflicts` | The conflicts of a stopped merge as data: per path the ancestor, ours and theirs objects and each hunk with its decision. Needs a working tree. |
+| `velo_find` | Snapshots matching `[namespace, key, value]` metadata filters, optionally on one `branch`. Works in store-only mode. |
 
-There is no force option anywhere: a dirty tree is an error result
+There is deliberately no tool for squash, rebase, compact, retention, gc, force
+push or anything else that rewrites pushed history, and no tool takes a `force`
+argument: the safety stance is the tool surface. There is no force option anywhere: a dirty tree is an error result
 (`DirtyWorkingTree`) and nothing is overwritten. Merging is always plan, then
 apply; there is no single-call merge.
 
@@ -59,6 +66,15 @@ apply; there is no single-call merge.
    conflict returns `Conflicts` listing the paths.
 6. `velo_blame {"path": "app.py"}`: each line's `origin.run` names the run that
    wrote it.
+
+## Concurrent agents
+
+Two agents may serve one repository through two servers. Write tools wait for
+the repository lock for `--lock-wait SECS` (default 5, fractions allowed, 0 to
+fail at once). If another process still holds it, the result has `isError: true`
+and names the holder in its text and in `structuredContent`:
+`{"error": "Locked", "holder": {"pid": ..., "command": ..., "started_at_ms": ...,
+"started_at": ...}}`. Retry the call later; nothing was written.
 
 ## Store-only mode
 

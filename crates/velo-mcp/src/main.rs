@@ -24,6 +24,10 @@ struct Args {
     /// Run identity recorded on every write (else $VELO_MCP_RUN, else generated).
     #[arg(long)]
     run: Option<String>,
+    /// Seconds a write tool waits for the repository lock before it answers
+    /// `Locked`, naming the holder.
+    #[arg(long, value_name = "SECS", default_value_t = 5.0)]
+    lock_wait: f64,
 }
 
 fn main() {
@@ -41,7 +45,12 @@ fn main() {
         }
     };
     let run = resolve_run_id(args.run, std::env::var("VELO_MCP_RUN").ok());
-    let mut server = Server::new(repo, run);
+    if !args.lock_wait.is_finite() || args.lock_wait < 0.0 {
+        eprintln!("velo-mcp: --lock-wait must be a number of seconds, zero or more");
+        std::process::exit(2);
+    }
+    let mut server =
+        Server::new(repo, run).with_lock_wait(std::time::Duration::from_secs_f64(args.lock_wait));
     if let Ok(name) = std::env::var("VELO_AUTHOR_NAME") {
         server = server.with_author(name, std::env::var("VELO_AUTHOR_EMAIL").ok());
     }

@@ -7,7 +7,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::store_tools;
+use std::time::Duration;
+
+use crate::{recovery_tools, store_tools};
 use serde_json::{json, Map, Value};
 use velo_core::commands::{
     blame, branches, diff, history, merge, resolve_snapshot_id, restore, save, status, switch,
@@ -47,6 +49,16 @@ pub struct Context<'a> {
     pub author: Option<&'a (String, Option<String>)>,
     /// The repository has no working tree: tools that need one are refused.
     pub store_only: bool,
+    /// How long a write tool waits for the repository lock before it answers
+    /// `Locked`, naming the holder.
+    pub lock_wait: Duration,
+}
+
+impl Context<'_> {
+    /// The write lock, waiting up to [`Context::lock_wait`] for another holder.
+    pub(crate) fn write(&self) -> velo_core::Result<velo_core::WriteGuard<'_>> {
+        self.repo.write_timeout(self.lock_wait)
+    }
 }
 
 /// The variant name of a velo error, taken from its `Debug` form so that new
@@ -170,6 +182,16 @@ pub fn list(store_only: bool) -> Value {
         });
     }
     tools.extend(store_tools::list());
+    let mut recovery = recovery_tools::list();
+    if store_only {
+        recovery.retain(|t| {
+            let name = t["name"].as_str().unwrap_or_default();
+            !recovery_tools::NEEDS_WORKING_TREE
+                .iter()
+                .any(|(n, _)| *n == name)
+        });
+    }
+    tools.extend(recovery);
     Value::Array(tools)
 }
 
@@ -186,7 +208,20 @@ pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolEr
             return Err(unsupported(name, instead));
         }
     }
+    if ctx.store_only {
+        if let Some((_, instead)) = recovery_tools::NEEDS_WORKING_TREE
+            .iter()
+            .find(|(n, _)| *n == name)
+        {
+            return Err(unsupported(name, instead));
+        }
+    }
     match name {
+        "velo_undo" => recovery_tools::undo_tool(ctx),
+        "velo_redo" => recovery_tools::redo_tool(ctx),
+        "velo_tag" => recovery_tools::tag_tool(ctx, args),
+        "velo_conflicts" => recovery_tools::conflicts_tool(ctx),
+        "velo_find" => recovery_tools::find_tool(ctx, args),
         "velo_save_tree" => store_tools::save_tree_tool(ctx, args),
         "velo_tree_at" => store_tools::tree_at_tool(ctx, args),
         "velo_read_file" => store_tools::read_file_tool(ctx, args),
@@ -316,7 +351,7 @@ fn save_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     let refs = path_refs(&paths);
     let meta = build_meta(ctx, "velo_save", args)?;
     let author = author(ctx)?;
-    let guard = ctx.repo.write()?;
+    let guard = ctx.write()?;
     let outcome = save::run(
         &guard,
         Some(message),
@@ -351,7 +386,7 @@ fn restore_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     let paths = paths_arg(args)?;
     let refs = path_refs(&paths);
     let id = snapshot_arg(ctx.repo, spec)?;
-    let guard = ctx.repo.write()?;
+    let guard = ctx.write()?;
     // `force` is never true here, whatever the caller asks.
     let outcome = restore::run(
         &guard,
@@ -589,7 +624,7 @@ fn branch_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             let at = opt_str(args, "at")?
                 .map(|s| snapshot_arg(ctx.repo, s))
                 .transpose()?;
-            let guard = ctx.repo.write()?;
+            let guard = ctx.write()?;
             let outcome = branches::create(&guard, &name, at.as_ref());
             drop(guard);
             outcome?;
@@ -601,7 +636,7 @@ fn branch_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         )),
         "switch" => {
             let name = need_name()?;
-            let guard = ctx.repo.write()?;
+            let guard = ctx.write()?;
             // `force` is never true here, whatever the caller asks.
             let outcome = switch::run(&guard, name, false);
             drop(guard);
@@ -748,7 +783,7 @@ fn merge_apply_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError>
     let meta = build_meta(ctx, "velo_merge_apply", args)?;
     let author = author(ctx)?;
     let theirs = snapshot_arg(ctx.repo, spec)?;
-    let guard = ctx.repo.write()?;
+    let guard = ctx.write()?;
     let result = (|| -> Result<Value, ToolError> {
         let s = status::run(ctx.repo, &[])?;
         if !s.is_clean() {
@@ -806,6 +841,12 @@ fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         }
     };
     let (start, end) = (line("start_line")?, line("end_line")?);
+    if let (Some(s), Some(e)) = (start, end) {
+        if s > e {
+            return Err(bad(format!("'start_line' ({s}) is after 'end_line' ({e})")));
+        }
+    }
+    let lines_asked = start.is_some() || end.is_some();
     let lines = if start.is_some() || end.is_some() {
         // 1-based inclusive in, half-open out.
         Some(start.unwrap_or(1)..end.map_or(usize::MAX, |e| e.saturating_add(1)))
@@ -821,6 +862,23 @@ fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             ..Default::default()
         },
     )?;
+    if lines_asked && b.lines.is_empty() {
+        // Core answers a range past the end with nothing; a caller that asked
+        // for it needs to be told, with the length to correct itself.
+        let total = blame::run(
+            ctx.repo,
+            Path::new(path),
+            blame::Options {
+                at: at.as_ref(),
+                ..Default::default()
+            },
+        )?
+        .lines
+        .len();
+        return Err(bad(format!(
+            "line range is out of range: '{path}' has {total} line(s)"
+        )));
+    }
     // One metadata read per distinct origin snapshot, not per line.
     let mut runs: std::collections::HashMap<String, Option<String>> = Default::default();
     let mut out = Vec::new();

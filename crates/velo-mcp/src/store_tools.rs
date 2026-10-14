@@ -155,7 +155,7 @@ pub(crate) fn save_tree_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, T
         tree.remove(path);
     }
 
-    let guard = ctx.repo.write()?;
+    let guard = ctx.write()?;
     let id = guard.save_tree(SaveTree {
         branch: &branch,
         parent: parent.as_ref(),

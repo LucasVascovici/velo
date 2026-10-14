@@ -19,6 +19,7 @@ path = "src/main.rs"
 
 [dependencies]
 velo-core.workspace = true
+velo-merge.workspace = true
 base64.workspace = true
 clap.workspace = true
 chrono.workspace = true

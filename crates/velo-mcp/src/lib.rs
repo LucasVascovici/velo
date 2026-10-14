@@ -6,8 +6,11 @@
 #![forbid(unsafe_code)]
 
 pub mod protocol;
+mod recovery_tools;
 mod store_tools;
 pub mod tools;
+
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use velo_core::Repo;
@@ -29,7 +32,11 @@ pub struct Server {
     author: Option<(String, Option<String>)>,
     /// Set when the repository has no working tree.
     store_only: bool,
+    lock_wait: Duration,
 }
+
+/// How long a write tool waits for the repository lock unless told otherwise.
+pub const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(5);
 
 impl Server {
     /// A server for `repo` that stamps writes with `run`.
@@ -38,6 +45,7 @@ impl Server {
         Server {
             repo,
             store_only,
+            lock_wait: DEFAULT_LOCK_WAIT,
             run,
             client: None,
             author: None,
@@ -47,6 +55,13 @@ impl Server {
     /// Use a fixed author instead of the client name.
     pub fn with_author(mut self, name: String, email: Option<String>) -> Self {
         self.author = Some((name, email));
+        self
+    }
+
+    /// Wait up to `wait` for the repository write lock before a write tool
+    /// answers `Locked`. The default is [`DEFAULT_LOCK_WAIT`].
+    pub fn with_lock_wait(mut self, wait: Duration) -> Self {
+        self.lock_wait = wait;
         self
     }
 
@@ -104,6 +119,7 @@ impl Server {
             client,
             author: self.author.as_ref(),
             store_only: self.store_only,
+            lock_wait: self.lock_wait,
         };
         match tools::call(&ctx, name, args) {
             Ok(result) => {
@@ -143,6 +159,42 @@ impl Server {
                             structured["hint"] = json!(hint);
                         }
                         structured["paths"] = json!(paths);
+                    }
+                    velo_core::Error::Locked { held_by, holder } => {
+                        // The text is all many clients show the model, so who
+                        // holds the lock and since when must be in it.
+                        let pid = holder.as_ref().map(|h| h.pid).or(*held_by);
+                        let mut who = json!({"pid": pid});
+                        if let Some(h) = holder {
+                            who["command"] = json!(h.command);
+                            who["started_at_ms"] = json!(h.started_at_ms);
+                            if let Some(t) =
+                                chrono::DateTime::from_timestamp_millis(h.started_at_ms)
+                            {
+                                who["started_at"] = json!(t.to_rfc3339());
+                            }
+                        }
+                        let mut hint = String::from("Held by");
+                        match pid {
+                            Some(p) => hint.push_str(&format!(" pid {p}")),
+                            None => hint.push_str(" an unknown process"),
+                        }
+                        if let Some(c) = who["command"].as_str() {
+                            hint.push_str(&format!(", command '{c}'"));
+                        }
+                        if let Some(t) = who["started_at"].as_str() {
+                            hint.push_str(&format!(", since {t}"));
+                        }
+                        hint.push_str(&format!(
+                            ". Waited {} s for it; retry the call later.",
+                            self.lock_wait.as_secs_f64()
+                        ));
+                        text = format!(
+                            "{text}
+{hint}"
+                        );
+                        structured["holder"] = who;
+                        structured["hint"] = json!(hint);
                     }
                     _ => {}
                 }
@@ -236,7 +288,12 @@ mod tests {
                 "velo_blame",
                 "velo_save_tree",
                 "velo_tree_at",
-                "velo_read_file"
+                "velo_read_file",
+                "velo_undo",
+                "velo_redo",
+                "velo_tag",
+                "velo_conflicts",
+                "velo_find"
             ]
         );
     }
