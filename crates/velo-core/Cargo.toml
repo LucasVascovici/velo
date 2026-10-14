@@ -8,6 +8,8 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 readme = "README.md"
+# Reads the golden corpus in the workspace's tests/corpus, outside the package.
+exclude = ["tests/corpus.rs"]
 keywords = ["version-control", "vcs", "snapshot", "history", "embeddable"]
 categories = ["development-tools", "filesystem"]
 
@@ -55,6 +57,7 @@ required-features = ["failpoints"]
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 
 # File locking and mmap have no wasm equivalent; `RepoLock` is a no-op there and

@@ -265,3 +265,33 @@ jobs:
 
       - name: Crash tests
         run: cargo test -p velo-core --features failpoints --test crash --locked
+
+  # Golden corpus: every repository and bundle written by a released build
+  # opens, migrates or is refused as recorded (crates/velo-core/tests/corpus.rs).
+  corpus:
+    name: Corpus · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Corpus tests
+        run: cargo test -p velo-core --test corpus --locked
