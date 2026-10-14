@@ -1,6 +1,8 @@
 # Cookbook: config registry
 
 Script: [`bindings/python/examples/config_registry.py`](../../bindings/python/examples/config_registry.py)
+Node port: [`bindings/node/examples/config_registry.mjs`](../../bindings/node/examples/config_registry.mjs)
+(same steps and asserts; its header says how to run it against a local build)
 
 A registry publishes versions of `configs/service.yaml`, rolls back cheaply,
 and can answer "who approved this?" in a way nobody can rewrite.

@@ -5,6 +5,11 @@
   "description": "Node.js binding for velo-core",
   "main": "index.js",
   "types": "index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "*.node"
+  ],
   "napi": {
     "binaryName": "velo"
   },
