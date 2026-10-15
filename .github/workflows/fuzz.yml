@@ -7,6 +7,11 @@ on:
     branches: [main]
   schedule:
     - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Fuzz time budget per target, in seconds"
+        default: "600"
 
 env:
   CARGO_TERM_COLOR: always
@@ -35,7 +40,7 @@ jobs:
         run: cargo install cargo-fuzz --locked
       - name: Fuzz ${{ matrix.target }}
         env:
-          SECONDS_BUDGET: ${{ github.event_name == 'schedule' && '600' || '60' }}
+          SECONDS_BUDGET: ${{ github.event_name == 'schedule' && '600' || github.event_name == 'workflow_dispatch' && inputs.seconds || '60' }}
         run: >
           cargo +nightly fuzz run ${{ matrix.target }} fuzz/seeds/${{ matrix.target }}
           -- -max_total_time=$SECONDS_BUDGET -rss_limit_mb=2048
