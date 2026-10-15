@@ -32,6 +32,10 @@ New inputs the fuzzer finds go to `fuzz/corpus/<target>/`, crashes to
 for 60 s on each push and pull request and for 600 s nightly, and uploads
 `fuzz/artifacts/` when one fails.
 
+The workflow can also be dispatched by hand with a chosen budget (the `seconds`
+input); GitHub only offers that once the workflow file is on the default
+branch.
+
 ## Minimise a crash
 
 ```sh
