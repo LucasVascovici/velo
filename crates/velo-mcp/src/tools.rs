@@ -129,6 +129,7 @@ pub fn list(store_only: bool) -> Value {
             "description": "List snapshots, newest first, optionally filtered by metadata.",
             "inputSchema": obj(json!({
                 "limit": {"type": "integer", "minimum": 1, "default": 200, "description": "Most entries to return. The result says truncated: true and how to get the next page when there are more."},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Entries to skip, for paging. Repeat the same branch/from/meta/paths with the next_offset of the previous page."},
                 "branch": {"type": "string"},
                 "from": {"type": "string"},
                 "paths": strs,
@@ -522,6 +523,13 @@ fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             .filter(|n| *n > 0)
             .ok_or_else(|| bad("'limit' must be a positive integer"))? as usize,
     };
+    let offset = match args.get("offset") {
+        None | Some(Value::Null) => 0,
+        Some(v) => {
+            v.as_u64()
+                .ok_or_else(|| bad("'offset' must be a non-negative integer"))? as usize
+        }
+    };
     let branch = opt_str(args, "branch")?
         .map(|b| b.parse::<BranchName>())
         .transpose()?;
@@ -561,13 +569,13 @@ fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             paths: &refs,
             meta: &filters,
             // One more than asked, to know whether there is a next page.
-            limit: Some(limit.saturating_add(1)),
+            limit: Some(offset.saturating_add(limit).saturating_add(1)),
             ..Default::default()
         },
     )?;
-    let truncated = h.entries.len() > limit;
+    let truncated = h.entries.len() > offset.saturating_add(limit);
     let mut entries = Vec::new();
-    for e in h.entries.iter().take(limit) {
+    for e in h.entries.iter().skip(offset).take(limit) {
         let mut o = Map::new();
         o.insert("snapshot".into(), json!(e.hash.as_str()));
         o.insert("message".into(), json!(e.message));
@@ -589,11 +597,10 @@ fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     }
     let mut out = json!({"entries": entries, "truncated": truncated});
     if truncated {
-        let next = h.entries[limit - 1].parent.as_ref().map(|p| p.as_str());
-        out["next_from"] = json!(next);
+        let next = offset + limit;
+        out["next_offset"] = json!(next);
         out["hint"] = json!(format!(
-            "Showing the newest {limit} entries. Call velo_history again with \"from\": \"{}\" for the next page, or narrow it with 'branch', 'meta' or 'paths'.",
-            next.unwrap_or("<none: that was the oldest>")
+            "Showing {limit} entries from offset {offset}. Call velo_history again with the same branch/from/meta/paths and \"offset\": {next} for the next page, or narrow it with 'branch', 'meta' or 'paths'."
         ));
     }
     Ok(out)

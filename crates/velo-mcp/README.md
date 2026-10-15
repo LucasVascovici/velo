@@ -129,7 +129,7 @@ No tool sends multi-megabyte text by accident. A cut result has
 
 | Tool | Bound | Next page |
 | --- | --- | --- |
-| `velo_history` | `limit`, default 200 entries | `from` = `next_from` |
+| `velo_history` | `limit`, default 200 entries | `offset` = `next_offset`, same filters |
 | `velo_blame` | `limit`, default 2000 lines | `start_line` = `next_start_line` |
 | `velo_tree_at` | `limit`, default 5000 files; result is `{files, total, truncated}` | `offset` = `next_offset` |
 | `velo_read_file` | `max_bytes`, default 1 MiB; result carries `size` | `offset` = `next_offset` (text is cut on a character boundary) |

@@ -122,7 +122,11 @@ fn history_and_blame_are_cut() {
     assert_eq!(p["entries"].as_array().unwrap().len(), 3);
     assert_eq!(p["truncated"], true);
     assert!(p["hint"].as_str().unwrap().contains("velo_history"));
-    let r = call(&mut s, "velo_history", json!({"from": p["next_from"]}));
+    let r = call(
+        &mut s,
+        "velo_history",
+        json!({"limit": 3, "offset": p["next_offset"]}),
+    );
     assert_eq!(ok(&r)["entries"].as_array().unwrap().len(), 1);
     assert_eq!(ok(&r)["truncated"], false);
     let r = call(&mut s, "velo_history", json!({}));
@@ -156,4 +160,59 @@ fn bad_limits_are_error_results() {
         assert!(r.get("error").is_none(), "{args}: {r}");
         assert_eq!(r["result"]["isError"], true, "{args}: {r}");
     }
+}
+
+/// Pages through every entry of `args`, returning the snapshot ids in order.
+fn page_all(s: &mut Server, mut args: Value, limit: u64) -> Vec<String> {
+    let mut seen = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        args["limit"] = json!(limit);
+        args["offset"] = json!(offset);
+        let r = call(s, "velo_history", args.clone());
+        let p = ok(&r);
+        for e in p["entries"].as_array().unwrap() {
+            seen.push(e["snapshot"].as_str().unwrap().to_string());
+        }
+        if p["truncated"] != true {
+            return seen;
+        }
+        offset = p["next_offset"].as_u64().unwrap();
+    }
+}
+
+#[test]
+fn history_pages_across_a_merge_without_loss() {
+    let (_d, mut s) = store();
+    let base = save(&mut s, "base", json!({"f": "0"}));
+    let tree = |s: &mut Server, branch: &str, msg: &str, parent: &str, merge: Option<&str>| {
+        let mut a = json!({"branch": branch, "message": msg, "parent": parent,
+                           "files": {"f": msg}});
+        if let Some(m) = merge {
+            a["merge_parent"] = json!(m);
+        }
+        let r = call(s, "velo_save_tree", a);
+        ok(&r)["snapshot"].as_str().unwrap().to_string()
+    };
+    let a1 = tree(&mut s, "attempt", "a1", &base, None);
+    let a2 = tree(&mut s, "attempt", "a2", &a1, None);
+    let x = tree(&mut s, "main", "x", &base, None);
+    let m = tree(&mut s, "main", "m", &x, Some(&a2));
+
+    let all = page_all(&mut s, json!({}), 100);
+    assert_eq!(all.len(), 5, "{all:?}");
+    for limit in [1, 2, 3] {
+        let mut got = page_all(&mut s, json!({}), limit);
+        assert_eq!(got, all, "limit {limit}");
+        got.sort();
+        got.dedup();
+        assert_eq!(got.len(), 5);
+        for id in [&base, &a1, &a2, &x, &m] {
+            assert!(got.contains(id), "{id} missing at limit {limit}");
+        }
+    }
+    // Paging with `branch` keeps that scope on every page.
+    let on_main = page_all(&mut s, json!({"branch": "main"}), 100);
+    assert!(!on_main.is_empty());
+    assert_eq!(page_all(&mut s, json!({"branch": "main"}), 1), on_main);
 }
