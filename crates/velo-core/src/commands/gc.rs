@@ -197,6 +197,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         drop(conn);
     } else {
         conn.commit()?;
+        crate::failpoint::hit("gc.after_prune");
     }
 
     // No total: the directory is streamed rather than counted first, so a
@@ -223,6 +224,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
             doomed.insert(name);
         } else {
             objects.remove(&name)?;
+            crate::failpoint::hit("gc.after_object");
         }
         collected.objects += 1;
         collected.bytes_freed += size;
@@ -254,6 +256,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
             }
             if !dry_run {
                 objects.remove_chunk(&name)?;
+                crate::failpoint::hit("gc.after_chunk");
             }
             collected.chunks += 1;
             collected.bytes_freed += size;

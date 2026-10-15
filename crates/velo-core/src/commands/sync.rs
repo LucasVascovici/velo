@@ -198,6 +198,7 @@ pub fn clone_with_token(
 
     std::fs::create_dir_all(&target)?;
     crate::commands::init::run(&target)?;
+    crate::failpoint::hit("clone.after_init");
 
     // Clone creates the repository, so it opens the result and holds the write
     // lock for the import. Nothing else can be touching it yet, but the guard is
@@ -212,6 +213,7 @@ pub fn clone_with_token(
 
     let (snaps, objs) = bundle::import_pack(&guard, &pack)?;
     guard.repo().emit_imported(snaps);
+    crate::failpoint::hit("clone.after_import");
 
     conn.execute(
         "INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)",

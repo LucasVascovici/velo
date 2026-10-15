@@ -15,7 +15,8 @@ use std::process::Command;
 
 use tempfile::TempDir;
 use velo_core::commands::{
-    fsck, history, merge, rebase, redo, restore, save, status, switch, undo,
+    bundle, compact, fsck, gc, history, merge, rebase, redo, restore, retention, save, status,
+    switch, sync, undo,
 };
 use velo_core::{Error, Repo, SnapshotId};
 
@@ -32,6 +33,14 @@ const KNOWN_WINDOWS: &[(&str, &str)] = &[(
     "a whole-tree restore writes its files one by one, so a kill after the \
      first leaves a mix of old and new files; PARENT still names the old \
      snapshot and status lists the changed files as unsaved; restore --force to the target finishes it",
+), (
+    "compact.after_commit",
+    "the rewrite committed but PARENT was not moved: PARENT names an old id that \
+     now resolves to Compacted { into }, the tree is unchanged, and fsck reports \
+     exactly one DanglingPosition, and status lists every file as unsaved (nothing is compared against a missing snapshot); restore --force to `into` (same tree, so nothing is lost) fixes it",
+), (
+    "compact.before_parent",
+    "same state as compact.after_commit: the commit is durable, the PARENT rewrite did not happen",
 )];
 
 // ── Scenarios ──────────────────────────────────────────────────────────────
@@ -337,6 +346,30 @@ const SCENARIOS: &[Scenario] = &[
         op: op_rebase,
         kind: Kind::Rebase,
     },
+    Scenario {
+        name: "gc",
+        build: build_gc,
+        op: op_gc,
+        kind: Kind::Plain,
+    },
+    Scenario {
+        name: "compact",
+        build: build_chain,
+        op: op_compact,
+        kind: Kind::Plain,
+    },
+    Scenario {
+        name: "retention",
+        build: build_chain,
+        op: op_retention,
+        kind: Kind::Plain,
+    },
+    Scenario {
+        name: "bundle",
+        build: build_bundle,
+        op: op_bundle,
+        kind: Kind::Plain,
+    },
 ];
 
 // ── Child ──────────────────────────────────────────────────────────────────
@@ -373,6 +406,12 @@ fn crash_child() {
     };
     let repo_dir = PathBuf::from(std::env::var("VELO_CRASH_REPO").unwrap());
     velo_core::failpoint::set_handler(handler);
+    if op == "clone" {
+        // The repository is the source; the clone goes to VELO_CRASH_DEST.
+        let dest = PathBuf::from(std::env::var("VELO_CRASH_DEST").unwrap());
+        clone_into(&repo_dir, &dest).unwrap();
+        return;
+    }
     let scenario = SCENARIOS.iter().find(|s| s.name == op).expect("scenario");
     let repo = Repo::open(&repo_dir).unwrap();
     (scenario.op)(&repo);
@@ -488,11 +527,40 @@ fn check_point(
 
     // 1. fsck has no problems; repair; then clean.
     let report = fsck::check(&repo).unwrap();
-    assert!(
-        report.problems.is_empty(),
-        "{ctx}: fsck problems: {:?}",
-        report.problems
-    );
+    if PARENT_WINDOWS.contains(&point) {
+        // Known window: the ids were rewritten but PARENT still names the old
+        // one. Exactly that is wrong, and it names the id compaction replaced.
+        let shown: Vec<String> = report.problems.iter().map(|p| format!("{p:?}")).collect();
+        assert!(
+            shown.len() == 1
+                && shown[0].contains("DanglingPosition")
+                && shown[0].contains(&pre_position),
+            "{ctx}: expected only a dangling PARENT, got {shown:?}"
+        );
+        // Recovery: the old id says where it went; restore there (same tree).
+        let old: SnapshotId = pre_position.parse().unwrap();
+        let Err(Error::Compacted { into, .. }) = repo.tree_at(&old) else {
+            panic!("{ctx}: the old PARENT does not resolve to Compacted");
+        };
+        let g = repo.write().unwrap();
+        restore::run(
+            &g,
+            &into,
+            restore::Options {
+                force: true,
+                ..Default::default()
+            },
+        )
+        .unwrap_or_else(|e| panic!("{ctx}: restoring to {into} failed: {e}"));
+        drop(g);
+        assert_eq!(position(&work), into.to_string(), "{ctx}: PARENT not fixed");
+    } else {
+        assert!(
+            report.problems.is_empty(),
+            "{ctx}: fsck problems: {:?}",
+            report.problems
+        );
+    }
     {
         let g = repo.write().unwrap();
         fsck::repair(&g).unwrap();
@@ -546,6 +614,8 @@ fn check_point(
         let g = repo.try_write().unwrap();
         assert!(g.is_some(), "{ctx}: the write lock is still held");
     }
+
+    extra_checks(&ctx, s, point, &repo, &work, template);
 
     // Known windows are finished by a forced restore to the snapshot the
     // operation was heading for.
@@ -717,6 +787,13 @@ fn every_point_leaves_old_or_new() {
 
         let points = discover(s, &template, scratch.path());
         assert!(!points.is_empty(), "{}: no failpoints were hit", s.name);
+        for need in required_points(s.name) {
+            assert!(
+                points.iter().any(|p| p == need),
+                "{}: never hit {need}",
+                s.name
+            );
+        }
         for point in &points {
             check_point(s, point, &template, &pre, &post, scratch.path());
         }
@@ -748,4 +825,457 @@ fn assert_same(got: &Tree, want: &Tree, msg: &str) {
         diff.push(format!("missing {p}"));
     }
     panic!("{msg}: {diff:?}");
+}
+
+// ── gc, compact, retention, bundle apply and clone ─────────────────────────
+
+/// Deterministic pseudo-random bytes, so a file is stored as chunks (it is
+/// over the 1 MiB threshold) and a second version shares most of them.
+fn big(seed: u64, len: usize) -> Vec<u8> {
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..len)
+        .map(|_| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            (x >> 24) as u8
+        })
+        .collect()
+}
+
+fn write_bytes(root: &Path, rel: &str, body: &[u8]) {
+    let p = root.join(rel);
+    fs::create_dir_all(p.parent().unwrap()).unwrap();
+    fs::write(p, body).unwrap();
+}
+
+/// Two versions of a chunked file and of a small one, the second undone into
+/// the trash: a `gc` with a zero window has objects, chunks, trash rows and
+/// file_map rows to remove, with the live snapshot's own objects beside them.
+fn build_gc(repo: &Repo) {
+    let root = repo.root().to_path_buf();
+    let v1 = big(1, 1_300_000);
+    let mut v2 = v1.clone();
+    v2[600_000..604_000].copy_from_slice(&big(9, 4_000));
+    write(&root, "a.txt", "a one\n");
+    write_bytes(&root, "big.bin", &v1);
+    save_all(repo, "one");
+    write(&root, "a.txt", "a two\n");
+    write(&root, "n.txt", "n two\n");
+    write_bytes(&root, "big.bin", &v2);
+    save_all(repo, "two");
+    let g = repo.write().unwrap();
+    undo::run(&g).unwrap();
+}
+
+fn op_gc(r: &Repo) {
+    let g = r.write().unwrap();
+    gc::run(
+        &g,
+        gc::Options {
+            keep_days: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+}
+
+/// Five snapshots on `main`, each changing one file and adding one.
+fn build_chain(repo: &Repo) {
+    let root = repo.root().to_path_buf();
+    for i in 1..=5 {
+        write(&root, "a.txt", &format!("a {i}\n"));
+        write(&root, &format!("f{i}.txt"), &format!("f{i}\n"));
+        save_all(repo, &format!("s{i}"));
+    }
+}
+
+fn op_compact(r: &Repo) {
+    let oldest = snapshot_by_message(r, "s2");
+    let newest = snapshot_by_message(r, "s3");
+    let g = r.write().unwrap();
+    let branch = "main".parse().unwrap();
+    compact::run(
+        &g,
+        &branch,
+        &[compact::Range {
+            oldest: &oldest,
+            newest: &newest,
+        }],
+        Default::default(),
+    )
+    .unwrap();
+}
+
+fn op_retention(r: &Repo) {
+    const DAY: i64 = 86_400_000;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as i64;
+    let policy = retention::Policy {
+        tiers: vec![retention::Tier {
+            older_than_ms: DAY,
+            keep_one_per_ms: DAY,
+        }],
+    };
+    let g = r.write().unwrap();
+    let branch = "main".parse().unwrap();
+    let report = retention::apply(
+        &g,
+        &branch,
+        &policy,
+        retention::Options {
+            now_ms: Some(now + 10 * DAY),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(report.removed > 0, "retention squashed nothing");
+}
+
+/// The bundle comes from a separate source repository built next to the
+/// template (every scenario copy lives in one scratch directory), so each copy
+/// of the destination finds it at the same relative place.
+fn bundle_file(repo: &Repo) -> PathBuf {
+    repo.root().parent().unwrap().join("in.velob")
+}
+
+fn build_bundle(repo: &Repo) {
+    let src = repo.root().parent().unwrap().join("bundle-src");
+    fs::create_dir_all(&src).unwrap();
+    velo_core::commands::init::run(&src).unwrap();
+    let source = Repo::open_and_migrate(&src).unwrap();
+    build_bundle_source(&source);
+    bundle::create(&source, &bundle_file(repo), None).unwrap();
+}
+
+/// Three snapshots with a chunked file, nothing in the trash.
+fn build_bundle_source(repo: &Repo) {
+    let root = repo.root().to_path_buf();
+    write(&root, "a.txt", "a one\n");
+    write_bytes(&root, "big.bin", &big(1, 1_300_000));
+    save_all(repo, "one");
+    write(&root, "a.txt", "a two\n");
+    write(&root, "dir/n.txt", "n two\n");
+    save_all(repo, "two");
+    write_bytes(&root, "big.bin", &big(2, 1_100_000));
+    save_all(repo, "three");
+}
+
+fn op_bundle(r: &Repo) {
+    let g = r.write().unwrap();
+    bundle::apply(&g, &bundle_file(r)).unwrap();
+}
+
+/// Points a scenario must hit, so a failpoint that stops being reached (a
+/// refactor moves it, a fixture stops exercising it) fails the test instead of
+/// silently shrinking the coverage.
+fn required_points(name: &str) -> &'static [&'static str] {
+    match name {
+        "gc" => &["gc.after_prune", "gc.after_object", "gc.after_chunk"],
+        "compact" | "retention" => &[
+            "compact.before_commit",
+            "compact.after_commit",
+            "compact.before_parent",
+        ],
+        "bundle" => &[
+            "bundle.after_objects",
+            "bundle.before_commit",
+            "bundle.after_commit",
+        ],
+        _ => &[],
+    }
+}
+
+fn live_ids(repo: &Repo) -> Vec<String> {
+    history::run(
+        repo,
+        history::Options {
+            all: true,
+            ..Default::default()
+        },
+    )
+    .unwrap()
+    .entries
+    .into_iter()
+    .map(|e| e.hash.to_string())
+    .collect()
+}
+
+/// The checks that belong to one operation, run on the crashed repository.
+fn extra_checks(ctx: &str, s: &Scenario, point: &str, repo: &Repo, work: &Path, template: &Path) {
+    match s.name {
+        "gc" => {
+            // No object a live snapshot refers to is missing: every file of every
+            // live snapshot reads back, chunked ones included.
+            for id in live_ids(repo) {
+                let _ = snapshot_tree(repo, &id);
+            }
+            // A second pass finishes what the first left, and breaks nothing.
+            op_gc(repo);
+            for id in live_ids(repo) {
+                let _ = snapshot_tree(repo, &id);
+            }
+            let rep = fsck::check(repo).unwrap();
+            assert!(
+                rep.problems.is_empty() && rep.cruft.is_empty(),
+                "{ctx}: fsck after a second gc: {:?} {:?}",
+                rep.problems,
+                rep.cruft
+            );
+        }
+        "compact" | "retention" => {
+            let old = live_ids(&Repo::open(template).unwrap());
+            let live = live_ids(repo);
+            let committed = matches!(point, "compact.after_commit" | "compact.before_parent");
+            let mut gone = 0;
+            for id in &old {
+                let sid: SnapshotId = id.parse().unwrap();
+                match repo.tree_at(&sid) {
+                    Ok(_) => assert!(live.contains(id), "{ctx}: {id} resolves but is not live"),
+                    Err(Error::Compacted { into, .. }) => {
+                        gone += 1;
+                        assert!(!live.contains(id), "{ctx}: {id} is both live and compacted");
+                        assert!(
+                            live.contains(&into.to_string()),
+                            "{ctx}: {id} compacted into {into}, which is not live"
+                        );
+                    }
+                    Err(e) => panic!("{ctx}: old id {id}: {e}"),
+                }
+            }
+            assert_eq!(
+                gone > 0,
+                committed,
+                "{ctx}: an old id resolves to Compacted only if the rewrite committed"
+            );
+            if !committed {
+                assert_eq!(
+                    live.len(),
+                    old.len(),
+                    "{ctx}: a rolled-back rewrite changed history"
+                );
+            }
+        }
+        "bundle" => {
+            // Re-applying completes the import, whatever the crash left.
+            let src = Repo::open(&work.parent().unwrap().join("bundle-src")).unwrap();
+            let want = live_ids(&src);
+            {
+                let g = repo.write().unwrap();
+                bundle::apply(&g, &bundle_file(repo))
+                    .unwrap_or_else(|e| panic!("{ctx}: re-applying the bundle failed: {e}"));
+            }
+            let mut got = live_ids(repo);
+            let mut want_sorted = want.clone();
+            got.sort();
+            want_sorted.sort();
+            assert_eq!(
+                got, want_sorted,
+                "{ctx}: re-apply did not yield the full import"
+            );
+            for id in &want {
+                assert_eq!(
+                    snapshot_tree(repo, id),
+                    snapshot_tree(&src, id),
+                    "{ctx}: imported tree of {id} differs"
+                );
+            }
+            let rep = fsck::check(repo).unwrap();
+            assert!(
+                rep.problems.is_empty() && rep.cruft.is_empty(),
+                "{ctx}: fsck after re-apply: {:?} {:?}",
+                rep.problems,
+                rep.cruft
+            );
+            // Idempotent: another apply imports nothing.
+            let g = repo.write().unwrap();
+            let again = bundle::apply(&g, &bundle_file(repo)).unwrap();
+            assert!(
+                again.is_empty(),
+                "{ctx}: a second re-apply imported something"
+            );
+        }
+        _ => {}
+    }
+}
+
+/// Points where `compact` has committed the new ids but not yet moved
+/// `.velo/PARENT`, so PARENT names an id that no longer exists.
+const PARENT_WINDOWS: &[&str] = &["compact.after_commit", "compact.before_parent"];
+
+/// Clone points before the checkout and the exact state each leaves: (point,
+/// whether the snapshots were imported, state). Every clone kill leaves a
+/// directory holding a `.velo`, so a second clone refuses it; the recovery is to
+/// delete the directory and clone again.
+const CLONE_WINDOWS: &[(&str, bool, &str)] = &[
+    (
+        "clone.after_init",
+        false,
+        "an empty repository: no snapshots, no files, no origin remote",
+    ),
+    (
+        "bundle.after_objects",
+        false,
+        "the objects are stored but no snapshot row exists: no snapshots, no files; the objects are unreferenced",
+    ),
+    (
+        "bundle.before_commit",
+        false,
+        "same as bundle.after_objects: the import transaction was never committed",
+    ),
+    (
+        "bundle.after_commit",
+        true,
+        "all snapshots imported, no origin remote row, nothing checked out",
+    ),
+    (
+        "clone.after_import",
+        true,
+        "all snapshots imported, no origin remote row, nothing checked out",
+    ),
+];
+
+fn spawn_clone_child(
+    src: &Path,
+    dest: &Path,
+    log: &Path,
+    at: Option<&str>,
+) -> std::process::Output {
+    let mut cmd = Command::new(std::env::current_exe().unwrap());
+    cmd.args(["--exact", "crash_child", "--nocapture"])
+        .env("VELO_CRASH_OP", "clone")
+        .env("VELO_CRASH_REPO", src)
+        .env("VELO_CRASH_DEST", dest)
+        .env("VELO_CRASH_LOG", log)
+        .env_remove("VELO_CRASH_AT");
+    if let Some(at) = at {
+        cmd.env("VELO_CRASH_AT", at);
+    }
+    cmd.output().unwrap()
+}
+
+fn clone_into(src: &Path, dest: &Path) -> velo_core::Result<sync::Cloned> {
+    let spawn = velo_core::transport::Spawn::new(std::env::current_exe().unwrap());
+    sync::clone(
+        &src.to_string_lossy(),
+        &spawn,
+        sync::CloneOptions {
+            dir: Some(dest),
+            ..Default::default()
+        },
+    )
+}
+
+#[test]
+fn clone_survives_or_is_a_listed_window() {
+    if std::env::var("VELO_CRASH_OP").is_ok() {
+        return;
+    }
+    let scratch = TempDir::new().unwrap();
+    let src = scratch.path().join("src");
+    fs::create_dir_all(&src).unwrap();
+    velo_core::commands::init::run(&src).unwrap();
+    {
+        let repo = Repo::open_and_migrate(&src).unwrap();
+        build_two(&repo);
+        write(&src, "more/x.txt", "x\n");
+        write(&src, "more/y.txt", "y\n");
+        save_all(&repo, "three");
+    }
+    let source_tree = read_tree(&src);
+    let source_ids = {
+        let mut v = live_ids(&Repo::open(&src).unwrap());
+        v.sort();
+        v
+    };
+
+    let log = scratch.path().join("discover.log");
+    let out = spawn_clone_child(&src, &scratch.path().join("d0"), &log, None);
+    assert!(out.status.success(), "clone discovery failed");
+    assert_eq!(read_tree(&scratch.path().join("d0")), source_tree);
+    let mut points: Vec<String> = Vec::new();
+    for line in fs::read_to_string(&log).unwrap().lines() {
+        if !points.iter().any(|p| p == line) {
+            points.push(line.to_string());
+        }
+    }
+    for need in [
+        "clone.after_init",
+        "clone.after_import",
+        "restore.after_first_file",
+    ] {
+        assert!(points.iter().any(|p| p == need), "clone never hit {need}");
+    }
+
+    for point in &points {
+        let ctx = format!("clone @ {point}");
+        let dest = scratch.path().join(format!("run-{point}"));
+        let log = scratch.path().join(format!("{point}.log"));
+        let out = spawn_clone_child(&src, &dest, &log, Some(point));
+        assert!(!out.status.success(), "{ctx}: child exited 0");
+
+        // The exact state: a repository directory that opens and has the
+        // snapshots it had when the kill came.
+        assert!(dest.join(".velo").is_dir(), "{ctx}: no repository left");
+        let repo = Repo::open(&dest).unwrap();
+        let ids = {
+            let mut v = live_ids(&repo);
+            v.sort();
+            v
+        };
+        let mut tree = read_tree(&dest);
+        tree.remove(".veloignore"); // written by init, not part of the checkout
+        match CLONE_WINDOWS.iter().find(|(p, _, _)| p == point) {
+            Some((_, imported, _)) => {
+                if *imported {
+                    assert_eq!(ids, source_ids, "{ctx}: snapshots missing");
+                } else {
+                    assert!(ids.is_empty(), "{ctx}: snapshots before the import");
+                }
+                assert!(
+                    tree.is_empty(),
+                    "{ctx}: files before the checkout: {:?}",
+                    tree.keys()
+                );
+            }
+            None => {
+                // Inside the checkout: every snapshot is in, and each file that
+                // exists is the source's (restore writes each file whole).
+                assert_eq!(ids, source_ids, "{ctx}: snapshots missing");
+                for (p, b) in &tree {
+                    assert_eq!(
+                        source_tree.get(p),
+                        Some(b),
+                        "{ctx}: {p} is not the source's"
+                    );
+                }
+                if point == "restore.after_first_file" {
+                    assert!(
+                        tree.len() < source_tree.len(),
+                        "{ctx}: the checkout had finished"
+                    );
+                }
+            }
+        }
+        assert!(
+            repo.try_write().unwrap().is_some(),
+            "{ctx}: the write lock is still held"
+        );
+        drop(repo);
+
+        // A second clone refuses the directory; delete it and clone again.
+        let err = clone_into(&src, &dest).expect_err("clone into a leftover repository");
+        assert!(
+            err.to_string()
+                .contains("already contains a Velo repository"),
+            "{ctx}: {err}"
+        );
+        fs::remove_dir_all(&dest).unwrap();
+        clone_into(&src, &dest).unwrap_or_else(|e| panic!("{ctx}: re-clone failed: {e}"));
+        assert_eq!(read_tree(&dest), source_tree, "{ctx}: re-clone differs");
+        let repo = Repo::open(&dest).unwrap();
+        assert!(fsck::check(&repo).unwrap().problems.is_empty());
+    }
 }

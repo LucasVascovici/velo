@@ -427,6 +427,13 @@ may ignore or delete it.
 `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`. WAL is required:
 readers must not block a writer.
 
+**Durability.** With `synchronous=NORMAL` in WAL mode a committed transaction is
+not forced to disk at commit, so a power loss may roll back the most recent
+commits; the database stays consistent. Files outside the database
+(`.velo/PARENT`, `.velo/HEAD`, objects) are written by temp-file-and-rename
+without an `fsync`. What a crash or power loss can leave, and how it is tested,
+is in [CRASH_SAFETY.md](CRASH_SAFETY.md).
+
 ---
 
 ## 8. Display vs identity

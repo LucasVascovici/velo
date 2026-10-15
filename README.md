@@ -865,6 +865,10 @@ Underneath, a few things protect your data:
 - **Atomic writes.** Objects and refs (`PARENT`, `HEAD`, `MERGE_HEAD`) are written
   to a temp file and renamed into place, so a crash mid-write can never leave a
   truncated ref or a half-written object.
+- **Crash-tested.** Every operation that writes more than one file is killed at
+  each durable step in the test suite, and what each kill leaves (including the
+  few known windows and what a power loss can do) is in
+  [docs/CRASH_SAFETY.md](docs/CRASH_SAFETY.md).
 - **Repository lock.** Mutating commands take an advisory lock on `.velo/lock`, so
   two concurrent `velo` processes can't race (a `gc` can't delete an object a
   `save` is still committing). Read-only commands never block.

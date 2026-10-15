@@ -612,11 +612,14 @@ pub fn run(
             params![old, new, now],
         )?;
     }
+    crate::failpoint::hit("compact.before_commit");
     tx.commit()?;
+    crate::failpoint::hit("compact.after_commit");
 
     // The tree is identical, so pointing PARENT at the new id keeps the working
     // tree consistent with it.
     if let (Some(new), true) = (mapping.get(&checked_out), guard.repo().has_working_tree()) {
+        crate::failpoint::hit("compact.before_parent");
         crate::storage::write_atomic(&root.join(".velo/PARENT"), new.as_bytes())?;
     }
 
