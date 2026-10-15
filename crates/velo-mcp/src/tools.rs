@@ -71,13 +71,9 @@ impl Context<'_> {
     }
 }
 
-/// The variant name of a velo error, taken from its `Debug` form so that new
-/// variants are named correctly without this crate being updated.
+/// The variant name of a velo error.
 pub fn variant_name(e: &Error) -> String {
-    format!("{e:?}")
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect()
+    e.variant_name().to_string()
 }
 
 /// An object schema with the given properties.

@@ -117,6 +117,12 @@ export declare class SigningKey {
   get publicKey(): string
 }
 
+/**
+ * `[variant, code]` for one sample of every core error. Hidden: it exists so a
+ * test can prove no variant falls through to a generic code.
+ */
+export declare function _errorCodes(): Array<Array<string>>
+
 /** The author of a snapshot. */
 export interface AuthorInfo {
   name: string

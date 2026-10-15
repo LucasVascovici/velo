@@ -51,6 +51,15 @@ pub const VELO_ERR_LIMIT_EXCEEDED: i32 = 27;
 /// server. The message carries the server's reason, never the token.
 pub const VELO_ERR_ACCESS_DENIED: i32 = 28;
 
+/// Taking a side would replace edits made by hand to conflicted files.
+pub const VELO_ERR_WOULD_OVERWRITE_EDITS: i32 = 29;
+/// A hand edit accepted as a resolution would drop lines the other side changed cleanly.
+pub const VELO_ERR_MISSING_CLEAN_CHANGES: i32 = 30;
+/// Undoing a snapshot would leave other snapshots without their parent.
+pub const VELO_ERR_SNAPSHOT_HAS_DEPENDENTS: i32 = 31;
+/// A remote-tracking ref names a snapshot this repository does not hold.
+pub const VELO_ERR_REMOTE_REF_ABSENT: i32 = 32;
+
 /// A required pointer argument was NULL.
 pub const VELO_ERR_NULL_ARGUMENT: i32 = 100;
 /// A string argument was not valid UTF-8.
@@ -93,6 +102,10 @@ pub fn code_of(error: &Error) -> i32 {
         Error::UnsafePath { .. } => VELO_ERR_UNSAFE_PATH,
         Error::LimitExceeded { .. } => VELO_ERR_LIMIT_EXCEEDED,
         Error::AccessDenied { .. } => VELO_ERR_ACCESS_DENIED,
+        Error::WouldOverwriteEdits { .. } => VELO_ERR_WOULD_OVERWRITE_EDITS,
+        Error::MissingCleanChanges { .. } => VELO_ERR_MISSING_CLEAN_CHANGES,
+        Error::SnapshotHasDependents { .. } => VELO_ERR_SNAPSHOT_HAS_DEPENDENTS,
+        Error::RemoteRefAbsent { .. } => VELO_ERR_REMOTE_REF_ABSENT,
         Error::Corrupt { .. } => VELO_ERR_CORRUPT,
         Error::MissingObject { .. } => VELO_ERR_MISSING_OBJECT,
         Error::UntrustedData { .. } => VELO_ERR_UNTRUSTED_DATA,

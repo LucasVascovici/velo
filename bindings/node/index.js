@@ -780,3 +780,4 @@ module.exports.__napiBindingTarget = __napiStampBindingTarget(nativeBinding, __n
 module.exports = nativeBinding
 module.exports.Repo = nativeBinding.Repo
 module.exports.SigningKey = nativeBinding.SigningKey
+module.exports._errorCodes = nativeBinding._errorCodes

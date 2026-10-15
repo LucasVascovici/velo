@@ -636,3 +636,17 @@ fn branches_create_list_and_set_tip() {
         velo_repo_free(repo);
     }
 }
+
+#[test]
+fn every_core_error_variant_has_a_specific_code() {
+    let samples = velo_core::Error::samples();
+    assert!(!samples.is_empty());
+    for e in samples {
+        assert_ne!(
+            velo_ffi::error::code_of(&e),
+            velo_ffi::error::VELO_ERR_UNKNOWN,
+            "{} falls through to VELO_ERR_UNKNOWN",
+            e.variant_name()
+        );
+    }
+}

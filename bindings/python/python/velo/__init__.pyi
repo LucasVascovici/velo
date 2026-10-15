@@ -23,6 +23,16 @@ class Locked(VeloError):
     held_by: Optional[int]
 class DirtyWorkingTree(VeloError):
     paths: List[str]
+class WouldOverwriteEdits(VeloError):
+    paths: List[str]
+class MissingCleanChanges(VeloError):
+    path: str
+    missing: int
+    sample: List[str]
+class SnapshotHasDependents(VeloError):
+    snapshot: str
+    dependents: int
+    branches: List[Tuple[str, int]]
 class OperationInProgress(VeloError):
     what: str
 class NoOperationInProgress(VeloError):
@@ -36,6 +46,10 @@ class Diverged(VeloError):
 class NotFastForward(VeloError):
     branch: str
     remote: str
+class RemoteRefAbsent(VeloError):
+    remote: str
+    branch: str
+    snapshot: str
 class UnbornBranch(VeloError):
     branch: str
 class NotFound(VeloError):
@@ -52,6 +66,16 @@ class Corrupt(VeloError):
 class MissingObject(VeloError):
     hash: str
 class UntrustedData(VeloError):
+    detail: str
+class UnsafePath(VeloError):
+    path: str
+    problem: str
+class LimitExceeded(VeloError):
+    limit: str
+    max: int
+    found: Optional[int]
+class AccessDenied(VeloError):
+    remote: str
     detail: str
 class InvalidInput(VeloError):
     detail: str
