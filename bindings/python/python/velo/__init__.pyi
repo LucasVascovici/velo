@@ -1,6 +1,21 @@
 import datetime
 import os
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, final
+
+__all__ = [
+    "Author", "Blame", "BlameLine", "Branch", "Entry", "LineOrigin",
+    "MergePlan", "PlannedFile", "Repo", "Signature", "SigningKey", "SyncResult",
+    "PushReport", "Verification", "Tag", "TreeEntry", "TreeFile", "VeloError",
+    "NotARepo", "AlreadyInitialized", "NestedRepo", "SchemaTooNew",
+    "MigrationRequired", "FormatTooOld", "Cancelled", "Locked",
+    "DirtyWorkingTree", "OperationInProgress", "NoOperationInProgress",
+    "Conflicts", "Diverged", "NotFastForward", "UnbornBranch", "NotFound",
+    "AmbiguousPrefix", "Compacted", "Corrupt", "MissingObject",
+    "UntrustedData", "UnsafePath", "LimitExceeded", "AccessDenied",
+    "WouldOverwriteEdits", "MissingCleanChanges", "SnapshotHasDependents",
+    "RemoteRefAbsent", "InvalidInput", "Unsupported", "VeloIOError",
+    "DatabaseError", "ReentrantCall",
+]
 
 class VeloError(Exception): ...
 class NotARepo(VeloError):
@@ -85,6 +100,7 @@ class VeloIOError(VeloError): ...
 class DatabaseError(VeloError): ...
 class ReentrantCall(VeloError): ...
 
+@final
 class TreeEntry:
     path: str
     @staticmethod
@@ -96,16 +112,19 @@ class TreeEntry:
     @staticmethod
     def stored(path: str, object: str, kind: str = "regular") -> TreeEntry: ...
 
+@final
 class TreeFile:
     path: str
     object: str
     kind: str
 
+@final
 class Author:
     name: str
     email: Optional[str]
-    def __init__(self, name: str, email: Optional[str] = None) -> None: ...
+    def __new__(cls, name: str, email: Optional[str] = None) -> Author: ...
 
+@final
 class Entry:
     id: str
     message: str
@@ -117,6 +136,7 @@ class Entry:
     tag: Optional[str]
     is_merge: bool
 
+@final
 class LineOrigin:
     id: str
     created_at: datetime.datetime
@@ -126,17 +146,20 @@ class LineOrigin:
     branch: str
     path: str
 
+@final
 class BlameLine:
     line_no: int
     text: str
     line_count: int
     origin: Optional[LineOrigin]
 
+@final
 class Blame:
     path: str
     snapshot: str
     lines: List[BlameLine]
 
+@final
 class Branch:
     name: str
     is_current: bool
@@ -144,6 +167,7 @@ class Branch:
     tip_message: Optional[str]
     tip_created_at_ms: Optional[int]
 
+@final
 class PlannedFile:
     path: str
     action: str
@@ -154,17 +178,20 @@ class PlannedFile:
     ours: Optional[str]
     theirs: Optional[str]
 
+@final
 class MergePlan:
     base: Optional[str]
     files: List[PlannedFile]
     is_clean: bool
     conflicts: List[PlannedFile]
 
+@final
 class Tag:
     name: str
     snapshot: str
     message: Optional[str]
 
+@final
 class SigningKey:
     @staticmethod
     def from_seed(seed: bytes) -> SigningKey: ...
@@ -173,12 +200,14 @@ class SigningKey:
     @property
     def public_key(self) -> str: ...
 
+@final
 class Signature:
     snapshot: str
     algorithm: str
     public_key: str
     signature: str
 
+@final
 class Verification:
     snapshot: str
     trusted: List[str]
@@ -188,6 +217,7 @@ class Verification:
     @property
     def is_trusted(self) -> bool: ...
 
+@final
 class PushReport:
     outcome: str
     branch: str
@@ -197,6 +227,7 @@ class PushReport:
     created: Optional[str]
     also_published: List[str]
 
+@final
 class SyncResult:
     kind: str
     branch: str
@@ -206,6 +237,7 @@ class SyncResult:
     paths: Optional[List[str]]
     report: Optional[PushReport]
 
+@final
 class Repo:
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> Repo: ...
