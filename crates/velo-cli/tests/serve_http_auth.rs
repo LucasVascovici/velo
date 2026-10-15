@@ -278,10 +278,20 @@ fn absurd_content_length_cannot_kill_workers_or_leak_slots() {
         );
         assert!(resp.contains("413"), "{resp}");
     }
-    let resp = raw(
-        &server.addr,
-        b"GET /velo/v1/refs HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
-    );
+    // The client sees the 413 before the worker has finished draining the
+    // body and released its slot, so a 503 right after is a race, not a leak.
+    // A leaked slot would never clear: give the last release a few seconds.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let resp = loop {
+        let resp = raw(
+            &server.addr,
+            b"GET /velo/v1/refs HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+        );
+        if resp.starts_with("HTTP/1.1 200") || std::time::Instant::now() > deadline {
+            break resp;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    };
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
 }
 
