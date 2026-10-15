@@ -123,7 +123,9 @@ jobs:
           npm install
           npx napi build --platform --release
           npm pack
-          tar -tzf velo-core-*.tgz | tee /dev/stderr | grep -q '\.node$'
+          tar -tzf velo-core-*.tgz > tarball.txt
+          cat tarball.txt
+          grep -q '\.node$' tarball.txt
       - uses: actions/upload-artifact@v4
         with:
           name: node-${{ matrix.name }}

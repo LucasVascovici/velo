@@ -53,14 +53,14 @@ jobs:
       - name: Test under Node
         # `--test node` keeps the browser-only test files (which configure a
         # dedicated worker) from running under the wrong runner.
-        run: wasm-pack test --node bindings/wasm -- --test node
+        run: wasm-pack test --node bindings/wasm --test node
       - name: Test in headless Chrome (dedicated worker, OPFS)
         run: >
-          wasm-pack test --headless --chrome bindings/wasm --
+          wasm-pack test --headless --chrome bindings/wasm
           --test browser --test browser_memory
       - name: Test in headless Firefox (dedicated worker, OPFS)
         run: >
-          wasm-pack test --headless --firefox bindings/wasm --
+          wasm-pack test --headless --firefox bindings/wasm
           --test browser --test browser_memory
       - name: Build for the web
         run: wasm-pack build bindings/wasm --release --target web
@@ -92,7 +92,7 @@ jobs:
           fi
 
   reload:
-    name: velo-wasm · page-reload persistence (Playwright, Chromium)
+    name: velo-wasm ï¿½ page-reload persistence (Playwright, Chromium)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

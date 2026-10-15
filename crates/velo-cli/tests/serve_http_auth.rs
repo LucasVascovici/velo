@@ -271,27 +271,28 @@ fn absurd_content_length_cannot_kill_workers_or_leak_slots() {
     );
     // More than max_connections + 1 requests: each one panics inside
     // tiny_http's drain-on-drop, which must not cost a worker or a slot.
+    // The client sees the 413 before the worker has finished draining the
+    // body and released its slot, so a 503 on the next request is a race, not
+    // a leak. A leaked slot would never clear: retry each request on 503 for
+    // a few seconds.
+    let retry_when_busy = |request: &[u8]| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let resp = raw(&server.addr, request);
+            if !resp.contains("503") || std::time::Instant::now() > deadline {
+                return resp;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    };
     for _ in 0..5 {
-        let resp = raw(
-            &server.addr,
+        let resp = retry_when_busy(
             b"POST /velo/v1/upload HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615\r\nConnection: close\r\n\r\n",
         );
         assert!(resp.contains("413"), "{resp}");
     }
-    // The client sees the 413 before the worker has finished draining the
-    // body and released its slot, so a 503 right after is a race, not a leak.
-    // A leaked slot would never clear: give the last release a few seconds.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let resp = loop {
-        let resp = raw(
-            &server.addr,
-            b"GET /velo/v1/refs HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
-        );
-        if resp.starts_with("HTTP/1.1 200") || std::time::Instant::now() > deadline {
-            break resp;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    };
+    let resp =
+        retry_when_busy(b"GET /velo/v1/refs HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n");
     assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
 }
 
