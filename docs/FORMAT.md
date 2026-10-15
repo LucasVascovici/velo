@@ -877,6 +877,50 @@ the decision below: share trees between snapshots, store hashes as blobs, or
 key `file_map` on `(snapshot_hash, path)` `WITHOUT ROWID`. Nothing in the
 format changed.
 
+**Round five (18.10): the format-compatible options at envelope sizes.**
+Measured with the `#[ignore]`d `round_five_options_at_*_rows` tests in
+`crates/velo-core/src/tests/metadata_growth.rs` (`cargo test -p velo-core
+--release metadata_growth -- --ignored --nocapture --test-threads=1`) and the
+`bench/scale/scale.py` harness. Machine: Intel Core i7-1370P (Family 6 Model
+186), Windows 11, NTFS with Defender real-time scanning on, release build,
+SQLite via rusqlite. Two runs each. Options 2 and 3 are measured on scratch
+tables, never the real schema; one parent snapshot of N rows, 10 snapshots for
+the scratch tables.
+
+| Option | Rows | Run 1 | Run 2 |
+| --- | --- | --- | --- |
+| 1. read tree + per-row insert loop | 10,000 | 25.1 ms | 25.3 ms |
+| 1. `INSERT ... SELECT` + 1 insert | 10,000 | 21.8 ms | 21.2 ms |
+| 1. read tree + per-row insert loop | 100,000 | 324.7 ms | 345.0 ms |
+| 1. `INSERT ... SELECT` + 1 insert | 100,000 | 286.1 ms | 254.3 ms |
+| 2. hex TEXT, bytes per row / insert | 100,000 | 290.1 B / 1.05 s | 290.1 B / 1.07 s |
+| 2. 32-byte BLOB, bytes per row / insert | 100,000 | 184.0 B / 0.85 s | 184.0 B / 0.81 s |
+| 2. hex TEXT, bytes per row / insert | 10,000 | 287.1 B / 78 ms | 287.1 B / 80 ms |
+| 2. 32-byte BLOB, bytes per row / insert | 10,000 | 178.6 B / 48 ms | 178.6 B / 47 ms |
+| 3. rowid + 2 indexes: B/row, insert, lookup | 100,000 | 290.1 B, 1.05 s, 88 us | 290.1 B, 1.00 s, 104 us |
+| 3. `WITHOUT ROWID`: B/row, insert, lookup | 100,000 | 191.5 B, 0.40 s, 47 us | 191.5 B, 0.37 s, 46 us |
+| 3. rowid + 2 indexes: B/row, insert, lookup | 10,000 | 287.1 B, 73 ms, 55 us | 287.1 B, 74 ms, 52 us |
+| 3. `WITHOUT ROWID`: B/row, insert, lookup | 10,000 | 186.4 B, 51 ms, 47 us | 186.4 B, 65 ms, 48 us |
+
+Whole-save latency, `scale.py --files 100000 --snapshots 20` (one file changed
+per snapshot; 2,000,020 `file_map` rows afterwards): the first save (every file
+new) took 483 s and 491 s; the median of saves 2-20 was 3.67 s and 3.66 s, and
+the median of the last 10% (two saves) 5.4 s and 5.3 s.
+
+**Carry-forward decision.** The rule was: adopt `INSERT ... SELECT` in `save`
+only if it makes a one-file-changed save at 100,000 files at least 20% faster
+end to end. It saves at most about 60-90 ms of a 3.7-5.4 s save, under 3%, so
+it does not clear the rule and `commands/save.rs` and `tree.rs` are unchanged.
+The whole row insert is about 0.3 s of the save; the rest is scanning, hashing
+and writing. Carry-forward would also give up the in-Rust tree the save needs
+anyway.
+
+Options 2 and 3 change column types or the table definition, so they are format
+changes and are **recorded, not implemented**: 32-byte blobs cut about 36% of
+the bytes per row and `WITHOUT ROWID` about 34%, with `WITHOUT ROWID` also
+inserting 2.6x faster and halving point lookups. Whether that is worth a format
+change is the overall decision of 18.10-c.
+
 **Decision:** open. This is the same decision as 14.1 and 14.5, so it belongs
 with those format decisions and is made there once. Nothing was changed in
 Phase 15: no schema, index or code path.

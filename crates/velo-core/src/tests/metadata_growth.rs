@@ -266,6 +266,243 @@ fn report_plans(repo: &Repo) {
     }
 }
 
+// ---- Round five (18.10-b): the format-compatible options at envelope sizes ----
+
+fn hex_hash(i: usize) -> String {
+    // 64 hex characters, distinct per row, like a real blake3 name.
+    format!(
+        "{:016x}{:016x}{:016x}{:016x}",
+        i,
+        i * 7 + 1,
+        i * 13 + 5,
+        i * 31 + 9
+    )
+}
+
+fn bin_hash(i: usize) -> Vec<u8> {
+    let mut v = Vec::with_capacity(32);
+    for k in [i, i * 7 + 1, i * 13 + 5, i * 31 + 9] {
+        v.extend_from_slice(&(k as u64).to_be_bytes());
+    }
+    v
+}
+
+fn row_path(i: usize) -> String {
+    format!("dir{}/sub{}/file{i}.txt", i % 20, i % 97)
+}
+
+fn db_bytes(conn: &rusqlite::Connection) -> i64 {
+    conn.query_row(
+        "SELECT (SELECT page_count FROM pragma_page_count)
+              * (SELECT page_size FROM pragma_page_size)",
+        [],
+        |r| r.get(0),
+    )
+    .unwrap()
+}
+
+/// Option 1: a per-row loop against one `INSERT ... SELECT` for the unchanged
+/// paths plus one insert, on the real `file_map` with `rows` rows for a single
+/// parent snapshot. Both are rolled back.
+#[allow(clippy::print_stderr)]
+fn carry_forward_at(rows: usize) {
+    let (_tmp, repo) = setup();
+    let conn = repo.conn();
+    conn.execute_batch("BEGIN").unwrap();
+    {
+        let mut stmt = conn
+            .prepare(
+                "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES ('parent', ?, ?, 420)",
+            )
+            .unwrap();
+        for i in 0..rows {
+            stmt.execute(rusqlite::params![row_path(i), hex_hash(i)])
+                .unwrap();
+        }
+    }
+    conn.execute_batch("COMMIT").unwrap();
+
+    // The loop reads the parent's tree into Rust first, as save does.
+    conn.execute_batch("BEGIN").unwrap();
+    let started = Instant::now();
+    let existing: Vec<(String, String, i64)> = conn
+        .prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")
+        .unwrap()
+        .query_map(["parent"], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    let read = started.elapsed();
+    {
+        let mut stmt = conn
+            .prepare("INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)")
+            .unwrap();
+        for (path, hash, mode) in &existing {
+            let hash = if *path == row_path(0) {
+                hex_hash(rows + 1)
+            } else {
+                hash.clone()
+            };
+            stmt.execute(rusqlite::params!["child-loop", path, hash, mode])
+                .unwrap();
+        }
+    }
+    let looped = started.elapsed();
+    conn.execute_batch("ROLLBACK").unwrap();
+
+    conn.execute_batch("BEGIN").unwrap();
+    let started = Instant::now();
+    conn.execute(
+        "INSERT INTO file_map (snapshot_hash, path, hash, mode)
+         SELECT 'child-select', path, hash, mode FROM file_map
+          WHERE snapshot_hash = 'parent' AND path NOT IN (?1)",
+        [row_path(0)],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES ('child-select', ?, ?, 420)",
+        rusqlite::params![row_path(0), hex_hash(rows + 1)],
+    )
+    .unwrap();
+    let selected = started.elapsed();
+    conn.execute_batch("ROLLBACK").unwrap();
+    eprintln!(
+        "[option 1] {rows} rows: read tree {read:?}; read + insert loop {looped:?}; insert-select {selected:?}"
+    );
+}
+
+/// Option 2: TEXT hex against 32-byte BLOB for the two hash columns, on a
+/// scratch table with the same two indexes. Never the real schema.
+#[allow(clippy::print_stderr)]
+fn blob_hashes_at(rows: usize) {
+    for (label, blob) in [("hex TEXT", false), ("32-byte BLOB", true)] {
+        let tmp = TempDir::new().unwrap();
+        let conn = rusqlite::Connection::open(tmp.path().join("scratch.db")).unwrap();
+        let ty = if blob { "BLOB" } else { "TEXT" };
+        conn.execute_batch(&format!(
+            "CREATE TABLE fm (snapshot_hash {ty} NOT NULL, path TEXT NOT NULL, hash {ty} NOT NULL, mode INTEGER NOT NULL);
+             CREATE INDEX fm_snap ON fm(snapshot_hash);
+             CREATE INDEX fm_path ON fm(path);"
+        ))
+        .unwrap();
+        let snaps = 10usize;
+        let per = rows / snaps;
+        let before = db_bytes(&conn);
+        let started = Instant::now();
+        conn.execute_batch("BEGIN").unwrap();
+        {
+            let mut stmt = conn
+                .prepare("INSERT INTO fm (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, 420)")
+                .unwrap();
+            for s in 0..snaps {
+                for i in 0..per {
+                    if blob {
+                        stmt.execute(rusqlite::params![
+                            bin_hash(s + 1_000_000),
+                            row_path(i),
+                            bin_hash(i)
+                        ])
+                        .unwrap();
+                    } else {
+                        stmt.execute(rusqlite::params![
+                            hex_hash(s + 1_000_000),
+                            row_path(i),
+                            hex_hash(i)
+                        ])
+                        .unwrap();
+                    }
+                }
+            }
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        let took = started.elapsed();
+        let size = db_bytes(&conn) - before;
+        eprintln!(
+            "[option 2] {rows} rows, {label}: {size} bytes ({:.1} B/row); insert {took:?}",
+            size as f64 / rows as f64
+        );
+    }
+}
+
+/// Option 3: the current table with two indexes against `WITHOUT ROWID` keyed
+/// `(snapshot_hash, path)`: size, insert time and a point lookup.
+#[allow(clippy::print_stderr)]
+fn without_rowid_at(rows: usize) {
+    for (label, wr) in [
+        ("rowid + 2 indexes", false),
+        ("WITHOUT ROWID (snapshot, path)", true),
+    ] {
+        let tmp = TempDir::new().unwrap();
+        let conn = rusqlite::Connection::open(tmp.path().join("scratch.db")).unwrap();
+        conn.execute_batch(if wr {
+            "CREATE TABLE fm (snapshot_hash TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, mode INTEGER NOT NULL,
+               PRIMARY KEY (snapshot_hash, path)) WITHOUT ROWID;"
+        } else {
+            "CREATE TABLE fm (snapshot_hash TEXT NOT NULL, path TEXT NOT NULL, hash TEXT NOT NULL, mode INTEGER NOT NULL);
+             CREATE INDEX fm_snap ON fm(snapshot_hash);
+             CREATE INDEX fm_path ON fm(path);"
+        })
+        .unwrap();
+        let snaps = 10usize;
+        let per = rows / snaps;
+        let before = db_bytes(&conn);
+        let started = Instant::now();
+        conn.execute_batch("BEGIN").unwrap();
+        {
+            let mut stmt = conn
+                .prepare("INSERT INTO fm (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, 420)")
+                .unwrap();
+            for s in 0..snaps {
+                for i in 0..per {
+                    stmt.execute(rusqlite::params![
+                        hex_hash(s + 1_000_000),
+                        row_path(i),
+                        hex_hash(i)
+                    ])
+                    .unwrap();
+                }
+            }
+        }
+        conn.execute_batch("COMMIT").unwrap();
+        let took = started.elapsed();
+        let size = db_bytes(&conn) - before;
+        let snap = hex_hash(5 + 1_000_000);
+        let n = 2000;
+        let started = Instant::now();
+        for k in 0..n {
+            let i = (k * 7919) % per;
+            let _: String = conn
+                .query_row(
+                    "SELECT hash FROM fm WHERE snapshot_hash = ? AND path = ?",
+                    rusqlite::params![&snap, row_path(i)],
+                    |r| r.get(0),
+                )
+                .unwrap();
+        }
+        let lookup = started.elapsed() / n as u32;
+        eprintln!(
+            "[option 3] {rows} rows, {label}: {size} bytes ({:.1} B/row); insert {took:?}; point lookup {lookup:?}",
+            size as f64 / rows as f64
+        );
+    }
+}
+
+#[test]
+#[ignore = "measurement; run with --release --ignored --nocapture --test-threads=1"]
+fn round_five_options_at_10000_rows() {
+    carry_forward_at(10_000);
+    blob_hashes_at(10_000);
+    without_rowid_at(10_000);
+}
+
+#[test]
+#[ignore = "measurement; run with --release --ignored --nocapture --test-threads=1"]
+fn round_five_options_at_100000_rows() {
+    carry_forward_at(100_000);
+    blob_hashes_at(100_000);
+    without_rowid_at(100_000);
+}
+
 #[test]
 #[ignore = "measurement; run with --ignored --nocapture"]
 fn file_map_growth_at_1000_files_200_snapshots() {
