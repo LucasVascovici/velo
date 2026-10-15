@@ -102,6 +102,7 @@ pub(crate) fn run_with(
     strategy: Strategy,
     scan: Option<DirtyScan>,
 ) -> Result<Outcome> {
+    crate::timing::begin();
     require_working_tree(guard.repo(), "restore")?;
     let Options {
         force,
@@ -126,6 +127,7 @@ pub(crate) fn run_with(
         modes: walked,
         ..
     } = scan.unwrap_or_else(|| dirty_scan(guard.repo()));
+    crate::timing::lap("restore.scan");
 
     // Nothing to do when a full restore targets where we already are.
     if !partial {
@@ -155,6 +157,7 @@ pub(crate) fn run_with(
     }
 
     let mut snapshot_files = load_tree(conn, snapshot_hash)?;
+    crate::timing::lap("restore.target_tree");
 
     if partial {
         let wanted: Vec<String> = paths.iter().map(|p| crate::db::normalise(p)).collect();
@@ -200,11 +203,14 @@ pub(crate) fn run_with(
             .collect()
     };
 
+    crate::timing::lap("restore.diff");
     let ghosts = if partial {
         Vec::new()
     } else {
         ghost_paths(root, conn, &snapshot_files, &walked)?
     };
+
+    crate::timing::lap("restore.ghosts");
 
     // The whole target is validated before the first ghost is removed or file
     // written: a refusal leaves the working tree exactly as it was.
@@ -224,6 +230,7 @@ pub(crate) fn run_with(
             &replaced,
         )?;
     }
+    crate::timing::lap("restore.validate");
 
     crate::failpoint::hit("restore.before_write");
     let ghosts_removed = remove_ghosts(root, &ghosts);
@@ -257,6 +264,7 @@ pub(crate) fn run_with(
     crate::commands::mv::discard_pending(guard.conn())?;
     crate::failpoint::hit("restore.before_parent");
     storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
+    crate::timing::lap("restore.parent_file");
     crate::failpoint::hit("restore.after_parent");
     let message: String = conn
         .query_row(
@@ -420,6 +428,7 @@ fn write_files(
         },
     );
 
+    crate::timing::lap("restore.write_files");
     let mut rows: Vec<CacheRow> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
     for r in results {
@@ -438,6 +447,7 @@ fn write_files(
             .collect();
         crate::commands::invalidate_cache_entries(guard.repo(), &unwritten);
     }
+    crate::timing::lap("restore.cache_seed");
 
     // Reported before any write error: a cancelled restore skipped files rather
     // than failing on them, so "you asked me to stop" is the truthful answer.

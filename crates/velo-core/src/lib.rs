@@ -112,6 +112,8 @@ pub mod scope;
 pub mod serve;
 pub mod sign;
 pub mod storage;
+#[doc(hidden)]
+pub mod timing;
 pub mod transport;
 pub mod tree;
 

@@ -162,6 +162,7 @@ pub fn apply(
     policy: &Policy,
     options: Options<'_>,
 ) -> Result<Report> {
+    crate::timing::begin();
     policy.validate()?;
     let Options {
         now_ms,
@@ -190,6 +191,7 @@ pub fn apply(
             created_at_ms,
         });
     }
+    crate::timing::lap("retention.chain");
 
     // Snapshots something outside the chain builds on, trash included.
     let on_chain: HashSet<&str> = chain.iter().map(|m| m.hash.as_str()).collect();
@@ -218,6 +220,7 @@ pub fn apply(
             }
         }
     }
+    crate::timing::lap("retention.dependants");
 
     let published = compact::published(conn)?;
     let checked_out = compact::checked_out(guard.repo());
@@ -289,6 +292,7 @@ pub fn apply(
             runs.push((newest, oldest));
         }
     }
+    crate::timing::lap("retention.classify");
 
     let mut report = Report {
         branch: branch.clone(),

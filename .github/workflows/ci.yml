@@ -43,6 +43,9 @@ jobs:
         # skips velo-core's ~300 unit tests.
         run: cargo test --workspace --locked
 
+      - name: Stage timer tests
+        run: cargo test -p velo-core --features timing --locked timing_laps
+
   # ── Clippy (blocking) ──────────────────────────────────────────────────────
   # Clippy catches real defects (this project has had genuine bugs surfaced by
   # it), so a new warning must fail the build.  Keep it green locally with:

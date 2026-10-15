@@ -332,6 +332,7 @@ pub fn run(
     ranges: &[Range<'_>],
     options: Options<'_>,
 ) -> Result<Compaction> {
+    crate::timing::begin();
     let Options {
         dry_run,
         observer,
@@ -383,6 +384,7 @@ pub fn run(
         .enumerate()
         .map(|(i, m)| (m.hash.as_str(), i))
         .collect();
+    crate::timing::lap("compact.chain");
 
     // ── Validate the ranges ──────────────────────────────────────────────────
     let mut spans: Vec<(usize, usize)> = Vec::new();
@@ -467,6 +469,7 @@ pub fn run(
     if let Some((inside, _outside)) = outside_dependant(conn, &rewrite)? {
         return Err(refuse(&inside, Protected::ParentOfOutside));
     }
+    crate::timing::lap("compact.eligibility");
 
     // ── Plan: mint every new snapshot, oldest first ──────────────────────────
     let progress = PhaseGuard::new(
@@ -545,6 +548,7 @@ pub fn run(
         i += members.len();
     }
     Cancel::check(cancel)?;
+    crate::timing::lap("compact.plan");
 
     if dry_run {
         return Ok(result);
@@ -580,6 +584,7 @@ pub fn run(
             )?;
         }
     }
+    crate::timing::lap("compact.insert");
     for old in mapping.keys() {
         // Old rows go after the new ones are in, so a copy above never reads a
         // tree that has already been deleted.
@@ -588,6 +593,7 @@ pub fn run(
         tx.execute("DELETE FROM snapshot_meta WHERE snapshot_id = ?", [old])?;
         tx.execute("DELETE FROM renames WHERE snapshot_hash = ?", [old])?;
     }
+    crate::timing::lap("compact.delete");
     for (old, new) in &mapping {
         {
             let mut stmt = tx.prepare("SELECT name FROM tags WHERE snapshot_hash = ?")?;
@@ -612,8 +618,10 @@ pub fn run(
             params![old, new, now],
         )?;
     }
+    crate::timing::lap("compact.refs");
     crate::failpoint::hit("compact.before_commit");
     tx.commit()?;
+    crate::timing::lap("compact.commit");
     crate::failpoint::hit("compact.after_commit");
 
     // The tree is identical, so pointing PARENT at the new id keeps the working

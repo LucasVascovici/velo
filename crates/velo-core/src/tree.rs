@@ -321,6 +321,7 @@ impl WriteGuard<'_> {
     /// # Ok(()) }
     /// ```
     pub fn save_tree(&self, spec: SaveTree<'_>) -> Result<SnapshotId> {
+        crate::timing::begin();
         // No empty-branch check: `BranchName` cannot be empty by construction.
         // Both parents are checked: naming one that does not exist would create
         // dangling history that only `fsck` would find later.
@@ -355,6 +356,7 @@ impl WriteGuard<'_> {
             crate::safe_path::check_named(&db::normalise(&from.to_string_lossy()))?;
             crate::safe_path::check_named(&db::normalise(&to.to_string_lossy()))?;
         }
+        crate::timing::lap("save_tree.validate");
 
         for (entry, path) in spec.entries.into_iter().zip(normalised) {
             if !seen.insert(path.clone()) {
@@ -395,6 +397,7 @@ impl WriteGuard<'_> {
             };
             tree.push((path, object, mode));
         }
+        crate::timing::lap("save_tree.objects");
 
         // The author joins the metadata *before* the id is computed, because
         // that is the point: it is part of identity, not a column beside it.
@@ -418,6 +421,7 @@ impl WriteGuard<'_> {
             timestamp_ms,
             meta: &meta,
         }));
+        crate::timing::lap("save_tree.snapshot_id");
 
         let tx = self.transaction()?;
 
@@ -475,6 +479,7 @@ impl WriteGuard<'_> {
                     ins.execute(params![snapshot, path, object, mode])?;
                 }
             }
+            crate::timing::lap("save_tree.insert_file_map");
             // Inside `if !already`, with everything else the snapshot owns.
             // Rename edges are not part of the id, so an identical tree saved a
             // second time is the same snapshot — and the edges recorded the
@@ -515,7 +520,9 @@ impl WriteGuard<'_> {
         // this transaction anyway — but only by accident of how it is
         // implemented. Being explicit says the branch row commits with the rest.
         crate::commands::register_branch(&tx, spec.branch, &snapshot)?;
+        crate::timing::lap("save_tree.insert_rest");
         tx.commit()?;
+        crate::timing::lap("save_tree.commit");
 
         // After the commit, and only for a row this call inserted: an idempotent
         // re-save changed nothing, so there is nothing to announce.
