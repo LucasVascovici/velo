@@ -40,7 +40,7 @@ jobs:
         run: cargo install cargo-fuzz --locked
       - name: Fuzz ${{ matrix.target }}
         env:
-          SECONDS_BUDGET: ${{ github.event_name == 'schedule' && '600' || github.event_name == 'workflow_dispatch' && inputs.seconds || '60' }}
+          SECONDS_BUDGET: ${{ github.event_name == 'schedule' && '600' || github.event_name == 'workflow_dispatch' && inputs.seconds || '600' }}
         run: >
           cargo +nightly fuzz run ${{ matrix.target }} fuzz/seeds/${{ matrix.target }}
           -- -max_total_time=$SECONDS_BUDGET -rss_limit_mb=2048
