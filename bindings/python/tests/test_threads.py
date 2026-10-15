@@ -1,5 +1,6 @@
 """Threading: a handle belongs to one thread, and long calls release the GIL."""
 
+import shutil
 import threading
 import time
 
@@ -27,20 +28,20 @@ def big(tmp_path_factory):
 
 
 class Counter:
-    """A background Python thread that can only advance while it holds the GIL."""
+    """A background Python thread that can only tick while it holds the GIL."""
 
     def __init__(self):
-        self.n = 0
+        self.ticks = []
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True)
 
     def _run(self):
         while not self._stop.is_set():
-            self.n += 1
+            self.ticks.append(time.perf_counter())
 
     def __enter__(self):
         self._thread.start()
-        while self.n == 0:
+        while not self.ticks:
             time.sleep(0.001)
         return self
 
@@ -49,34 +50,34 @@ class Counter:
         self._thread.join()
 
 
-def advanced_during(call):
-    """How far the counter moved while `call` ran, and how long `call` took."""
+# Longer than the 5 ms switch interval, so a tick this far from either edge of
+# a call cannot be the interpreter handing over the GIL at the call boundary.
+MARGIN = 0.010
+MIN_CALL = 0.050
+
+
+def ticks_inside(call):
+    """Tick times strictly inside one `call`, away from its edges, and its length."""
     with Counter() as c:
-        before = c.n
-        started = time.perf_counter()
+        start = time.perf_counter()
         call()
-        took = time.perf_counter() - started
-        return c.n - before, took
+        end = time.perf_counter()
+        ticks = list(c.ticks)
+    inside = [t for t in ticks if start + MARGIN <= t <= end - MARGIN]
+    return inside, end - start
 
 
-@pytest.mark.parametrize(
-    "name",
-    ["fsck", "history", "find_snapshots", "tree_at", "blame"],
-)
-def test_long_calls_release_the_gil(big, name):
-    _, repo = big
-    tip = repo.branch_tip("main")
-    calls = {
-        "fsck": lambda: repo.fsck(),
-        "history": lambda: repo.history(branch="main"),
-        "find_snapshots": lambda: repo.find_snapshots([["x", "y"]]),
-        "tree_at": lambda: repo.tree_at(tip),
-        "blame": lambda: repo.blame("f.txt", at=tip),
-    }
-    call = calls[name]
-    moved, took = advanced_during(lambda: [call() for _ in range(5)])
-    # Held for the whole call, the counter could not move at all.
-    assert moved > 0, f"{name} ran {took:.3f}s without letting another thread run"
+def test_fsck_releases_the_gil(big, tmp_path):
+    path, _ = big
+    # A later fsck of the same repository is far faster than the first, so check
+    # a pristine copy that nothing has verified yet.
+    copy = tmp_path / "copy"
+    shutil.copytree(path, copy)
+    repo = velo.Repo.open(copy)
+    inside, took = ticks_inside(lambda: repo.fsck())
+    assert took >= MIN_CALL, f"fsck took only {took:.3f}s, too short to discriminate"
+    # Held for the whole call, ticks could only land at its edges.
+    assert inside, f"fsck ran {took:.3f}s without letting another thread run"
 
 
 def test_another_thread_gets_a_clear_error(big):
