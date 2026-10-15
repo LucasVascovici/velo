@@ -18,6 +18,12 @@ categories = ["development-tools", "filesystem"]
 [package.metadata.docs.rs]
 all-features = true
 
+# `Bundle.signatures` is `#[doc(hidden)]` but cargo-semver-checks ignores that on
+# a constructible struct. The accepted exception is written up in
+# docs/STABILITY.md; remove this when `Bundle` becomes `#[non_exhaustive]` (6.0).
+[package.metadata.cargo-semver-checks.lints]
+constructible_struct_adds_field = "allow"
+
 [features]
 # Nothing on by default: an embedder should not pay for the CLI's dependencies.
 default = []
