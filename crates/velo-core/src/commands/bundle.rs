@@ -117,6 +117,7 @@ pub struct RenameRow {
 
 /// One `signatures` row in transit. The algorithm is a free string so a row
 /// from a newer writer survives a trip through this build, unverified.
+#[non_exhaustive]
 pub struct SignatureRow {
     pub snapshot_hash: String,
     pub algorithm: String,

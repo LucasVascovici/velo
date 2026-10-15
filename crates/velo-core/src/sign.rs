@@ -68,6 +68,7 @@ fn from_hex<const N: usize>(text: &str) -> Option<[u8; N]> {
 
 /// A private signing key. Never stored by velo; never printed.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct SigningKey(ed25519_dalek::SigningKey);
 
 impl SigningKey {
@@ -99,6 +100,7 @@ impl fmt::Debug for SigningKey {
 
 /// A 32-byte Ed25519 public key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[non_exhaustive]
 pub struct PublicKey([u8; 32]);
 
 impl PublicKey {
@@ -143,6 +145,7 @@ pub trait TrustPolicy {
 
 /// A set of trusted Ed25519 public keys: the common [`TrustPolicy`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct TrustedKeys(HashSet<PublicKey>);
 
 impl TrustedKeys {

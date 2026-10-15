@@ -223,6 +223,9 @@ Worked walkthroughs live in [`docs/cookbook`](docs/cookbook):
 [config registry](docs/cookbook/config-registry.md) and
 [document editor](docs/cookbook/document-editor.md).
 
+What is promised to adopters, and which CI job enforces each promise, is in
+[`docs/STABILITY.md`](docs/STABILITY.md).
+
 ---
 
 ## The velo CLI
@@ -850,7 +853,7 @@ most two parents. Importing does not touch the working tree.
 | **A library a program can hold** | `velo-core` produces no terminal output at all, takes options structs rather than positional flags, and reports progress and accepts cancellation per call. A consumer with no working tree — an editor, a registry, a server — is a first-class caller. |
 
 The full list is in [CHANGELOG.md](CHANGELOG.md); the design record, including
-what was deliberately not done, is in [ARCHITECTURE.md](ARCHITECTURE.md).
+what was deliberately not done, is kept with the maintainers.
 
 ---
 
@@ -1027,7 +1030,7 @@ Remote-tracking history is stored on internal branches named
 
 ## Development
 
-See [DEVELOPING.md](DEVELOPING.md) for the full build/test/release guide.
+Build with `cargo build --workspace` and test with `cargo test --workspace`; the CI jobs in `.github/workflows/ci.yml` are the full gate.
 
 ```bash
 cargo build --release       # binary at target/release/velo

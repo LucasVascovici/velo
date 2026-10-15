@@ -49,7 +49,7 @@ impl Collected {
 
 /// How to run a collection pass.
 ///
-/// The last of the four commands [7.6](../../../ARCHITECTURE.md) named to get
+/// The last of the four commands design item 7.6 named to get
 /// per-call progress. `gc` is the longest purely local operation velo has, and
 /// it reported through the handle observer only — so a GUI running a collection
 /// alongside anything else could not tell the two apart, and could not stop
