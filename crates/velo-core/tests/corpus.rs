@@ -17,8 +17,10 @@ use std::path::{Path, PathBuf};
 use serde_json::{json, Value};
 use tempfile::TempDir;
 use velo_core::commands::{blame, bundle, fsck, history, tag};
+use velo_core::sign::{self, SigningKey, TrustedKeys};
 use velo_core::tree::FileKind;
-use velo_core::{BranchName, Error, Repo, SnapshotId, FORMAT_VERSION};
+use velo_core::tree::{SaveTree, TreeEntry};
+use velo_core::{BranchName, Error, Repo, SnapshotId, SnapshotMeta, FORMAT_VERSION};
 
 const RULE: &str = "A golden's expected output changing is a format change: read \
     tests/corpus/README.md (needs a docs/FORMAT.md entry and a changelog line), \
@@ -62,7 +64,8 @@ fn tags() -> Vec<String> {
             let name = e.unwrap().file_name().into_string().unwrap();
             let stem = name.strip_suffix(".json")?;
             // `<tag>.blame.json` sits beside `<tag>.json`.
-            (!stem.ends_with(".blame")).then(|| stem.to_string())
+            // `bundles.v4.json` describes the signed bundles, not a repository.
+            (!stem.ends_with(".blame") && stem != "bundles.v4").then(|| stem.to_string())
         })
         .collect();
     tags.sort();
@@ -368,6 +371,10 @@ fn bundle_cases() -> Vec<(PathBuf, Option<String>)> {
         let path = entry.unwrap().path();
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         assert!(name.ends_with(".bundle"), "{name}");
+        // The v4 signature bundles have their own tests and expectation file.
+        if name.ends_with(".v4.bundle") {
+            continue;
+        }
         let tag = if name.starts_with("synth.") {
             None
         } else {
@@ -496,4 +503,200 @@ fn a_bundle_from_a_future_wire_version_is_refused_and_imports_nothing() {
         all_ids(&repo).is_empty(),
         "a refused bundle imported history"
     );
+}
+
+// ── Signed bundles (wire v4) ─────────────────────────────────────────────────
+//
+// No release has written wire v4 yet: these goldens were written by the 5.2.0
+// development build and are pinned from now on (see README.md).
+
+const UNKNOWN_ALGORITHM: &str = "test-algo";
+
+fn test_key() -> SigningKey {
+    let seed = fs::read_to_string(corpus().join("keys/test.seed")).unwrap();
+    SigningKey::from_hex(&seed).unwrap()
+}
+
+fn v4_expected() -> Value {
+    serde_json::from_slice(&fs::read(corpus().join("expected/bundles.v4.json")).unwrap()).unwrap()
+}
+
+/// Apply `name` to a fresh repository, returning the repository and the result.
+fn apply_v4(name: &str) -> (TempDir, Repo, velo_core::Result<bundle::Applied>) {
+    let (dir, repo) = fresh_repo();
+    let copy = dir.path().join("in.bundle");
+    fs::copy(corpus().join("bundles").join(name), &copy).unwrap();
+    let g = repo.write().unwrap();
+    let result = bundle::apply(&g, &copy);
+    drop(g);
+    (dir, repo, result)
+}
+
+fn version_byte(name: &str) -> u32 {
+    let bytes = fs::read(corpus().join("bundles").join(name)).unwrap();
+    u32::from_le_bytes(bytes[8..12].try_into().unwrap())
+}
+
+fn expected_ids(exp: &Value) -> Vec<SnapshotId> {
+    exp["snapshots"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| id(s(h)))
+        .collect()
+}
+
+#[test]
+fn the_signed_v4_bundle_applies_and_verifies_as_trusted() {
+    let exp = v4_expected();
+    assert_eq!(version_byte("signed.v4.bundle"), 4, "{RULE}");
+    let (_dir, repo, result) = apply_v4("signed.v4.bundle");
+    result.unwrap_or_else(|e| panic!("{e:?}. {RULE}"));
+    let ids = expected_ids(&exp);
+    let got = all_ids(&repo);
+    let want: BTreeSet<String> = ids.iter().map(|i| i.to_string()).collect();
+    assert_eq!(got, want, "{RULE}");
+
+    let public = test_key().public_key();
+    assert_eq!(public.to_string(), s(&exp["signer_public_key"]), "{RULE}");
+    let trusted: TrustedKeys = [public].into_iter().collect();
+    for snapshot in &ids {
+        let v = sign::verify(&repo, snapshot, &trusted).unwrap();
+        assert!(v.is_trusted(), "{snapshot}: {v:?}. {RULE}");
+    }
+    assert!(fsck::check(&repo).unwrap().problems.is_empty());
+}
+
+#[test]
+fn the_bad_signature_v4_bundle_is_refused_and_imports_nothing() {
+    assert_eq!(version_byte("bad-signature.v4.bundle"), 4, "{RULE}");
+    let (_dir, repo, result) = apply_v4("bad-signature.v4.bundle");
+    match result {
+        Err(Error::UntrustedData { .. }) => {}
+        other => panic!("expected UntrustedData, got {other:?}. {RULE}"),
+    }
+    assert!(all_ids(&repo).is_empty(), "{RULE}");
+}
+
+#[test]
+fn the_unknown_algorithm_v4_bundle_applies_and_is_unverifiable() {
+    let exp = v4_expected();
+    assert_eq!(version_byte("unknown-algorithm.v4.bundle"), 4, "{RULE}");
+    let (_dir, repo, result) = apply_v4("unknown-algorithm.v4.bundle");
+    result.unwrap_or_else(|e| panic!("{e:?}. {RULE}"));
+    let ids = expected_ids(&exp);
+    assert_eq!(all_ids(&repo).len(), ids.len(), "{RULE}");
+    let trusted: TrustedKeys = [test_key().public_key()].into_iter().collect();
+    let row_snapshot = id(s(&exp["unknown_algorithm_snapshot"]));
+    for snapshot in &ids {
+        let v = sign::verify(&repo, snapshot, &trusted).unwrap();
+        assert!(!v.is_trusted(), "{snapshot}: {v:?}");
+        if *snapshot == row_snapshot {
+            assert_eq!(v.unverifiable.len(), 1, "{v:?}. {RULE}");
+            assert!(v.invalid.is_empty() && v.trusted.is_empty());
+            let rows = sign::signatures(&repo, snapshot).unwrap();
+            assert_eq!(rows[0].algorithm, UNKNOWN_ALGORITHM);
+        } else {
+            assert!(v.unverifiable.is_empty());
+        }
+    }
+}
+
+/// One-off generator for the three v4 goldens and `expected/bundles.v4.json`.
+///
+/// Run only deliberately: `VELO_CORPUS_WRITE=1 cargo test -p velo-core --test
+/// corpus -- --ignored write_the_v4_goldens`. Timestamps are fixed, so the
+/// snapshot ids are stable; the golden-change rule in README.md applies to the
+/// output.
+#[test]
+#[ignore = "writes the checked-in v4 goldens; set VELO_CORPUS_WRITE=1"]
+fn write_the_v4_goldens() {
+    if std::env::var("VELO_CORPUS_WRITE").as_deref() != Ok("1") {
+        panic!("set VELO_CORPUS_WRITE=1 to rewrite the pinned v4 goldens");
+    }
+    let key = test_key();
+    let main: BranchName = "main".parse().unwrap();
+
+    let history_repo = || {
+        let (dir, repo) = fresh_repo();
+        let g = repo.write().unwrap();
+        let mut ids: Vec<SnapshotId> = Vec::new();
+        for (n, body) in [(1i64, "one\n"), (2, "two\n")] {
+            let new = g
+                .save_tree(SaveTree {
+                    branch: &main,
+                    parent: ids.last(),
+                    merge_parent: None,
+                    message: "corpus",
+                    entries: vec![TreeEntry::file("f.txt", body.as_bytes().to_vec())],
+                    meta: SnapshotMeta::new(),
+                    author: None,
+                    timestamp_ms: Some(1_700_000_000_000 + n),
+                    renames: &[],
+                })
+                .unwrap();
+            ids.push(new);
+        }
+        drop(g);
+        (dir, repo, ids)
+    };
+
+    let out = corpus().join("bundles");
+    // Signed.
+    let (_d, repo, ids) = history_repo();
+    let g = repo.write().unwrap();
+    let sigs: Vec<_> = ids
+        .iter()
+        .map(|i| sign::sign(&g, i, &key).unwrap())
+        .collect();
+    drop(g);
+    let signed = out.join("signed.v4.bundle");
+    bundle::create(&repo, &signed, None).unwrap();
+
+    // Bad signature: flip the last hex digit of the second signature.
+    let mut bytes = fs::read(&signed).unwrap();
+    let needle = sigs[1].signature.as_bytes();
+    let at = bytes
+        .windows(needle.len())
+        .position(|w| w == needle)
+        .unwrap();
+    let last = at + needle.len() - 1;
+    bytes[last] = if bytes[last] == b'0' { b'1' } else { b'0' };
+    fs::write(out.join("bad-signature.v4.bundle"), &bytes).unwrap();
+
+    // Unknown algorithm: one row on the first snapshot.
+    let (_d2, repo2, ids2) = history_repo();
+    assert_eq!(ids, ids2, "timestamps must make ids deterministic");
+    let db = rusqlite::Connection::open(repo2.root().join(".velo/velo.db")).unwrap();
+    db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS signatures (
+            snapshot_hash TEXT NOT NULL, algorithm TEXT NOT NULL,
+            public_key TEXT NOT NULL, signature TEXT NOT NULL,
+            PRIMARY KEY (snapshot_hash, public_key));",
+    )
+    .unwrap();
+    db.execute(
+        "INSERT INTO signatures VALUES (?, ?, ?, ?)",
+        rusqlite::params![
+            ids2[0].as_str(),
+            UNKNOWN_ALGORITHM,
+            "ab".repeat(32),
+            "cd".repeat(64)
+        ],
+    )
+    .unwrap();
+    drop(db);
+    bundle::create(&repo2, &out.join("unknown-algorithm.v4.bundle"), None).unwrap();
+
+    let exp = json!({
+        "snapshots": ids.iter().map(|i| i.to_string()).collect::<Vec<_>>(),
+        "signer_public_key": key.public_key().to_string(),
+        "signed": {"bundle": "signed.v4.bundle", "rows": [ids[0].to_string(), ids[1].to_string()]},
+        "bad_signature": {"bundle": "bad-signature.v4.bundle", "flipped_row": ids[1].to_string()},
+        "unknown_algorithm": {"bundle": "unknown-algorithm.v4.bundle", "algorithm": UNKNOWN_ALGORITHM},
+        "unknown_algorithm_snapshot": ids[0].to_string(),
+    });
+    let mut text = serde_json::to_string_pretty(&exp).unwrap();
+    text.push('\n');
+    fs::write(corpus().join("expected/bundles.v4.json"), text).unwrap();
 }

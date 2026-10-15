@@ -45,6 +45,26 @@ take a v3 bundle of a history with no renames, set the `u32` version at byte
 offset 8 to 2, and drop the trailing renames count (`u32 0`). The layout is
 docs/FORMAT.md section 9. It was made from the v4.0.0 build.
 
+## Signed bundles (wire v4)
+
+`bundles/signed.v4.bundle`, `bundles/bad-signature.v4.bundle` and
+`bundles/unknown-algorithm.v4.bundle` are **not** from a tagged release: no
+release has written wire v4 yet. They were written by the 5.2.0 development
+build (the ignored `write_the_v4_goldens` test in
+`crates/velo-core/tests/corpus.rs`, run with `VELO_CORPUS_WRITE=1`, with fixed
+timestamps so the ids are stable). They are pinned from now on under the same
+golden-change rule as everything above; never regenerate them.
+
+- `signed.v4.bundle`: two snapshots on `main`, both signed by the test key.
+- `bad-signature.v4.bundle`: the same, with the last hex digit of one
+  signature flipped. Applying it fails with `UntrustedData` and imports nothing.
+- `unknown-algorithm.v4.bundle`: the same history, one row with algorithm
+  `test-algo`. It applies; `verify` reports the row as unverifiable.
+
+`keys/test.seed` is the signing seed for these bundles. It is a **test-only
+key, never trust it**: it is public, and anyone can sign with it.
+Expectations (ids, signer public key, rows) are in `expected/bundles.v4.json`.
+
 ## Regenerating
 
 Build the tagged release in a scratch worktree (never commit worktrees or
