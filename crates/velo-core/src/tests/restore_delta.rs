@@ -553,7 +553,14 @@ proptest! {
         materialise(&root, &left);
         let s1 = save(&root, "left");
         materialise(&root, &right);
-        save(&root, "right");
+        // A tree that differs from the left only in file modes is not a change
+        // `save` records, so there is no second snapshot to restore from.
+        let saved_right = with_write(&root, |g| {
+            commands::save::run(g, Some("right"), commands::save::Options::default())
+        })
+        .unwrap()
+        .into_result();
+        prop_assume!(saved_right.is_some());
 
         for (path, op) in UNIVERSE.iter().zip(&ops) {
             dirty_op(&root, path, *op);
@@ -571,5 +578,26 @@ proptest! {
 
         prop_assert_eq!(snapshot_of_disk(&root), snapshot_of_disk(&copy));
         drop(tmp);
+    }
+}
+
+/// A tracked symlink that the target replaces with a directory is deleted
+/// before the directory is written, so the path check must not refuse the
+/// files below it.
+#[cfg(unix)]
+#[test]
+fn restore_replaces_a_tracked_symlink_with_a_directory() {
+    for strategy in [Strat::Delta, Strat::RewriteAll] {
+        let (_tmp, root) = setup();
+        write(&root, "a/b", "body");
+        let s1 = save(&root, "left");
+        fs::remove_dir_all(root.join("a")).unwrap();
+        std::os::unix::fs::symlink("x", root.join("a")).unwrap();
+        save(&root, "right");
+
+        restore_with(&root, &s1, strategy);
+
+        assert!(fs::symlink_metadata(root.join("a")).unwrap().is_dir());
+        assert_eq!(fs::read_to_string(root.join("a/b")).unwrap(), "body");
     }
 }

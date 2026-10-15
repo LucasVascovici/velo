@@ -16,6 +16,7 @@
 //! written, by every working-tree writer. Repositories that already hold a
 //! refused path stay readable; only writing it out is refused.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -235,6 +236,18 @@ fn unsafe_path(path: &str, problem: PathProblem) -> Error {
 /// The symlink walk is git's "beyond a symbolic link" check: a directory that
 /// is really a link would carry the write outside the root.
 pub(crate) fn join_checked(root: &Path, rel: &str) -> crate::Result<PathBuf> {
+    join_checked_replacing(root, rel, &HashSet::new())
+}
+
+/// [`join_checked`] for a write that follows the removal of `replaced`: a
+/// symlink in `replaced` is about to be deleted, so a path below it is judged
+/// as if the link were already gone. This is how a restore turns a tracked
+/// symlink `a` into a directory holding `a/b`.
+pub(crate) fn join_checked_replacing(
+    root: &Path,
+    rel: &str,
+    replaced: &HashSet<String>,
+) -> crate::Result<PathBuf> {
     check_for_this_platform(rel).map_err(|p| unsafe_path(rel, p))?;
     let full = root.join(crate::db::db_to_path(rel));
     let mut current = root.to_path_buf();
@@ -247,6 +260,8 @@ pub(crate) fn join_checked(root: &Path, rel: &str) -> crate::Result<PathBuf> {
         }
         walked.push_str(component);
         match std::fs::symlink_metadata(&current) {
+            // Nothing below a link that is being removed will exist.
+            Ok(m) if m.file_type().is_symlink() && replaced.contains(&walked) => break,
             Ok(m) if m.file_type().is_symlink() => {
                 return Err(unsafe_path(
                     rel,
@@ -300,9 +315,21 @@ pub(crate) fn validate_write_set<'a>(
     writing: impl IntoIterator<Item = (&'a str, &'a str, i64)>,
     read: impl Fn(&str) -> crate::Result<Vec<u8>>,
 ) -> crate::Result<()> {
+    validate_write_set_replacing(root, tree, writing, read, &HashSet::new())
+}
+
+/// [`validate_write_set`] for a write that follows the removal of `replaced`
+/// (see [`join_checked_replacing`]).
+pub(crate) fn validate_write_set_replacing<'a>(
+    root: &Path,
+    tree: impl IntoIterator<Item = &'a str>,
+    writing: impl IntoIterator<Item = (&'a str, &'a str, i64)>,
+    read: impl Fn(&str) -> crate::Result<Vec<u8>>,
+    replaced: &HashSet<String>,
+) -> crate::Result<()> {
     check_tree(tree).map_err(|(p, e)| unsafe_path(&p, e))?;
     for (rel, hash, mode) in writing {
-        join_checked(root, rel)?;
+        join_checked_replacing(root, rel, replaced)?;
         if mode == crate::storage::MODE_SYMLINK {
             let target = read(hash)?;
             let target = String::from_utf8_lossy(&target);
