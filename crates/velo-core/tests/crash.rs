@@ -537,6 +537,25 @@ fn check_point(
                 && shown[0].contains(&pre_position),
             "{ctx}: expected only a dangling PARENT, got {shown:?}"
         );
+        // The exact state: the tree is untouched and, since PARENT resolves to
+        // no snapshot, status lists every tracked file as new.
+        assert_same(
+            &read_tree(&work),
+            pre,
+            &format!("{ctx}: the working tree changed"),
+        );
+        let st = status::run(&repo, &[]).unwrap();
+        assert!(
+            !st.is_clean(),
+            "{ctx}: status is clean with a dangling PARENT"
+        );
+        let mut listed = st.new_files.clone();
+        listed.sort();
+        let tracked: Vec<String> = pre.keys().cloned().collect();
+        assert_eq!(
+            listed, tracked,
+            "{ctx}: status must list every file as unsaved"
+        );
         // Recovery: the old id says where it went; restore there (same tree).
         let old: SnapshotId = pre_position.parse().unwrap();
         let Err(Error::Compacted { into, .. }) = repo.tree_at(&old) else {
@@ -849,23 +868,89 @@ fn write_bytes(root: &Path, rel: &str, body: &[u8]) {
     fs::write(p, body).unwrap();
 }
 
-/// Two versions of a chunked file and of a small one, the second undone into
-/// the trash: a `gc` with a zero window has objects, chunks, trash rows and
-/// file_map rows to remove, with the live snapshot's own objects beside them.
+/// Three versions of a chunked file and of a small one. The newest ("three",
+/// unsigned) and the one before it ("two", signed) are both undone into the
+/// trash. A `gc` with a zero window expires "three" and everything only it
+/// refers to, but keeps "two": `gc` never expires the trash entry of a signed
+/// snapshot. So every gc point has garbage to delete and a trashed snapshot
+/// whose objects must all survive and that `redo` must still bring back.
 fn build_gc(repo: &Repo) {
     let root = repo.root().to_path_buf();
     let v1 = big(1, 1_300_000);
     let mut v2 = v1.clone();
     v2[600_000..604_000].copy_from_slice(&big(9, 4_000));
-    write(&root, "a.txt", "a one\n");
+    let mut v3 = v2.clone();
+    v3[100_000..104_000].copy_from_slice(&big(7, 4_000));
+    write(
+        &root, "a.txt", "a one
+",
+    );
     write_bytes(&root, "big.bin", &v1);
     save_all(repo, "one");
-    write(&root, "a.txt", "a two\n");
-    write(&root, "n.txt", "n two\n");
+    write(
+        &root, "a.txt", "a two
+",
+    );
+    write(
+        &root, "n.txt", "n two
+",
+    );
     write_bytes(&root, "big.bin", &v2);
     save_all(repo, "two");
+    write(
+        &root, "a.txt", "a three
+",
+    );
+    write(
+        &root, "m.txt", "m three
+",
+    );
+    write_bytes(&root, "big.bin", &v3);
+    save_all(repo, "three");
+    let two = snapshot_by_message(repo, "two");
+    let key = velo_core::sign::SigningKey::from_hex(&"11".repeat(32)).unwrap();
     let g = repo.write().unwrap();
+    velo_core::sign::sign(&g, &two, &key).unwrap();
     undo::run(&g).unwrap();
+    undo::run(&g).unwrap();
+}
+
+fn open_db(repo: &Repo) -> rusqlite::Connection {
+    rusqlite::Connection::open(repo.root().join(".velo/velo.db")).unwrap()
+}
+
+/// Hashes of every snapshot in the trash.
+fn trashed_ids(repo: &Repo) -> Vec<String> {
+    let db = open_db(repo);
+    let mut stmt = db.prepare("SELECT hash FROM trash").unwrap();
+    stmt.query_map([], |r| r.get::<_, String>(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+}
+
+/// The files of a trashed snapshot, read back object by object. A trashed
+/// snapshot is not a live row, so `tree_at` refuses it; its `file_map` rows
+/// and the objects they name are what `redo` needs, and what is checked.
+fn trashed_tree(repo: &Repo, id: &str) -> Tree {
+    let db = open_db(repo);
+    let mut stmt = db
+        .prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")
+        .unwrap();
+    let rows: Vec<(String, velo_core::ObjectHash)> = stmt
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    assert!(!rows.is_empty(), "trashed snapshot {id} lost its file_map");
+    rows.into_iter()
+        .map(|(path, hash)| {
+            let obj = repo
+                .read_object(&hash)
+                .unwrap_or_else(|e| panic!("trashed snapshot {id}: object of {path}: {e}"));
+            (path, obj)
+        })
+        .collect()
 }
 
 fn op_gc(r: &Repo) {
@@ -1012,11 +1097,37 @@ fn extra_checks(ctx: &str, s: &Scenario, point: &str, repo: &Repo, work: &Path, 
             for id in live_ids(repo) {
                 let _ = snapshot_tree(repo, &id);
             }
+            // Nor one a trashed snapshot refers to: the signed one survives
+            // every gc point whole, and redo brings it back (on a copy, so the
+            // crashed repository is left as the rest of the checks expect).
+            let trashed = trashed_ids(repo);
+            assert_eq!(trashed.len(), 1, "{ctx}: trash is {trashed:?}");
+            let want = trashed_tree(repo, &trashed[0]);
+            let copy = work.parent().unwrap().join(format!("redo-{point}"));
+            copy_dir(work, &copy);
+            {
+                let r = Repo::open(&copy).unwrap();
+                let g = r.write().unwrap();
+                let out = redo::run(&g)
+                    .unwrap_or_else(|e| panic!("{ctx}: redo of the trashed snapshot: {e}"));
+                assert_eq!(out.snapshot, trashed[0], "{ctx}: redo brought back another");
+                drop(g);
+                assert_same(
+                    &read_tree(&copy),
+                    &want,
+                    &format!("{ctx}: redo did not restore the trashed snapshot's files"),
+                );
+            }
             // A second pass finishes what the first left, and breaks nothing.
             op_gc(repo);
             for id in live_ids(repo) {
                 let _ = snapshot_tree(repo, &id);
             }
+            assert_same(
+                &trashed_tree(repo, &trashed[0]),
+                &want,
+                &format!("{ctx}: a second gc damaged the trashed snapshot"),
+            );
             let rep = fsck::check(repo).unwrap();
             assert!(
                 rep.problems.is_empty() && rep.cruft.is_empty(),
@@ -1244,12 +1355,20 @@ fn clone_survives_or_is_a_listed_window() {
                 // Inside the checkout: every snapshot is in, and each file that
                 // exists is the source's (restore writes each file whole).
                 assert_eq!(ids, source_ids, "{ctx}: snapshots missing");
+                // Restore's workers race: when the first file's point aborts
+                // the process, another worker may be inside `fs::write` of its
+                // own file, which leaves a prefix of the source's bytes (often
+                // none). That one file is the only allowed deviation.
                 for (p, b) in &tree {
-                    assert_eq!(
-                        source_tree.get(p),
-                        Some(b),
-                        "{ctx}: {p} is not the source's"
-                    );
+                    let want = source_tree
+                        .get(p)
+                        .unwrap_or_else(|| panic!("{ctx}: {p} is not in the source"));
+                    if b != want {
+                        assert!(
+                            point == "restore.after_first_file" && want.starts_with(b),
+                            "{ctx}: {p} is not the source's"
+                        );
+                    }
                 }
                 if point == "restore.after_first_file" {
                     assert!(
