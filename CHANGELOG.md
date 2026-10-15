@@ -10,6 +10,36 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 Phase 18: hostile-input hardening, crash safety, a format-compatibility corpus, an authenticated HTTP remote, signed snapshots, `velo sync`, and binding/MCP/WASM work. Public API changes in `velo-core` are additive; one additive table (`signatures`); bundle wire version 4 is written only when a bundle carries signatures.
 
+### Added
+
+- **Open 5.2.0** Bumped the workspace to 5.2.0 (`Cargo.toml`, the four lockfiles, the README tag line) with an empty 5.2.0 section here.
+
+- **One path rule: unsafe tree paths are refused at ingestion and before any working-tree write.** `safe_path` (store rule, platform rule, tree exclusivity, symlink checks, `join_checked`) and `Error::UnsafePath`, FFI code 26. Enforced in `save_tree` and bundle import before any object is stored; restore, apply, stash, abort and resolve validate the whole target before writing. `FORMAT.md` 3.1 documents it.
+
+- **Read limits on the handle.** `Limits` and `Limit`, `Repo::limited`, `Repo::limits`, `Error::LimitExceeded` and `VELO_ERR_LIMIT_EXCEEDED = 27`. Bundle decode and apply, bounded zstd decompression of received frames, the wire readers, serve receive and git import are bounded; `FORMAT.md` 9 documents the ceilings.
+
+- **Fuzzing.** Six `cargo-fuzz` targets (bundles, wire, HTTP service, git import, paths, ids), run in CI.
+
+- **Crash safety.** A `failpoints` feature with named crash points and a self-exec crash harness covering save, restore, switch, undo, redo, merge, `merge --abort`, rebase, gc, compact, retention, bundle apply and clone, with a `crash` CI job on Linux and Windows. It found one real window in `undo`, now fixed, and `continue` now refuses with `DirtyWorkingTree` when no merge is pending and the tree is dirty.
+
+- **Golden corpus.** Repositories and bundles written by released builds, including signed, bad-signature and unknown-algorithm v4 bundles; a corpus test and CI job assert that every released format opens, migrates or refuses.
+
+- **Hosted HTTP remote.** `serve::http` (`Service`, `Request`, `Response`, `Operation`, `Access`, `Authorize`, `Tokens`): constant-time bearer auth or a host hook, read-only mode, request and object limits, directory mode with traversal refused (`FORMAT.md` 9.1). The client takes tokens from the caller, never the URL, and reports typed `AccessDenied` and limit refusals. `velo serve-http` adds tokens, read-only, limits, connections and directory serving.
+
+- **Signed snapshots.** `velo_core::sign` over an additive `signatures` table; `fsck` reports `Problem::BadSignature` and `Cruft::OrphanSignatures`. Bundles and sync packs carry signatures as wire v4, only when present (unsigned bundles stay v3); import verifies every row first and refuses the whole import with `UntrustedData` on a bad one. `compact`, retention, `gc`, `squash`, `rebase` and `save --amend` leave signed snapshots alone (`Protected::Signed`). CLI: `velo keygen`, `velo sign`, `velo verify` and a `[signed]` marker in `history` and `show`.
+
+- **`velo sync`.** `commands::sync::sync` returning `Synced`, and `velo sync [REMOTE] [BRANCH]`: a clean diverged merge is saved and pushed, a conflict stops where `velo merge` does (exit 3). The push, pull and status recipe now leads with `velo sync`. Git-habit hints for `show`, `history`, `stash push -m`, `grep -n` and `diff --stat`, and `switch --create`/`-c` with a near-miss refusal.
+
+- **MCP.** Store-only mode (`save_tree`, `tree_at`, `read_file`), recovery tools (`velo_undo`, `velo_redo`, `velo_tag`, `velo_conflicts`, `velo_find`, blame line ranges), a busy repository that names its holder, `velo_history` paging by `offset`/`next_offset` (the `next_from` cursor is gone), conformance runs with real clients in CI, and `velo-mcp --http ADDR` (Streamable HTTP with bearer tokens, Origin checks and a non-loopback bind guard).
+
+- **Bindings.** Python and Node bind retention, compaction, tags, `fsck`, change events, merge drivers, signing and `sync`, with a re-entrancy guard and documented threading (Python releases the GIL on long calls). Every core `Error` variant has its own Python exception class and Node code; `py.typed`, a stubtest check and a generated `index.d.ts` drift check are in CI, and a parity check requires every core entry point to be bound or exempted with a reason. `packages.yml` builds wheels and Node prebuilds as artifacts and install-tests them without a Rust toolchain.
+
+- **WASM.** Headless Chrome and Firefox tests in CI, an `fsck` binding, persistent reopen, a Playwright page-reload test, and a release profile that cut the gzip size from 1,267,189 to 863,812 bytes with a 950,000-byte CI budget. There is no IndexedDB fallback.
+
+- **Scale and benchmarks.** `bench/scale/scale.py` and a `workflow_dispatch` benchmark workflow, the measured scale envelope and retention recommendation, `file_map` measurements in `FORMAT.md` 11.4 (carry-forward saves under 3% of a 100k-file save, so it is not adopted), and a six-system agent-checkpointing benchmark with committed Windows and Linux results.
+
+- **API stability and supply chain.** A blocking `semver` job (`cargo-semver-checks` on `velo-core` and `velo-merge` against `v5.1.2`), `deny` and `audit` jobs with `deny.toml`, `forbid(unsafe_code)` or justified `allow` with `SAFETY` comments in every crate, an SBOM attached to release artifacts, a reproducible-build check, `SECURITY.md` and `docs/THREAT_MODEL.md`.
+
 ## 5.1.2
 
 Phase 17: fixes for what the third team simulation found. No repository
