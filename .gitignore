@@ -6,5 +6,6 @@
 !bindings/parity/*.py
 !bench/scale/*.py
 !bench/agent/*.py
+!crates/velo-mcp/conformance/*.py
 /target-lane*
 
