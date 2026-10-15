@@ -258,3 +258,53 @@ fn excess_concurrent_requests_get_503_busy() {
     assert!(resp.contains("velo: busy"), "{resp}");
     drop(hog);
 }
+
+#[test]
+fn absurd_content_length_cannot_kill_workers_or_leak_slots() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    repo(&origin);
+    let server = spawn(
+        &origin,
+        &["--max-connections", "1", "--max-request-bytes", "100"],
+        None,
+    );
+    // More than max_connections + 1 requests: each one panics inside
+    // tiny_http's drain-on-drop, which must not cost a worker or a slot.
+    for _ in 0..5 {
+        let resp = raw(
+            &server.addr,
+            b"POST /velo/v1/upload HTTP/1.1\r\nHost: x\r\nContent-Length: 18446744073709551615\r\nConnection: close\r\n\r\n",
+        );
+        assert!(resp.contains("413"), "{resp}");
+    }
+    let resp = raw(
+        &server.addr,
+        b"GET /velo/v1/refs HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(resp.starts_with("HTTP/1.1 200"), "{resp}");
+}
+
+#[test]
+fn stalled_request_does_not_pin_the_busy_responder() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    repo(&origin);
+    let server = spawn(&origin, &["--max-connections", "1"], None);
+    let stall = b"POST /velo/v1/upload HTTP/1.1\r\nHost: x\r\nContent-Length: 5000\r\n\r\npartial";
+    // The first hog pins the only worker; the second is refused 503 on the
+    // spare thread, whose drop would block on the unread body.
+    let mut hog1 = TcpStream::connect(&server.addr).unwrap();
+    hog1.write_all(stall).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let mut hog2 = TcpStream::connect(&server.addr).unwrap();
+    hog2.write_all(stall).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let resp = raw(
+        &server.addr,
+        b"GET /velo/v1/refs HTTP/1.1\r\nHost: x\r\nConnection: close\r\n\r\n",
+    );
+    assert!(resp.contains("503"), "{resp}");
+    assert!(resp.contains("velo: busy"), "{resp}");
+    drop((hog1, hog2));
+}

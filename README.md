@@ -810,10 +810,19 @@ server {
 
     location / {
         proxy_pass http://127.0.0.1:8417;
-        proxy_request_buffering off;
     }
 }
 ```
+
+**The proxy's body limit is required, not optional.** When it drops a request,
+tiny_http (the HTTP library under `serve-http`) first reads and discards the
+unread rest of the body, allocating a buffer the size of the declared
+`Content-Length`, even after velo has already answered 413. An absurd length is
+caught per request, but a merely huge one can make the allocator abort the
+whole server, and the library offers no way to answer without that drain. Set
+`client_max_body_size` (nginx) or a `request_body { max_size ... }` block
+(Caddy) so such a request never reaches velo; the proxy's read timeout also
+bounds stalled clients.
 
 **Fast-forward only.** A push the server cannot fast-forward is rejected as
 non-fast-forward. There is no `--force`, on the client or the server.

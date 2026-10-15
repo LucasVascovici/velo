@@ -2538,7 +2538,24 @@ fn serve_one(
     let _ = req.respond(out);
 }
 
+/// Releases one active-request slot when dropped, panic or not.
+struct ActiveSlot<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for ActiveSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Run the reference HTTP server until the process is killed.
+///
+/// Known limit: tiny_http reads and discards the unread remainder of a request
+/// body when it drops the request, even after a 413, allocating a buffer of
+/// the declared Content-Length. A panic from that (an absurd length) is caught
+/// per request, but a merely huge length can make the allocator abort the
+/// process, and tiny_http offers no way to answer without the drain. The
+/// reverse proxy's `client_max_body_size` (or equivalent) is therefore
+/// required, not optional, when this server faces untrusted clients.
 ///
 /// A front end over the core `Service`: it owns the socket, the connection
 /// pool, and the body size and time limits; routing, authorization and
@@ -2643,15 +2660,25 @@ fn serve_http(o: ServeHttpOptions<'_>) -> Result<()> {
                 if active.fetch_add(1, Ordering::SeqCst) >= max_conn {
                     active.fetch_sub(1, Ordering::SeqCst);
                     eprintln!("{} {} -> 503", req.method(), req.url());
-                    let _ = req.respond(front_refusal(
-                        503,
-                        "busy",
-                        "all connections are in use; retry shortly",
-                    ));
+                    // Dropping a Request drains its unread body in tiny_http,
+                    // which blocks on a stalled client. Do that off this
+                    // thread so it goes straight back to `recv()`.
+                    std::thread::spawn(move || {
+                        let _ = req.respond(front_refusal(
+                            503,
+                            "busy",
+                            "all connections are in use; retry shortly",
+                        ));
+                    });
                     continue;
                 }
-                serve_one(req, &service, limits);
-                active.fetch_sub(1, Ordering::SeqCst);
+                // The guard frees the slot even if the request panics, and
+                // catch_unwind keeps the worker alive: tiny_http's drain of an
+                // oversized body can panic (capacity overflow) on drop.
+                let _slot = ActiveSlot(&active);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    serve_one(req, &service, limits);
+                }));
             }
         }));
     }
