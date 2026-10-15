@@ -2029,7 +2029,7 @@
     "platform": "Windows-11-10.0.22621-SP0",
     "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
     "velo_version": "velo 5.2.0",
-    "workdir": "C:\\Users\\lvi\\AppData\\Local\\Temp\\claude\\C--Users-lvi-Documents-velo\\ef367dbb-6d38-4dce-9856-9eed58664ff8\\scratchpad\\wa\\repo",
+    "workdir": "%TEMP%/velo-scale/wa/repo",
     "files": 10000,
     "snapshots": 2000,
     "change_per_snapshot": 1,
