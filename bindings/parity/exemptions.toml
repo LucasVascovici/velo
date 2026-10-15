@@ -412,11 +412,6 @@ bindings = ["python", "node"]
 reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
 
 [[exempt]]
-entry = "commands::sync::sync"
-bindings = ["python", "node"]
-reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
-
-[[exempt]]
 entry = "commands::sync::tracking_refs_at"
 bindings = ["python", "node"]
 reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
@@ -430,3 +425,23 @@ reason = "internal helper for snapshot ids and display; the bindings return ids 
 entry = "commands::undo::run"
 bindings = ["python", "node"]
 reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "Repo::limited"
+bindings = ["python", "node"]
+reason = "pending: read limits on the handle are not bound yet (18.1-b follow-up)"
+
+[[exempt]]
+entry = "Repo::limits"
+bindings = ["python", "node"]
+reason = "pending: read limits on the handle are not bound yet (18.1-b follow-up)"
+
+[[exempt]]
+entry = "commands::sync::clone_with_token"
+bindings = ["python", "node"]
+reason = "pending: clone is not bound; sync is, with the token parameter (18.8-d)"
+
+[[exempt]]
+entry = "sign::message"
+bindings = ["python", "node"]
+reason = "internal: the canonical bytes a signature covers; the bindings sign through sign::sign"

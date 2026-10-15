@@ -69,6 +69,21 @@ export declare class Repo {
   resolve(spec: string): Promise<string>
   branchTip(branch: string): Promise<string | null>
   headToken(): Promise<bigint>
+  /** Sign `snapshot` with `key`; the signature is stored beside the snapshot. */
+  sign(snapshot: string, key: SigningKey): Promise<SignatureInfo>
+  /** Every signature stored for `snapshot`, valid or not. */
+  signatures(snapshot: string): Promise<Array<SignatureInfo>>
+  /** Check the signatures on `snapshot` against `trustedKeys` (hex public keys). */
+  verify(snapshot: string, trustedKeys: Array<string>): Promise<VerificationInfo>
+  /** The ids of snapshots that carry at least one signature. */
+  signedSnapshots(): Promise<Array<string>>
+  /**
+   * Fetch, then push, fast-forward or merge as needed.
+   *
+   * A merge is saved and pushed only when clean; a conflicted one stops as
+   * `merge` leaves it and nothing is pushed. Needs a working tree.
+   */
+  sync(options?: SyncInput): Promise<SyncResult>
   /** Thin `branch` by a retention policy. With `dryRun` nothing is written. */
   retention(branch: string, options?: RetentionOptions | undefined | null): Promise<RetentionReport>
   /**
@@ -90,6 +105,16 @@ export declare class Repo {
    * only ever reported.
    */
   fsck(repair?: boolean | undefined | null): Promise<FsckReport>
+}
+
+/** A private Ed25519 signing key. */
+export declare class SigningKey {
+  /** Build a key from its 32-byte seed. */
+  static fromSeed(seed: Buffer): SigningKey
+  /** Build a key from its seed written as 64 hex characters. */
+  static fromHex(text: string): SigningKey
+  /** The public key as hex: what `verify` takes as a trusted key. */
+  get publicKey(): string
 }
 
 /** The author of a snapshot. */
@@ -257,6 +282,19 @@ export interface ProtectedInfo {
   reason: string
 }
 
+/** What a push did. */
+export interface PushReportInfo {
+  /** `'sent'` or `'already_up_to_date'`. */
+  outcome: string
+  branch: string
+  remote: string
+  snapshots: number
+  objects: number
+  /** `'remote_was_empty'` or `'branch_was_missing'` when the push created the branch. */
+  created?: string
+  alsoPublished: Array<string>
+}
+
 /** One range of a branch's first-parent chain, `oldest..=newest`. */
 export interface RangeInput {
   oldest: string
@@ -301,6 +339,14 @@ export interface SaveTreeInput {
   renames?: Array<Array<string>>
 }
 
+/** One signature on a snapshot, as stored. */
+export interface SignatureInfo {
+  snapshot: string
+  algorithm: string
+  publicKey: string
+  signature: string
+}
+
 /** A snapshot's header. */
 export interface SnapshotInfo {
   id: string
@@ -318,6 +364,45 @@ export interface SquashInfo {
   into: string
   /** Every snapshot of the range, oldest first. All stopped existing. */
   removed: Array<string>
+}
+
+/** What `sync` takes. Every field is optional. */
+export interface SyncInput {
+  /** The remote's name. Defaults to `'origin'`. */
+  remote?: string
+  /** Must be the checked-out branch; defaults to it. */
+  branch?: string
+  /**
+   * A bearer token for an HTTP remote, used for this call only and never
+   * included in an error.
+   */
+  token?: string
+  /** Recorded on a merge snapshot the sync creates. */
+  author?: AuthorInput
+  /** The merge snapshot's message. */
+  message?: string
+  /**
+   * The `velo` executable for `child:` and `ssh://` remotes, which a binding
+   * does not have of its own. Defaults to `velo` on the path. HTTP and
+   * local-path remotes need none.
+   */
+  veloBin?: string
+}
+
+/** What `sync` did. */
+export interface SyncResult {
+  /** `'nothing'`, `'pushed'`, `'fast_forwarded'`, `'merged'` or `'conflicted'`. */
+  kind: string
+  branch: string
+  remote: string
+  /** The snapshot the branch moved to (`fast_forwarded`). */
+  to?: string
+  /** The merge snapshot (`merged`). */
+  merge?: string
+  /** The conflicted paths (`conflicted`). */
+  paths?: Array<string>
+  /** The push (`pushed`, `merged`). */
+  report?: PushReportInfo
 }
 
 /** A tag and what it points at. */
@@ -343,4 +428,18 @@ export interface TreeFile {
   object: string
   /** `'regular'`, `'executable'` or `'symlink'`. */
   kind: string
+}
+
+/**
+ * Every signature on a snapshot, sorted by outcome. Each list holds public
+ * keys as hex.
+ */
+export interface VerificationInfo {
+  snapshot: string
+  trusted: Array<string>
+  untrusted: Array<string>
+  invalid: Array<string>
+  unverifiable: Array<string>
+  /** True when at least one valid signature is by a trusted key and none is invalid. */
+  isTrusted: boolean
 }

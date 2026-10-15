@@ -183,7 +183,7 @@ pub enum Rule {
 /// Everything a handle keeps besides the core repository.
 pub struct Hooks {
     /// Where the repository was opened, to reopen it with other merge drivers.
-    root: std::path::PathBuf,
+    pub(crate) root: std::path::PathBuf,
     queue: Arc<Queue>,
     callbacks: Mutex<Vec<EventFn>>,
     rules: Mutex<Vec<(String, Rule)>>,

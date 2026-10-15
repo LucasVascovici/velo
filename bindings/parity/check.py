@@ -22,8 +22,8 @@ BINDINGS = {
 EXEMPTIONS = Path(__file__).resolve().parent / "exemptions.toml"
 
 # Extra core modules whose module-level `pub fn`s are entry points
-# (18.8-d adds "sign" when signing is bound).
-EXTRA_MODULES: list[str] = []
+# (signing is bound since 18.8-d).
+EXTRA_MODULES: list[str] = ["sign"]
 
 IMPL_RE = re.compile(r"^impl(?:<[^>]*>)?\s+(Repo|WriteGuard)\b(?!\s+for)")
 PUB_FN_RE = re.compile(r"^pub\s+(?:const\s+|async\s+|unsafe\s+)*fn\s+(\w+)")

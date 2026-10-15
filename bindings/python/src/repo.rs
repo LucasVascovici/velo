@@ -257,9 +257,9 @@ fn collect_entries(entries: &Bound<'_, PyAny>) -> PyResult<Vec<CoreEntry>> {
 pub struct Repo {
     owner: std::thread::ThreadId,
     inner: Mutex<velo_core::Repo>,
-    hooks: Hooks,
+    pub(crate) hooks: Hooks,
     /// Where the repository was opened, to reopen it with other merge drivers.
-    root: PathBuf,
+    pub(crate) root: PathBuf,
 }
 
 /// The core handle, locked. Dropping it releases the lock first and only then

@@ -10,6 +10,11 @@ from ._velo import (
     MergePlan,
     PlannedFile,
     Repo,
+    Signature,
+    SigningKey,
+    SyncResult,
+    PushReport,
+    Verification,
     Tag,
     TreeEntry,
     TreeFile,
@@ -44,7 +49,8 @@ from ._velo import (
 
 __all__ = [
     "Author", "Blame", "BlameLine", "Branch", "Entry", "LineOrigin",
-    "MergePlan", "PlannedFile", "Repo", "Tag", "TreeEntry", "TreeFile", "VeloError",
+    "MergePlan", "PlannedFile", "Repo", "Signature", "SigningKey", "SyncResult",
+    "PushReport", "Verification", "Tag", "TreeEntry", "TreeFile", "VeloError",
     "NotARepo", "AlreadyInitialized", "NestedRepo", "SchemaTooNew",
     "MigrationRequired", "FormatTooOld", "Cancelled", "Locked",
     "DirtyWorkingTree", "OperationInProgress", "NoOperationInProgress",

@@ -141,6 +141,47 @@ class Tag:
     snapshot: str
     message: Optional[str]
 
+class SigningKey:
+    @staticmethod
+    def from_seed(seed: bytes) -> SigningKey: ...
+    @staticmethod
+    def from_hex(text: str) -> SigningKey: ...
+    @property
+    def public_key(self) -> str: ...
+
+class Signature:
+    snapshot: str
+    algorithm: str
+    public_key: str
+    signature: str
+
+class Verification:
+    snapshot: str
+    trusted: List[str]
+    untrusted: List[str]
+    invalid: List[str]
+    unverifiable: List[str]
+    @property
+    def is_trusted(self) -> bool: ...
+
+class PushReport:
+    outcome: str
+    branch: str
+    remote: str
+    snapshots: int
+    objects: int
+    created: Optional[str]
+    also_published: List[str]
+
+class SyncResult:
+    kind: str
+    branch: str
+    remote: str
+    to: Optional[str]
+    merge: Optional[str]
+    paths: Optional[List[str]]
+    report: Optional[PushReport]
+
 class Repo:
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> Repo: ...
@@ -230,3 +271,16 @@ class Repo:
     ) -> str: ...
     def delete_tag(self, name: str) -> None: ...
     def fsck(self, repair: bool = False) -> Dict[str, List[Dict[str, str]]]: ...
+    def sign(self, snapshot: str, key: SigningKey) -> Signature: ...
+    def signatures(self, snapshot: str) -> List[Signature]: ...
+    def verify(self, snapshot: str, trusted_keys: List[str]) -> Verification: ...
+    def signed_snapshots(self) -> List[str]: ...
+    def sync(
+        self,
+        remote: str = "origin",
+        branch: Optional[str] = None,
+        token: Optional[str] = None,
+        author: Optional[Author] = None,
+        message: Optional[str] = None,
+        velo_bin: Optional[Union[str, os.PathLike]] = None,
+    ) -> SyncResult: ...
