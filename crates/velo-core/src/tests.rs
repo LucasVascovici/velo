@@ -12257,3 +12257,6 @@ mod http_auth_client;
 
 #[cfg(test)]
 mod signed_protection;
+
+#[cfg(test)]
+mod rebase_abort;

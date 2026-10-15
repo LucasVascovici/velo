@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use tempfile::TempDir;
-use velo_core::commands::{fsck, history, redo, restore, save, status, switch, undo};
+use velo_core::commands::{
+    fsck, history, merge, rebase, redo, restore, save, status, switch, undo,
+};
 use velo_core::{Error, Repo, SnapshotId};
 
 type Tree = BTreeMap<String, Vec<u8>>;
@@ -38,6 +40,23 @@ struct Scenario {
     name: &'static str,
     build: fn(&Repo),
     op: fn(&Repo),
+    kind: Kind,
+}
+
+/// What recovery a kill must leave available, beyond the common checks.
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
+    Plain,
+    /// A merge: if `MERGE_HEAD` survives, `merge --abort` must put back the
+    /// pre-operation tree byte for byte.
+    Merge,
+    /// An abort of a conflicted merge: re-running the abort must reach the
+    /// tree the finished abort leaves.
+    MergeAbort,
+    /// A rebase: if a rebase state survives, `--abort` must put back the
+    /// pre-operation tree and `--continue` must finish or refuse with a typed
+    /// error.
+    Rebase,
 }
 
 fn write(root: &Path, rel: &str, body: &str) {
@@ -132,6 +151,99 @@ fn build_branches(repo: &Repo) {
     switch::run(&g, "main", false).unwrap();
 }
 
+/// `main` and `feat` diverge from one snapshot. `feat` edits `dir/c.txt`, adds
+/// `f.txt` and rewrites a CRLF file; `main` edits `a.txt`. With `conflict`,
+/// both also edit `shared.txt`. We end on `main`.
+fn build_diverged(repo: &Repo, conflict: bool) {
+    let root = repo.root().to_path_buf();
+    write(&root, "a.txt", "a base\n");
+    write(&root, "dir/c.txt", "c base\n");
+    write(&root, "shared.txt", "one\ntwo\nthree\n");
+    write(&root, "crlf.txt", "x\r\ny\r\n");
+    save_all(repo, "base");
+    {
+        let g = repo.write().unwrap();
+        switch::run(&g, "feat", false).unwrap();
+    }
+    write(&root, "dir/c.txt", "c feat\n");
+    write(&root, "f.txt", "f feat\n");
+    write(&root, "crlf.txt", "x\r\ny feat\r\n");
+    if conflict {
+        write(&root, "shared.txt", "one\ntwo feat\nthree\n");
+    }
+    save_all(repo, "feat one");
+    let g = repo.write().unwrap();
+    switch::run(&g, "main", false).unwrap();
+    drop(g);
+    write(&root, "a.txt", "a main\n");
+    if conflict {
+        write(&root, "shared.txt", "one\ntwo main\nthree\n");
+    }
+    save_all(repo, "main two");
+}
+
+fn build_merge_clean(repo: &Repo) {
+    build_diverged(repo, false);
+}
+
+fn build_merge_conflict(repo: &Repo) {
+    build_diverged(repo, true);
+}
+
+fn build_merge_conflicted(repo: &Repo) {
+    build_diverged(repo, true);
+    op_merge(repo);
+}
+
+fn op_merge(r: &Repo) {
+    let g = r.write().unwrap();
+    merge::run(&g, merge::Mode::Bring { source: "feat" }).unwrap();
+}
+
+fn op_merge_clean_save(r: &Repo) {
+    op_merge(r);
+    save_all(r, "merged");
+}
+
+fn op_merge_abort(r: &Repo) {
+    let g = r.write().unwrap();
+    merge::run(&g, merge::Mode::Abort).unwrap();
+}
+
+/// On `feat`: three snapshots replay onto `main`, which has moved on.
+fn build_rebase(repo: &Repo) {
+    let root = repo.root().to_path_buf();
+    write(&root, "a.txt", "a base\n");
+    write(&root, "dir/c.txt", "c base\n");
+    save_all(repo, "base");
+    {
+        let g = repo.write().unwrap();
+        switch::run(&g, "feat", false).unwrap();
+    }
+    write(&root, "r1.txt", "r1\n");
+    save_all(repo, "feat one");
+    write(&root, "a.txt", "a feat\n");
+    write(&root, "dir/r2.txt", "r2\n");
+    save_all(repo, "feat two");
+    fs::remove_file(root.join("dir/c.txt")).unwrap();
+    write(&root, "r3.txt", "r3\n");
+    save_all(repo, "feat three");
+    {
+        let g = repo.write().unwrap();
+        switch::run(&g, "main", false).unwrap();
+    }
+    write(&root, "m.txt", "m main\n");
+    save_all(repo, "main two");
+    let g = repo.write().unwrap();
+    switch::run(&g, "feat", false).unwrap();
+}
+
+fn op_rebase(r: &Repo) {
+    let onto = snapshot_by_message(r, "main two");
+    let g = r.write().unwrap();
+    rebase::run(&g, rebase::Mode::Start { onto: &onto }, None).unwrap();
+}
+
 fn op_save(r: &Repo) {
     let g = r.write().unwrap();
     save::run(&g, Some("next"), save::Options::default()).unwrap();
@@ -163,36 +275,67 @@ const SCENARIOS: &[Scenario] = &[
         name: "save",
         build: build_one_file,
         op: op_save,
+        kind: Kind::Plain,
     },
     Scenario {
         name: "save_multi",
         build: build_dirty_save,
         op: op_save,
+        kind: Kind::Plain,
     },
     Scenario {
         name: "restore",
         build: build_two,
         op: op_restore,
+        kind: Kind::Plain,
     },
     Scenario {
         name: "switch",
         build: build_branches,
         op: op_switch,
+        kind: Kind::Plain,
     },
     Scenario {
         name: "undo",
         build: build_two,
         op: op_undo,
+        kind: Kind::Plain,
     },
     Scenario {
         name: "undo_root",
         build: build_one_snapshot,
         op: op_undo,
+        kind: Kind::Plain,
     },
     Scenario {
         name: "redo",
         build: build_undone,
         op: op_redo,
+        kind: Kind::Plain,
+    },
+    Scenario {
+        name: "merge_clean",
+        build: build_merge_clean,
+        op: op_merge_clean_save,
+        kind: Kind::Merge,
+    },
+    Scenario {
+        name: "merge_conflict",
+        build: build_merge_conflict,
+        op: op_merge,
+        kind: Kind::Merge,
+    },
+    Scenario {
+        name: "merge_abort",
+        build: build_merge_conflicted,
+        op: op_merge_abort,
+        kind: Kind::MergeAbort,
+    },
+    Scenario {
+        name: "rebase",
+        build: build_rebase,
+        op: op_rebase,
+        kind: Kind::Rebase,
     },
 ];
 
@@ -357,7 +500,13 @@ fn check_point(
     let tree = read_tree(&work);
     let st = status::run(&repo, &[]).unwrap();
     let known = KNOWN_WINDOWS.iter().any(|(p, _)| *p == point);
-    let mixed = tree != *pre && tree != post.0;
+    // A merge or rebase that was named in `.velo` is an operation in progress:
+    // its tree may be anything on the way, and what is asserted instead is that
+    // the matching abort puts the old tree back (below).
+    let merging = work.join(".velo/MERGE_HEAD").exists();
+    let rebasing = work.join(".velo/REBASE_STATE").exists();
+    let in_progress = merging || rebasing;
+    let mixed = tree != *pre && tree != post.0 && !in_progress;
     if mixed {
         assert!(
             known,
@@ -376,9 +525,10 @@ fn check_point(
         } else {
             snapshot_tree(&repo, &pos)
         };
-        assert_eq!(
-            tree, expect,
-            "{ctx}: status is clean but the tree is not PARENT's"
+        assert_same(
+            &tree,
+            &expect,
+            &format!("{ctx}: status is clean but the tree is not PARENT's"),
         );
     }
 
@@ -400,6 +550,83 @@ fn check_point(
         restore::run(&g, &target, force).unwrap();
         drop(g);
         assert_eq!(read_tree(&work), post.0, "{ctx}: finishing did not recover");
+    }
+
+    // Recovery of an interrupted merge or rebase.
+    if s.kind == Kind::Rebase && rebasing {
+        // Abort, on a copy, restores the original head and tree.
+        let aborted = scratch.join(format!("abort-{point}"));
+        copy_dir(&work, &aborted);
+        {
+            let r = Repo::open(&aborted).unwrap();
+            let g = r.write().unwrap();
+            rebase::run(&g, rebase::Mode::Abort, None)
+                .unwrap_or_else(|e| panic!("{ctx}: rebase --abort failed: {e}"));
+        }
+        assert_same(
+            &read_tree(&aborted),
+            pre,
+            &format!("{ctx}: rebase --abort did not restore the pre-rebase tree"),
+        );
+        assert_eq!(
+            position(&aborted),
+            pre_position,
+            "{ctx}: rebase --abort did not restore PARENT"
+        );
+        assert!(!aborted.join(".velo/REBASE_STATE").exists());
+        assert!(!aborted.join(".velo/MERGE_HEAD").exists());
+        let r = Repo::open(&aborted).unwrap();
+        let rep = fsck::check(&r).unwrap();
+        assert!(
+            rep.problems.is_empty(),
+            "{ctx}: fsck after rebase --abort: {:?}",
+            rep.problems
+        );
+
+        // Continue finishes, or refuses with something typed.
+        let g = repo.write().unwrap();
+        match rebase::run(&g, rebase::Mode::Continue, None) {
+            Ok(_) => {
+                drop(g);
+                assert!(!work.join(".velo/REBASE_STATE").exists());
+            }
+            Err(e) => assert!(
+                !matches!(e, Error::Corrupt { .. }),
+                "{ctx}: rebase --continue reported corruption: {e}"
+            ),
+        }
+    } else if s.kind != Kind::Plain && merging && !rebasing {
+        // Abort restores the pre-merge tree byte for byte. For a killed abort,
+        // that is the tree the finished abort leaves.
+        let want = if s.kind == Kind::MergeAbort {
+            &post.0
+        } else {
+            pre
+        };
+        let want_position = if s.kind == Kind::MergeAbort {
+            &post.1
+        } else {
+            &pre_position
+        };
+        {
+            let g = repo.write().unwrap();
+            merge::run(&g, merge::Mode::Abort)
+                .unwrap_or_else(|e| panic!("{ctx}: merge --abort failed: {e}"));
+        }
+        assert_same(
+            &read_tree(&work),
+            want,
+            &format!("{ctx}: merge --abort did not restore the pre-merge tree byte for byte"),
+        );
+        assert_eq!(position(&work), *want_position, "{ctx}: PARENT moved");
+        assert!(!work.join(".velo/MERGE_HEAD").exists());
+        assert!(!work.join(".velo/MERGE_ORIG").exists());
+        let rep = fsck::check(&repo).unwrap();
+        assert!(
+            rep.problems.is_empty(),
+            "{ctx}: fsck after merge --abort: {:?}",
+            rep.problems
+        );
     }
 
     // 5. undo then redo succeed or fail with something typed and not Corrupt.
@@ -458,4 +685,23 @@ fn known_windows_are_described() {
     for (point, state) in KNOWN_WINDOWS {
         assert!(point.contains('.') && !state.is_empty());
     }
+}
+
+/// Compare two trees, naming the paths that differ instead of dumping bytes.
+fn assert_same(got: &Tree, want: &Tree, msg: &str) {
+    if got == want {
+        return;
+    }
+    let mut diff: Vec<String> = Vec::new();
+    for (p, b) in got {
+        match want.get(p) {
+            None => diff.push(format!("extra {p}")),
+            Some(w) if w != b => diff.push(format!("differs {p}")),
+            _ => {}
+        }
+    }
+    for p in want.keys().filter(|p| !got.contains_key(*p)) {
+        diff.push(format!("missing {p}"));
+    }
+    panic!("{msg}: {diff:?}");
 }

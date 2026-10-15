@@ -115,13 +115,16 @@ impl Applied {
 
     /// Record the conflicts so `velo resolve` can find them.
     pub(crate) fn record_conflicts(&self, conn: &rusqlite::Connection) -> Result<()> {
+        // One transaction, so a kill leaves every conflict row or none.
+        let tx = conn.unchecked_transaction()?;
         for c in &self.conflicts {
-            conn.execute(
+            tx.execute(
                 "INSERT OR REPLACE INTO conflict_files (path, ancestor_hash, our_hash, their_hash)
                  VALUES (?, ?, ?, ?)",
                 params![c.path, c.ancestor, c.ours, c.theirs],
             )?;
         }
+        tx.commit()?;
         Ok(())
     }
 }
@@ -370,6 +373,8 @@ pub(crate) fn reconcile_tree_moving(
         )));
     }
 
+    crate::failpoint::hit("apply.after_files");
+
     // Pass 4: the report, in sorted path order.
     let mut files = Vec::with_capacity(planned.len());
     let mut conflicts = Vec::new();
@@ -433,6 +438,9 @@ fn write_file(full: &Path, mode: i64, content: &[u8]) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     storage::apply_file(full, mode, content)?;
+    // Hit after every file, on whichever pool thread wrote it; a handler that
+    // stops at the first hit stops after the first file to land.
+    crate::failpoint::hit("apply.after_first_file");
     Ok(())
 }
 

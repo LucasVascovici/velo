@@ -118,18 +118,7 @@ pub fn run(guard: &WriteGuard, mode: Mode<'_>) -> Result<Outcome> {
 // ─── Abort ───────────────────────────────────────────────────────────────────
 
 fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
-    let out = abort_inner(guard);
-    // Whatever happened above, the saved bytes are consumed: a stale
-    // MERGE_ORIG must not survive into the next merge.
-    if let Ok(Outcome::Aborted {
-        restored_to: Some(_),
-        ..
-    }) = &out
-    {
-        restore_orig_bytes(guard);
-    }
-    let _ = fs::remove_file(guard.root().join(MERGE_ORIG));
-    out
+    abort_inner(guard)
 }
 
 fn abort_inner(guard: &WriteGuard) -> Result<Outcome> {
@@ -160,31 +149,39 @@ fn abort_inner(guard: &WriteGuard) -> Result<Outcome> {
         .filter_map(|r| r.ok())
         .collect();
 
+    // The tree is put back first and the merge state (conflict rows, MERGE_ORIG,
+    // and MERGE_HEAD last) is cleared only once that has landed. MERGE_HEAD is
+    // the commit point of the abort: a kill anywhere before it leaves a merge
+    // still in progress, and `merge --abort` simply runs again (restoring is
+    // idempotent and MERGE_ORIG is still there to put the CR bytes back).
+    if !pre_merge_hash.is_empty() {
+        crate::commands::restore::run(
+            guard,
+            &SnapshotId::from_stored(pre_merge_hash),
+            crate::commands::restore::Options {
+                force: true,
+                ..Default::default()
+            },
+        )?;
+        remove_merge_added(guard, pre_merge_hash, &source, &conflict_paths)?;
+        crate::failpoint::hit("merge_abort.after_restore");
+        restore_orig_bytes(guard);
+    }
+
+    crate::failpoint::hit("merge_abort.before_clear_state");
     conn.execute("DELETE FROM hunk_decisions", [])?;
     conn.execute("DELETE FROM conflict_files", [])?;
-    let _ = fs::remove_file(&merge_head_path);
     // A whole-tree rewrite lands a tree that no pending move describes, so the
     // moves are forgotten rather than attached to whatever gets saved next.
     crate::commands::mv::discard_pending(guard.conn())?;
+    // MERGE_ORIG must not survive into the next merge.
+    let _ = fs::remove_file(root.join(MERGE_ORIG));
+    let _ = fs::remove_file(&merge_head_path);
+    crate::failpoint::hit("merge_abort.after_clear_state");
 
-    if pre_merge_hash.is_empty() {
-        return Ok(Outcome::Aborted {
-            source,
-            restored_to: None,
-        });
-    }
-    crate::commands::restore::run(
-        guard,
-        &SnapshotId::from_stored(pre_merge_hash),
-        crate::commands::restore::Options {
-            force: true,
-            ..Default::default()
-        },
-    )?;
-    remove_merge_added(guard, pre_merge_hash, &source, &conflict_paths)?;
     Ok(Outcome::Aborted {
         source,
-        restored_to: Some(pre_merge_hash.to_string()),
+        restored_to: (!pre_merge_hash.is_empty()).then(|| pre_merge_hash.to_string()),
     })
 }
 
@@ -480,9 +477,37 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         &mut our_tree,
         &mut their_tree,
     )?;
+    crate::failpoint::hit("merge.before_state");
     let _ = fs::remove_file(root.join(MERGE_ORIG));
     save_orig_bytes(root, &our_tree, &their_tree);
-    let applied = apply::reconcile_tree_moving(guard, &base_tree, &our_tree, &their_tree, &moves)?;
+
+    // MERGE_HEAD is written for a clean merge too, not just a conflicted one: the
+    // finalising `velo save` reads it to stamp the second parent. Without it a
+    // conflict-free merge would collapse to a single-parent commit and
+    // `velo history --graph` would draw it as linear. Every `Merged` outcome
+    // means the histories diverged, so it is written even when the trees were
+    // already equal: the merge still has to be recorded to join the histories.
+    //
+    // It is written *before* the working tree is touched, so a process killed
+    // part-way through the file writes leaves a merge in progress that
+    // `merge --abort` can undo, instead of a half-merged tree with nothing
+    // naming what it was merging.
+    storage::write_atomic(
+        &root.join(".velo/MERGE_HEAD"),
+        format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
+    )?;
+    crate::failpoint::hit("merge.after_state");
+
+    let applied =
+        match apply::reconcile_tree_moving(guard, &base_tree, &our_tree, &their_tree, &moves) {
+            Ok(a) => a,
+            Err(e) => {
+                // A refused or failed merge is not a merge in progress.
+                let _ = fs::remove_file(root.join(".velo/MERGE_HEAD"));
+                let _ = fs::remove_file(root.join(MERGE_ORIG));
+                return Err(e);
+            }
+        };
 
     let result = ThreeWay {
         source: target_branch.to_string(),
@@ -491,17 +516,8 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
         applied,
     };
 
-    // MERGE_HEAD is written for a clean merge too, not just a conflicted one: the
-    // finalising `velo save` reads it to stamp the second parent. Without it a
-    // conflict-free merge would collapse to a single-parent commit and
-    // `velo history --graph` would draw it as linear. Every `Merged` outcome
-    // means the histories diverged, so it is written even when the trees were
-    // already equal: the merge still has to be recorded to join the histories.
-    storage::write_atomic(
-        &root.join(".velo/MERGE_HEAD"),
-        format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
-    )?;
     result.applied.record_conflicts(conn)?;
+    crate::failpoint::hit("merge.after_conflicts");
 
     Ok(Outcome::Merged(result))
 }
