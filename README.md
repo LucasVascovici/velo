@@ -853,6 +853,10 @@ Checking repository integrity…
 ✔ Repository is healthy.
 ```
 
+What velo defends against and what it does not is in
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md); to report a vulnerability see
+[SECURITY.md](SECURITY.md).
+
 `fsck` checks that every referenced object exists **and re-hashes to its own
 name**, that every snapshot's content-addressed ID recomputes correctly, that
 parents and merge parents resolve, and that all refs (`PARENT`, tags, stash,
