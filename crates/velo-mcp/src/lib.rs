@@ -5,6 +5,7 @@
 //! protocol testable in-process.
 #![forbid(unsafe_code)]
 
+pub mod http;
 pub mod protocol;
 mod recovery_tools;
 mod store_tools;
@@ -63,6 +64,18 @@ impl Server {
     pub fn with_lock_wait(mut self, wait: Duration) -> Self {
         self.lock_wait = wait;
         self
+    }
+
+    /// Handle one request line on behalf of a session that keeps its own
+    /// client name in `client`. The HTTP transport serves many sessions from
+    /// one `Server`; swapping the name in and out is the smallest change that
+    /// keeps per-session `clientInfo` stamping correct without a second
+    /// repository handle.
+    pub fn handle_as(&mut self, line: &str, client: &mut Option<String>) -> Option<String> {
+        std::mem::swap(&mut self.client, client);
+        let reply = self.handle(line);
+        std::mem::swap(&mut self.client, client);
+        reply
     }
 
     /// Handle one request line. Notifications return `None`.

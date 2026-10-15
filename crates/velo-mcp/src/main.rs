@@ -28,6 +28,41 @@ struct Args {
     /// `Locked`, naming the holder.
     #[arg(long, value_name = "SECS", default_value_t = 5.0)]
     lock_wait: f64,
+    /// Serve MCP's Streamable HTTP transport on ADDR (e.g. 127.0.0.1:8418)
+    /// instead of stdio. Endpoint: /mcp.
+    #[arg(long, value_name = "ADDR")]
+    http: Option<String>,
+    /// With --http, a file of bearer tokens, one per line (else $VELO_MCP_TOKEN).
+    #[arg(long, value_name = "FILE", requires = "http")]
+    token_file: Option<PathBuf>,
+    /// With --http, an extra allowed Origin besides loopback ones (repeatable).
+    #[arg(long, value_name = "ORIGIN", requires = "http")]
+    allow_origin: Vec<String>,
+}
+
+/// Tokens from `--token-file` and `$VELO_MCP_TOKEN`, if any.
+fn load_tokens(file: Option<&PathBuf>) -> Result<Option<velo_core::serve::http::Tokens>, String> {
+    let mut tokens = velo_core::serve::http::Tokens::new();
+    let mut any = false;
+    if let Some(f) = file {
+        let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+        for line in text.lines().map(str::trim) {
+            if !line.is_empty() && !line.starts_with('#') {
+                tokens = tokens.write(line);
+                any = true;
+            }
+        }
+        if !any {
+            return Err(format!("{}: no tokens in file", f.display()));
+        }
+    }
+    if let Ok(t) = std::env::var("VELO_MCP_TOKEN") {
+        if !t.is_empty() {
+            tokens = tokens.write(t);
+            any = true;
+        }
+    }
+    Ok(any.then_some(tokens))
 }
 
 fn main() {
@@ -53,6 +88,24 @@ fn main() {
         Server::new(repo, run).with_lock_wait(std::time::Duration::from_secs_f64(args.lock_wait));
     if let Ok(name) = std::env::var("VELO_AUTHOR_NAME") {
         server = server.with_author(name, std::env::var("VELO_AUTHOR_EMAIL").ok());
+    }
+    if let Some(listen) = &args.http {
+        let tokens = match load_tokens(args.token_file.as_ref()) {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("velo-mcp: {e}");
+                std::process::exit(2);
+            }
+        };
+        let cfg = velo_mcp::http::HttpConfig {
+            tokens,
+            allow_origins: args.allow_origin,
+        };
+        if let Err(e) = velo_mcp::http::serve(server, listen, cfg) {
+            eprintln!("velo-mcp: {e}");
+            std::process::exit(2);
+        }
+        return;
     }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();

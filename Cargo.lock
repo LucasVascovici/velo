@@ -1596,6 +1596,7 @@ dependencies = [
  "clap",
  "serde_json",
  "tempfile",
+ "tiny_http",
  "velo-core",
  "velo-merge",
 ]

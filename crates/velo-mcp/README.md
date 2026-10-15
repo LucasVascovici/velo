@@ -76,6 +76,42 @@ and names the holder in its text and in `structuredContent`:
 `{"error": "Locked", "holder": {"pid": ..., "command": ..., "started_at_ms": ...,
 "started_at": ...}}`. Retry the call later; nothing was written.
 
+## HTTP transport
+
+`velo-mcp --http ADDR` serves MCP's Streamable HTTP transport instead of stdio,
+so one server can serve agents on other machines. It works with `--repo` and
+`--store` alike. The bound address is printed to stderr as
+`velo-mcp: listening on http://ADDR/mcp`, so `--http 127.0.0.1:0` reveals the
+port it chose.
+
+- One endpoint, `/mcp`. `POST` carries one JSON-RPC message and is answered with
+  `Content-Type: application/json` (no SSE stream); notifications and client
+  responses get `202 Accepted`. `GET` is `405`. `DELETE` with `Mcp-Session-Id`
+  ends the session (`204`).
+- `initialize` returns an `Mcp-Session-Id` header; every later request must send
+  it (`400` without, `404` if unknown or ended). `MCP-Protocol-Version`, when
+  sent, must match the version negotiated at `initialize`. Each session keeps
+  its own `clientInfo`, so saves are stamped with the right client.
+- Tokens: `--token-file FILE` (one token per line; blank lines and `#` comments
+  are skipped) and/or the `VELO_MCP_TOKEN` environment variable. With any
+  token configured, every request needs `Authorization: Bearer <token>`;
+  otherwise `401` with `WWW-Authenticate: Bearer`. Comparison is constant-time.
+  All tokens are equal; there is no read-only tier.
+- Origin rule (DNS-rebinding protection): a request with an `Origin` header is
+  accepted only from a loopback origin (`localhost`, `127.0.0.0/8`, `::1`) or
+  one given exactly with `--allow-origin ORIGIN` (repeatable); otherwise `403`.
+  Requests with no `Origin`, as from non-browser agents, pass this check.
+- Binding a non-loopback address without a token is refused at start-up.
+- Requests run one at a time against one repository handle; bodies are limited
+  to 8 MiB.
+
+The server speaks plain HTTP. To expose it beyond a trusted network, put a
+reverse proxy that terminates TLS in front of it (as for `velo serve-http`), and
+keep the bearer token out of logs.
+
+Bearer tokens are the only supported authorization scheme. SSE streaming,
+resumable streams and OAuth authorization-server metadata are not implemented.
+
 ## Store-only mode
 
 An agent that has no checkout can still use velo. Point the server at a
