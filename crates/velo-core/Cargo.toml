@@ -33,6 +33,9 @@ yaml = ["velo-merge/yaml"]
 toml = ["velo-merge/toml"]
 # Test-only crash points (`failpoint::set_handler`); compiled out when off.
 failpoints = []
+# Entry points for the cargo-fuzz targets in `fuzz/`; not a supported API.
+# `tempfile` is a dev-dependency, so the fuzz crate gets it through this feature.
+fuzzing = ["dep:tempfile"]
 
 [dependencies]
 velo-merge.workspace = true
@@ -48,6 +51,7 @@ rayon.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 similar.workspace = true
+tempfile = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 zstd.workspace = true
 

@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# cargo-fuzz needs nightly and its own lockfile; it is built only by fuzz.yml.
+exclude = ["fuzz"]
 members = [
     "crates/velo-merge",
     "crates/velo-core",

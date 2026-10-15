@@ -98,6 +98,9 @@ pub mod error;
 pub mod events;
 #[doc(hidden)]
 pub mod failpoint;
+#[cfg(feature = "fuzzing")]
+#[doc(hidden)]
+pub mod fuzzing;
 pub mod ids;
 pub mod limits;
 pub mod lock;

@@ -12263,3 +12263,6 @@ mod rebase_abort;
 
 #[cfg(test)]
 mod retention_scale;
+
+#[cfg(test)]
+mod fuzz_regressions;
