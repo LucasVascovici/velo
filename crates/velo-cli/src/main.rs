@@ -1171,13 +1171,20 @@ NOTES
 
     /// Serve a repository over HTTP, for `velo clone http://...`, `velo push` and `velo pull`.
     ///
-    /// A reference server: it handles one request at a time and has NO
-    /// authentication and no TLS. Anyone who can reach the port can read
-    /// the history and push to it. Put it behind a reverse proxy that
-    /// authenticates and terminates TLS for anything public.
+    /// A reference server. By default fetch is anonymous and push is
+    /// refused; give it a token to accept pushes. There is no TLS: put a
+    /// reverse proxy in front of anything public (see "Hosting a remote" in
+    /// the README). Pushes stay fast-forward only; there is no --force.
+    ///
+    /// Tokens: VELO_SERVE_TOKEN is one write token; --token-file holds lines
+    /// of `read <token>` or `write <token>`. Once any token is configured,
+    /// every request needs one. Clients send theirs in VELO_TOKEN.
     ///
     ///   velo serve-http /srv/project
-    ///   velo serve-http /srv/project --listen 0.0.0.0:8417
+    ///   VELO_SERVE_TOKEN=s3cret velo serve-http /srv/project --listen 0.0.0.0:8417
+    ///   velo serve-http /srv/project --read-only
+    ///   velo serve-http /srv/repos --directory --token-file tokens.txt
+    ///   velo serve-http /srv/project --allow-anonymous-push
     #[command(verbatim_doc_comment)]
     ServeHttp {
         #[arg(value_name = "PATH")]
@@ -1185,6 +1192,27 @@ NOTES
         /// Address to listen on (port 0 picks a free one).
         #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:8417")]
         listen: String,
+        /// Serve PATH as a directory of repositories, at http://host/<repo>/.
+        #[arg(long)]
+        directory: bool,
+        /// File of `read <token>` / `write <token>` lines; `#` starts a comment.
+        #[arg(long, value_name = "FILE")]
+        token_file: Option<String>,
+        /// Refuse every push, whatever the token.
+        #[arg(long)]
+        read_only: bool,
+        /// With no tokens configured, accept pushes from anyone.
+        #[arg(long)]
+        allow_anonymous_push: bool,
+        /// Largest request body accepted, in bytes.
+        #[arg(long, value_name = "N", default_value_t = 1 << 30)]
+        max_request_bytes: u64,
+        /// Seconds allowed to receive one request body.
+        #[arg(long, value_name = "SECS", default_value_t = 300)]
+        request_timeout: u64,
+        /// Requests served at once; more get 503 busy.
+        #[arg(long, value_name = "N", default_value_t = 8)]
+        max_connections: usize,
     },
 }
 
@@ -2305,24 +2333,289 @@ fn parse_line_range(spec: &str) -> Result<std::ops::Range<usize>> {
     Ok(start..end + 1)
 }
 
+/// The CLI's access policy, a small [`serve::http::Authorize`] over `Tokens`.
+///
+/// Which variant is active is decided once at start-up from the flags and
+/// `VELO_SERVE_TOKEN`; see [`serve_http`] for the rules.
+enum ServePolicy {
+    /// Tokens are configured: every request needs a valid one.
+    Tokens(serve::http::Tokens),
+    /// No tokens: fetch is anonymous, push is refused as unauthenticated.
+    AnonymousRead,
+    /// Everything is allowed (the pre-5.2 behaviour, or a read-only mirror).
+    Open,
+}
+
+impl serve::http::Authorize for ServePolicy {
+    fn authorize(
+        &self,
+        repository: &str,
+        operation: serve::http::Operation,
+        bearer: Option<&str>,
+    ) -> serve::http::Access {
+        use serve::http::Access;
+        match self {
+            ServePolicy::Tokens(t) => t.authorize(repository, operation, bearer),
+            ServePolicy::AnonymousRead if operation.is_write() => Access::Unauthenticated,
+            ServePolicy::AnonymousRead | ServePolicy::Open => Access::Allow,
+        }
+    }
+}
+
+/// Parse a `--token-file`: lines of `read <token>` or `write <token>`, with
+/// `#` comments and blank lines allowed.
+fn parse_token_file(path: &str) -> Result<serve::http::Tokens> {
+    let text = std::fs::read_to_string(path).map_err(VeloError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                eprintln!(
+                    "warning: token file '{path}' is readable by other users; run chmod 600 on it"
+                );
+            }
+        }
+    }
+    let mut tokens = serve::http::Tokens::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match line.split_once(char::is_whitespace) {
+            Some(("read", t)) if !t.trim().is_empty() => tokens = tokens.read(t.trim()),
+            Some(("write", t)) if !t.trim().is_empty() => tokens = tokens.write(t.trim()),
+            _ => {
+                return Err(VeloError::invalid(format!(
+                    "{path}:{}: expected 'read <token>' or 'write <token>'",
+                    i + 1
+                )))
+            }
+        }
+    }
+    Ok(tokens)
+}
+
+/// Options of `velo serve-http`, gathered from the flags.
+struct ServeHttpOptions<'a> {
+    path: &'a str,
+    listen: &'a str,
+    directory: bool,
+    token_file: Option<&'a str>,
+    read_only: bool,
+    allow_anonymous_push: bool,
+    max_request_bytes: u64,
+    request_timeout: u64,
+    max_connections: usize,
+}
+
+/// A refusal made by the front end itself, in the core's `velo: <kind>: <detail>` form.
+fn front_refusal(
+    status: u16,
+    kind: &str,
+    detail: &str,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    tiny_http::Response::from_data(format!("velo: {kind}: {detail}\n").into_bytes())
+        .with_status_code(status)
+        .with_header(
+            tiny_http::Header::from_bytes("Content-Type", "text/plain").expect("static header"),
+        )
+}
+
+/// Why reading a request body stopped early.
+enum BodyError {
+    TooLarge,
+    Timeout,
+    Io(std::io::Error),
+}
+
+/// Read a body in chunks, refusing past `max` bytes (covers chunked bodies
+/// that carry no Content-Length) or once `timeout` has elapsed. A socket read
+/// that never returns is not interrupted: tiny_http has no read timeout, so
+/// that case is bounded only by the proxy in front.
+fn read_body(
+    reader: &mut dyn std::io::Read,
+    max: u64,
+    timeout: std::time::Duration,
+) -> std::result::Result<Vec<u8>, BodyError> {
+    let start = std::time::Instant::now();
+    let mut limited = std::io::Read::take(reader, max.saturating_add(1));
+    let mut body = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        if start.elapsed() > timeout {
+            return Err(BodyError::Timeout);
+        }
+        let n = std::io::Read::read(&mut limited, &mut chunk).map_err(BodyError::Io)?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..n]);
+        if body.len() as u64 > max {
+            return Err(BodyError::TooLarge);
+        }
+    }
+    Ok(body)
+}
+
+/// Serve one received request: size and time limits, then the core service.
+fn serve_one(
+    mut req: tiny_http::Request,
+    service: &serve::http::Service,
+    limits: (u64, std::time::Duration),
+) {
+    let (max, timeout) = limits;
+    let method = req.method().to_string();
+    let full = req.url().to_string();
+    let too_large = || {
+        front_refusal(
+            413,
+            "too-large",
+            &format!("request body exceeds {max} bytes"),
+        )
+    };
+
+    if req.body_length().is_some_and(|n| n as u64 > max) {
+        eprintln!("{method} {full} -> 413");
+        let _ = req.respond(too_large());
+        return;
+    }
+    let body = match read_body(req.as_reader(), max, timeout) {
+        Ok(b) => b,
+        Err(BodyError::TooLarge) => {
+            eprintln!("{method} {full} -> 413");
+            let _ = req.respond(too_large());
+            return;
+        }
+        Err(BodyError::Timeout) => {
+            eprintln!("{method} {full} -> 408");
+            let _ = req.respond(front_refusal(
+                408,
+                "timeout",
+                &format!("request not received within {} seconds", timeout.as_secs()),
+            ));
+            return;
+        }
+        Err(BodyError::Io(e)) => {
+            eprintln!("{method} {full} -> 400: {e}");
+            let _ = req.respond(front_refusal(
+                400,
+                "error",
+                "the request body could not be read",
+            ));
+            return;
+        }
+    };
+    // The Authorization header is passed through but never logged.
+    let auth = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Authorization"))
+        .map(|h| h.value.as_str().to_string());
+    let resp = service.handle(&serve::http::Request::new(
+        &method,
+        &full,
+        auth.as_deref(),
+        &body,
+    ));
+    eprintln!(
+        "{method} {full} -> {} ({} bytes)",
+        resp.status,
+        resp.body.len()
+    );
+    let mut out = tiny_http::Response::from_data(resp.body)
+        .with_status_code(resp.status)
+        .with_header(
+            tiny_http::Header::from_bytes("Content-Type", resp.content_type)
+                .expect("static header"),
+        );
+    if resp.www_authenticate {
+        out = out.with_header(
+            tiny_http::Header::from_bytes("WWW-Authenticate", "Bearer").expect("static header"),
+        );
+    }
+    let _ = req.respond(out);
+}
+
 /// Run the reference HTTP server until the process is killed.
 ///
-/// Requests are served one at a time: the core handlers take the repository
-/// write lock themselves, and a reference server has no need for more. The only
+/// A front end over the core `Service`: it owns the socket, the connection
+/// pool, and the body size and time limits; routing, authorization and
+/// read-only are the service's. Policy: with tokens (a `--token-file` or
+/// `VELO_SERVE_TOKEN`) every request needs a valid one; with none, fetch is
+/// anonymous and push is refused unless `--allow-anonymous-push`. The only
 /// thing written to stdout is the single `listening on` line, so a caller can
 /// read it to learn the port chosen for `--listen ...:0`.
-fn serve_http(path: &str, listen: &str) -> Result<()> {
+fn serve_http(o: ServeHttpOptions<'_>) -> Result<()> {
     use std::io::Write;
-    use tiny_http::{Header, Method, Response, Server};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    let root = Path::new(path);
-    // Fail at start-up, not on the first request, if this is not a repository.
-    serve::http::refs(root)?;
+    let root = Path::new(o.path);
+    if !o.directory {
+        // Fail at start-up, not on the first request, if this is not a repository.
+        serve::http::refs(root)?;
+    } else if !root.is_dir() {
+        return Err(VeloError::invalid(format!(
+            "'{}' is not a directory",
+            o.path
+        )));
+    }
+
+    let mut tokens = match o.token_file {
+        Some(f) => parse_token_file(f)?,
+        None => serve::http::Tokens::new(),
+    };
+    let mut have_tokens = o.token_file.is_some();
+    if let Ok(t) = std::env::var("VELO_SERVE_TOKEN") {
+        if !t.is_empty() {
+            tokens = tokens.write(t);
+            have_tokens = true;
+        }
+    }
+    let (policy, described) = if have_tokens {
+        (
+            ServePolicy::Tokens(tokens),
+            "a bearer token is required for every request",
+        )
+    } else if o.read_only || o.allow_anonymous_push {
+        (
+            ServePolicy::Open,
+            if o.read_only {
+                "anonymous fetch; push refused (read-only)"
+            } else {
+                "anonymous fetch and anonymous push (no authentication)"
+            },
+        )
+    } else {
+        (
+            ServePolicy::AnonymousRead,
+            "anonymous fetch; push refused (set VELO_SERVE_TOKEN or pass --token-file to enable it)",
+        )
+    };
+    let mut described = described.to_string();
+    if have_tokens && o.read_only {
+        described.push_str("; read-only, pushes are refused");
+    }
+    eprintln!("velo serve-http: {described}");
+
+    let limits = velo_core::Limits::default().with_max_pack_bytes(o.max_request_bytes);
+    let base = if o.directory {
+        serve::http::Service::directory(root)
+    } else {
+        serve::http::Service::single(root)
+    };
+    let service = Arc::new(
+        base.authorize_with(policy)
+            .read_only(o.read_only)
+            .limits(limits),
+    );
 
     let io_err = |e: Box<dyn std::error::Error + Send + Sync>| {
         VeloError::Io(std::io::Error::other(e.to_string()))
     };
-    let server = Server::http(listen).map_err(io_err)?;
+    let server = Arc::new(tiny_http::Server::http(o.listen).map_err(io_err)?);
     let addr = server
         .server_addr()
         .to_ip()
@@ -2333,62 +2626,37 @@ fn serve_http(path: &str, listen: &str) -> Result<()> {
         out.flush().map_err(VeloError::Io)?;
     }
 
-    let text = |s: &str| Header::from_bytes("Content-Type", s).expect("static header");
-    for mut req in server.incoming_requests() {
-        let method = req.method().clone();
-        let full = req.url().to_string();
-        let route = full.split('?').next().unwrap_or("").to_string();
-
-        let (want, endpoint) = if route.ends_with("/velo/v1/refs") {
-            (Method::Get, 0)
-        } else if route.ends_with("/velo/v1/upload") {
-            (Method::Post, 1)
-        } else if route.ends_with("/velo/v1/receive") {
-            (Method::Post, 2)
-        } else {
-            eprintln!("{method} {full} -> 404");
-            let _ = req.respond(
-                Response::from_string("not found\n")
-                    .with_status_code(404)
-                    .with_header(text("text/plain")),
-            );
-            continue;
-        };
-        if method != want {
-            eprintln!("{method} {full} -> 405");
-            let _ = req.respond(
-                Response::from_string("method not allowed\n")
-                    .with_status_code(405)
-                    .with_header(text("text/plain")),
-            );
-            continue;
-        }
-
-        let mut body = Vec::new();
-        let result = match req.as_reader().read_to_end(&mut body) {
-            Err(e) => Err(VeloError::Io(e)),
-            Ok(_) => match endpoint {
-                0 => serve::http::refs(root),
-                1 => serve::http::upload(root, &body),
-                _ => serve::http::receive(root, &body),
-            },
-        };
-        match result {
-            Ok(bytes) => {
-                eprintln!("{method} {full} -> 200 ({} bytes)", bytes.len());
-                let _ = req.respond(
-                    Response::from_data(bytes).with_header(text("application/octet-stream")),
-                );
+    // `max_connections` workers serve requests; one extra thread exists only
+    // to answer 503 when they are all busy, since tiny_http would otherwise
+    // queue the request past its timeout.
+    let max_conn = o.max_connections.max(1);
+    let active = Arc::new(AtomicUsize::new(0));
+    let limits = (
+        o.max_request_bytes,
+        std::time::Duration::from_secs(o.request_timeout),
+    );
+    let mut threads = Vec::new();
+    for _ in 0..=max_conn {
+        let (server, service, active) = (server.clone(), service.clone(), active.clone());
+        threads.push(std::thread::spawn(move || {
+            while let Ok(req) = server.recv() {
+                if active.fetch_add(1, Ordering::SeqCst) >= max_conn {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    eprintln!("{} {} -> 503", req.method(), req.url());
+                    let _ = req.respond(front_refusal(
+                        503,
+                        "busy",
+                        "all connections are in use; retry shortly",
+                    ));
+                    continue;
+                }
+                serve_one(req, &service, limits);
+                active.fetch_sub(1, Ordering::SeqCst);
             }
-            Err(e) => {
-                eprintln!("{method} {full} -> 500: {e}");
-                let _ = req.respond(
-                    Response::from_string(e.to_string())
-                        .with_status_code(500)
-                        .with_header(text("text/plain")),
-                );
-            }
-        }
+        }));
+    }
+    for t in threads {
+        let _ = t.join();
     }
     Ok(())
 }
@@ -2426,8 +2694,29 @@ fn run(cli: Cli) -> Result<Exit> {
         }
         Commands::ServeUpload { path } => return serve::upload(path).map(|()| Exit::Success),
         Commands::ServeReceive { path } => return serve::receive(path).map(|()| Exit::Success),
-        Commands::ServeHttp { path, listen } => {
-            return serve_http(path, listen).map(|()| Exit::Success)
+        Commands::ServeHttp {
+            path,
+            listen,
+            directory,
+            token_file,
+            read_only,
+            allow_anonymous_push,
+            max_request_bytes,
+            request_timeout,
+            max_connections,
+        } => {
+            return serve_http(ServeHttpOptions {
+                path,
+                listen,
+                directory: *directory,
+                token_file: token_file.as_deref(),
+                read_only: *read_only,
+                allow_anonymous_push: *allow_anonymous_push,
+                max_request_bytes: *max_request_bytes,
+                request_timeout: *request_timeout,
+                max_connections: *max_connections,
+            })
+            .map(|()| Exit::Success)
         }
         _ => {}
     }

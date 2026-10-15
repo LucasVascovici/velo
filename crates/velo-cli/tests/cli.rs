@@ -869,6 +869,7 @@ fn serve_http(dir: &Path) -> HttpServer {
             dir.to_str().unwrap(),
             "--listen",
             "127.0.0.1:0",
+            "--allow-anonymous-push",
         ])
         .stdout(std::process::Stdio::piped())
         .spawn()

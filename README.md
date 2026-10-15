@@ -542,10 +542,9 @@ Scripts can decide on the exit code:
 To host a repository over HTTP, run `velo serve-http <path> [--listen <addr>]`
 (default `127.0.0.1:8417`); it prints `listening on http://<addr>/`. Then
 `velo clone http://<addr>/` and the usual `push` / `pull` work against it, with
-the same fast-forward-only rule. **`serve-http` is a reference server with no
-authentication and no TLS**: anyone who can reach the port can read and push.
-Put it behind a reverse proxy that authenticates and terminates TLS for
-anything public.
+the same fast-forward-only rule. By default fetch is anonymous and **push is
+refused** until you configure a token; there is no TLS. See "Hosting a remote"
+below.
 
 After a `fetch`, `velo status` shows ahead/behind, and `origin/<branch>`
 can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
@@ -741,6 +740,83 @@ objects the peer already holds are skipped. A one-line change in a 20-file proje
 transfers a single object, not the whole tree — a snapshot references its entire
 file tree, so naive syncing would resend everything on every push. (`bundle create`
 deliberately opts out of this, since a bundle must stand alone.)
+
+#### Hosting a remote
+
+`velo serve-http` is a small reference server. It is safe to host once you pick
+a policy; from 5.2.0 it no longer accepts anonymous pushes by default.
+
+```bash
+velo serve-http /srv/project                       # anonymous fetch, push refused (401)
+VELO_SERVE_TOKEN=s3cret velo serve-http /srv/project   # every request needs the token
+velo serve-http /srv/project --token-file tokens   # several tokens, read or write
+velo serve-http /srv/project --allow-anonymous-push    # the old open behaviour
+```
+
+**Tokens.** `VELO_SERVE_TOKEN` is one write token. `--token-file FILE` holds
+lines of `read <token>` or `write <token>` (`#` starts a comment; on Unix velo
+warns if the file is readable by others). Once any token exists, every request
+needs a valid one; a read token may fetch, only a write token may push. Clients
+send theirs in `VELO_TOKEN`, or `VELO_TOKEN_<REMOTE>` (the remote's name,
+uppercased) for one remote, never in the URL:
+
+```bash
+VELO_TOKEN=s3cret velo push
+```
+
+A refused request exits with an access-denied error naming the remote.
+
+**A read-only public mirror.** `velo serve-http /srv/project --read-only`
+serves anonymous fetches and refuses every push, even one carrying a valid token.
+
+**Limits.** Each is a typed refusal on the wire (`velo: <kind>: <detail>`):
+
+| Flag | Default | Refusal |
+|---|---|---|
+| `--max-request-bytes N` | 1 GiB | 413 `too-large` (clients report a limit exceeded) |
+| `--request-timeout SECS` | 300 | 408 `timeout`, while receiving a body |
+| `--max-connections N` | 8 | 503 `busy` when all workers are in use |
+
+The timeout bounds a body that arrives slowly. A socket that stalls completely
+is only bounded by your proxy's timeout, because the server has no socket read
+timeout of its own.
+
+**Many repositories.** `velo serve-http /srv/repos --directory` serves every
+repository under `/srv/repos`, addressed as `http://host/<repo>/` (for example
+`velo clone http://host/team/app/`). Paths containing `..`, percent-encoding or
+backslashes are refused.
+
+**TLS terminates at a proxy.** The server speaks plain HTTP on purpose. Run it
+on `127.0.0.1` and let a proxy hold the certificate.
+
+Caddy:
+
+```
+velo.example.com {
+    reverse_proxy 127.0.0.1:8417
+}
+```
+
+nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name velo.example.com;
+    # ssl_certificate / ssl_certificate_key as usual
+
+    client_max_body_size 1g;     # match --max-request-bytes
+    proxy_read_timeout 300s;     # match --request-timeout
+
+    location / {
+        proxy_pass http://127.0.0.1:8417;
+        proxy_request_buffering off;
+    }
+}
+```
+
+**Fast-forward only.** A push the server cannot fast-forward is rejected as
+non-fast-forward. There is no `--force`, on the client or the server.
 
 ---
 
