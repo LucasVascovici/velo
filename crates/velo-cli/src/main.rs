@@ -505,12 +505,17 @@ NOTES
 
     /// Switch to a branch (creates it if it does not exist).
     ///
+    /// A name that is a near miss of an existing branch (`mian` for `main`)
+    /// is not created silently: a terminal is asked, a script is refused with
+    /// exit code 2.  --create (-c) creates the branch regardless.
+    ///
     /// Restores the working tree to the latest snapshot on the target
     /// branch.  Aborts if there are unsaved changes unless --force is used.
     ///
     /// Examples
     ///   velo switch feature/auth    # switch (creates if new)
     ///   velo switch main --force    # discard unsaved changes and switch
+    ///   velo switch --create mian   # create it even though `main` exists
     #[command(
         verbatim_doc_comment,
         after_help = "\
@@ -527,6 +532,10 @@ NOTES
         /// Discard unsaved changes without prompting.
         #[arg(short, long, help = "Discard unsaved changes and switch")]
         force: bool,
+
+        /// Create the branch; skips the near-miss check on the name.
+        #[arg(short, long, help = "Create the branch (error if it exists)")]
+        create: bool,
     },
 
     /// List branches, or delete one.
@@ -1080,6 +1089,10 @@ NOTES
     },
 
     /// Send a branch's commits to a remote (fast-forward only).
+    ///
+    /// Exits with code 4 when the remote refuses the push because it is not a
+    /// fast-forward (the remote has commits you lack); `velo sync` fetches,
+    /// integrates and pushes in one step.
     #[command(
         verbatim_doc_comment,
         after_help = "\
@@ -1295,6 +1308,92 @@ enum StashSub {
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
+/// A nudge for a git habit that clap rejects as an argument rather than as a
+/// subcommand. Keyed on the words of the command line that are not flags and
+/// on the offending token clap reported, so each row names exactly one habit.
+fn clap_habit_hint(args: &[String], offending: &str) -> Option<&'static str> {
+    if offending == "-C" {
+        return Some("hint: velo has no -C; cd <dir> first, then run velo");
+    }
+    let words: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    Some(
+        match (words.first().copied()?, words.get(1).copied(), offending) {
+            ("history", _, tok) if !tok.starts_with('-') => {
+                "hint: velo history --branch <ref> shows another branch's history"
+            }
+            ("stash", Some("push"), "-m" | "--message") => {
+                "hint: the shelf name is an argument: velo stash push \"<name>\""
+            }
+            ("grep", _, "-n" | "--line-number") => {
+                "hint: velo grep always shows line numbers; there is no -n"
+            }
+            ("diff", _, "--stat" | "--numstat" | "--shortstat") => {
+                "hint: velo diff has no summary mode; it prints every change, and -- <path> narrows it"
+            }
+            _ => return None,
+        },
+    )
+}
+
+/// A nudge for a `velo show` target typed out of git habit. These are not
+/// argument errors, so they are offered after the lookup itself fails.
+fn show_habit_hint(args: &[String]) -> Option<&'static str> {
+    let mut words = args.iter().filter(|a| !a.starts_with('-'));
+    if words.next().map(String::as_str) != Some("show") {
+        return None;
+    }
+    let target = words.next()?;
+    if target == "HEAD" || target.starts_with("HEAD~") || target.starts_with("HEAD^") {
+        Some("hint: velo has no HEAD; name a branch, tag or snapshot id (velo history lists them)")
+    } else if target.contains(':') {
+        Some("hint: velo show <ref> -- <path> shows a path's changes; velo restore <ref> -- <path> pulls the file out")
+    } else {
+        None
+    }
+}
+
+/// Edit distance counting a swap of two neighbours as one edit.
+fn damerau_levenshtein(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
+}
+
+/// The existing branch a new name is probably a typo of, if any: within two
+/// edits, and neither a prefix of the other (`feat` beside `feature` is a
+/// deliberate new name).
+fn near_miss<'a>(name: &str, existing: &'a [String]) -> Option<&'a str> {
+    existing
+        .iter()
+        .filter(|b| !b.starts_with("remotes/") && !b.starts_with("_deleted_"))
+        .filter(|b| !b.starts_with(name) && !name.starts_with(b.as_str()))
+        .map(|b| (damerau_levenshtein(name, b), b))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, b)| b.as_str())
+}
+
 /// A nudge for a command people type out of git habit, keyed on the first
 /// argument that is not a flag.
 fn git_habit_hint(args: impl Iterator<Item = String>) -> Option<&'static str> {
@@ -1326,12 +1425,27 @@ fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
-            let wrong_subcommand = e.kind() == clap::error::ErrorKind::InvalidSubcommand;
+            use clap::error::{ContextKind, ContextValue, ErrorKind};
+            let kind = e.kind();
+            let offending = match e.get(ContextKind::InvalidArg) {
+                Some(ContextValue::String(s)) => s.clone(),
+                Some(ContextValue::Strings(v)) => v.first().cloned().unwrap_or_default(),
+                _ => String::new(),
+            };
             let _ = e.print();
-            if wrong_subcommand {
-                if let Some(hint) = git_habit_hint(std::env::args().skip(1)) {
-                    eprintln!("{hint}");
+            let hint = match kind {
+                ErrorKind::InvalidSubcommand => git_habit_hint(std::env::args().skip(1)),
+                ErrorKind::UnknownArgument
+                | ErrorKind::InvalidValue
+                | ErrorKind::TooManyValues
+                | ErrorKind::ArgumentConflict => {
+                    let args: Vec<String> = std::env::args().skip(1).collect();
+                    clap_habit_hint(&args, &offending)
                 }
+                _ => None,
+            };
+            if let Some(hint) = hint {
+                eprintln!("{hint}");
             }
             std::process::exit(e.exit_code());
         }
@@ -1346,6 +1460,10 @@ fn main() {
             eprintln!("{} {}", console::style("error:").red().bold(), e);
             if let Some(hint) = hint_for(&e, force_form) {
                 eprintln!("{}", hint);
+            } else if let Some(hint) =
+                show_habit_hint(&std::env::args().skip(1).collect::<Vec<_>>())
+            {
+                eprintln!("{hint}");
             }
             error_code(&e)
         }
@@ -1366,6 +1484,8 @@ enum Exit {
     Diverged,
     /// `velo verify` found no trusted signature, or an invalid one.
     Untrusted,
+    /// A usage refusal made after parsing (a near-miss branch name).
+    Usage,
 }
 
 impl Exit {
@@ -1375,6 +1495,7 @@ impl Exit {
             Exit::Conflicts => 3,
             Exit::Diverged => 4,
             Exit::Untrusted => 1,
+            Exit::Usage => 2,
         }
     }
 }
@@ -2544,7 +2665,52 @@ fn run(cli: Cli) -> Result<Exit> {
             }
         }
 
-        Commands::Switch { name, force } => {
+        Commands::Switch {
+            name,
+            force,
+            create,
+        } => {
+            let existing: Vec<String> = commands::branches::list(&repo)?
+                .iter()
+                .map(|b| b.name.as_str().to_string())
+                .collect();
+            let exists = existing.contains(&name);
+            if create && exists {
+                return Err(VeloError::invalid(format!(
+                    "branch '{name}' already exists; switch to it with: velo switch {name}"
+                )));
+            }
+            let mut name = name;
+            if !create && !exists {
+                if let Some(close) = near_miss(&name, &existing) {
+                    use std::io::IsTerminal;
+                    let close = close.to_string();
+                    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                        print!(
+                            "No branch '{name}'. Did you mean '{close}'? \
+                             [y = switch to {close} / c = create {name} / N = cancel] "
+                        );
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                        let mut answer = String::new();
+                        let _ = std::io::stdin().read_line(&mut answer);
+                        match answer.trim().to_lowercase().as_str() {
+                            "y" => name = close,
+                            "c" => {}
+                            _ => {
+                                println!("Cancelled.");
+                                return Ok(Exit::Success);
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "{} no branch '{name}'; did you mean '{close}'? \
+                             To create it: velo switch --create {name}",
+                            console::style("error:").red().bold()
+                        );
+                        return Ok(Exit::Usage);
+                    }
+                }
+            }
             render::switch::print(&commands::switch::run(write(), &name, force)?);
         }
 

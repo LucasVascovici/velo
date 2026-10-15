@@ -462,6 +462,7 @@ velo pull
 | Command | Description |
 | :--- | :--- |
 | `velo switch <name>` | Switch to a branch (creates it if it doesn't exist) |
+| `velo switch --create <name>` (`-c`) | Create a branch even if its name is close to an existing one; errors if it exists |
 | `velo switch <name> --force` | Switch, discarding any unsaved changes |
 | `velo branches` | List all branches with their latest snapshot |
 | `velo branches --delete <name>` | Soft-delete a branch (history preserved, purged by `velo gc`) |
@@ -527,7 +528,7 @@ Scripts can decide on the exit code:
 |------|---------|
 | 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
 | 1 | Error |
-| 2 | Command-line usage error |
+| 2 | Command-line usage error, or `switch` refusing a near-miss branch name (`mian` for `main`) without a terminal; `velo switch --create <name>` creates it anyway |
 | 3 | Conflicts left to resolve (`merge`, `cherry-pick`, `rebase` or `sync` stopped on conflicts) |
 | 4 | Histories diverged (`pull`, or a `push` or `sync` the remote refused) |
 | 5 | Repository locked by another velo process |
