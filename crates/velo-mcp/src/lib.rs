@@ -130,9 +130,15 @@ impl Server {
                            "structuredContent": result, "isError": false}),
                 )
             }
-            Err(tools::ToolError::Params(msg)) => {
+            Err(tools::ToolError::UnknownTool(msg)) => {
                 protocol::error(id, protocol::INVALID_PARAMS, &msg)
             }
+            Err(tools::ToolError::Params(msg)) => protocol::result(
+                id,
+                json!({"content": [{"type": "text", "text": format!("InvalidParams: {msg}")}],
+                       "structuredContent": {"error": "InvalidParams", "message": msg},
+                       "isError": true}),
+            ),
             Err(tools::ToolError::Velo(e)) => {
                 let variant = tools::variant_name(&e);
                 let mut text = format!("{variant}: {e}");
@@ -253,7 +259,7 @@ mod tests {
         assert_eq!(r["result"]["capabilities"]["tools"]["listChanged"], false);
         assert_eq!(r["result"]["serverInfo"]["name"], "velo-mcp");
         let r = rpc(&mut s, 2, "initialize", json!({"protocolVersion": "1999"}));
-        assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(r["result"]["protocolVersion"], "2025-11-25");
         assert!(s
             .handle(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
             .is_none());
@@ -414,16 +420,27 @@ mod tests {
             call(&mut s, "velo_nope", json!({}))["error"]["code"],
             -32602
         );
+        assert_eq!(
+            rpc(&mut s, 2, "tools/call", json!({}))["error"]["code"],
+            -32602
+        );
+        assert_eq!(
+            rpc(&mut s, 2, "tools/call", json!({}))["error"]["code"],
+            -32602
+        );
         for ns in ["velo", "mcp"] {
             let r = call(
                 &mut s,
                 "velo_save",
                 json!({"message": "x", "meta": {ns: {"k": "v"}}}),
             );
-            assert_eq!(r["error"]["code"], -32602, "{ns}");
+            assert_eq!(r["result"]["isError"], true, "{ns}");
+            let t = r["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(t.starts_with("InvalidParams: ") && t.contains(ns), "{t}");
         }
         let r = call(&mut s, "velo_save", json!({}));
-        assert_eq!(r["error"]["code"], -32602);
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["result"]["isError"], true);
     }
 
     fn sc(r: &Value) -> &Value {

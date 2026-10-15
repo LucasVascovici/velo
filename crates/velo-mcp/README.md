@@ -117,5 +117,41 @@ Example session:
 4. `velo_history {"meta": [{"namespace": "mcp", "key": "run"}]}` lists both
    snapshots with this run's identity.
 
-A velo error is a tool result with `isError: true`; protocol faults are JSON-RPC
-errors. Only protocol lines go to stdout; diagnostics go to stderr.
+A velo error, and bad arguments, are tool results with `isError: true` (the
+text of a bad-argument result starts `InvalidParams:` and says what was wrong, so
+the model can correct the call); only malformed requests and unknown tool names
+are JSON-RPC errors. Only protocol lines go to stdout; diagnostics go to stderr.
+
+## Large results
+
+No tool sends multi-megabyte text by accident. A cut result has
+`truncated: true`, a `hint` on how to get the rest and the value to pass for it:
+
+| Tool | Bound | Next page |
+| --- | --- | --- |
+| `velo_history` | `limit`, default 200 entries | `from` = `next_from` |
+| `velo_blame` | `limit`, default 2000 lines | `start_line` = `next_start_line` |
+| `velo_tree_at` | `limit`, default 5000 files; result is `{files, total, truncated}` | `offset` = `next_offset` |
+| `velo_read_file` | `max_bytes`, default 1 MiB; result carries `size` | `offset` = `next_offset` (text is cut on a character boundary) |
+
+## Protocol versions
+
+`2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05` are accepted; the
+client's version is echoed when supported, else the newest (`2025-11-25`).
+
+## Tried clients
+
+Each client below is run against the built server by
+[`conformance/`](conformance) (how to run it locally is in its README) and, for
+the first three, in CI (`.github/workflows/mcp.yml`).
+
+| Client | Version | Transport | Result | What broke, what was fixed |
+| --- | --- | --- | --- | --- |
+| MCP Python SDK (`mcp`) | 2.3.0 | stdio | Passes: negotiates `2025-11-25`, every `inputSchema` is valid draft 2020-12, completes the agent-checkpointing scenario store-only and the `velo_save`/`velo_status` working-tree run | Bad arguments were JSON-RPC `-32602` errors, which the SDK raises as an exception and the model never sees: now `isError` results. The server did not offer `2025-11-25`: added. |
+| MCP TypeScript SDK (`@modelcontextprotocol/sdk`) | 1.32.1 | stdio | Passes: lists tools, `velo_save_tree`, `velo_history`, a bad call as `isError` | `velo_tree_at` returned a bare array as `structuredContent`, which the spec requires to be an object: now `{files, total, truncated}`. |
+| MCP Inspector CLI (`@modelcontextprotocol/inspector`) | 2.11.0 | stdio | Passes: `tools/list` and one `tools/call` exit 0 | Nothing. |
+| Claude Desktop, Cursor, VS Code | not exercised in CI | stdio | Cannot be installed headlessly | Not exercised in CI. |
+
+Found while writing the conformance clients, and fixed for every client:
+`velo_history`, `velo_blame`, `velo_read_file` and `velo_tree_at` had no bound
+and could return multi-megabyte text (see Large results).

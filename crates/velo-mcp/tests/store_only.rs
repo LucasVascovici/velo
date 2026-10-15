@@ -98,7 +98,7 @@ fn store_only_session_needs_no_working_tree() {
     let third_id = third["snapshot"].as_str().unwrap().to_string();
 
     let tree = call(&mut s, 6, "velo_tree_at", json!({"snapshot": third_id}));
-    let paths: Vec<&str> = ok(&tree)
+    let paths: Vec<&str> = ok(&tree)["files"]
         .as_array()
         .unwrap()
         .iter()
@@ -114,7 +114,13 @@ fn store_only_session_needs_no_working_tree() {
         "velo_read_file",
         json!({"snapshot": third_id, "path": "a.txt"}),
     );
-    assert_eq!(ok(&a), &json!({"content": "ONE\n", "encoding": "utf8"}));
+    assert_eq!(
+        ok(&a)["content"],
+        "ONE
+"
+    );
+    assert_eq!(ok(&a)["encoding"], "utf8");
+    assert_eq!(ok(&a)["truncated"], false);
 
     // Binary content round-trips, and utf8 falls back to base64 for it.
     for enc in ["base64", "utf8"] {
@@ -124,7 +130,8 @@ fn store_only_session_needs_no_working_tree() {
             "velo_read_file",
             json!({"snapshot": bin_id, "path": "blob.bin", "encoding": enc}),
         );
-        assert_eq!(ok(&r), &json!({"content": b64, "encoding": "base64"}));
+        assert_eq!(ok(&r)["content"], json!(b64));
+        assert_eq!(ok(&r)["encoding"], "base64");
     }
 
     // History lists all three, each stamped with the run identity.
@@ -195,7 +202,7 @@ fn replace_ignores_the_base() {
     );
     let id = ok(&r)["snapshot"].as_str().unwrap().to_string();
     let tree = call(&mut s, 3, "velo_tree_at", json!({"snapshot": id}));
-    assert_eq!(ok(&tree).as_array().unwrap().len(), 1);
+    assert_eq!(ok(&tree)["files"].as_array().unwrap().len(), 1);
 }
 
 fn base64_encode(bytes: &[u8]) -> String {

@@ -41,5 +41,12 @@ fn stdout_is_json_rpc_only() {
         assert_eq!(v["jsonrpc"], "2.0");
         assert_eq!(v["id"], i as u64 + 1);
     }
-    assert_eq!(lines[1]["result"]["tools"].as_array().unwrap().len(), 18);
+    let tools = lines[1]["result"]["tools"].as_array().unwrap();
+    assert_eq!(tools.len(), 18);
+    // What a client's JSON Schema validator needs of every tool.
+    for t in tools {
+        assert_eq!(t["inputSchema"]["type"], "object", "{t}");
+        assert!(t["inputSchema"]["properties"].is_object(), "{t}");
+    }
+    assert_eq!(lines[0]["result"]["protocolVersion"], "2025-06-18");
 }

@@ -26,6 +26,23 @@ pub(crate) const NEEDS_WORKING_TREE: [(&str, &str); 5] = [
     ("velo_merge_apply", "velo_save_tree with merge_parent"),
 ];
 
+/// Files `velo_tree_at` returns when the call gives no `limit`.
+pub(crate) const TREE_DEFAULT_LIMIT: usize = 5000;
+/// Bytes `velo_read_file` returns when the call gives no `max_bytes`.
+pub(crate) const READ_DEFAULT_MAX_BYTES: usize = 1024 * 1024;
+
+/// An optional integer argument of at least `min`.
+fn usize_arg(args: &Value, key: &str, min: usize) -> Result<Option<usize>, ToolError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_u64()
+            .filter(|n| *n >= min as u64)
+            .map(|n| Some(n as usize))
+            .ok_or_else(|| bad(format!("'{key}' must be an integer of at least {min}"))),
+    }
+}
+
 /// The schemas of the store tools.
 pub(crate) fn list() -> Vec<Value> {
     let encoding = json!({"type": "string", "enum": ["utf8", "base64"], "default": "utf8"});
@@ -51,18 +68,22 @@ pub(crate) fn list() -> Vec<Value> {
         }),
         json!({
             "name": "velo_tree_at",
-            "description": "List the files of a snapshot as {path, object, kind}.",
+            "description": "List the files of a snapshot as {files: [{path, object, kind}], total, truncated}. A large tree comes back in pages of 'limit' files; use 'offset' for the next page.",
             "inputSchema": obj_schema(json!({
-                "snapshot": {"type": "string", "description": "Snapshot id, prefix, branch or tag."}
+                "snapshot": {"type": "string", "description": "Snapshot id, prefix, branch or tag."},
+                "limit": {"type": "integer", "minimum": 1, "default": TREE_DEFAULT_LIMIT, "description": "Most files to return."},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Files to skip, in path order."}
             }), json!(["snapshot"]))
         }),
         json!({
             "name": "velo_read_file",
-            "description": "Read one file of a snapshot. With utf8 (the default), content that is not valid UTF-8 comes back base64 with encoding 'base64'.",
+            "description": "Read one file of a snapshot. With utf8 (the default), content that is not valid UTF-8 comes back base64 with encoding 'base64'. At most 'max_bytes' bytes (default 1 MiB) are returned; a longer file has truncated: true and a hint to read on with 'offset'.",
             "inputSchema": obj_schema(json!({
                 "snapshot": {"type": "string"},
                 "path": {"type": "string"},
-                "encoding": encoding
+                "encoding": encoding,
+                "max_bytes": {"type": "integer", "minimum": 1, "default": READ_DEFAULT_MAX_BYTES, "description": "Most bytes of the file to return."},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Byte offset to start at; use the next_offset of a truncated result."}
             }), json!(["snapshot", "path"]))
         }),
     ]
@@ -179,17 +200,33 @@ pub(crate) fn save_tree_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, T
 }
 
 pub(crate) fn tree_at_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let limit = usize_arg(args, "limit", 1)?.unwrap_or(TREE_DEFAULT_LIMIT);
+    let offset = usize_arg(args, "offset", 0)?.unwrap_or(0);
     let id = snapshot_arg(ctx.repo, req_str(args, "snapshot")?)?;
-    let files: Vec<Value> = ctx
-        .repo
-        .tree_at(&id)?
+    let all = ctx.repo.tree_at(&id)?;
+    let total = all.len();
+    let files: Vec<Value> = all
         .iter()
+        .skip(offset)
+        .take(limit)
         .map(|f| json!({"path": f.path, "object": f.object.as_str(), "kind": kind_name(f.kind)}))
         .collect();
-    Ok(json!(files))
+    let truncated = offset.saturating_add(limit) < total;
+    let mut out = json!({"files": files, "total": total, "truncated": truncated});
+    if truncated {
+        let next = offset + limit;
+        out["next_offset"] = json!(next);
+        out["hint"] = json!(format!(
+            "Showing files {}..{next} of {total}. Call velo_tree_at again with \"offset\": {next} for the next page.",
+            offset + 1
+        ));
+    }
+    Ok(out)
 }
 
 pub(crate) fn read_file_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let max = usize_arg(args, "max_bytes", 1)?.unwrap_or(READ_DEFAULT_MAX_BYTES);
+    let offset = usize_arg(args, "offset", 0)?.unwrap_or(0);
     let id = snapshot_arg(ctx.repo, req_str(args, "snapshot")?)?;
     let path = req_str(args, "path")?;
     let want_b64 = encoding_arg(args)?;
@@ -200,15 +237,47 @@ pub(crate) fn read_file_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, T
         .find(|f| f.path == path)
         .ok_or_else(|| bad(format!("no file '{path}' in snapshot {}", id.as_str())))?;
     let bytes = ctx.repo.read_object(&file.object)?;
-    if !want_b64 {
-        match String::from_utf8(bytes) {
-            Ok(text) => return Ok(json!({"content": text, "encoding": "utf8"})),
-            Err(e) => {
-                return Ok(
-                    json!({"content": STANDARD.encode(e.into_bytes()), "encoding": "base64"}),
-                )
-            }
+    let size = bytes.len();
+    if offset > size {
+        return Err(bad(format!(
+            "'offset' {offset} is past the end of '{path}' ({size} bytes)"
+        )));
+    }
+    let mut end = offset.saturating_add(max).min(size);
+    // Text is cut on a character boundary so a page is still valid UTF-8.
+    let text = if want_b64 {
+        None
+    } else {
+        std::str::from_utf8(&bytes).ok()
+    };
+    if let Some(t) = text {
+        if !t.is_char_boundary(offset) {
+            return Err(bad(format!(
+                "'offset' {offset} is inside a UTF-8 character of '{path}'; use the next_offset of the previous page"
+            )));
+        }
+        while end > offset && !t.is_char_boundary(end) {
+            end -= 1;
+        }
+        if end == offset && offset < size {
+            return Err(bad(format!(
+                "'max_bytes' {max} is smaller than the character at offset {offset}; raise it"
+            )));
         }
     }
-    Ok(json!({"content": STANDARD.encode(bytes), "encoding": "base64"}))
+    let truncated = end < size;
+    let mut out = match text {
+        Some(t) => json!({"content": &t[offset..end], "encoding": "utf8"}),
+        None => json!({"content": STANDARD.encode(&bytes[offset..end]), "encoding": "base64"}),
+    };
+    out["size"] = json!(size);
+    out["offset"] = json!(offset);
+    out["truncated"] = json!(truncated);
+    if truncated {
+        out["next_offset"] = json!(end);
+        out["hint"] = json!(format!(
+            "Returned bytes {offset}..{end} of {size}. Call velo_read_file again with \"offset\": {end} for the rest, or raise 'max_bytes'."
+        ));
+    }
+    Ok(out)
 }

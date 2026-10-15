@@ -1,0 +1,60 @@
+name: MCP conformance
+
+# Real MCP clients drive the built velo-mcp end to end. See
+# crates/velo-mcp/conformance/README.md.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  conformance:
+    name: MCP clients
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      # The CLI is only here to `velo init` the working-tree repository.
+      - name: Build velo-mcp
+        run: cargo build -p velo-mcp -p velo-cli --locked
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Python SDK client
+        working-directory: crates/velo-mcp/conformance
+        run: |
+          pip install mcp jsonschema
+          pip list 2>/dev/null | grep -E '^(mcp|jsonschema) '
+          python python_sdk_client.py --velo-mcp ../../../target/debug/velo-mcp --velo ../../../target/debug/velo
+
+      - name: TypeScript SDK client
+        working-directory: crates/velo-mcp/conformance
+        run: |
+          npm ci --no-audit --no-fund
+          npm ls @modelcontextprotocol/sdk
+          node ts_sdk_client.mjs ../../../target/debug/velo-mcp
+
+      - name: MCP Inspector CLI
+        run: |
+          bin="$PWD/target/debug/velo-mcp"
+          db="$(mktemp -d)/repo.db"
+          npx -y @modelcontextprotocol/inspector --cli "$bin" --store "$db" --create --method tools/list
+          npx -y @modelcontextprotocol/inspector --cli "$bin" --store "$db" --create \
+            --method tools/call --tool-name velo_save_tree \
+            --tool-arg branch=main --tool-arg message=inspector \
+            --tool-arg 'files={"a.txt":"one\n"}'

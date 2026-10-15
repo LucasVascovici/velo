@@ -20,12 +20,22 @@ use velo_core::{Author, BranchName, Error, Repo, SnapshotId, SnapshotMeta};
 /// carries the server's own run identity and would otherwise be forgeable.
 const REFUSED_NAMESPACES: [&str; 2] = ["velo", "mcp"];
 
+/// Entries `velo_history` returns when the call gives no `limit`.
+pub(crate) const HISTORY_DEFAULT_LIMIT: usize = 200;
+/// Lines `velo_blame` returns when the call gives no `limit`.
+pub(crate) const BLAME_DEFAULT_LIMIT: usize = 2000;
+
 /// Why a tool call failed.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ToolError {
-    /// The arguments were wrong: a JSON-RPC invalid-params error.
+    /// The arguments were wrong. This is a tool result with `isError: true`
+    /// whose text says what was wrong, so the model can correct the call (the
+    /// 2025-11-25 revision asks for exactly this).
     Params(String),
+    /// No tool has this name: a JSON-RPC invalid-params error, because the
+    /// request itself is malformed rather than the arguments.
+    UnknownTool(String),
     /// velo refused or failed: a tool result with `isError: true`.
     Velo(Error),
 }
@@ -118,7 +128,7 @@ pub fn list(store_only: bool) -> Value {
             "name": "velo_history",
             "description": "List snapshots, newest first, optionally filtered by metadata.",
             "inputSchema": obj(json!({
-                "limit": {"type": "integer", "minimum": 1, "default": 20},
+                "limit": {"type": "integer", "minimum": 1, "default": 200, "description": "Most entries to return. The result says truncated: true and how to get the next page when there are more."},
                 "branch": {"type": "string"},
                 "from": {"type": "string"},
                 "paths": strs,
@@ -168,7 +178,8 @@ pub fn list(store_only: bool) -> Value {
                 "path": {"type": "string"},
                 "at": {"type": "string", "description": "Snapshot spec; default the current position."},
                 "start_line": {"type": "integer", "minimum": 1},
-                "end_line": {"type": "integer", "minimum": 1, "description": "Inclusive."}
+                "end_line": {"type": "integer", "minimum": 1, "description": "Inclusive."},
+                "limit": {"type": "integer", "minimum": 1, "default": 2000, "description": "Most lines to return. The result says truncated: true and the start_line to continue from."}
             }), json!(["path"]))
         }
     ]);
@@ -235,7 +246,7 @@ pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolEr
         "velo_merge_plan" => merge_plan_tool(ctx, args),
         "velo_merge_apply" => merge_apply_tool(ctx, args),
         "velo_blame" => blame_tool(ctx, args),
-        other => Err(bad(format!("unknown tool: {other}"))),
+        other => Err(ToolError::UnknownTool(format!("unknown tool: {other}"))),
     }
 }
 
@@ -505,7 +516,7 @@ fn diff_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
 
 fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     let limit = match args.get("limit") {
-        None | Some(Value::Null) => 20,
+        None | Some(Value::Null) => HISTORY_DEFAULT_LIMIT,
         Some(v) => v
             .as_u64()
             .filter(|n| *n > 0)
@@ -549,12 +560,14 @@ fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             from: from.as_ref(),
             paths: &refs,
             meta: &filters,
-            limit: Some(limit),
+            // One more than asked, to know whether there is a next page.
+            limit: Some(limit.saturating_add(1)),
             ..Default::default()
         },
     )?;
+    let truncated = h.entries.len() > limit;
     let mut entries = Vec::new();
-    for e in &h.entries {
+    for e in h.entries.iter().take(limit) {
         let mut o = Map::new();
         o.insert("snapshot".into(), json!(e.hash.as_str()));
         o.insert("message".into(), json!(e.message));
@@ -574,7 +587,16 @@ fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         }
         entries.push(Value::Object(o));
     }
-    Ok(json!({"entries": entries}))
+    let mut out = json!({"entries": entries, "truncated": truncated});
+    if truncated {
+        let next = h.entries[limit - 1].parent.as_ref().map(|p| p.as_str());
+        out["next_from"] = json!(next);
+        out["hint"] = json!(format!(
+            "Showing the newest {limit} entries. Call velo_history again with \"from\": \"{}\" for the next page, or narrow it with 'branch', 'meta' or 'paths'.",
+            next.unwrap_or("<none: that was the oldest>")
+        ));
+    }
+    Ok(out)
 }
 
 fn metadata_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
@@ -841,6 +863,7 @@ fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         }
     };
     let (start, end) = (line("start_line")?, line("end_line")?);
+    let limit = line("limit")?.unwrap_or(BLAME_DEFAULT_LIMIT);
     if let (Some(s), Some(e)) = (start, end) {
         if s > e {
             return Err(bad(format!("'start_line' ({s}) is after 'end_line' ({e})")));
@@ -882,7 +905,8 @@ fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     // One metadata read per distinct origin snapshot, not per line.
     let mut runs: std::collections::HashMap<String, Option<String>> = Default::default();
     let mut out = Vec::new();
-    for l in &b.lines {
+    let truncated = b.lines.len() > limit;
+    for l in b.lines.iter().take(limit) {
         let origin = match &l.origin {
             None => Value::Null,
             Some(o) => {
@@ -907,5 +931,14 @@ fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         };
         out.push(json!({"line_no": l.line_no, "text": l.text, "origin": origin}));
     }
-    Ok(json!({"path": path, "snapshot": b.snapshot.as_str(), "lines": out}))
+    let mut result = json!({"path": path, "snapshot": b.snapshot.as_str(), "lines": out, "truncated": truncated});
+    if truncated {
+        let next = b.lines[limit].line_no;
+        result["next_start_line"] = json!(next);
+        result["hint"] = json!(format!(
+            "Showing {limit} lines; the file has more (to line {}). Call velo_blame again with \"start_line\": {next} for the rest.",
+            b.lines[b.lines.len() - 1].line_no
+        ));
+    }
+    Ok(result)
 }

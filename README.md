@@ -213,6 +213,9 @@ Client configuration (the surrounding file format depends on the client):
 {"command": "velo-mcp", "args": ["--repo", "/path/to/project"]}
 ```
 
+Which real clients were tried, and what broke, is in the
+[tried clients table](crates/velo-mcp/README.md#tried-clients).
+
 ### Further reading
 
 Worked walkthroughs live in [`docs/cookbook`](docs/cookbook):

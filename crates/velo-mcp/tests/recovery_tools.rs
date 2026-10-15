@@ -111,7 +111,8 @@ fn tag_create_list_delete() {
     let r = call(&mut s, "velo_tag", json!({"action": "list"}));
     assert!(ok(&r)["tags"].as_array().unwrap().is_empty());
     let r = call(&mut s, "velo_tag", json!({"action": "create"}));
-    assert_eq!(r["error"]["code"], -32602);
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(r.get("error").is_none());
 }
 
 #[test]
@@ -192,7 +193,8 @@ fn find_by_metadata() {
     );
     assert_eq!(ok(&r)["snapshots"].as_array().unwrap().len(), 2, "{r}");
     let r = call(&mut s, "velo_find", json!({"filters": []}));
-    assert_eq!(r["error"]["code"], -32602);
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(r.get("error").is_none());
 }
 
 #[test]
@@ -214,7 +216,7 @@ fn blame_range_and_invalid_range() {
         json!({"path": "f.txt", "start_line": 99}),
     ] {
         let r = call(&mut s, "velo_blame", args.clone());
-        assert_eq!(r["error"]["code"], -32602, "{args}: {r}");
+        assert_eq!(r["result"]["isError"], true, "{args}: {r}");
     }
 }
 
