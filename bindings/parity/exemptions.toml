@@ -1,0 +1,447 @@
+# Entry points of velo-core that are deliberately not bound.  See README.md.
+# A stale exemption (entry gone, or now bound) fails the check.
+
+[[exempt]]
+entry = "Repo::branch_exists"
+bindings = ["python", "node"]
+reason = "pending: metadata queries, tags and fsck (18.8-b)"
+
+[[exempt]]
+entry = "Repo::create_file"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "Repo::discover"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "Repo::format_version"
+bindings = ["python", "node"]
+reason = "pending: metadata queries, tags and fsck (18.8-b)"
+
+[[exempt]]
+entry = "Repo::has_working_tree"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "Repo::init_with"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "Repo::lock_holder"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "Repo::lock_label"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "Repo::object_location"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "Repo::observing"
+bindings = ["python", "node"]
+reason = "progress observers are called from worker threads once per item; a Python or JS callback at that rate is not offered, while change events (on_event, onEvent) are"
+
+[[exempt]]
+entry = "Repo::open"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "Repo::open_file"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "Repo::open_file_and_migrate"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "Repo::root"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "Repo::scoped"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "Repo::try_write"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "Repo::write_timeout"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "WriteGuard::repo"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "WriteGuard::root"
+bindings = ["python", "node"]
+reason = "lock and scope handling is internal to the binding handle; each bound call takes the write lock itself"
+
+[[exempt]]
+entry = "commands::apply::reconcile_tree"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::branches::delete"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::bundle::apply"
+bindings = ["python", "node"]
+reason = "pending: sync (bundle transfer, 18.8-d)"
+
+[[exempt]]
+entry = "commands::bundle::create"
+bindings = ["python", "node"]
+reason = "pending: sync (bundle transfer, 18.8-d)"
+
+[[exempt]]
+entry = "commands::cherry_pick::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::diff::between"
+bindings = ["python", "node"]
+reason = "pending: metadata queries (diff output types, 18.8-b)"
+
+[[exempt]]
+entry = "commands::diff::build_hunks"
+bindings = ["python", "node"]
+reason = "pending: metadata queries (diff output types, 18.8-b)"
+
+[[exempt]]
+entry = "commands::diff::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::diff::tracks_path"
+bindings = ["python", "node"]
+reason = "pending: metadata queries, tags and fsck (18.8-b)"
+
+[[exempt]]
+entry = "commands::export::git_fast_import"
+bindings = ["python", "node"]
+reason = "git interchange is a CLI workflow; no embedder demand, revisit with sync (18.8-d)"
+
+[[exempt]]
+entry = "commands::find_repo_root"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "commands::gc::run"
+bindings = ["python", "node"]
+reason = "pending: retention, compaction and gc (18.8-b)"
+
+[[exempt]]
+entry = "commands::get_dirty_files"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::grep::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::import::git_fast_export"
+bindings = ["python", "node"]
+reason = "git interchange is a CLI workflow; no embedder demand, revisit with sync (18.8-d)"
+
+[[exempt]]
+entry = "commands::init::run"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "commands::init::run_with"
+bindings = ["python", "node"]
+reason = "bindings open and create through init and open_and_migrate only; file-backed and discovery constructors are Rust-embedder conveniences"
+
+[[exempt]]
+entry = "commands::merge::run"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::mv::pending"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::mv::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::paths::aliases"
+bindings = ["python", "node"]
+reason = "pending: metadata queries, tags and fsck (18.8-b)"
+
+[[exempt]]
+entry = "commands::paths::path_at"
+bindings = ["python", "node"]
+reason = "pending: metadata queries, tags and fsck (18.8-b)"
+
+[[exempt]]
+entry = "commands::paths::recorded_by"
+bindings = ["python", "node"]
+reason = "pending: metadata queries, tags and fsck (18.8-b)"
+
+[[exempt]]
+entry = "commands::rebase::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::redo::peek"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::redo::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::remote::add"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::remote::list"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::remote::remove"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::resolve::clear_conflict"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::clear_decision"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::conflict_count"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::edits"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::finalise"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::get_conflict"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::list_conflicts"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::mark"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::mark_with"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::merge_active"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::merge_source"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::missing_clean_changes"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::open_session"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::record_decision"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::take_all"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::resolve::take_side"
+bindings = ["python", "node"]
+reason = "working-tree merge and conflict session; the bindings expose the in-memory merge in merge.rs, conflict sessions are not an embedder surface yet"
+
+[[exempt]]
+entry = "commands::restore::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::save::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::show::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::snapshot_timestamp_ms"
+bindings = ["python", "node"]
+reason = "internal helper for snapshot ids and display; the bindings return ids and timestamps already formatted"
+
+[[exempt]]
+entry = "commands::squash::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::stash::drop_shelf"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::stash::list"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::stash::pop"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::stash::push"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::stash::show_shelf"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::status::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::switch::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "commands::sync::clone"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::sync::fetch"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::sync::published"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::sync::pull"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::sync::push"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::sync::push_report"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::sync::tracking_refs_at"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
+entry = "commands::timestamp_from_ms"
+bindings = ["python", "node"]
+reason = "internal helper for snapshot ids and display; the bindings return ids and timestamps already formatted"
+
+[[exempt]]
+entry = "commands::undo::run"
+bindings = ["python", "node"]
+reason = "working-tree command; the bindings expose the store-only half (see the method table in lib.rs)"
+
+[[exempt]]
+entry = "Repo::limited"
+bindings = ["python", "node"]
+reason = "pending: read limits on the handle are not bound yet (18.1-b follow-up)"
+
+[[exempt]]
+entry = "Repo::limits"
+bindings = ["python", "node"]
+reason = "pending: read limits on the handle are not bound yet (18.1-b follow-up)"
+
+[[exempt]]
+entry = "commands::sync::clone_with_token"
+bindings = ["python", "node"]
+reason = "pending: clone is not bound; sync is, with the token parameter (18.8-d)"
+
+[[exempt]]
+entry = "sign::message"
+bindings = ["python", "node"]
+reason = "internal: the canonical bytes a signature covers; the bindings sign through sign::sign"

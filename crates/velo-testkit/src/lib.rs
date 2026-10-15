@@ -14,6 +14,7 @@
 //! ```
 //!
 //! The temporary directory is removed when the [`TempRepo`] is dropped.
+#![forbid(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 

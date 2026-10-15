@@ -3768,7 +3768,7 @@ mod tests {
     }
 
     fn status_of(resp: &[u8]) -> String {
-        crate::transport::read_string(&mut std::io::Cursor::new(resp)).unwrap()
+        crate::transport::read_string(&mut std::io::Cursor::new(resp), u32::MAX).unwrap()
     }
 
     #[test]
@@ -3791,7 +3791,9 @@ mod tests {
         let mut cur = std::io::Cursor::new(&bytes[..]);
         let refs = crate::transport::read_refs(&mut cur).unwrap();
         assert_eq!(refs[0].hash, second);
-        let pack = commands::bundle::decode(&bytes[cur.position() as usize..]).unwrap();
+        let pack =
+            commands::bundle::decode(&bytes[cur.position() as usize..], &crate::Limits::default())
+                .unwrap();
         assert_eq!(pack.snapshots.len(), 2);
 
         let fresh = TempDir::new().unwrap();
@@ -12231,3 +12233,36 @@ mod resolve_line_endings;
 
 #[cfg(test)]
 mod sync_pack_speed;
+
+#[cfg(test)]
+mod hostile_paths;
+
+#[cfg(test)]
+mod signatures;
+
+#[cfg(test)]
+mod one_step_sync;
+
+#[cfg(test)]
+mod read_limits;
+
+#[cfg(test)]
+mod signed_bundles;
+
+#[cfg(test)]
+mod http_service;
+
+#[cfg(test)]
+mod http_auth_client;
+
+#[cfg(test)]
+mod signed_protection;
+
+#[cfg(test)]
+mod rebase_abort;
+
+#[cfg(test)]
+mod retention_scale;
+
+#[cfg(test)]
+mod fuzz_regressions;

@@ -1,0 +1,217 @@
+# Scale: how far velo has been tested
+
+velo keeps every snapshot's whole file list in the `file_map` table, so its
+metadata grows as files x snapshots even when one file changes per snapshot
+(see [FORMAT.md](FORMAT.md) section 11.4). This page says how far that has been
+measured, how fast velo is there, where it degrades, and what to do about it.
+
+## The envelope
+
+**Tested to 10,000 files x 2,000 snapshots and to 100,000 files x 200
+snapshots: 20 million `file_map` rows (a 5.3 GiB `velo.db`) in both cases, on
+Windows 11 and on Linux, one file changed per snapshot.**
+
+Inside that envelope every command completed. Beyond it nothing is claimed:
+velo has not been measured above 20 million rows, 100,000 files or 2,000
+snapshots. The limits that show up inside it are below.
+
+## Results
+
+Every number is a run of the real release CLI (`velo 5.2.0`), so it includes
+process start, database open and disk I/O. One run per cell, one file changed
+per snapshot, each file about 200 bytes, so these are metadata and scanning
+costs, not large-content costs. The per-command rows are the median of 3 runs
+(5 for open). Raw data, including every save latency, is in
+[`bench/results/`](../bench/results/).
+
+Machine for both platforms: Intel Core i7-1370P, 20 logical CPUs. The
+Linux runs are WSL2 (Ubuntu 22.04, kernel 5.15, ext4 inside the WSL2 virtual
+disk) on the same laptop, not a separate Linux box, so the two columns compare
+filesystems and scanners on identical hardware, not different hardware.
+
+### 10,000 files x 2,000 snapshots (`envelope-a`)
+
+| Metric | Windows 11 (NTFS, Defender on) | Linux (WSL2, ext4) |
+| --- | --- | --- |
+| first save (every file new) | 49.6 s | 0.68 s |
+| save, first 10% median / p95 | 1,208 ms / 2,456 ms | 861 ms / 1,832 ms |
+| save, last 10% median / p95 | 1,854 ms / 2,111 ms | 1,976 ms / 2,835 ms |
+| save growth, last / first median | 1.53x | 2.30x |
+| `status` (clean) | 180 ms | 101 ms |
+| `history` (all 2,000) | 50 ms | 28 ms |
+| `history --file` | 111 ms | 74 ms |
+| `restore` to snapshot 1,000 / back to tip | 965 ms / 508 ms | 329 ms / 277 ms |
+| `gc` | 6.5 s | 5.1 s |
+| `fsck` | 31.3 s | 25.6 s |
+| open (`velo branches`) | 36 ms | 3 ms |
+| `velo.db` | 5,338.6 MiB | 5,353.9 MiB |
+| `file_map` rows | 20,002,000 | 20,002,000 |
+
+### 100,000 files x 200 snapshots (`envelope-b`)
+
+| Metric | Windows 11 (NTFS, Defender on) | Linux (WSL2, ext4) |
+| --- | --- | --- |
+| first save (every file new) | 519.9 s | 21.4 s |
+| save, first 10% median / p95 | 3,621 ms / 7,081 ms | 2,971 ms / 4,493 ms |
+| save, last 10% median / p95 | 14,470 ms / 16,551 ms | 20,187 ms / 21,821 ms |
+| save growth, last / first median | 4.00x | 6.80x |
+| `status` (clean) | 2,406 ms | 720 ms |
+| `history` (all 200) | 28 ms | 7 ms |
+| `history --file` | 44 ms | 13 ms |
+| `restore` to snapshot 100 / back to tip | 2,720 ms / 2,751 ms | 1,280 ms / 1,298 ms |
+| `gc` | 392.3 s | 8.2 s |
+| `fsck` | 127.5 s | 37.6 s |
+| open (`velo branches`) | 96 ms | 3 ms |
+| `velo.db` | 5,329.2 MiB | 5,350.9 MiB |
+| `file_map` rows | 20,000,200 | 20,000,200 |
+
+Reading them:
+
+- **Reading history is cheap everywhere.** `history`, `history --file` and open
+  stay under 120 ms at 20 million rows. `restore` is a second or three, in
+  proportion to the files it rewrites.
+- **Save is the cost, and it grows with the history.** At 10,000 files a save
+  settles at about 1.9 s after the first few hundred snapshots and stays flat
+  to 2,000. At 100,000 files it keeps climbing, from 3-4 s to 14-20 s over 200
+  snapshots, and had not flattened when the run ended. Each save writes one
+  row per file (100,000 rows for a one-file change) into a database that keeps
+  getting larger. The runs measured that latency grows with the table; they did
+  not isolate which part of SQLite's work (page cache, index maintenance, the
+  WAL) is responsible.
+- **The first save of a large tree is a scan-and-hash of every file.** On
+  Windows it took 520 s for 100,000 files against 21 s on Linux, and the same
+  gap shows in `gc` (392 s against 8 s) and in clean `status`. That gap is
+  per-file open cost with Defender scanning on, not the database. See the
+  caveats.
+- **`fsck` and `gc` read every row.** At 20 million rows `fsck` is 26-38 s on
+  Linux and 31-127 s on Windows. Treat it as a maintenance command, not a
+  prompt.
+
+## Where it degrades, and why
+
+Rows in `file_map` grow as files x snapshots. Everything that is not a point
+lookup either reads or writes in proportion to that:
+
+| What grows | Where it showed | Consequence |
+| --- | --- | --- |
+| rows written per save = files in the tree | `save` at 100,000 files: 3.6 s rising to 14-20 s | at 100,000 files a save takes 14-20 s once the history is 200 snapshots long |
+| total rows = files x snapshots | `fsck` 26-127 s, `gc` 5-392 s, `velo.db` 5.3 GiB | maintenance commands take minutes at 20 million rows |
+| per-file open cost | Windows first save, `gc`, `status` at 100,000 files | Defender scanning (see caveats); not a velo limit |
+
+What stays fast: `history`, `history --file`, open, and `restore` of a tree
+(proportional to the files in one tree, not to the history). Storage costs about
+290 bytes per `file_map` row, so 20 million rows is 5.3 GiB however small the
+files are.
+
+Two things keep the cost down without changing the format:
+
+1. **Retention** (next section) removes whole snapshots and their rows.
+2. **Carry-forward** (`TreeEntry::stored` in `WriteGuard::save_tree`, built from
+   the previous tree) avoids re-reading and re-hashing files, which is where
+   first-save cost goes. It does not reduce rows.
+
+## Retention for agent checkpointing
+
+An agent that snapshots after every tool call produces thousands of
+near-identical snapshots. The recommended policy is the default of
+`velo_core::commands::retention::Policy::default()`:
+
+- every snapshot for the last day,
+- one per hour for the last 30 days,
+- one per day after that.
+
+It is a library API (`retention::apply`) in this release, not a CLI command.
+Call it on a schedule (daily is enough), followed by `gc`.
+
+**Measured** (`crates/velo-core/src/tests/retention_scale.rs`, an ignored
+test): a 10,000-file tree and 2,000 snapshots spread evenly over 60 synthetic
+days (one about every 43 minutes, three files changed per snapshot), saved with
+`save_tree` and explicit timestamps, then `retention::apply` with the default
+policy at day 60, then `gc`. Windows 11, release build, Defender on.
+
+| | Before | After retention and `gc` |
+| --- | --- | --- |
+| snapshots | 2,000 | 760 (-62%) |
+| `file_map` rows | 20,000,000 | 7,600,000 (-62%) |
+| live database content | 5.17 GiB | 1.99 GiB (-62%) |
+| `velo.db` file size | 5.17 GiB | 7.14 GiB |
+| `retention::apply` | | 1,219.5 s |
+| `gc` | | 226.1 s |
+| building the 2,000 snapshots | 3,808 s | |
+
+Only the Windows run of the retention test is published. The same test was
+started on Linux (WSL2) but had not finished when the session ended, so there
+are no Linux retention numbers here; the row and snapshot counts are properties
+of the policy and do not depend on the platform, the timings do.
+
+What to take from it:
+
+- **Retention bounds the rows.** The policy keeps everything from the last day
+  and at most 24 per day for the 29 days after, then one a day, so the retained
+  history is set by the policy, not by how long the agent has run. Rows fall in
+  step with snapshots, because every snapshot owns its whole tree.
+- **The database file does not shrink.** SQLite keeps freed pages for reuse and
+  velo has no `VACUUM`, so the 7.14 GiB file holds 5.15 GiB of free pages after
+  the pass (later saves reuse them). Retention bounds growth; it does not give
+  disk back to the operating system. The pass itself grew the file by 38%.
+- **Run it early and often.** Applying the policy once to 20 million rows took
+  20 minutes. Run daily, a pass thins about 30 snapshots and costs a small
+  fraction of that. Do not let 2,000 snapshots of a 10,000-file tree pile up
+  before the first pass.
+
+## Method
+
+`bench/scale/scale.py` drives the release CLI and uses only the Python standard
+library. For N files of about 200 bytes in directories of about 100 files, it
+runs `velo init`, one first `save`, then M-1 saves that each rewrite one file
+chosen by a seeded RNG (seed 1). It records every save latency, then the
+`.velo` and `velo.db` sizes and the `file_map` row count (read-only `sqlite3`),
+then the median of 3 runs of `status`, `history`, `history --file`, `restore`,
+`gc` and `fsck`, and of 5 runs of `velo branches` for open time. Full method:
+[`bench/README.md`](../bench/README.md).
+
+Build and run:
+
+```
+cargo build --release -p velo-cli --locked
+python bench/scale/scale.py --preset envelope-a --out a.json   # 10,000 x 2,000
+python bench/scale/scale.py --preset envelope-b --out b.json   # 100,000 x 200
+```
+
+Both take hours. On the laptop above, `envelope-a` took about 1 hour 10 minutes
+and `envelope-b` about 2 hours 15 minutes on Windows. The `bench` workflow
+(`.github/workflows/bench.yml`, manual dispatch) runs the same presets on a
+GitHub-hosted Linux runner. Retention:
+
+```
+cargo test -p velo-core --release retention_scale -- --ignored --nocapture
+```
+
+The retention test builds 2,000 snapshots of a 10,000-file tree: about 1 hour
+30 minutes on Windows, and it needs about 8 GiB of temporary disk.
+
+Results are committed as `bench/results/<date>-<platform>-<preset>.json`:
+`2026-10-15-windows-envelope-a.json`, `2026-10-15-windows-envelope-b.json`,
+`2026-10-15-linux-envelope-a.json` and `2026-10-15-linux-envelope-b.json`, with
+the retention output as `<date>-<platform>-retention-scale.txt`.
+
+## Caveats
+
+- **Windows Defender.** The Windows runs had Defender real-time protection on,
+  with no exclusions, and the work directory under `%TEMP%`. Defender scans
+  files as they are opened and written, and velo writes one object file per new
+  file, so file-heavy steps (the first save, `gc`, clean `status` at 100,000
+  files) are many times slower than on Linux: 520 s against 21 s for the first
+  100,000-file save. Excluding the work directory from real-time scanning is
+  expected to remove most of that gap; that was not measured here. The
+  committed Windows numbers are the default configuration an adopter sees, not
+  the best case. Each JSON records the Defender state in `env.defender_note`.
+- **One machine, one run per cell.** The Linux runs are WSL2 on the same laptop
+  as the Windows runs, not native Linux and not a separate machine. There is no
+  repeat to give a confidence interval; the p95 columns show the spread within
+  a run.
+- **Small files.** About 200 bytes each, so content hashing and compression are
+  negligible and the numbers describe metadata scale. Large files add their own
+  hashing and write cost on top.
+- **One changed file per snapshot** in the benchmark and three in the retention
+  test. The rows written are the same either way: one per file in the tree.

@@ -1,7 +1,9 @@
 //! Render sync outcomes for the terminal.
 
 use console::style;
-use velo_core::commands::sync::{BranchCreated, Cloned, Fetched, Pulled, PushReport, Pushed};
+use velo_core::commands::sync::{
+    BranchCreated, Cloned, Fetched, Pulled, PushReport, Pushed, Synced,
+};
 
 /// The steps after a refused push, in order. One definition so `push`, `pull`
 /// and `status` can never give different advice. `pull` and `push` carry the
@@ -13,6 +15,10 @@ pub fn recipe(remote: &str, branch: &str) -> Vec<(String, &'static str)> {
         format!(" {remote}")
     };
     vec![
+        (
+            format!("velo sync{arg}"),
+            "fetch, merge if clean, push (or by hand:)",
+        ),
         (format!("velo pull{arg}"), "bring their snapshots in"),
         (
             format!("velo merge {remote}/{branch}"),
@@ -88,6 +94,64 @@ pub fn print_push_report(report: &PushReport) {
                 branch
             );
         }
+    }
+}
+
+pub fn print_synced(synced: &Synced) {
+    match synced {
+        Synced::Nothing { branch, remote } => println!(
+            "{} '{}' is already up to date with '{}'.",
+            style("✔").green(),
+            branch,
+            remote
+        ),
+        Synced::Pushed { report } => print_push_report(report),
+        Synced::FastForwarded { branch, to, .. } => println!(
+            "{} Fast-forwarded '{}' to {}.",
+            style("✔").green().bold(),
+            branch,
+            style(super::id::short(to.as_str())).yellow()
+        ),
+        Synced::Merged {
+            branch,
+            remote,
+            merge,
+            report,
+        } => {
+            println!(
+                "{} merged {}/{} ({}) and pushed",
+                style("✔").green().bold(),
+                remote,
+                branch,
+                style(super::id::short(merge.as_str())).yellow()
+            );
+            print_push_report(report);
+        }
+        Synced::Conflicted {
+            branch,
+            remote,
+            paths,
+        } => {
+            println!(
+                "{} '{}' and '{}/{}' conflict; nothing was pushed. Conflicting files:",
+                style("!").yellow().bold(),
+                branch,
+                remote,
+                branch
+            );
+            for p in paths {
+                println!("  {} {}", style("[Conflict]").red().bold(), p.display());
+            }
+            println!("  Next steps:");
+            println!(
+                "    · {}  resolve each file (or --take ours / --take theirs)",
+                style("velo resolve <file>").cyan()
+            );
+            println!("    · {}  record the merge", style("velo save").cyan());
+            println!("    · {}  publish it", style("velo sync").cyan());
+        }
+        // `Synced` is non-exhaustive; a future outcome falls back to its debug form.
+        other => println!("{other:?}"),
     }
 }
 

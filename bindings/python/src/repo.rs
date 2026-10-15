@@ -1,8 +1,9 @@
 //! The embedder API as Python classes.
 
 use std::collections::BTreeMap;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
@@ -10,7 +11,8 @@ use pyo3::types::{PyBytes, PyDict, PyList, PyString};
 use velo_core::tree::{FileKind, SaveTree, TreeEntry as CoreEntry};
 use velo_core::{Author as CoreAuthor, BranchName, ObjectHash, SnapshotId, SnapshotMeta};
 
-use crate::errors::to_py;
+use crate::callbacks::{Hooks, Rule};
+use crate::errors::{to_py, ReentrantCall, REENTRANT};
 use crate::history::{meta_filters, Blame, Branch};
 use crate::merge::{parse_resolutions, MergePlan};
 
@@ -255,25 +257,96 @@ fn collect_entries(entries: &Bound<'_, PyAny>) -> PyResult<Vec<CoreEntry>> {
 pub struct Repo {
     owner: std::thread::ThreadId,
     inner: Mutex<velo_core::Repo>,
+    pub(crate) hooks: Hooks,
+    /// Where the repository was opened, to reopen it with other merge drivers.
+    pub(crate) root: PathBuf,
+}
+
+/// The core handle, locked. Dropping it releases the lock first and only then
+/// delivers queued change events, so an `on_event` callback never runs inside a
+/// core call.
+pub(crate) struct CoreGuard<'a> {
+    guard: Option<MutexGuard<'a, velo_core::Repo>>,
+    hooks: &'a Hooks,
+}
+
+impl Deref for CoreGuard<'_> {
+    type Target = velo_core::Repo;
+    fn deref(&self) -> &velo_core::Repo {
+        self.guard.as_deref().expect("guard is held until drop")
+    }
+}
+
+impl DerefMut for CoreGuard<'_> {
+    fn deref_mut(&mut self) -> &mut velo_core::Repo {
+        self.guard.as_deref_mut().expect("guard is held until drop")
+    }
+}
+
+impl Drop for CoreGuard<'_> {
+    fn drop(&mut self) {
+        drop(self.guard.take());
+        self.hooks.flush();
+    }
 }
 
 impl Repo {
-    fn wrap(repo: velo_core::Repo) -> Self {
+    fn wrap(repo: velo_core::Repo, root: &Path) -> Self {
+        let hooks = Hooks::new();
         Repo {
             owner: std::thread::current().id(),
-            inner: Mutex::new(repo),
+            inner: Mutex::new(repo.listening(hooks.listener())),
+            hooks,
+            root: std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf()),
         }
     }
 
-    fn core(&self) -> PyResult<MutexGuard<'_, velo_core::Repo>> {
+    pub(crate) fn check_owner(&self) -> PyResult<()> {
         if std::thread::current().id() != self.owner {
             return Err(PyRuntimeError::new_err(
                 "velo.Repo is unsendable: it can only be used on the thread that created it",
             ));
         }
-        self.inner
-            .lock()
-            .map_err(|_| PyRuntimeError::new_err("velo.Repo is poisoned by an earlier panic"))
+        Ok(())
+    }
+
+    /// Lock the core handle without ever waiting for it.
+    ///
+    /// The owner-thread check means a second caller can only be on the owner
+    /// thread, inside a core call: a merge driver or an event callback calling
+    /// back in. Waiting for that lock would deadlock, so it fails instead.
+    pub(crate) fn core(&self) -> PyResult<CoreGuard<'_>> {
+        self.check_owner()?;
+        match self.inner.try_lock() {
+            Ok(guard) => Ok(CoreGuard {
+                guard: Some(guard),
+                hooks: &self.hooks,
+            }),
+            Err(TryLockError::WouldBlock) => Err(PyErr::new::<ReentrantCall, _>(REENTRANT)),
+            Err(TryLockError::Poisoned(_)) => Err(PyRuntimeError::new_err(
+                "velo.Repo is poisoned by an earlier panic",
+            )),
+        }
+    }
+
+    /// Replace the core handle with one carrying the merge drivers: the current
+    /// rules plus `add`, or none when `clear`.
+    fn rebuild(&self, py: Python<'_>, add: Option<(String, Rule)>, clear: bool) -> PyResult<()> {
+        let mut guard = self.core()?;
+        let (drivers, list) = if clear {
+            (velo_core::Drivers::new(), Vec::new())
+        } else {
+            self.hooks.drivers_with(py, add).map_err(to_py)?
+        };
+        // The builders consume the handle, so the new one is opened from the
+        // same root with the same listener and the old one is dropped.
+        let fresh = velo_core::Repo::open_and_migrate(&self.root)
+            .map_err(to_py)?
+            .listening(self.hooks.listener())
+            .merging(drivers);
+        *guard = fresh;
+        self.hooks.set_rules(list);
+        Ok(())
     }
 }
 
@@ -281,13 +354,17 @@ impl Repo {
 impl Repo {
     #[staticmethod]
     fn init(path: PathBuf) -> PyResult<Self> {
-        Ok(Repo::wrap(velo_core::Repo::init(&path).map_err(to_py)?))
+        Ok(Repo::wrap(
+            velo_core::Repo::init(&path).map_err(to_py)?,
+            &path,
+        ))
     }
 
     #[staticmethod]
     fn open(path: PathBuf) -> PyResult<Self> {
         Ok(Repo::wrap(
             velo_core::Repo::open_and_migrate(Path::new(&path)).map_err(to_py)?,
+            &path,
         ))
     }
 
@@ -296,6 +373,7 @@ impl Repo {
     #[allow(clippy::too_many_arguments)]
     fn save_tree(
         &self,
+        py: Python<'_>,
         branch: &str,
         message: &str,
         entries: &Bound<'_, PyAny>,
@@ -317,26 +395,34 @@ impl Repo {
             .map(|(from, to)| (PathBuf::from(from), PathBuf::from(to)))
             .collect();
 
-        let repo = self.core()?;
-        let guard = repo.write().map_err(to_py)?;
-        let id = guard
-            .save_tree(SaveTree {
+        let author = author.as_ref().map(|a| &a.inner);
+        self.check_owner()?;
+        let id = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let guard = match repo.write() {
+                Ok(g) => g,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(guard.save_tree(SaveTree {
                 branch: &branch,
                 parent: parent.as_ref(),
                 merge_parent: merge_parent.as_ref(),
                 message,
                 entries,
                 meta: snapshot_meta,
-                author: author.as_ref().map(|a| &a.inner),
+                author,
                 renames: &renames,
                 timestamp_ms,
-            })
-            .map_err(to_py)?;
-        Ok(id.as_str().to_string())
+            }))
+        })?;
+        Ok(id.map_err(to_py)?.as_str().to_string())
     }
 
-    fn tree_at(&self, id: &str) -> PyResult<Vec<TreeFile>> {
-        let files = self.core()?.tree_at(&snapshot_id(id)?).map_err(to_py)?;
+    fn tree_at(&self, py: Python<'_>, id: &str) -> PyResult<Vec<TreeFile>> {
+        let id = snapshot_id(id)?;
+        self.check_owner()?;
+        let files = py.detach(|| -> PyResult<_> { Ok(self.core()?.tree_at(&id)) })?;
+        let files = files.map_err(to_py)?;
         Ok(files
             .into_iter()
             .map(|f| TreeFile {
@@ -413,8 +499,10 @@ impl Repo {
     /// Each `meta` tuple is `(namespace, key, value)` or `(namespace, key)`.
     #[pyo3(signature = (*, from_ = None, branch = None, all = false, paths = None,
         limit = None, meta = None))]
+    #[allow(clippy::too_many_arguments)]
     fn history(
         &self,
+        py: Python<'_>,
         from_: Option<&str>,
         branch: Option<&str>,
         all: bool,
@@ -432,25 +520,30 @@ impl Repo {
         let path_refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
         let meta = meta.unwrap_or_default();
         let filters = meta_filters(&meta)?;
-        let history = velo_core::commands::history::run(
-            &*self.core()?,
-            velo_core::commands::history::Options {
-                all,
-                branch: branch.as_ref(),
-                from: from.as_ref(),
-                paths: &path_refs,
-                meta: &filters,
-                limit,
-            },
-        )
-        .map_err(to_py)?;
+        self.check_owner()?;
+        let history = py.detach(|| -> PyResult<_> {
+            Ok(velo_core::commands::history::run(
+                &*self.core()?,
+                velo_core::commands::history::Options {
+                    all,
+                    branch: branch.as_ref(),
+                    from: from.as_ref(),
+                    paths: &path_refs,
+                    meta: &filters,
+                    limit,
+                },
+            ))
+        })?;
+        let history = history.map_err(to_py)?;
         Ok(history.entries.into_iter().map(Entry::from).collect())
     }
 
     /// Snapshots whose metadata satisfies every filter, newest first.
-    fn find_snapshots(&self, meta: Vec<Vec<String>>) -> PyResult<Vec<Entry>> {
+    fn find_snapshots(&self, py: Python<'_>, meta: Vec<Vec<String>>) -> PyResult<Vec<Entry>> {
         let filters = meta_filters(&meta)?;
-        let found = self.core()?.find_snapshots(&filters).map_err(to_py)?;
+        self.check_owner()?;
+        let found = py.detach(|| -> PyResult<_> { Ok(self.core()?.find_snapshots(&filters)) })?;
+        let found = found.map_err(to_py)?;
         Ok(found.into_iter().map(Entry::from).collect())
     }
 
@@ -460,6 +553,7 @@ impl Repo {
     #[pyo3(signature = (path, *, at = None, lines = None))]
     fn blame(
         &self,
+        py: Python<'_>,
         path: &str,
         at: Option<&str>,
         lines: Option<(usize, usize)>,
@@ -476,50 +570,72 @@ impl Repo {
             }
             None => None,
         };
-        let blame = velo_core::commands::blame::run(
-            &*self.core()?,
-            Path::new(path),
-            velo_core::commands::blame::Options {
-                at: at.as_ref(),
-                lines: range,
-                ..Default::default()
-            },
-        )
-        .map_err(to_py)?;
+        self.check_owner()?;
+        let blame = py.detach(|| -> PyResult<_> {
+            Ok(velo_core::commands::blame::run(
+                &*self.core()?,
+                Path::new(path),
+                velo_core::commands::blame::Options {
+                    at: at.as_ref(),
+                    lines: range,
+                    ..Default::default()
+                },
+            ))
+        })?;
+        let blame = blame.map_err(to_py)?;
         Ok(Blame::from(blame))
     }
 
     /// The nearest common ancestor of two snapshots, if they share history.
-    fn merge_base(&self, a: &str, b: &str) -> PyResult<Option<String>> {
-        let base = velo_core::commands::merge::merge_base(
-            &*self.core()?,
-            &snapshot_id(a)?,
-            &snapshot_id(b)?,
-        )
-        .map_err(to_py)?;
+    fn merge_base(&self, py: Python<'_>, a: &str, b: &str) -> PyResult<Option<String>> {
+        let (a, b) = (snapshot_id(a)?, snapshot_id(b)?);
+        self.check_owner()?;
+        let base = py.detach(|| -> PyResult<_> {
+            Ok(velo_core::commands::merge::merge_base(
+                &*self.core()?,
+                &a,
+                &b,
+            ))
+        })?;
+        let base = base.map_err(to_py)?;
         Ok(base.map(|b| b.as_str().to_string()))
     }
 
     /// What merging `theirs` into `ours` would do, with nothing done.
-    fn merge_plan(&self, ours: &str, theirs: &str) -> PyResult<MergePlan> {
-        let plan = velo_core::commands::merge::plan(
-            &*self.core()?,
-            &snapshot_id(ours)?,
-            &snapshot_id(theirs)?,
-        )
-        .map_err(to_py)?;
-        Ok(plan.into())
+    ///
+    /// The GIL is released around the core call so a merge driver, which may
+    /// run on another thread, can take it. A driver that raises makes this
+    /// raise the same exception.
+    fn merge_plan(&self, py: Python<'_>, ours: &str, theirs: &str) -> PyResult<MergePlan> {
+        let (ours, theirs) = (snapshot_id(ours)?, snapshot_id(theirs)?);
+        self.check_owner()?;
+        self.hooks.take_error();
+        let plan = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            Ok(velo_core::commands::merge::plan(&repo, &ours, &theirs))
+        })?;
+        if let Some(e) = self.hooks.take_error() {
+            return Err(e);
+        }
+        Ok(plan.map_err(to_py)?.into())
     }
 
     /// Record the merge of `theirs` into `ours` as a snapshot on `branch`.
     ///
     /// `resolutions` maps a path to `"ours"`, `"theirs"`, `None` (delete) or
     /// the bytes to write. A conflict left without one raises `Conflicts`.
+    ///
+    /// An exception raised by a Python merge driver is re-raised and nothing
+    /// is committed. A driver's conflict that has a resolution would not stop
+    /// the commit by itself, so with a Python driver and resolutions the merge
+    /// is planned first and the exception surfaces before any write; the
+    /// driver therefore runs twice.
     #[pyo3(signature = (*, branch, ours, theirs, message, resolutions = None, meta = None,
         author = None, timestamp_ms = None))]
     #[allow(clippy::too_many_arguments)]
     fn merge_commit(
         &self,
+        py: Python<'_>,
         branch: &str,
         ours: &str,
         theirs: &str,
@@ -534,23 +650,81 @@ impl Repo {
         let theirs = snapshot_id(theirs)?;
         let resolutions = parse_resolutions(resolutions.unwrap_or_default())?;
         let meta = build_meta(meta)?;
-        let repo = self.core()?;
-        let guard = repo.write().map_err(to_py)?;
-        let id = velo_core::commands::merge::commit(
-            &guard,
-            velo_core::commands::merge::MergeCommit {
-                branch: &branch,
-                ours: &ours,
-                theirs: &theirs,
-                resolutions: &resolutions,
-                message,
-                meta,
-                author: author.as_ref().map(|a| &a.inner),
-                timestamp_ms,
-            },
-        )
-        .map_err(to_py)?;
-        Ok(id.as_str().to_string())
+        let author = author.as_ref().map(|a| &a.inner);
+        self.check_owner()?;
+        self.hooks.take_error();
+        if !resolutions.is_empty() && self.hooks.has_custom_driver() {
+            py.detach(|| -> PyResult<_> {
+                let repo = self.core()?;
+                let _ = velo_core::commands::merge::plan(&repo, &ours, &theirs);
+                Ok(())
+            })?;
+            if let Some(e) = self.hooks.take_error() {
+                return Err(e);
+            }
+        }
+        let id = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let guard = match repo.write() {
+                Ok(g) => g,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(velo_core::commands::merge::commit(
+                &guard,
+                velo_core::commands::merge::MergeCommit {
+                    branch: &branch,
+                    ours: &ours,
+                    theirs: &theirs,
+                    resolutions: &resolutions,
+                    message,
+                    meta,
+                    author,
+                    timestamp_ms,
+                },
+            ))
+        })?;
+        if let Some(e) = self.hooks.take_error() {
+            return Err(e);
+        }
+        Ok(id.map_err(to_py)?.as_str().to_string())
+    }
+
+    /// Call `callback(event)` for every change committed through this handle.
+    ///
+    /// `event` is a dict with `kind` (`"Saved"`, `"Merged"`, `"RefMoved"` or
+    /// `"Imported"`) and that event's fields. Callbacks run after the call that
+    /// made the change has returned and released the repository, on the calling
+    /// thread. Events are in-process only: this handle hears its own writes,
+    /// not those of another handle or process. Returns `callback`.
+    fn on_event(&self, py: Python<'_>, callback: Py<PyAny>) -> PyResult<Py<PyAny>> {
+        self.check_owner()?;
+        if !callback.bind(py).is_callable() {
+            return Err(PyTypeError::new_err("on_event needs a callable"));
+        }
+        self.hooks.add_callback(callback.clone_ref(py));
+        Ok(callback)
+    }
+
+    /// Merge files matching glob `pattern` with `driver`: `"json"`, `"yaml"`,
+    /// `"toml"` or a function `(ancestor, ours, theirs) -> str | None`, where
+    /// `None` is a conflict. The first matching rule wins.
+    ///
+    /// A function runs inside the merge, under the repository lock, so it must
+    /// not call the repository: that raises `ReentrantCall`. An exception it
+    /// raises is re-raised by `merge_plan` or `merge_commit`.
+    fn set_merge_driver(
+        &self,
+        py: Python<'_>,
+        pattern: &str,
+        driver: &Bound<'_, PyAny>,
+    ) -> PyResult<()> {
+        let rule = Rule::parse(driver)?;
+        self.rebuild(py, Some((pattern.to_string(), rule)), false)
+    }
+
+    /// Go back to line-based merging for every path.
+    fn clear_merge_drivers(&self, py: Python<'_>) -> PyResult<()> {
+        self.rebuild(py, None, true)
     }
 
     fn branches(&self) -> PyResult<Vec<Branch>> {

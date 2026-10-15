@@ -18,6 +18,13 @@ use crate::{
 /// The nearest common ancestor of snapshots `a` and `b` (specs), written to
 /// `*out_id`. Histories that share nothing are not an error: `*out_id` is
 /// NULL. Free a non-NULL id with `velo_string_free`.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_merge_base(
     repo: *const VeloRepo,
@@ -50,6 +57,13 @@ fn object_json(hash: &Option<ObjectHash>) -> Value {
 /// `auto_merged` carries `content_base64` and `mode`; `conflicted` carries
 /// `base`, `ours` and `theirs`, each an object id or null when that side has
 /// no such file. Nothing is written.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_merge_plan(
     repo: *const VeloRepo,
@@ -139,6 +153,13 @@ fn parse_resolution(value: &Value) -> Res<Resolution> {
 /// `meta` (`{namespace: {key: value}}`), `author` (`{"name", "email"?}`) and
 /// `timestamp_ms`. A conflicted path with no resolution fails with
 /// `VELO_ERR_CONFLICTS`, whose message lists the paths.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_merge_commit(
     repo: *const VeloRepo,

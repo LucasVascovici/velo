@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use js_sys::{Array, BigInt, Date, Object, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
 use velo_core::commands::merge::{self, FileAction, MergeCommit, PlannedChange, Resolution};
-use velo_core::commands::{blame, history};
+use velo_core::commands::{blame, fsck, history};
 use velo_core::error::{InProgress, RefKind};
 use velo_core::tree::{Content, FileKind, SaveTree, TreeEntry as CoreEntry};
 use velo_core::{
@@ -105,6 +105,8 @@ export interface PlannedFileInfo {
   theirs: string | null;
 }
 export interface MergePlanInfo { base: string | null; files: PlannedFileInfo[] }
+export interface FsckFinding { kind: string; detail: string }
+export interface FsckReport { ok: boolean; problems: FsckFinding[]; cruft: FsckFinding[] }
 export type VeloErrorCode = string;
 "#;
 
@@ -737,11 +739,60 @@ impl Repo {
         Ok(tip.map(|t| t.as_str().to_string()))
     }
 
+    /// Verify the repository without changing it: objects re-hash to their
+    /// names, parents and refs resolve, ids recompute. `ok` is false only for
+    /// integrity problems; `cruft` is harmless leftovers a repair would clean.
+    pub fn fsck(&self) -> Result<JsValue, JsValue> {
+        let report = lift(fsck::check(&self.inner))?;
+        let out = FsckInfo {
+            ok: report.is_healthy(),
+            problems: report
+                .problems
+                .iter()
+                .map(|p| FsckFinding {
+                    kind: variant_name(&format!("{p:?}")),
+                    detail: p.to_string(),
+                })
+                .collect(),
+            cruft: report
+                .cruft
+                .iter()
+                .map(|c| FsckFinding {
+                    kind: variant_name(&format!("{c:?}")),
+                    detail: c.describe(),
+                })
+                .collect(),
+        };
+        to_js(&out)
+    }
+
     /// A token that changes whenever the repository's branches or snapshots do.
     #[wasm_bindgen(js_name = headToken)]
     pub fn head_token(&self) -> Result<BigInt, JsValue> {
         Ok(BigInt::from(lift(self.inner.head_token())?))
     }
+}
+
+#[derive(Serialize)]
+struct FsckFinding {
+    kind: String,
+    detail: String,
+}
+
+#[derive(Serialize)]
+struct FsckInfo {
+    ok: bool,
+    problems: Vec<FsckFinding>,
+    cruft: Vec<FsckFinding>,
+}
+
+/// The enum variant name from a derived `Debug` rendering (`Name { .. }` or
+/// `Name(..)`), which is what a caller switches on.
+fn variant_name(debug: &str) -> String {
+    debug
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect()
 }
 
 impl Repo {

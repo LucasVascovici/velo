@@ -1,0 +1,52 @@
+name: fuzz
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: "Fuzz time budget per target, in seconds"
+        default: "600"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - bundle_decode
+          - wire
+          - http_service
+          - git_import
+          - tree_paths
+          - snapshot_ids
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz
+      - name: Install cargo-fuzz
+        run: cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          SECONDS_BUDGET: ${{ github.event_name == 'schedule' && '600' || github.event_name == 'workflow_dispatch' && inputs.seconds || '60' }}
+        run: >
+          cargo +nightly fuzz run ${{ matrix.target }} fuzz/seeds/${{ matrix.target }}
+          -- -max_total_time=$SECONDS_BUDGET -rss_limit_mb=2048
+      - name: Upload crashing inputs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts-${{ matrix.target }}
+          path: fuzz/artifacts/

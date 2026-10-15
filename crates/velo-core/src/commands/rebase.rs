@@ -138,24 +138,47 @@ fn do_start(guard: &WriteGuard, target: &SnapshotId, author: Option<&Author>) ->
         return Ok(Outcome::AlreadyUpToDate);
     }
 
-    fs::write(root.join(".velo/REBASE_ONTO"), &onto_hash)?;
-    fs::write(root.join(".velo/REBASE_ORIG_HEAD"), &head_hash)?;
+    // Replaying re-mints every commit; a signed one cannot survive that. Refuse
+    // before anything is written.
+    let signed = crate::commands::compact::signed(guard.repo())?;
+    if let Some((hit, _)) = commits.iter().find(|(h, _)| signed.contains(h)) {
+        return Err(VeloError::invalid(format!(
+            "Cannot rebase: snapshot {} is signed and would be replayed; \
+             signatures cannot survive a rewrite.",
+            &hit[..16.min(hit.len())]
+        )));
+    }
+
+    // All three state files are written before the tree moves, REBASE_STATE
+    // last: it is what makes a rebase "in progress", so a kill after it can
+    // always `--abort` back to the original head, and a kill before it leaves
+    // the repository untouched apart from two inert files the next start
+    // overwrites.
+    crate::failpoint::hit("rebase.before_state");
+    storage::write_atomic(&root.join(".velo/REBASE_ONTO"), onto_hash.as_bytes())?;
+    storage::write_atomic(&root.join(".velo/REBASE_ORIG_HEAD"), head_hash.as_bytes())?;
+    crate::failpoint::hit("rebase.after_onto");
+    write_state(
+        guard.root(),
+        &commits.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(),
+    )?;
+    crate::failpoint::hit("rebase.after_state");
 
     // Move onto the new base. `restore` sets PARENT, which is what the replay
     // builds on top of; HEAD keeps naming our branch.
-    crate::commands::restore::run(
+    if let Err(e) = crate::commands::restore::run(
         guard,
         &SnapshotId::from_stored(onto_hash.as_str()),
         crate::commands::restore::Options {
             force: true,
             ..Default::default()
         },
-    )?;
-
-    write_state(
-        guard.root(),
-        &commits.iter().map(|(h, _)| h.clone()).collect::<Vec<_>>(),
-    )?;
+    ) {
+        // A rebase that never started is not one in progress.
+        clear_state(guard.root());
+        return Err(e);
+    }
+    crate::failpoint::hit("rebase.after_restore");
     replay(guard, &branch, &onto_hash, &commits, author)
 }
 
@@ -172,6 +195,27 @@ fn do_continue(guard: &WriteGuard, author: Option<&Author>) -> Result<Outcome> {
         return Err(VeloError::Conflicts {
             paths: conflict_paths(guard.repo()),
         });
+    }
+
+    // With no conflict pending the tree must be clean: the user saves after
+    // resolving. A dirty tree here is a replay killed between dropping a
+    // commit from REBASE_STATE and saving it; carrying on would fold that
+    // commit's changes into the next one. `--abort` still recovers.
+    let dirty = crate::commands::get_dirty_files(guard.repo());
+    if !dirty.is_empty() {
+        let mut paths: Vec<std::path::PathBuf> =
+            dirty.keys().map(std::path::PathBuf::from).collect();
+        paths.sort();
+        return Err(VeloError::DirtyWorkingTree { paths });
+    }
+
+    // Still sitting on the original head means the kill landed after the state
+    // files but before the tree moved onto the target; replaying from here would
+    // stack the commits on their own old tip. Only `--abort` is right.
+    if read_trimmed(guard.root(), "PARENT") == read_trimmed(guard.root(), "REBASE_ORIG_HEAD") {
+        return Err(VeloError::invalid(
+            "The rebase was interrupted before it moved onto the target; run `velo rebase --abort` and start again."
+                    ));
     }
 
     let remaining = read_state(guard.root())?;
@@ -214,25 +258,47 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
 
     let orig_head = read_trimmed(guard.root(), "REBASE_ORIG_HEAD");
     let onto = read_trimmed(guard.root(), "REBASE_ONTO");
-    let discarded = discard_replayed(guard, &onto, &orig_head);
 
-    let _ = fs::remove_file(root.join(".velo/MERGE_HEAD"));
-    let _ = fs::remove_file(root.join(".velo/MERGE_ORIG"));
-    clear_state(guard.root());
+    // Where the replay got to, found before anything moves. The branch tip is
+    // used rather than PARENT so that a repeated abort, after PARENT has
+    // already been put back, still finds the replayed snapshots to discard.
+    let branch = read_trimmed(guard.root(), "HEAD");
+    let replay_tip = crate::commands::branch_tip(guard.conn(), &branch)
+        .unwrap_or_else(|| read_trimmed(guard.root(), "PARENT"));
 
+    // The tree goes back first, while PARENT still names a snapshot whose files
+    // `restore` can treat as tracked (and so remove when the original head does
+    // not have them); the state is cleared last, so a kill part-way leaves a
+    // rebase that `--abort` can simply run again.
+    //
+    // PARENT still naming the original head with a rebase in progress means the
+    // move onto the new base may have been interrupted part-way, leaving files
+    // of `onto` on disk that the original head does not have. They are
+    // untracked from PARENT's point of view, so finish that move first.
     let restored_to = if orig_head.is_empty() {
         None
     } else {
+        let force = || crate::commands::restore::Options {
+            force: true,
+            ..Default::default()
+        };
+        if !onto.is_empty() && read_trimmed(guard.root(), "PARENT") == orig_head {
+            crate::commands::restore::run(guard, &SnapshotId::from_stored(onto.as_str()), force())?;
+        }
         crate::commands::restore::run(
             guard,
             &SnapshotId::from_stored(orig_head.as_str()),
-            crate::commands::restore::Options {
-                force: true,
-                ..Default::default()
-            },
+            force(),
         )?;
-        Some(orig_head)
+        Some(orig_head.clone())
     };
+    crate::failpoint::hit("rebase_abort.after_restore");
+
+    let discarded = discard_replayed(guard, &replay_tip, &onto, &orig_head);
+    crate::failpoint::hit("rebase_abort.before_clear_state");
+    let _ = fs::remove_file(root.join(".velo/MERGE_ORIG"));
+    let _ = fs::remove_file(root.join(".velo/MERGE_HEAD"));
+    clear_state(guard.root());
 
     Ok(Outcome::Aborted {
         restored_to,
@@ -245,13 +311,13 @@ fn do_abort(guard: &WriteGuard) -> Result<Outcome> {
 /// Without this the replayed commits stay in the database sitting on top of
 /// `onto`, and because branch-tip resolution orders by `created_at_ms` they would
 /// masquerade as the branch tip even though the position was restored.
-fn discard_replayed(guard: &WriteGuard, onto: &str, orig_head: &str) -> usize {
+fn discard_replayed(guard: &WriteGuard, start: &str, onto: &str, orig_head: &str) -> usize {
     let conn = guard.conn();
     let _ = conn.execute("DELETE FROM hunk_decisions", []);
     let _ = conn.execute("DELETE FROM conflict_files", []);
 
     let branch = read_trimmed(guard.root(), "HEAD");
-    let mut hash = read_trimmed(guard.root(), "PARENT");
+    let mut hash = start.to_string();
 
     // Walk back from the current tip to `onto`, collecting this branch's replayed
     // commits — both auto-replayed and manually saved during a paused conflict.
@@ -303,6 +369,7 @@ fn replay(
             total,
         };
         let applied = apply_one(guard, snapshot)?;
+        crate::failpoint::hit("rebase.after_apply");
 
         // Drop this commit from the remaining state either way. On a conflict the
         // user finishes it by hand, so `--continue` must resume with the *next*
@@ -327,6 +394,7 @@ fn replay(
                 ..Default::default()
             },
         )?;
+        crate::failpoint::hit("rebase.after_replay");
         replayed.push(step);
     }
 
@@ -339,6 +407,7 @@ fn finish(
     onto: &str,
     replayed: Vec<Replayed>,
 ) -> Result<Outcome> {
+    crate::failpoint::hit("rebase.before_clear_state");
     clear_state(guard.root());
     Ok(Outcome::Completed {
         branch: branch.to_string(),
@@ -401,7 +470,10 @@ fn read_state(root: &Path) -> Result<Vec<String>> {
 }
 
 fn write_state(root: &Path, remaining: &[String]) -> Result<()> {
-    fs::write(root.join(".velo/REBASE_STATE"), remaining.join("\n"))?;
+    storage::write_atomic(
+        &root.join(".velo/REBASE_STATE"),
+        remaining.join("\n").as_bytes(),
+    )?;
     Ok(())
 }
 

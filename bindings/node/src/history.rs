@@ -13,8 +13,8 @@ use velo_core::commands::{blame, history};
 
 use crate::errors::to_js;
 use crate::repo::{
-    branch_name, nullable, snapshot_id, CoreResult, Nullable, Repo, Shared, SnapshotData,
-    SnapshotInfo,
+    branch_name, nullable, snapshot_id, CoreResult, Nullable, Repo, SnapshotData, SnapshotInfo,
+    Ticket,
 };
 
 /// One metadata condition. Without `value`, it matches any value of the key.
@@ -56,7 +56,7 @@ pub struct HistoryOptions {
 type EntriesWork = Box<dyn FnOnce(&velo_core::Repo) -> CoreResult<Vec<SnapshotData>> + Send>;
 
 pub struct EntriesJob {
-    repo: Shared,
+    ticket: Ticket,
     run: Option<EntriesWork>,
 }
 
@@ -69,10 +69,10 @@ impl<'task> ScopedTask<'task> for EntriesJob {
             .run
             .take()
             .ok_or_else(|| napi::Error::from_reason("velo job already ran"))?;
-        let repo = self
-            .repo
-            .lock()
-            .map_err(|_| napi::Error::from_reason("velo Repo is poisoned by an earlier panic"))?;
+        let repo = match self.ticket.lock()? {
+            Ok(repo) => repo,
+            Err(refused) => return Ok(Err(refused)),
+        };
         Ok(run(&repo))
     }
 
@@ -161,7 +161,7 @@ pub struct BlameData {
 }
 
 pub struct BlameJob {
-    repo: Shared,
+    ticket: Ticket,
     file: String,
     at: Option<String>,
     start_line: Option<u32>,
@@ -218,10 +218,10 @@ impl<'task> ScopedTask<'task> for BlameJob {
     type JsValue = BlameInfo<'task>;
 
     fn compute(&mut self) -> Result<Self::Output> {
-        let repo = self
-            .repo
-            .lock()
-            .map_err(|_| napi::Error::from_reason("velo Repo is poisoned by an earlier panic"))?;
+        let repo = match self.ticket.lock()? {
+            Ok(repo) => repo,
+            Err(refused) => return Ok(Err(refused)),
+        };
         Ok(blame_data(self, &repo))
     }
 
@@ -276,7 +276,7 @@ impl Repo {
             meta: None,
         });
         AsyncTask::new(EntriesJob {
-            repo: self.inner.clone(),
+            ticket: self.ticket(),
             run: Some(Box::new(move |repo| {
                 let from = o.from.as_deref().map(snapshot_id).transpose()?;
                 let branch = o.branch.as_deref().map(branch_name).transpose()?;
@@ -312,7 +312,7 @@ impl Repo {
     #[napi(ts_return_type = "Promise<Array<SnapshotInfo>>")]
     pub fn find_snapshots(&self, meta: Vec<MetaFilterInput>) -> AsyncTask<EntriesJob> {
         AsyncTask::new(EntriesJob {
-            repo: self.inner.clone(),
+            ticket: self.ticket(),
             run: Some(Box::new(move |repo| {
                 let found = repo.find_snapshots(&filters(&meta))?;
                 Ok(found.into_iter().map(SnapshotData::from_entry).collect())
@@ -328,7 +328,7 @@ impl Repo {
             None => (None, None, None),
         };
         AsyncTask::new(BlameJob {
-            repo: self.inner.clone(),
+            ticket: self.ticket(),
             file: path,
             at,
             start_line,

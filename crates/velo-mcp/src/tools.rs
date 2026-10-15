@@ -7,6 +7,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use std::time::Duration;
+
+use crate::{recovery_tools, store_tools};
 use serde_json::{json, Map, Value};
 use velo_core::commands::{
     blame, branches, diff, history, merge, resolve_snapshot_id, restore, save, status, switch,
@@ -17,12 +20,22 @@ use velo_core::{Author, BranchName, Error, Repo, SnapshotId, SnapshotMeta};
 /// carries the server's own run identity and would otherwise be forgeable.
 const REFUSED_NAMESPACES: [&str; 2] = ["velo", "mcp"];
 
+/// Entries `velo_history` returns when the call gives no `limit`.
+pub(crate) const HISTORY_DEFAULT_LIMIT: usize = 200;
+/// Lines `velo_blame` returns when the call gives no `limit`.
+pub(crate) const BLAME_DEFAULT_LIMIT: usize = 2000;
+
 /// Why a tool call failed.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum ToolError {
-    /// The arguments were wrong: a JSON-RPC invalid-params error.
+    /// The arguments were wrong. This is a tool result with `isError: true`
+    /// whose text says what was wrong, so the model can correct the call (the
+    /// 2025-11-25 revision asks for exactly this).
     Params(String),
+    /// No tool has this name: a JSON-RPC invalid-params error, because the
+    /// request itself is malformed rather than the arguments.
+    UnknownTool(String),
     /// velo refused or failed: a tool result with `isError: true`.
     Velo(Error),
 }
@@ -33,7 +46,7 @@ impl From<Error> for ToolError {
     }
 }
 
-fn bad(msg: impl Into<String>) -> ToolError {
+pub(crate) fn bad(msg: impl Into<String>) -> ToolError {
     ToolError::Params(msg.into())
 }
 
@@ -44,22 +57,36 @@ pub struct Context<'a> {
     pub client: &'a str,
     /// Author override from the environment, as `(name, email)`.
     pub author: Option<&'a (String, Option<String>)>,
+    /// The repository has no working tree: tools that need one are refused.
+    pub store_only: bool,
+    /// How long a write tool waits for the repository lock before it answers
+    /// `Locked`, naming the holder.
+    pub lock_wait: Duration,
 }
 
-/// The variant name of a velo error, taken from its `Debug` form so that new
-/// variants are named correctly without this crate being updated.
+impl Context<'_> {
+    /// The write lock, waiting up to [`Context::lock_wait`] for another holder.
+    pub(crate) fn write(&self) -> velo_core::Result<velo_core::WriteGuard<'_>> {
+        self.repo.write_timeout(self.lock_wait)
+    }
+}
+
+/// The variant name of a velo error.
 pub fn variant_name(e: &Error) -> String {
-    format!("{e:?}")
-        .chars()
-        .take_while(|c| c.is_alphanumeric() || *c == '_')
-        .collect()
+    e.variant_name().to_string()
 }
 
-/// The `tools/list` payload.
-pub fn list() -> Value {
-    let obj = |props: Value, required: Value| json!({"type": "object", "properties": props, "required": required});
+/// An object schema with the given properties.
+pub(crate) fn obj_schema(props: Value, required: Value) -> Value {
+    json!({"type": "object", "properties": props, "required": required})
+}
+
+/// The `tools/list` payload. In store-only mode the tools that need a working
+/// tree are left out, so a client never offers the model a call that must fail.
+pub fn list(store_only: bool) -> Value {
+    let obj = obj_schema;
     let strs = json!({"type": "array", "items": {"type": "string"}});
-    json!([
+    let all = json!([
         {
             "name": "velo_save",
             "description": "Save a snapshot of the working tree. Records this run's identity in metadata.",
@@ -97,7 +124,8 @@ pub fn list() -> Value {
             "name": "velo_history",
             "description": "List snapshots, newest first, optionally filtered by metadata.",
             "inputSchema": obj(json!({
-                "limit": {"type": "integer", "minimum": 1, "default": 20},
+                "limit": {"type": "integer", "minimum": 1, "default": 200, "description": "Most entries to return. The result says truncated: true and how to get the next page when there are more."},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Entries to skip, for paging. Repeat the same branch/from/meta/paths with the next_offset of the previous page."},
                 "branch": {"type": "string"},
                 "from": {"type": "string"},
                 "paths": strs,
@@ -147,10 +175,32 @@ pub fn list() -> Value {
                 "path": {"type": "string"},
                 "at": {"type": "string", "description": "Snapshot spec; default the current position."},
                 "start_line": {"type": "integer", "minimum": 1},
-                "end_line": {"type": "integer", "minimum": 1, "description": "Inclusive."}
+                "end_line": {"type": "integer", "minimum": 1, "description": "Inclusive."},
+                "limit": {"type": "integer", "minimum": 1, "default": 2000, "description": "Most lines to return. The result says truncated: true and the start_line to continue from."}
             }), json!(["path"]))
         }
-    ])
+    ]);
+    let mut tools = all.as_array().cloned().unwrap_or_default();
+    if store_only {
+        tools.retain(|t| {
+            let name = t["name"].as_str().unwrap_or_default();
+            !store_tools::NEEDS_WORKING_TREE
+                .iter()
+                .any(|(n, _)| *n == name)
+        });
+    }
+    tools.extend(store_tools::list());
+    let mut recovery = recovery_tools::list();
+    if store_only {
+        recovery.retain(|t| {
+            let name = t["name"].as_str().unwrap_or_default();
+            !recovery_tools::NEEDS_WORKING_TREE
+                .iter()
+                .any(|(n, _)| *n == name)
+        });
+    }
+    tools.extend(recovery);
+    Value::Array(tools)
 }
 
 /// Dispatch one tool call.
@@ -158,7 +208,31 @@ pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolEr
     if !args.is_object() {
         return Err(bad("arguments must be an object"));
     }
+    if ctx.store_only {
+        if let Some((_, instead)) = store_tools::NEEDS_WORKING_TREE
+            .iter()
+            .find(|(n, _)| *n == name)
+        {
+            return Err(unsupported(name, instead));
+        }
+    }
+    if ctx.store_only {
+        if let Some((_, instead)) = recovery_tools::NEEDS_WORKING_TREE
+            .iter()
+            .find(|(n, _)| *n == name)
+        {
+            return Err(unsupported(name, instead));
+        }
+    }
     match name {
+        "velo_undo" => recovery_tools::undo_tool(ctx),
+        "velo_redo" => recovery_tools::redo_tool(ctx),
+        "velo_tag" => recovery_tools::tag_tool(ctx, args),
+        "velo_conflicts" => recovery_tools::conflicts_tool(ctx),
+        "velo_find" => recovery_tools::find_tool(ctx, args),
+        "velo_save_tree" => store_tools::save_tree_tool(ctx, args),
+        "velo_tree_at" => store_tools::tree_at_tool(ctx, args),
+        "velo_read_file" => store_tools::read_file_tool(ctx, args),
         "velo_save" => save_tool(ctx, args),
         "velo_restore" => restore_tool(ctx, args),
         "velo_status" => status_tool(ctx),
@@ -169,13 +243,20 @@ pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolEr
         "velo_merge_plan" => merge_plan_tool(ctx, args),
         "velo_merge_apply" => merge_apply_tool(ctx, args),
         "velo_blame" => blame_tool(ctx, args),
-        other => Err(bad(format!("unknown tool: {other}"))),
+        other => Err(ToolError::UnknownTool(format!("unknown tool: {other}"))),
     }
+}
+
+/// The refusal for a tool that needs a working tree in a store-only session.
+fn unsupported(tool: &str, instead: &str) -> ToolError {
+    ToolError::Velo(Error::Unsupported {
+        detail: format!("{tool} needs a working tree and this server is store-only; use {instead}"),
+    })
 }
 
 // ── Argument helpers ─────────────────────────────────────────────────────────
 
-fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError> {
+pub(crate) fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(s)) => Ok(Some(s)),
@@ -183,7 +264,7 @@ fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError>
     }
 }
 
-fn req_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
+pub(crate) fn req_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
     opt_str(args, key)?.ok_or_else(|| bad(format!("missing required argument '{key}'")))
 }
 
@@ -206,13 +287,13 @@ fn path_refs(paths: &[PathBuf]) -> Vec<&Path> {
     paths.iter().map(PathBuf::as_path).collect()
 }
 
-fn snapshot_arg(repo: &Repo, spec: &str) -> Result<SnapshotId, ToolError> {
+pub(crate) fn snapshot_arg(repo: &Repo, spec: &str) -> Result<SnapshotId, ToolError> {
     Ok(resolve_snapshot_id(repo, spec)?)
 }
 
 // ── Write-tool identity ──────────────────────────────────────────────────────
 
-fn author(ctx: &Context<'_>) -> Result<Author, ToolError> {
+pub(crate) fn author(ctx: &Context<'_>) -> Result<Author, ToolError> {
     Ok(match ctx.author {
         Some((name, Some(email))) => Author::with_email(name.clone(), email.clone())?,
         Some((name, None)) => Author::new(name.clone())?,
@@ -224,7 +305,11 @@ fn author(ctx: &Context<'_>) -> Result<Author, ToolError> {
 ///
 /// The refusal of `velo` and `mcp` happens here, before velo is called, so it
 /// reads as the caller's mistake (invalid params) rather than a velo failure.
-fn build_meta(ctx: &Context<'_>, tool: &str, args: &Value) -> Result<SnapshotMeta, ToolError> {
+pub(crate) fn build_meta(
+    ctx: &Context<'_>,
+    tool: &str,
+    args: &Value,
+) -> Result<SnapshotMeta, ToolError> {
     let mut meta = SnapshotMeta::new();
     match args.get("meta") {
         None | Some(Value::Null) => {}
@@ -274,7 +359,7 @@ fn save_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     let refs = path_refs(&paths);
     let meta = build_meta(ctx, "velo_save", args)?;
     let author = author(ctx)?;
-    let guard = ctx.repo.write()?;
+    let guard = ctx.write()?;
     let outcome = save::run(
         &guard,
         Some(message),
@@ -309,7 +394,7 @@ fn restore_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     let paths = paths_arg(args)?;
     let refs = path_refs(&paths);
     let id = snapshot_arg(ctx.repo, spec)?;
-    let guard = ctx.repo.write()?;
+    let guard = ctx.write()?;
     // `force` is never true here, whatever the caller asks.
     let outcome = restore::run(
         &guard,
@@ -428,11 +513,18 @@ fn diff_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
 
 fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     let limit = match args.get("limit") {
-        None | Some(Value::Null) => 20,
+        None | Some(Value::Null) => HISTORY_DEFAULT_LIMIT,
         Some(v) => v
             .as_u64()
             .filter(|n| *n > 0)
             .ok_or_else(|| bad("'limit' must be a positive integer"))? as usize,
+    };
+    let offset = match args.get("offset") {
+        None | Some(Value::Null) => 0,
+        Some(v) => {
+            v.as_u64()
+                .ok_or_else(|| bad("'offset' must be a non-negative integer"))? as usize
+        }
     };
     let branch = opt_str(args, "branch")?
         .map(|b| b.parse::<BranchName>())
@@ -472,12 +564,14 @@ fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             from: from.as_ref(),
             paths: &refs,
             meta: &filters,
-            limit: Some(limit),
+            // One more than asked, to know whether there is a next page.
+            limit: Some(offset.saturating_add(limit).saturating_add(1)),
             ..Default::default()
         },
     )?;
+    let truncated = h.entries.len() > offset.saturating_add(limit);
     let mut entries = Vec::new();
-    for e in &h.entries {
+    for e in h.entries.iter().skip(offset).take(limit) {
         let mut o = Map::new();
         o.insert("snapshot".into(), json!(e.hash.as_str()));
         o.insert("message".into(), json!(e.message));
@@ -497,7 +591,15 @@ fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         }
         entries.push(Value::Object(o));
     }
-    Ok(json!({"entries": entries}))
+    let mut out = json!({"entries": entries, "truncated": truncated});
+    if truncated {
+        let next = offset + limit;
+        out["next_offset"] = json!(next);
+        out["hint"] = json!(format!(
+            "Showing {limit} entries from offset {offset}. Call velo_history again with the same branch/from/meta/paths and \"offset\": {next} for the next page, or narrow it with 'branch', 'meta' or 'paths'."
+        ));
+    }
+    Ok(out)
 }
 
 fn metadata_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
@@ -547,15 +649,19 @@ fn branch_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             let at = opt_str(args, "at")?
                 .map(|s| snapshot_arg(ctx.repo, s))
                 .transpose()?;
-            let guard = ctx.repo.write()?;
+            let guard = ctx.write()?;
             let outcome = branches::create(&guard, &name, at.as_ref());
             drop(guard);
             outcome?;
             Ok(json!({"created": name.as_str(), "at": at.as_ref().map(|a| a.as_str())}))
         }
+        "switch" if ctx.store_only => Err(unsupported(
+            "velo_branch switch",
+            "velo_save_tree with a branch name",
+        )),
         "switch" => {
             let name = need_name()?;
-            let guard = ctx.repo.write()?;
+            let guard = ctx.write()?;
             // `force` is never true here, whatever the caller asks.
             let outcome = switch::run(&guard, name, false);
             drop(guard);
@@ -702,7 +808,7 @@ fn merge_apply_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError>
     let meta = build_meta(ctx, "velo_merge_apply", args)?;
     let author = author(ctx)?;
     let theirs = snapshot_arg(ctx.repo, spec)?;
-    let guard = ctx.repo.write()?;
+    let guard = ctx.write()?;
     let result = (|| -> Result<Value, ToolError> {
         let s = status::run(ctx.repo, &[])?;
         if !s.is_clean() {
@@ -760,6 +866,13 @@ fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         }
     };
     let (start, end) = (line("start_line")?, line("end_line")?);
+    let limit = line("limit")?.unwrap_or(BLAME_DEFAULT_LIMIT);
+    if let (Some(s), Some(e)) = (start, end) {
+        if s > e {
+            return Err(bad(format!("'start_line' ({s}) is after 'end_line' ({e})")));
+        }
+    }
+    let lines_asked = start.is_some() || end.is_some();
     let lines = if start.is_some() || end.is_some() {
         // 1-based inclusive in, half-open out.
         Some(start.unwrap_or(1)..end.map_or(usize::MAX, |e| e.saturating_add(1)))
@@ -775,10 +888,28 @@ fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
             ..Default::default()
         },
     )?;
+    if lines_asked && b.lines.is_empty() {
+        // Core answers a range past the end with nothing; a caller that asked
+        // for it needs to be told, with the length to correct itself.
+        let total = blame::run(
+            ctx.repo,
+            Path::new(path),
+            blame::Options {
+                at: at.as_ref(),
+                ..Default::default()
+            },
+        )?
+        .lines
+        .len();
+        return Err(bad(format!(
+            "line range is out of range: '{path}' has {total} line(s)"
+        )));
+    }
     // One metadata read per distinct origin snapshot, not per line.
     let mut runs: std::collections::HashMap<String, Option<String>> = Default::default();
     let mut out = Vec::new();
-    for l in &b.lines {
+    let truncated = b.lines.len() > limit;
+    for l in b.lines.iter().take(limit) {
         let origin = match &l.origin {
             None => Value::Null,
             Some(o) => {
@@ -803,5 +934,14 @@ fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
         };
         out.push(json!({"line_no": l.line_no, "text": l.text, "origin": origin}));
     }
-    Ok(json!({"path": path, "snapshot": b.snapshot.as_str(), "lines": out}))
+    let mut result = json!({"path": path, "snapshot": b.snapshot.as_str(), "lines": out, "truncated": truncated});
+    if truncated {
+        let next = b.lines[limit].line_no;
+        result["next_start_line"] = json!(next);
+        result["hint"] = json!(format!(
+            "Showing {limit} lines; the file has more (to line {}). Call velo_blame again with \"start_line\": {next} for the rest.",
+            b.lines[b.lines.len() - 1].line_no
+        ));
+    }
+    Ok(result)
 }

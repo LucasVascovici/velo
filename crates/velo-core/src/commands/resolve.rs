@@ -259,7 +259,7 @@ pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
     if trailing_newline && !resolved.is_empty() && !resolved.ends_with('\n') {
         resolved.push('\n');
     }
-    let full = guard.root().join(db::db_to_path(&session.file.path));
+    let full = crate::safe_path::join_checked(guard.root(), &session.file.path)?;
     // A modify/delete conflict has an absent side; resolving to nothing on that
     // side means the file stays deleted, not that it becomes a zero-byte file.
     let absent = session.file.our_hash.is_empty() || session.file.their_hash.is_empty();

@@ -26,6 +26,7 @@
 //! # let _ = v2;
 //! # Ok(()) }
 //! ```
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
 use std::path::Path;

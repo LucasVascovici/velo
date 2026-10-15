@@ -149,9 +149,27 @@ impl Spawn {
 /// subprocess; `http://` and `https://` go over HTTP (feature `http`); anything
 /// else is treated as a local filesystem path.
 pub fn open(url: &str, spawn: &Spawn) -> Result<Box<dyn Remote>> {
+    open_with_token(url, spawn, None)
+}
+
+/// [`open`] with a bearer token for an HTTP(S) remote. The token is supplied by
+/// the caller and is ignored by every other transport. A URL that embeds
+/// credentials (`https://user:secret@host/...`) is refused: they would land in
+/// shell history and in `velo remote`'s output.
+pub fn open_with_token(url: &str, spawn: &Spawn, token: Option<&str>) -> Result<Box<dyn Remote>> {
     if url.starts_with("http://") || url.starts_with("https://") {
+        if has_userinfo(url) {
+            return Err(VeloError::invalid(
+                "An HTTP remote URL must not contain credentials. Supply a bearer token instead (VELO_TOKEN or VELO_TOKEN_<REMOTE> in the command line tool).",
+            ));
+        }
         #[cfg(feature = "http")]
-        return Ok(Box::new(HttpRemote::new(url)));
+        return Ok(Box::new(match token {
+            Some(t) => HttpRemote::new(url).with_token(t),
+            None => HttpRemote::new(url),
+        }));
+        #[cfg(not(feature = "http"))]
+        let _ = token;
         #[cfg(not(feature = "http"))]
         return Err(VeloError::unsupported(
             "HTTP remotes are not available: velo-core was built without the `http` feature.",
@@ -167,6 +185,13 @@ pub fn open(url: &str, spawn: &Spawn) -> Result<Box<dyn Remote>> {
             root: crate::commands::remote::resolve_remote_root(url)?,
         }))
     }
+}
+
+/// Whether an http(s) URL carries `user[:password]@` before its host.
+fn has_userinfo(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    authority.contains('@')
 }
 
 // ─── Local (direct DB) transport ──────────────────────────────────────────────
@@ -338,12 +363,29 @@ fn join_url(base: &str, endpoint: &str) -> String {
 #[cfg(feature = "http")]
 pub struct HttpRemote {
     base: String,
+    token: Option<String>,
 }
 
 #[cfg(feature = "http")]
 impl HttpRemote {
     pub fn new(base: impl Into<String>) -> Self {
-        HttpRemote { base: base.into() }
+        HttpRemote {
+            base: base.into(),
+            token: None,
+        }
+    }
+
+    /// Send `Authorization: Bearer <token>` on every request. The token is
+    /// held only in memory and is deliberately absent from `Debug` output and
+    /// errors.
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
+        self
+    }
+
+    /// The `Authorization` header value, if a token is set.
+    fn auth(&self) -> Option<String> {
+        self.token.as_ref().map(|t| format!("Bearer {t}"))
     }
 
     fn agent() -> ureq::Agent {
@@ -356,13 +398,47 @@ impl HttpRemote {
     }
 
     /// Turn a response into its body, or into the error a non-2xx status means.
-    fn checked(resp: ureq::http::Response<ureq::Body>) -> Result<ureq::Body> {
+    ///
+    /// The server's refusals arrive as typed errors: 401 and 403 become
+    /// `AccessDenied`, 404 `NotFound`, 503 an I/O error carrying its reason,
+    /// and 413 `LimitExceeded` with `max` 0, because the server's ceiling is
+    /// not known on this side.
+    fn checked(&self, resp: ureq::http::Response<ureq::Body>) -> Result<ureq::Body> {
         let code = resp.status();
         let mut body = resp.into_body();
         if code.is_success() {
             return Ok(body);
         }
         let text = body.read_to_string().unwrap_or_default();
+        let detail = text
+            .trim()
+            .strip_prefix("velo: ")
+            .map(|r| r.split_once(": ").map_or(r, |(_, d)| d))
+            .unwrap_or(text.trim())
+            .to_string();
+        match code.as_u16() {
+            401 | 403 => {
+                return Err(VeloError::AccessDenied {
+                    remote: self.base.clone(),
+                    detail,
+                })
+            }
+            413 => {
+                return Err(VeloError::LimitExceeded {
+                    limit: crate::limits::Limit::PackBytes,
+                    max: 0,
+                    found: None,
+                })
+            }
+            404 => {
+                return Err(VeloError::not_found(
+                    crate::error::RefKind::Remote,
+                    self.base.clone(),
+                ))
+            }
+            503 => return Err(VeloError::Io(std::io::Error::other(detail))),
+            _ => {}
+        }
         Err(VeloError::invalid(format!(
             "remote returned HTTP {}: {}",
             code.as_u16(),
@@ -410,16 +486,19 @@ impl Remote for HttpRemote {
         if progress.is_cancelled() {
             return Err(VeloError::Cancelled);
         }
+        let limits = crate::Limits::default();
         let mut body = Vec::new();
         for h in have {
             write_string(&mut body, h)?;
         }
-        let resp = Self::agent()
+        let mut req = Self::agent()
             .post(&join_url(&self.base, "velo/v1/upload"))
-            .header("Content-Type", "application/octet-stream")
-            .send(&body[..])
-            .map_err(Self::net)?;
-        let mut reader = Self::checked(resp)?.into_reader();
+            .header("Content-Type", "application/octet-stream");
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let resp = req.send(&body[..]).map_err(Self::net)?;
+        let mut reader = self.checked(resp)?.into_reader();
 
         let mut bytes = Vec::new();
         let mut buf = vec![0u8; CHUNK];
@@ -432,12 +511,15 @@ impl Remote for HttpRemote {
                 break;
             }
             bytes.extend_from_slice(&buf[..n]);
+            if bytes.len() as u64 > limits.max_pack_bytes {
+                return Err(pack_overrun(limits.max_pack_bytes));
+            }
             progress.advance(n as u64);
         }
         let mut cur = std::io::Cursor::new(&bytes[..]);
         let refs = read_refs(&mut cur)?;
         let at = cur.position() as usize;
-        Ok((refs, bundle::decode(&bytes[at..])?))
+        Ok((refs, bundle::decode(&bytes[at..], &limits)?))
     }
 
     fn push(
@@ -448,11 +530,12 @@ impl Remote for HttpRemote {
         progress: &PhaseGuard,
     ) -> Result<PushOutcome> {
         let agent = Self::agent();
-        let resp = agent
-            .get(&join_url(&self.base, "velo/v1/refs"))
-            .call()
-            .map_err(Self::net)?;
-        let mut reader = Self::checked(resp)?.into_reader();
+        let mut req = agent.get(&join_url(&self.base, "velo/v1/refs"));
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let resp = req.call().map_err(Self::net)?;
+        let mut reader = self.checked(resp)?.into_reader();
         let refs = read_refs(&mut reader)?;
         let pack = build(&refs)?;
 
@@ -465,18 +548,21 @@ impl Remote for HttpRemote {
             data: &payload,
             progress,
         };
-        let sent = agent
+        let mut req = agent
             .post(&join_url(&self.base, "velo/v1/receive"))
             .header("Content-Type", "application/octet-stream")
-            .header("Content-Length", payload.len().to_string())
-            .send(ureq::SendBody::from_reader(&mut source));
+            .header("Content-Length", payload.len().to_string());
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let sent = req.send(ureq::SendBody::from_reader(&mut source));
         let resp = match sent {
             Ok(r) => r,
             Err(_) if progress.is_cancelled() => return Err(VeloError::Cancelled),
             Err(e) => return Err(Self::net(e)),
         };
-        let mut reader = Self::checked(resp)?.into_reader();
-        let status = read_string(&mut reader)?;
+        let mut reader = self.checked(resp)?.into_reader();
+        let status = read_string(&mut reader, crate::Limits::default().max_string_bytes)?;
         parse_status(&status)
     }
 }
@@ -508,6 +594,7 @@ impl Remote for StreamRemote {
         drop(stdin);
         // S→C pack, in chunks so the caller sees it arriving. Read to EOF: the
         // sender does not announce a length, so there is no total to report.
+        let limits = crate::Limits::default();
         let mut packbytes = Vec::new();
         let mut buf = vec![0u8; CHUNK];
         loop {
@@ -525,10 +612,15 @@ impl Remote for StreamRemote {
                 break;
             }
             packbytes.extend_from_slice(&buf[..n]);
+            if packbytes.len() as u64 > limits.max_pack_bytes {
+                child.kill().ok();
+                child.wait().ok();
+                return Err(pack_overrun(limits.max_pack_bytes));
+            }
             progress.advance(n as u64);
         }
         finish(child)?;
-        let bundle = bundle::decode(&packbytes)?;
+        let bundle = bundle::decode(&packbytes, &limits)?;
         Ok((refs, bundle))
     }
 
@@ -567,7 +659,7 @@ impl Remote for StreamRemote {
         stdin.flush().ok();
         drop(stdin);
         // S→C status
-        let status = read_string(&mut stdout)?;
+        let status = read_string(&mut stdout, crate::Limits::default().max_string_bytes)?;
         finish(child)?;
         parse_status(&status)
     }
@@ -685,14 +777,25 @@ fn fill<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<usize> {
 }
 
 /// Read a length-prefixed string, or `None` at a clean stream EOF.
-pub(crate) fn read_string_opt<R: Read>(r: &mut R) -> Result<Option<String>> {
+///
+/// `max` bounds the length prefix, checked before anything is allocated: the
+/// prefix is the sender's claim, and four billion bytes is not a string.
+pub(crate) fn read_string_opt<R: Read>(r: &mut R, max: u32) -> Result<Option<String>> {
     let mut lenb = [0u8; 4];
     match fill(r, &mut lenb)? {
         0 => return Ok(None),
         4 => {}
         _ => return Err(proto_err()),
     }
-    let len = u32::from_le_bytes(lenb) as usize;
+    let claimed = u32::from_le_bytes(lenb);
+    if claimed > max {
+        return Err(VeloError::LimitExceeded {
+            limit: crate::limits::Limit::StringBytes,
+            max: u64::from(max),
+            found: Some(u64::from(claimed)),
+        });
+    }
+    let len = claimed as usize;
     let mut buf = vec![0u8; len];
     if fill(r, &mut buf)? != len {
         return Err(proto_err());
@@ -700,8 +803,8 @@ pub(crate) fn read_string_opt<R: Read>(r: &mut R) -> Result<Option<String>> {
     Ok(Some(String::from_utf8(buf).map_err(|_| proto_err())?))
 }
 
-pub(crate) fn read_string<R: Read>(r: &mut R) -> Result<String> {
-    read_string_opt(r)?.ok_or_else(proto_err)
+pub(crate) fn read_string<R: Read>(r: &mut R, max: u32) -> Result<String> {
+    read_string_opt(r, max)?.ok_or_else(proto_err)
 }
 
 pub(crate) fn write_refs<W: Write>(w: &mut W, refs: &[(String, String)]) -> Result<()> {
@@ -720,13 +823,26 @@ pub(crate) fn read_refs<R: Read>(r: &mut R) -> Result<Vec<RemoteRef>> {
         return Err(proto_err());
     }
     let count = u32::from_le_bytes(lenb);
-    let mut out = Vec::with_capacity(count as usize);
+    // The count is the sender's claim too: reserve a little, and let the
+    // vector grow only as rows actually arrive.
+    let max = crate::Limits::default().max_string_bytes;
+    let mut out = Vec::with_capacity(count.min(1024) as usize);
     for _ in 0..count {
-        let branch = read_string(r)?;
-        let hash = read_string(r)?;
+        let branch = read_string(r, max)?;
+        let hash = read_string(r, max)?;
         out.push(RemoteRef { branch, hash });
     }
     Ok(out)
+}
+
+/// A pack that kept arriving past the ceiling; the overrun was found while
+/// streaming, so there is no total to report.
+fn pack_overrun(max: u64) -> VeloError {
+    VeloError::LimitExceeded {
+        limit: crate::limits::Limit::PackBytes,
+        max,
+        found: None,
+    }
 }
 
 fn proto_err() -> VeloError {

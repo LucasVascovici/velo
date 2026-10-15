@@ -515,7 +515,9 @@ impl ObjectStore<'_> {
         &self,
         items: &[(String, Vec<u8>)],
         progress: &crate::progress::PhaseGuard<'_>,
+        limits: &crate::Limits,
     ) -> Result<usize> {
+        let max = limits.max_object_bytes;
         use rayon::prelude::*;
         match self {
             ObjectStore::Files(f) => {
@@ -532,7 +534,7 @@ impl ObjectStore<'_> {
                         if f.contains(hash) {
                             Ok(None)
                         } else {
-                            f.verify_incoming(hash, frame).map(Some)
+                            f.verify_incoming(hash, frame, max).map(Some)
                         }
                     })
                     .collect();
@@ -547,7 +549,7 @@ impl ObjectStore<'_> {
                 pending.retain(|((hash, _), _)| seen.insert(hash.as_str()));
                 let mut new = 0;
                 for ((hash, frame), large) in pending {
-                    if f.store_verified(hash, frame, large)? {
+                    if f.store_verified(hash, frame, large, max)? {
                         new += 1;
                     }
                 }
@@ -564,7 +566,7 @@ impl ObjectStore<'_> {
                 }
                 let verified: Vec<Result<()>> = fresh
                     .par_iter()
-                    .map(|(hash, frame)| verify_frame(hash, frame))
+                    .map(|(hash, frame)| verify_frame(hash, frame, max))
                     .collect();
                 for r in verified {
                     r?;
@@ -698,10 +700,52 @@ impl ObjectStore<'_> {
     }
 }
 
+/// Decompress a frame that arrived from elsewhere, refusing to produce more
+/// than `max` bytes.
+///
+/// A zstd frame can expand a thousandfold or more, so `zstd::decode_all` on
+/// untrusted input is an allocation chosen by the sender. A frame that states
+/// its content size is refused up front; one that does not (or lies) is cut off
+/// by reading at most `max + 1` bytes, and the extra byte is the proof of
+/// overrun. Only for received frames: objects the user saved themselves are
+/// read back unbounded, since a file larger than the import ceiling is
+/// legitimate to store.
+pub(crate) fn decode_bounded(frame: &[u8], max: u64) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let over = |found: Option<u64>| VeloError::LimitExceeded {
+        limit: crate::limits::Limit::ObjectBytes,
+        max,
+        found,
+    };
+    if let Ok(Some(declared)) = zstd::zstd_safe::get_frame_content_size(frame) {
+        if declared > max {
+            return Err(over(Some(declared)));
+        }
+    }
+    let mut out = Vec::new();
+    zstd::stream::read::Decoder::new(frame)
+        .map_err(VeloError::Io)?
+        .take(max.saturating_add(1))
+        .read_to_end(&mut out)
+        .map_err(VeloError::Io)?;
+    if out.len() as u64 > max {
+        return Err(over(None));
+    }
+    Ok(out)
+}
+
+/// [`decode_bounded`] for a named object: a limit stays a limit, anything else
+/// is a frame that does not decode.
+fn decode_received(hash: &str, frame: &[u8], max: u64) -> Result<Vec<u8>> {
+    decode_bounded(frame, max).map_err(|e| match e {
+        VeloError::LimitExceeded { .. } => e,
+        _ => VeloError::corrupt(format!("object {} could not be decompressed", hash)),
+    })
+}
+
 /// Check that a received frame decompresses and hashes to its own name.
-fn verify_frame(hash: &str, frame: &[u8]) -> Result<()> {
-    let decompressed = zstd::decode_all(frame)
-        .map_err(|_| VeloError::corrupt(format!("object {} could not be decompressed", hash)))?;
+fn verify_frame(hash: &str, frame: &[u8], max: u64) -> Result<()> {
+    let decompressed = decode_received(hash, frame, max)?;
     let actual = blake3::hash(&decompressed).to_hex().to_string();
     if actual != hash {
         return Err(VeloError::corrupt(format!(
@@ -984,10 +1028,8 @@ impl FileObjects {
     /// The checking half of importing a received frame: it must decompress and hash to `hash`. Returns whether the
     /// object is big enough to be stored as chunks, which the writing half
     /// needs and which would otherwise mean decoding it a second time.
-    pub(crate) fn verify_incoming(&self, hash: &str, frame: &[u8]) -> Result<bool> {
-        let decompressed = zstd::decode_all(frame).map_err(|_| {
-            VeloError::corrupt(format!("object {} could not be decompressed", hash))
-        })?;
+    pub(crate) fn verify_incoming(&self, hash: &str, frame: &[u8], max: u64) -> Result<bool> {
+        let decompressed = decode_received(hash, frame, max)?;
         let actual = blake3::hash(&decompressed).to_hex().to_string();
         if actual != hash {
             return Err(VeloError::corrupt(format!(
@@ -1000,12 +1042,18 @@ impl FileObjects {
 
     /// The writing half: store a frame [`verify_incoming`](Self::verify_incoming)
     /// accepted. `Ok(true)` if the object was new.
-    pub(crate) fn store_verified(&self, hash: &str, frame: &[u8], large: bool) -> Result<bool> {
+    pub(crate) fn store_verified(
+        &self,
+        hash: &str,
+        frame: &[u8],
+        large: bool,
+        max: u64,
+    ) -> Result<bool> {
         if self.path(hash).exists() {
             return Ok(false);
         }
         if large {
-            let decompressed = zstd::decode_all(frame).map_err(VeloError::Io)?;
+            let decompressed = decode_received(hash, frame, max)?;
             self.store(hash, &decompressed)?;
         } else {
             write_atomic(&self.path(hash), frame)?;
@@ -1161,8 +1209,15 @@ fn hash_mmap(path: &Path) -> Result<String> {
 #[cfg(not(target_family = "wasm"))]
 fn read_mmap(path: &Path) -> Result<Vec<u8>> {
     let file = fs::File::open(path).map_err(VeloError::Io)?;
-    // Safety: the file is read-only and we don't modify it during the map's
-    // lifetime.  This is the standard pattern for read-only mmaps.
+    // SAFETY: the file is opened read-only and the map is private to this
+    // function. velo never writes to a stored file in place (objects are written
+    // to a temporary name and renamed), so nothing in this process mutates the
+    // mapped bytes. The known mmap caveat is another process truncating the file
+    // while it is mapped, which raises SIGBUS on Unix or an access violation on
+    // Windows. velo narrows that to the instant of the copy: the bytes are
+    // copied into a `Vec` immediately and the map dropped, so no reference into
+    // the mapping outlives this function.
+    #[allow(unsafe_code)]
     let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(VeloError::Io)?;
     Ok(mmap.to_vec())
 }
@@ -1226,7 +1281,7 @@ mod tests {
         let (_d, s) = store();
         let frame = zstd::encode_all(&b"content"[..], 1).unwrap();
         let wrong = blake3::hash(b"other").to_hex().to_string();
-        let err = s.verify_incoming(&wrong, &frame).unwrap_err();
+        let err = s.verify_incoming(&wrong, &frame, u64::MAX).unwrap_err();
         assert!(matches!(err, VeloError::Corrupt { .. }));
 
         let h = s.put(b"original").unwrap();

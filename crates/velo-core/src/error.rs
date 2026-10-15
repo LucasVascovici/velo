@@ -213,6 +213,28 @@ pub enum Error {
     },
 
     // ── Caller error ─────────────────────────────────────────────────────────
+    /// A path in a tree, bundle or git stream is one velo will not store or
+    /// write to a working tree: it escapes the root, names `.velo`, is reserved
+    /// on this platform, or collides with a directory. Nothing was written.
+    UnsafePath {
+        path: String,
+        problem: crate::safe_path::PathProblem,
+    },
+    /// Received data would need more memory than a configured ceiling allows.
+    /// `found` is `None` when the overrun was noticed while streaming. Nothing
+    /// was imported. See [`crate::Limits`].
+    LimitExceeded {
+        limit: crate::limits::Limit,
+        max: u64,
+        found: Option<u64>,
+    },
+    /// A remote refused the request for lack of (valid) credentials or
+    /// permission. `detail` is the server's explanation and never contains a
+    /// token.
+    AccessDenied {
+        remote: String,
+        detail: String,
+    },
     /// The request itself was invalid (empty message, bad range, …). Prefer a
     /// specific variant; this is the residual case.
     InvalidInput {
@@ -352,6 +374,16 @@ impl fmt::Display for Error {
             Error::UntrustedData { detail } => {
                 write!(f, "received data failed verification: {}", detail)
             }
+            Error::UnsafePath { path, problem } => {
+                write!(f, "refusing path '{path}': {problem}")
+            }
+            Error::LimitExceeded { limit, max, found } => match found {
+                Some(n) => write!(f, "{limit} of {n} exceeds the limit of {max}"),
+                None => write!(f, "{limit} exceeds the limit of {max}"),
+            },
+            Error::AccessDenied { remote, detail } => {
+                write!(f, "'{}' refused access: {}", remote, detail)
+            }
             Error::InvalidInput { detail } => f.write_str(detail),
             Error::Unsupported { detail } => f.write_str(detail),
             Error::Io(e) => write!(f, "I/O error: {}", e),
@@ -409,6 +441,178 @@ impl Error {
         }
     }
 
+    /// The name of this variant, exactly as declared. For bindings and tests
+    /// that must name a variant without parsing `Debug` output; **unstable**,
+    /// not part of the public API promise.
+    ///
+    /// The match has no wildcard on purpose: adding a variant stops this crate
+    /// compiling until it is named here.
+    #[doc(hidden)]
+    pub fn variant_name(&self) -> &'static str {
+        match self {
+            Error::NotARepo { .. } => "NotARepo",
+            Error::AlreadyInitialized { .. } => "AlreadyInitialized",
+            Error::NestedRepo { .. } => "NestedRepo",
+            Error::SchemaTooNew { .. } => "SchemaTooNew",
+            Error::MigrationRequired { .. } => "MigrationRequired",
+            Error::FormatTooOld { .. } => "FormatTooOld",
+            Error::Cancelled => "Cancelled",
+            Error::Locked { .. } => "Locked",
+            Error::DirtyWorkingTree { .. } => "DirtyWorkingTree",
+            Error::WouldOverwriteEdits { .. } => "WouldOverwriteEdits",
+            Error::MissingCleanChanges { .. } => "MissingCleanChanges",
+            Error::SnapshotHasDependents { .. } => "SnapshotHasDependents",
+            Error::OperationInProgress { .. } => "OperationInProgress",
+            Error::NoOperationInProgress { .. } => "NoOperationInProgress",
+            Error::Conflicts { .. } => "Conflicts",
+            Error::Diverged { .. } => "Diverged",
+            Error::NotFastForward { .. } => "NotFastForward",
+            Error::RemoteRefAbsent { .. } => "RemoteRefAbsent",
+            Error::UnbornBranch { .. } => "UnbornBranch",
+            Error::NotFound { .. } => "NotFound",
+            Error::AmbiguousPrefix { .. } => "AmbiguousPrefix",
+            Error::Compacted { .. } => "Compacted",
+            Error::Corrupt { .. } => "Corrupt",
+            Error::MissingObject { .. } => "MissingObject",
+            Error::UntrustedData { .. } => "UntrustedData",
+            Error::UnsafePath { .. } => "UnsafePath",
+            Error::LimitExceeded { .. } => "LimitExceeded",
+            Error::AccessDenied { .. } => "AccessDenied",
+            Error::InvalidInput { .. } => "InvalidInput",
+            Error::Unsupported { .. } => "Unsupported",
+            Error::Io(_) => "Io",
+            Error::Db(_) => "Db",
+        }
+    }
+
+    /// One realistic value of every variant, for binding tests that prove no
+    /// variant falls through to a generic error. **Unstable**; not for
+    /// application code. The `samples_cover_every_variant` unit test fails when
+    /// a variant has no sample.
+    #[doc(hidden)]
+    pub fn samples() -> Vec<Error> {
+        let id = |c: char| -> crate::SnapshotId {
+            c.to_string().repeat(64).parse().expect("a valid id")
+        };
+        let branch = |n: &str| -> crate::BranchName { n.parse().expect("a valid branch name") };
+        vec![
+            Error::NotARepo {
+                searched_from: PathBuf::from("/work/project"),
+            },
+            Error::AlreadyInitialized {
+                at: PathBuf::from("/work/project"),
+            },
+            Error::NestedRepo {
+                outer: PathBuf::from("/work"),
+            },
+            Error::SchemaTooNew {
+                found: 99,
+                supported: 5,
+            },
+            Error::MigrationRequired {
+                found: 4,
+                supported: 5,
+            },
+            Error::FormatTooOld {
+                found: 1,
+                supported: 5,
+            },
+            Error::Cancelled,
+            Error::Locked {
+                held_by: Some(4242),
+                holder: Some(crate::lock::LockHolder {
+                    pid: 4242,
+                    started_at_ms: 1_700_000_000_000,
+                    command: Some("velo save".to_string()),
+                }),
+            },
+            Error::DirtyWorkingTree {
+                paths: vec![PathBuf::from("src/main.rs")],
+            },
+            Error::WouldOverwriteEdits {
+                paths: vec![PathBuf::from("notes.txt")],
+            },
+            Error::MissingCleanChanges {
+                path: PathBuf::from("notes.txt"),
+                missing: 2,
+                sample: vec!["first line".to_string(), "second line".to_string()],
+            },
+            Error::SnapshotHasDependents {
+                snapshot: id('a'),
+                branches: vec![(branch("main"), 3)],
+                dependents: 3,
+            },
+            Error::OperationInProgress {
+                what: InProgress::Merge,
+            },
+            Error::NoOperationInProgress {
+                what: InProgress::Rebase,
+            },
+            Error::Conflicts {
+                paths: vec![PathBuf::from("src/lib.rs")],
+            },
+            Error::Diverged {
+                branch: "main".to_string(),
+                ahead: 2,
+                behind: 1,
+            },
+            Error::NotFastForward {
+                branch: "main".to_string(),
+                remote: "origin".to_string(),
+            },
+            Error::RemoteRefAbsent {
+                remote: "origin".to_string(),
+                branch: "main".to_string(),
+                snapshot: id('b'),
+            },
+            Error::UnbornBranch {
+                branch: "main".to_string(),
+            },
+            Error::NotFound {
+                kind: RefKind::Branch,
+                name: "feature".to_string(),
+            },
+            Error::AmbiguousPrefix {
+                prefix: "ab".to_string(),
+                matches: 2,
+            },
+            Error::Compacted {
+                id: "old-id".to_string(),
+                into: id('c'),
+            },
+            Error::Corrupt {
+                detail: "snapshot row is truncated".to_string(),
+            },
+            Error::MissingObject {
+                hash: "d".repeat(64),
+            },
+            Error::UntrustedData {
+                detail: "bundle checksum mismatch".to_string(),
+            },
+            Error::UnsafePath {
+                path: "../escape".to_string(),
+                problem: crate::safe_path::PathProblem::DotDotComponent,
+            },
+            Error::LimitExceeded {
+                limit: crate::limits::Limit::ObjectBytes,
+                max: 1024,
+                found: Some(4096),
+            },
+            Error::AccessDenied {
+                remote: "https://example.com/repo".to_string(),
+                detail: "a bearer token is required".to_string(),
+            },
+            Error::InvalidInput {
+                detail: "message must not be empty".to_string(),
+            },
+            Error::Unsupported {
+                detail: "not supported on this platform".to_string(),
+            },
+            Error::Io(std::io::Error::other("disk full")),
+            Error::Db(rusqlite::Error::QueryReturnedNoRows),
+        ]
+    }
+
     /// True when the caller must reconcile history before retrying.
     pub fn is_reconcile_needed(&self) -> bool {
         matches!(self, Error::Diverged { .. } | Error::NotFastForward { .. })
@@ -434,3 +638,101 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// written as `VeloError::…` keep compiling during the in-tree migration.
 #[doc(hidden)]
 pub type VeloError = Error;
+
+#[cfg(test)]
+mod variant_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// Every variant, by name. Extend it together with `Error::samples`.
+    const ALL: &[&str] = &[
+        "NotARepo",
+        "AlreadyInitialized",
+        "NestedRepo",
+        "SchemaTooNew",
+        "MigrationRequired",
+        "FormatTooOld",
+        "Cancelled",
+        "Locked",
+        "DirtyWorkingTree",
+        "WouldOverwriteEdits",
+        "MissingCleanChanges",
+        "SnapshotHasDependents",
+        "OperationInProgress",
+        "NoOperationInProgress",
+        "Conflicts",
+        "Diverged",
+        "NotFastForward",
+        "RemoteRefAbsent",
+        "UnbornBranch",
+        "NotFound",
+        "AmbiguousPrefix",
+        "Compacted",
+        "Corrupt",
+        "MissingObject",
+        "UntrustedData",
+        "UnsafePath",
+        "LimitExceeded",
+        "AccessDenied",
+        "InvalidInput",
+        "Unsupported",
+        "Io",
+        "Db",
+    ];
+
+    /// Exhaustive on purpose (no wildcard): a new variant breaks compilation
+    /// here until it is added to `ALL` and given a sample.
+    fn _all_covered(e: &Error) -> &'static str {
+        match e {
+            Error::NotARepo { .. } => "NotARepo",
+            Error::AlreadyInitialized { .. } => "AlreadyInitialized",
+            Error::NestedRepo { .. } => "NestedRepo",
+            Error::SchemaTooNew { .. } => "SchemaTooNew",
+            Error::MigrationRequired { .. } => "MigrationRequired",
+            Error::FormatTooOld { .. } => "FormatTooOld",
+            Error::Cancelled => "Cancelled",
+            Error::Locked { .. } => "Locked",
+            Error::DirtyWorkingTree { .. } => "DirtyWorkingTree",
+            Error::WouldOverwriteEdits { .. } => "WouldOverwriteEdits",
+            Error::MissingCleanChanges { .. } => "MissingCleanChanges",
+            Error::SnapshotHasDependents { .. } => "SnapshotHasDependents",
+            Error::OperationInProgress { .. } => "OperationInProgress",
+            Error::NoOperationInProgress { .. } => "NoOperationInProgress",
+            Error::Conflicts { .. } => "Conflicts",
+            Error::Diverged { .. } => "Diverged",
+            Error::NotFastForward { .. } => "NotFastForward",
+            Error::RemoteRefAbsent { .. } => "RemoteRefAbsent",
+            Error::UnbornBranch { .. } => "UnbornBranch",
+            Error::NotFound { .. } => "NotFound",
+            Error::AmbiguousPrefix { .. } => "AmbiguousPrefix",
+            Error::Compacted { .. } => "Compacted",
+            Error::Corrupt { .. } => "Corrupt",
+            Error::MissingObject { .. } => "MissingObject",
+            Error::UntrustedData { .. } => "UntrustedData",
+            Error::UnsafePath { .. } => "UnsafePath",
+            Error::LimitExceeded { .. } => "LimitExceeded",
+            Error::AccessDenied { .. } => "AccessDenied",
+            Error::InvalidInput { .. } => "InvalidInput",
+            Error::Unsupported { .. } => "Unsupported",
+            Error::Io(_) => "Io",
+            Error::Db(_) => "Db",
+        }
+    }
+
+    #[test]
+    fn samples_cover_every_variant() {
+        let samples = Error::samples();
+        for e in &samples {
+            assert_eq!(e.variant_name(), _all_covered(e));
+        }
+        let names: Vec<_> = samples.iter().map(|e| e.variant_name()).collect();
+        let set: BTreeSet<_> = names.iter().copied().collect();
+        assert_eq!(
+            set.len(),
+            names.len(),
+            "a variant has two samples: {names:?}"
+        );
+        let want: BTreeSet<_> = ALL.iter().copied().collect();
+        assert_eq!(set, want, "samples() and the variant list disagree");
+    }
+}

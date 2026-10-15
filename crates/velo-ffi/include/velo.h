@@ -48,6 +48,20 @@ extern "C" {
 #define VELO_ERR_DB 24
 /* Snapshot squashed or re-minted by compaction; the message names the live id. */
 #define VELO_ERR_COMPACTED 25
+/* A path velo refuses to store or write (escapes the root, reserved name, ...). */
+#define VELO_ERR_UNSAFE_PATH 26
+/* Received data would exceed a configured read limit (object, pack or string size). */
+#define VELO_ERR_LIMIT_EXCEEDED 27
+/* A remote refused access (missing/invalid token, read-only server). */
+#define VELO_ERR_ACCESS_DENIED 28
+/* Taking a side would replace edits made by hand to conflicted files. */
+#define VELO_ERR_WOULD_OVERWRITE_EDITS 29
+/* A hand edit would drop lines the other side changed cleanly. */
+#define VELO_ERR_MISSING_CLEAN_CHANGES 30
+/* Undoing a snapshot would leave other snapshots without their parent. */
+#define VELO_ERR_SNAPSHOT_HAS_DEPENDENTS 31
+/* A remote-tracking ref names a snapshot this repository does not hold. */
+#define VELO_ERR_REMOTE_REF_ABSENT 32
 /* Binding-level errors. */
 #define VELO_ERR_NULL_ARGUMENT 100
 #define VELO_ERR_INVALID_UTF8 101

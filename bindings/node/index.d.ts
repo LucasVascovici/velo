@@ -11,6 +11,30 @@ export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-was
 
 /** An open velo repository. */
 export declare class Repo {
+  /**
+   * Call `callback(event)` for every change committed through this handle.
+   *
+   * `event.kind` is `'Saved'`, `'Merged'`, `'RefMoved'` or `'Imported'`,
+   * next to that event's fields. Callbacks run when the promise of the call
+   * that made the change resolves: after the core call has finished and
+   * released the repository, on the JS thread. Events are in-process only:
+   * this handle hears its own writes, not those of another handle or process.
+   */
+  onEvent(callback: (event: { kind: string; [field: string]: string | number | null }) => void): void
+  /**
+   * Merge files matching glob `pattern` with `driver`: `'json'`, `'yaml'`,
+   * `'toml'`, or a function `(ancestor, ours, theirs) => string | null`
+   * where `null` is a conflict. The first matching rule wins.
+   *
+   * A function runs inside the merge, under the repository lock, and must
+   * answer synchronously. Any call it makes on this handle rejects with
+   * `code: 'Reentrant'`. A throw (or a return that is not a string or
+   * `null`) makes `mergePlan` / `mergeCommit` reject with
+   * `code: 'DriverFailed'`, and nothing is committed.
+   */
+  setMergeDriver(pattern: string, driver: 'json' | 'yaml' | 'toml' | ((ancestor: string, ours: string, theirs: string) => string | null)): Promise<void>
+  /** Go back to line-based merging for every path. */
+  clearMergeDrivers(): Promise<void>
   /** Snapshots newest first, filtered by `options`. */
   history(options?: HistoryOptions | undefined | null): Promise<Array<SnapshotInfo>>
   /** Snapshots whose metadata satisfies every filter, newest first. */
@@ -45,7 +69,59 @@ export declare class Repo {
   resolve(spec: string): Promise<string>
   branchTip(branch: string): Promise<string | null>
   headToken(): Promise<bigint>
+  /** Sign `snapshot` with `key`; the signature is stored beside the snapshot. */
+  sign(snapshot: string, key: SigningKey): Promise<SignatureInfo>
+  /** Every signature stored for `snapshot`, valid or not. */
+  signatures(snapshot: string): Promise<Array<SignatureInfo>>
+  /** Check the signatures on `snapshot` against `trustedKeys` (hex public keys). */
+  verify(snapshot: string, trustedKeys: Array<string>): Promise<VerificationInfo>
+  /** The ids of snapshots that carry at least one signature. */
+  signedSnapshots(): Promise<Array<string>>
+  /**
+   * Fetch, then push, fast-forward or merge as needed.
+   *
+   * A merge is saved and pushed only when clean; a conflicted one stops as
+   * `merge` leaves it and nothing is pushed. Needs a working tree.
+   */
+  sync(options?: SyncInput): Promise<SyncResult>
+  /** Thin `branch` by a retention policy. With `dryRun` nothing is written. */
+  retention(branch: string, options?: RetentionOptions | undefined | null): Promise<RetentionReport>
+  /**
+   * Squash each range of `branch`'s first-parent chain. Afterwards an old id
+   * rejects with `code: 'Compacted'` and an `into` naming its replacement.
+   */
+  compact(branch: string, ranges: Array<RangeInput>, dryRun?: boolean | undefined | null): Promise<CompactionInfo>
+  /** Every tag, ordered by name. */
+  tags(): Promise<Array<TagInfo>>
+  /**
+   * Tag snapshot `at` (a name, id or prefix), or the current position when
+   * absent, and resolve to the tagged id. Fails if the name is taken unless
+   * `force`.
+   */
+  createTag(name: string, at?: string | undefined | null, force?: boolean | undefined | null): Promise<string>
+  deleteTag(name: string): Promise<void>
+  /**
+   * Verify the repository. With `repair`, cruft is cleaned up; damage is
+   * only ever reported.
+   */
+  fsck(repair?: boolean | undefined | null): Promise<FsckReport>
 }
+
+/** A private Ed25519 signing key. */
+export declare class SigningKey {
+  /** Build a key from its 32-byte seed. */
+  static fromSeed(seed: Buffer): SigningKey
+  /** Build a key from its seed written as 64 hex characters. */
+  static fromHex(text: string): SigningKey
+  /** The public key as hex: what `verify` takes as a trusted key. */
+  get publicKey(): string
+}
+
+/**
+ * `[variant, code]` for one sample of every core error. Hidden: it exists so a
+ * test can prove no variant falls through to a generic code.
+ */
+export declare function _errorCodes(): Array<Array<string>>
 
 /** The author of a snapshot. */
 export interface AuthorInfo {
@@ -94,6 +170,13 @@ export interface BranchInfo {
   tip: string | null
 }
 
+export interface CompactionInfo {
+  branch: string
+  dryRun: boolean
+  squashed: Array<SquashInfo>
+  rewritten: Array<RewrittenInfo>
+}
+
 /** One file of a tree to save. Exactly one of `data` and `object` is given. */
 export interface EntryInput {
   path: string
@@ -103,6 +186,21 @@ export interface EntryInput {
   object?: string
   /** `'regular'` (default), `'executable'` or `'symlink'`. */
   kind?: string
+}
+
+/** One fsck finding: a variant name and a sentence. */
+export interface Finding {
+  kind: string
+  detail: string
+}
+
+export interface FsckReport {
+  /** Damage. Non-empty means the repository is corrupt. */
+  problems: Array<Finding>
+  /** Harmless leftovers that `repair` cleans up. */
+  cruft: Array<Finding>
+  /** What `repair` cleaned up. */
+  repaired: Array<Finding>
 }
 
 /** What `history` filters on. Every field is optional. */
@@ -183,6 +281,57 @@ export interface PlannedFileInfo {
   theirs?: string
 }
 
+/** A snapshot retention would not touch. */
+export interface ProtectedInfo {
+  id: string
+  /** `'tagged'`, `'merge'`, `'parent_of_outside'`, `'published'` or `'checked_out'`. */
+  reason: string
+}
+
+/** What a push did. */
+export interface PushReportInfo {
+  /** `'sent'` or `'already_up_to_date'`. */
+  outcome: string
+  branch: string
+  remote: string
+  snapshots: number
+  objects: number
+  /** `'remote_was_empty'` or `'branch_was_missing'` when the push created the branch. */
+  created?: string
+  alsoPublished: Array<string>
+}
+
+/** One range of a branch's first-parent chain, `oldest..=newest`. */
+export interface RangeInput {
+  oldest: string
+  newest: string
+}
+
+export interface RetentionOptions {
+  /** Ascending by age. Absent means the default policy. */
+  tiers?: Array<TierInput>
+  /** The clock, in epoch milliseconds. Defaults to now. */
+  nowMs?: number
+  /** Compute the report and write nothing. */
+  dryRun?: boolean
+}
+
+export interface RetentionReport {
+  branch: string
+  examined: number
+  removed: number
+  dryRun: boolean
+  squashed: Array<SquashInfo>
+  rewritten: Array<RewrittenInfo>
+  protected: Array<ProtectedInfo>
+}
+
+/** A snapshot re-minted because an ancestor changed. */
+export interface RewrittenInfo {
+  old: string
+  new: string
+}
+
 export interface SaveTreeInput {
   branch: string
   message: string
@@ -194,6 +343,14 @@ export interface SaveTreeInput {
   timestampMs?: number
   /** `[from, to]` pairs of paths this snapshot moved. */
   renames?: Array<Array<string>>
+}
+
+/** One signature on a snapshot, as stored. */
+export interface SignatureInfo {
+  snapshot: string
+  algorithm: string
+  publicKey: string
+  signature: string
 }
 
 /** A snapshot's header. */
@@ -208,10 +365,87 @@ export interface SnapshotInfo {
   tag: string | null
 }
 
+/** A range that became one snapshot. */
+export interface SquashInfo {
+  into: string
+  /** Every snapshot of the range, oldest first. All stopped existing. */
+  removed: Array<string>
+}
+
+/** What `sync` takes. Every field is optional. */
+export interface SyncInput {
+  /** The remote's name. Defaults to `'origin'`. */
+  remote?: string
+  /** Must be the checked-out branch; defaults to it. */
+  branch?: string
+  /**
+   * A bearer token for an HTTP remote, used for this call only and never
+   * included in an error.
+   */
+  token?: string
+  /** Recorded on a merge snapshot the sync creates. */
+  author?: AuthorInput
+  /** The merge snapshot's message. */
+  message?: string
+  /**
+   * The `velo` executable for `child:` and `ssh://` remotes, which a binding
+   * does not have of its own. Defaults to `velo` on the path. HTTP and
+   * local-path remotes need none.
+   */
+  veloBin?: string
+}
+
+/** What `sync` did. */
+export interface SyncResult {
+  /** `'nothing'`, `'pushed'`, `'fast_forwarded'`, `'merged'` or `'conflicted'`. */
+  kind: string
+  branch: string
+  remote: string
+  /** The snapshot the branch moved to (`fast_forwarded`). */
+  to?: string
+  /** The merge snapshot (`merged`). */
+  merge?: string
+  /** The conflicted paths (`conflicted`). */
+  paths?: Array<string>
+  /** The push (`pushed`, `merged`). */
+  report?: PushReportInfo
+}
+
+/** A tag and what it points at. */
+export interface TagInfo {
+  name: string
+  snapshot: string
+  /** The tagged snapshot's message, absent once that snapshot is gone. */
+  message?: string
+}
+
+/**
+ * One retention tier: snapshots older than `olderThanMs` keep one per
+ * `keepOnePerMs` bucket.
+ */
+export interface TierInput {
+  olderThanMs: number
+  keepOnePerMs: number
+}
+
 /** A file as recorded in a saved tree. */
 export interface TreeFile {
   path: string
   object: string
   /** `'regular'`, `'executable'` or `'symlink'`. */
   kind: string
+}
+
+/**
+ * Every signature on a snapshot, sorted by outcome. Each list holds public
+ * keys as hex.
+ */
+export interface VerificationInfo {
+  snapshot: string
+  trusted: Array<string>
+  untrusted: Array<string>
+  invalid: Array<string>
+  unverifiable: Array<string>
+  /** True when at least one valid signature is by a trusted key and none is invalid. */
+  isTrusted: boolean
 }

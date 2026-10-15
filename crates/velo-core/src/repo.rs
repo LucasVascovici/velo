@@ -40,7 +40,16 @@ pub struct Repo {
     /// What this handle writes into the lock's holder record, so a refused
     /// writer can say what is running. Set via [`Repo::lock_label`].
     lock_label: Option<String>,
+    /// Ceilings on what this handle will allocate for data received from
+    /// elsewhere. Set via [`Repo::limited`].
+    limits: crate::Limits,
+    /// Where bearer tokens for HTTP remotes come from, given a remote's URL.
+    /// `None` sends no credentials. Set via [`Repo::credentials`].
+    credentials: Option<Credentials>,
 }
+
+/// A callback mapping a remote URL to the bearer token to present to it.
+type Credentials = Box<dyn Fn(&str) -> Option<String> + Send>;
 
 /// How a repository sits on disk.
 #[derive(Clone, Debug)]
@@ -157,9 +166,11 @@ impl Repo {
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
+            credentials: None,
             listeners: Vec::new(),
             object_location,
             lock_label: None,
+            limits: crate::Limits::default(),
         })
     }
 
@@ -206,9 +217,11 @@ impl Repo {
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
+            credentials: None,
             listeners: Vec::new(),
             object_location,
             lock_label: None,
+            limits: crate::Limits::default(),
         })
     }
 
@@ -301,9 +314,11 @@ impl Repo {
             observer: Box::new(Silent),
             scope: crate::Scope::new(),
             drivers: crate::Drivers::new(),
+            credentials: None,
             listeners: Vec::new(),
             object_location,
             lock_label: None,
+            limits: crate::Limits::default(),
         })
     }
 
@@ -531,6 +546,60 @@ impl Repo {
     pub fn merging(mut self, drivers: crate::Drivers) -> Self {
         self.drivers = drivers;
         self
+    }
+
+    /// Supply bearer tokens for HTTP remotes.
+    ///
+    /// The provider is given a remote's URL and returns the token to send as
+    /// `Authorization: Bearer <token>`, or `None` for no credentials. Core reads
+    /// no environment, so the caller decides where tokens come from; they never
+    /// belong in the URL itself, which `transport::open` refuses. Tokens are
+    /// never stored in the repository and never appear in errors.
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// let repo = velo_core::Repo::discover(std::path::Path::new("."))?
+    ///     .credentials(|_url| std::env::var("VELO_TOKEN").ok());
+    /// # let _ = repo;
+    /// # Ok(()) }
+    /// ```
+    pub fn credentials(
+        mut self,
+        provider: impl Fn(&str) -> Option<String> + Send + 'static,
+    ) -> Self {
+        self.credentials = Some(Box::new(provider));
+        self
+    }
+
+    /// The bearer token configured for a remote URL, if any.
+    pub(crate) fn token_for_url(&self, url: &str) -> Option<String> {
+        self.credentials.as_ref().and_then(|f| f(url))
+    }
+
+    /// Set the ceilings on what this handle allocates when reading data that
+    /// came from another machine (bundles, packs, git streams).
+    ///
+    /// Like [`Repo::scoped`], this belongs to the handle: it is a property of
+    /// how much the application trusts its sources, not of one call. Hitting a
+    /// ceiling is [`Error::LimitExceeded`](crate::Error::LimitExceeded).
+    ///
+    /// ```no_run
+    /// # fn main() -> Result<(), velo_core::Error> {
+    /// use velo_core::{Limits, Repo};
+    ///
+    /// let repo = Repo::discover(std::path::Path::new("."))?
+    ///     .limited(Limits::default().with_max_object_bytes(64 << 20));
+    /// # let _ = repo;
+    /// # Ok(()) }
+    /// ```
+    pub fn limited(mut self, limits: crate::Limits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// The handle's read limits.
+    pub fn limits(&self) -> &crate::Limits {
+        &self.limits
     }
 
     /// The handle's merge drivers.

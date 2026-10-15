@@ -53,6 +53,13 @@ fn kind_name(kind: FileKind) -> &'static str {
 }
 
 /// Create an empty tree. Free it with `velo_tree_free`.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_tree_new(out: *mut *mut VeloTree) -> i32 {
     run(|| {
@@ -64,6 +71,13 @@ pub unsafe extern "C" fn velo_tree_new(out: *mut *mut VeloTree) -> i32 {
 }
 
 /// Release a tree. NULL is a no-op.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_tree_free(tree: *mut VeloTree) {
     if !tree.is_null() {
@@ -74,6 +88,13 @@ pub unsafe extern "C" fn velo_tree_free(tree: *mut VeloTree) {
 
 /// Add a file whose bytes are `data[0..len]`. The bytes are copied, so the
 /// caller keeps ownership of its buffer. `data` may be NULL only when `len` is 0.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_tree_add_file(
     tree: *mut VeloTree,
@@ -101,6 +122,13 @@ pub unsafe extern "C" fn velo_tree_add_file(
 
 /// Add a file by naming an object the store already holds (the `object` field
 /// of `velo_tree_at`), so an unchanged file costs nothing to carry forward.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_tree_add_stored(
     tree: *mut VeloTree,
@@ -235,6 +263,13 @@ fn parse_options(repo: &velo_core::Repo, text: &str) -> Res<Options> {
 ///
 /// The working tree and `.velo/PARENT` are never touched. The tree is not
 /// consumed: the caller still frees it.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_save_tree(
     repo: *const VeloRepo,
@@ -265,6 +300,13 @@ pub unsafe extern "C" fn velo_save_tree(
 
 /// The files of a snapshot, as a JSON array of `{"path", "object", "kind"}`
 /// in path order, where `kind` is `regular`, `executable` or `symlink`.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_tree_at(
     repo: *const VeloRepo,
@@ -291,6 +333,13 @@ pub unsafe extern "C" fn velo_tree_at(
 
 /// The bytes of `path` as of a snapshot, written to `*out_data` with their
 /// length in `*out_len`. Free with `velo_bytes_free(*out_data, *out_len)`.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_read_file_at(
     repo: *const VeloRepo,
@@ -315,6 +364,13 @@ pub unsafe extern "C" fn velo_read_file_at(
 /// One snapshot as JSON: `{"id", "message", "created_at" (RFC 3339),
 /// "created_at_ms", "branch", "parent", "merge_parent", "tag"}`. Absent
 /// parents and tag are `null`.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_snapshot(
     repo: *const VeloRepo,
@@ -331,6 +387,13 @@ pub unsafe extern "C" fn velo_snapshot(
 
 /// A snapshot's metadata as JSON, `{namespace: {key: value}}`, including the
 /// reserved `velo` namespace that records the author.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_snapshot_meta(
     repo: *const VeloRepo,

@@ -142,6 +142,17 @@ const SCHEMA: &str = "
         compacted_at_ms INTEGER NOT NULL
     );
 
+    -- Signatures over snapshot ids (docs/FORMAT.md 11.1).  Outside identity: a
+    -- signature never changes a snapshot's id, and a countersignature is just
+    -- another row.  Keys and signatures are lowercase hex.
+    CREATE TABLE IF NOT EXISTS signatures (
+        snapshot_hash TEXT NOT NULL,
+        algorithm     TEXT NOT NULL,
+        public_key    TEXT NOT NULL,
+        signature     TEXT NOT NULL,
+        PRIMARY KEY (snapshot_hash, public_key)
+    );
+
     -- Repository settings. `objects` = 'database' puts object content in the
     -- `objects` table below; no row means files under .velo/objects.
     CREATE TABLE IF NOT EXISTS settings (

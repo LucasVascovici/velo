@@ -1,1 +1,2 @@
 install.sh text eol=lf
+tests/corpus/** -text

@@ -1,0 +1,38 @@
+blob
+mark :1
+data 3
+hi
+
+blob
+mark :2
+data 3
+yo
+
+reset refs/heads/main
+commit refs/heads/main
+mark :3
+author a <a@x.org> 1792067887 +0200
+committer a <a@x.org> 1792067887 +0200
+data 4
+one
+M 100644 :1 a.txt
+M 100644 :2 d/b.txt
+
+blob
+mark :4
+data 7
+hi
+two
+
+commit refs/heads/main
+mark :5
+author a <a@x.org> 1792067888 +0200
+committer a <a@x.org> 1792067888 +0200
+data 4
+two
+from :3
+M 100644 :4 a.txt
+
+reset refs/tags/v1
+from :5
+

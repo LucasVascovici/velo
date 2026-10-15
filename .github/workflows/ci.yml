@@ -168,3 +168,130 @@ jobs:
 
       - name: Check formatting
         run: cargo fmt --all -- --check
+
+  # ── Binding parity (blocking) ──────────────────────────────────────────────
+  # Every public velo-core entry point is bound or exempted with a reason.
+  parity:
+    name: Binding parity
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check binding parity
+        run: python bindings/parity/check.py
+
+  # ── Semver compatibility (blocking) ────────────────────────────────────────
+  # A breaking change to velo-core or velo-merge cannot land in a minor
+  # release by accident. The baseline is the previous released tag and MUST be
+  # bumped to the newest released tag at each release: otherwise the check
+  # compares against an ever-older API and stops catching breaks introduced
+  # since that tag.
+  semver:
+    name: Semver check
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # tags must be present for baseline-rev
+
+      - uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          package: velo-core,velo-merge
+          baseline-rev: v5.1.2
+          feature-group: all-features
+
+  # Licences, bans, sources and advisories against deny.toml for the root
+  # workspace. The bindings are separate workspaces whose manifests declare no
+  # licence yet, so they are not covered here.
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          arguments: --all-features
+
+  # RustSec advisories against Cargo.lock.
+  audit:
+    name: cargo audit
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: rustsec/audit-check@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  # Crash injection: kill save, restore, switch, undo and redo at every named
+  # durable step and check what is left (crates/velo-core/tests/crash.rs).
+  crash:
+    name: Crash · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Crash tests
+        run: cargo test -p velo-core --features failpoints --test crash --locked
+
+  # Golden corpus: every repository and bundle written by a released build
+  # opens, migrates or is refused as recorded (crates/velo-core/tests/corpus.rs).
+  corpus:
+    name: Corpus · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Corpus tests
+        run: cargo test -p velo-core --test corpus --locked

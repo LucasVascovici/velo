@@ -47,4 +47,52 @@ Notes:
   conflict rejects with `code: 'Conflicts'` and `err.paths`.
 - `branches()`, `createBranch(name, at?)` and `setBranchTip(name, to)` manage
   refs. Timestamps come as `createdAtMs` plus a `createdAt` `Date`.
-- Working-tree commands and events are not yet exposed.
+- Working-tree commands are not yet exposed.
+
+## Change events and merge drivers
+
+```js
+repo.onEvent((e) => console.log(e.kind, e.snapshot))
+await repo.setMergeDriver('*.json', 'json')           // or 'yaml', 'toml'
+await repo.setMergeDriver('*.txt', (ancestor, ours, theirs) => ours + theirs)
+await repo.clearMergeDrivers()
+```
+
+- `onEvent(fn)` calls `fn(event)` for each change committed through this handle.
+  `event` is an object with `kind` (`'Saved'`, `'Merged'`, `'RefMoved'`,
+  `'Imported'`) and that event's fields (`snapshot`, `branch`, `parent`,
+  `mergeParent`, `ours`, `theirs`, ...). Events are **in-process only**: a handle
+  hears its own writes, not those of another handle or process (poll
+  `headToken` for those).
+- Callbacks run when the promise of the call that made the change resolves:
+  after the core call has finished and released the repository, on the JS
+  thread. They may use the repository. A callback that throws is rethrown as an
+  uncaught exception on the next tick; the write has already committed.
+- `setMergeDriver(pattern, driver)` picks a merge driver by path glob; the first
+  matching rule wins. `driver` is `'json'`, `'yaml'`, `'toml'` or a function
+  `(ancestor, ours, theirs) => string | null`; `null` is a conflict.
+- A driver function runs **inside** the merge: the core call runs on a libuv
+  worker under the repository lock, and the worker blocks while the JS thread
+  runs the function. The function must be synchronous (return the string or
+  `null`, not a promise) and must **not** call the repository: any method called
+  on the same handle while a driver function is running rejects at once with
+  `code: 'Reentrant'` instead of waiting. Calls made at other times are not
+  affected. The driver does not keep the process alive.
+- A driver that throws, or returns something other than a string or `null`,
+  makes `mergePlan` / `mergeCommit` reject with `code: 'DriverFailed'` and the
+  driver's message, and nothing is committed. With resolutions given, the merge
+  is planned first so the failure surfaces before any write; the driver then
+  runs twice.
+
+## Threads
+
+- Every call runs on the libuv pool, so the event loop is never blocked, and
+  calls on one handle are serialised: they run one at a time, in the order made.
+- A `Repo` belongs to the thread that opened it and cannot be transferred to a
+  `worker_thread`. Native objects are not cloneable: `postMessage` either throws
+  `DataCloneError` or delivers an empty plain object with none of the methods,
+  depending on the Node version. Either way the worker gets no usable handle.
+- Open one `Repo` per worker, on the same path. Reads run in parallel. A write
+  takes the repository lock without waiting: while another handle (in a worker
+  or another process) holds it, the call rejects at once with `code: 'Locked'`,
+  so retry after a short delay.

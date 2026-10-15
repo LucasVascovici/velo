@@ -1,0 +1,61 @@
+[package]
+name = "velo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+velo-core = { path = "../crates/velo-core", features = ["fuzzing", "bundle"] }
+
+# Its own workspace: the root one excludes `fuzz`, which needs nightly.
+[workspace]
+
+[profile.release]
+debug = 1
+
+[[bin]]
+name = "bundle_decode"
+path = "fuzz_targets/bundle_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wire"
+path = "fuzz_targets/wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "http_service"
+path = "fuzz_targets/http_service.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "git_import"
+path = "fuzz_targets/git_import.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "tree_paths"
+path = "fuzz_targets/tree_paths.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "snapshot_ids"
+path = "fuzz_targets/snapshot_ids.rs"
+test = false
+doc = false
+bench = false
+

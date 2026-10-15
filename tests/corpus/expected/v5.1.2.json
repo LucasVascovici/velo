@@ -1,0 +1,573 @@
+{
+ "branch_tips": [
+  [
+   "feature",
+   ""
+  ],
+  [
+   "main",
+   ""
+  ]
+ ],
+ "file_map": {
+  "30df32b38cbaa6c140dd6aa049e17083c79918f34c1e27db5066df0c497a4fb1": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   }
+  ],
+  "4c3316285eb75baa1ea20c8d2c1a24d6fe3ab3c31310d27d22efcbb97e4f7242": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "3284874c0a53c526084d2e5dd7e0d672bd2057474e0684728182de2dd30c272d",
+    "mode": 0,
+    "path": "src/meta.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   },
+   {
+    "hash": "f522d11ed192da434a59555e0148cb20660d386aaaa5d61b40fa33260cfeba7e",
+    "mode": 0,
+    "path": "src/wip.txt"
+   }
+  ],
+  "51f73af0b6928e21612a21c1e272d76765aa5c20aa4a6401ea1c94f3722680d9": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ],
+  "570489222ded5314154cc8f9b35507625f876b2e103eca0b7aef4d6342ee5b55": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   }
+  ],
+  "59ed58a17fe44cb43302420f4da47cadcdd470742e1e97109b14843f702b22e6": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ],
+  "7d39c7f94efa1c2e87cdbe571aff31d3bbd6675e1ef1272135954a2cfafed21c": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   }
+  ],
+  "c9249f43846279750477b095c260b74364db78bfbc86c02b6c5de19d7fb3a488": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ],
+  "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "3284874c0a53c526084d2e5dd7e0d672bd2057474e0684728182de2dd30c272d",
+    "mode": 0,
+    "path": "src/meta.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   }
+  ],
+  "f1fbee12e27f97a16ac15a97a1a3015264c78a2ebae22c5e7fa3b285f0426017": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "3284874c0a53c526084d2e5dd7e0d672bd2057474e0684728182de2dd30c272d",
+    "mode": 0,
+    "path": "src/meta.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   },
+   {
+    "hash": "c9773d7e715cba0bda066b0e71afb27ddf456599561bb5a1be07251e70898868",
+    "mode": 0,
+    "path": "src/undone.txt"
+   }
+  ]
+ },
+ "lacks": [],
+ "renames": [
+  [
+   "7d39c7f94efa1c2e87cdbe571aff31d3bbd6675e1ef1272135954a2cfafed21c",
+   "src/a.txt",
+   "src/renamed.txt"
+  ]
+ ],
+ "snapshot_meta": [
+  [
+   "30df32b38cbaa6c140dd6aa049e17083c79918f34c1e27db5066df0c497a4fb1",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "30df32b38cbaa6c140dd6aa049e17083c79918f34c1e27db5066df0c497a4fb1",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "51f73af0b6928e21612a21c1e272d76765aa5c20aa4a6401ea1c94f3722680d9",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "51f73af0b6928e21612a21c1e272d76765aa5c20aa4a6401ea1c94f3722680d9",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "570489222ded5314154cc8f9b35507625f876b2e103eca0b7aef4d6342ee5b55",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "570489222ded5314154cc8f9b35507625f876b2e103eca0b7aef4d6342ee5b55",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "59ed58a17fe44cb43302420f4da47cadcdd470742e1e97109b14843f702b22e6",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "59ed58a17fe44cb43302420f4da47cadcdd470742e1e97109b14843f702b22e6",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "7d39c7f94efa1c2e87cdbe571aff31d3bbd6675e1ef1272135954a2cfafed21c",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "7d39c7f94efa1c2e87cdbe571aff31d3bbd6675e1ef1272135954a2cfafed21c",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "c9249f43846279750477b095c260b74364db78bfbc86c02b6c5de19d7fb3a488",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "c9249f43846279750477b095c260b74364db78bfbc86c02b6c5de19d7fb3a488",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05",
+   "corpus",
+   "step",
+   "meta"
+  ],
+  [
+   "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05",
+   "mcp",
+   "client",
+   "corpus"
+  ],
+  [
+   "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05",
+   "mcp",
+   "run",
+   "corpus-run"
+  ],
+  [
+   "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05",
+   "mcp",
+   "tool",
+   "velo_save"
+  ],
+  [
+   "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05",
+   "mcp",
+   "tool_call_id",
+   "tc1"
+  ],
+  [
+   "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "f1fbee12e27f97a16ac15a97a1a3015264c78a2ebae22c5e7fa3b285f0426017",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "f1fbee12e27f97a16ac15a97a1a3015264c78a2ebae22c5e7fa3b285f0426017",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ]
+ ],
+ "snapshots": [
+  {
+   "branch": "main",
+   "created_at_ms": 1791981980505,
+   "hash": "59ed58a17fe44cb43302420f4da47cadcdd470742e1e97109b14843f702b22e6",
+   "merge_parent": "",
+   "message": "initial",
+   "parent_hash": ""
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981980619,
+   "hash": "c9249f43846279750477b095c260b74364db78bfbc86c02b6c5de19d7fb3a488",
+   "merge_parent": "",
+   "message": "second",
+   "parent_hash": "59ed58a17fe44cb43302420f4da47cadcdd470742e1e97109b14843f702b22e6"
+  },
+  {
+   "branch": "feature",
+   "created_at_ms": 1791981980809,
+   "hash": "30df32b38cbaa6c140dd6aa049e17083c79918f34c1e27db5066df0c497a4fb1",
+   "merge_parent": "",
+   "message": "feature work",
+   "parent_hash": "c9249f43846279750477b095c260b74364db78bfbc86c02b6c5de19d7fb3a488"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981980992,
+   "hash": "51f73af0b6928e21612a21c1e272d76765aa5c20aa4a6401ea1c94f3722680d9",
+   "merge_parent": "",
+   "message": "main work",
+   "parent_hash": "c9249f43846279750477b095c260b74364db78bfbc86c02b6c5de19d7fb3a488"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981981173,
+   "hash": "570489222ded5314154cc8f9b35507625f876b2e103eca0b7aef4d6342ee5b55",
+   "merge_parent": "30df32b38cbaa6c140dd6aa049e17083c79918f34c1e27db5066df0c497a4fb1",
+   "message": "merge feature",
+   "parent_hash": "51f73af0b6928e21612a21c1e272d76765aa5c20aa4a6401ea1c94f3722680d9"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981981345,
+   "hash": "7d39c7f94efa1c2e87cdbe571aff31d3bbd6675e1ef1272135954a2cfafed21c",
+   "merge_parent": "",
+   "message": "rename a",
+   "parent_hash": "570489222ded5314154cc8f9b35507625f876b2e103eca0b7aef4d6342ee5b55"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981984869,
+   "hash": "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05",
+   "merge_parent": "",
+   "message": "save with metadata",
+   "parent_hash": "7d39c7f94efa1c2e87cdbe571aff31d3bbd6675e1ef1272135954a2cfafed21c"
+  },
+  {
+   "branch": "_stash",
+   "created_at_ms": 1791981985118,
+   "hash": "4c3316285eb75baa1ea20c8d2c1a24d6fe3ab3c31310d27d22efcbb97e4f7242",
+   "merge_parent": "",
+   "message": "stash: wip",
+   "parent_hash": "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05"
+  }
+ ],
+ "stash_names": [
+  "wip"
+ ],
+ "tag": "v5.1.2",
+ "tags": [
+  [
+   "v1",
+   "efd90c014eb679dc7b555abcfd8232e0dcb5cdce5c60ebefe7cd0919c8f0fb05"
+  ]
+ ],
+ "trash_ids": [
+  "f1fbee12e27f97a16ac15a97a1a3015264c78a2ebae22c5e7fa3b285f0426017"
+ ],
+ "user_version": 3
+}

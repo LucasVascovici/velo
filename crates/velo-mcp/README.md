@@ -16,7 +16,7 @@ not a language binding, so it is not limited to the embeddable half.
 ## Client configuration
 
 ```json
-{"command": "velo-mcp", "args": ["--repo", "/path"]}
+{"command": "velo-mcp", "args": ["--repo", "/path", "--lock-wait", "5"]}
 ```
 
 ## Run identity
@@ -40,9 +40,16 @@ the `velo` or `mcp` namespaces themselves. The author is the client name, or
 | `velo_branch` | `list`, `create` (does not switch) or `switch` (creates the branch if missing, as the CLI does; refuses on a dirty tree). |
 | `velo_merge_plan` | What merging `source` into the current branch would do, with conflict texts and an `apply_hint`. Writes nothing. |
 | `velo_merge_apply` | Record the merge as a two-parent snapshot and move the tree to it. Needs a clean tree and a resolution for every conflict. |
-| `velo_blame` | Per-line origin; `origin.run` is the run that saved the line. |
+| `velo_blame` | Per-line origin; `origin.run` is the run that saved the line. `start_line` and `end_line` (1-based, inclusive) return only that slice; an inverted range or one past the end of the file is an invalid-params error. |
+| `velo_undo` | Undo the last snapshot on the current branch (shelved, not destroyed). Needs a working tree. |
+| `velo_redo` | Bring back what the last `velo_undo` shelved. Needs a working tree. |
+| `velo_tag` | `list`, `create` (refuses a taken name) or `delete` tags. Works in store-only mode. |
+| `velo_conflicts` | The conflicts of a stopped merge as data: per path the ancestor, ours and theirs objects and each hunk with its decision. Needs a working tree. |
+| `velo_find` | Snapshots matching `[namespace, key, value]` metadata filters, optionally on one `branch`. Works in store-only mode. |
 
-There is no force option anywhere: a dirty tree is an error result
+There is deliberately no tool for squash, rebase, compact, retention, gc, force
+push or anything else that rewrites pushed history, and no tool takes a `force`
+argument: the safety stance is the tool surface. There is no force option anywhere: a dirty tree is an error result
 (`DirtyWorkingTree`) and nothing is overwritten. Merging is always plan, then
 apply; there is no single-call merge.
 
@@ -60,5 +67,127 @@ apply; there is no single-call merge.
 6. `velo_blame {"path": "app.py"}`: each line's `origin.run` names the run that
    wrote it.
 
-A velo error is a tool result with `isError: true`; protocol faults are JSON-RPC
-errors. Only protocol lines go to stdout; diagnostics go to stderr.
+## Concurrent agents
+
+Two agents may serve one repository through two servers. Write tools wait for
+the repository lock for `--lock-wait SECS` (default 5, fractions allowed, 0 to
+fail at once). If another process still holds it, the result has `isError: true`
+and names the holder in its text and in `structuredContent`:
+`{"error": "Locked", "holder": {"pid": ..., "command": ..., "started_at_ms": ...,
+"started_at": ...}}`. Retry the call later; nothing was written.
+
+## HTTP transport
+
+`velo-mcp --http ADDR` serves MCP's Streamable HTTP transport instead of stdio,
+so one server can serve agents on other machines. It works with `--repo` and
+`--store` alike. The bound address is printed to stderr as
+`velo-mcp: listening on http://ADDR/mcp`, so `--http 127.0.0.1:0` reveals the
+port it chose.
+
+- One endpoint, `/mcp`. `POST` carries one JSON-RPC message and is answered with
+  `Content-Type: application/json` (no SSE stream); notifications and client
+  responses get `202 Accepted`. `GET` is `405`. `DELETE` with `Mcp-Session-Id`
+  ends the session (`204`).
+- `initialize` returns an `Mcp-Session-Id` header; every later request must send
+  it (`400` without, `404` if unknown or ended). `MCP-Protocol-Version`, when
+  sent, must match the version negotiated at `initialize`. Each session keeps
+  its own `clientInfo`, so saves are stamped with the right client.
+- Tokens: `--token-file FILE` (one token per line; blank lines and `#` comments
+  are skipped) and/or the `VELO_MCP_TOKEN` environment variable. With any
+  token configured, every request needs `Authorization: Bearer <token>`;
+  otherwise `401` with `WWW-Authenticate: Bearer`. Comparison is constant-time.
+  All tokens are equal; there is no read-only tier.
+- Origin rule (DNS-rebinding protection): a request with an `Origin` header is
+  accepted only from a loopback origin (`localhost`, `127.0.0.0/8`, `::1`) or
+  one given exactly with `--allow-origin ORIGIN` (repeatable); otherwise `403`.
+  Requests with no `Origin`, as from non-browser agents, pass this check.
+- Binding a non-loopback address without a token is refused at start-up.
+- Requests run one at a time against one repository handle; bodies are limited
+  to 8 MiB.
+
+The server speaks plain HTTP. To expose it beyond a trusted network, put a
+reverse proxy that terminates TLS in front of it (as for `velo serve-http`), and
+keep the bearer token out of logs.
+
+Bearer tokens are the only supported authorization scheme. SSE streaming,
+resumable streams and OAuth authorization-server metadata are not implemented.
+
+## Store-only mode
+
+An agent that has no checkout can still use velo. Point the server at a
+single-file repository instead of a project directory:
+
+```json
+{"command": "velo-mcp", "args": ["--store", "/path/agent.velo", "--create"]}
+```
+
+`--create` makes the file when it is missing; without it the file must exist
+(and is migrated if it is older). `--store` conflicts with `--repo`. Store mode
+is chosen whenever the repository has no working tree, and nothing is ever
+written outside the database file (plus its `-wal`, `-shm` and `.lock` files).
+
+Content arrives in the call and trees come back by id:
+
+| Tool | What it does |
+| --- | --- |
+| `velo_save_tree` | Record a snapshot from `files` (`{path: content}`, `null` deletes a path). By default the files are laid over the tree of `base` (default: the parent), so only changes are sent; `replace: true` makes `files` the whole tree. `encoding` is `utf8` (default) or `base64` and applies to every value. `parent` defaults to the branch tip, a root snapshot on an unborn branch. |
+| `velo_tree_at` | The files of a snapshot as `{path, object, kind}`. |
+| `velo_read_file` | One file of a snapshot as `{content, encoding}`; non-UTF-8 content comes back base64. |
+
+These three are listed in both modes. In store mode `tools/list` omits the tools
+that need a working tree (`velo_save`, `velo_restore`, `velo_status`,
+`velo_diff`, `velo_merge_apply` and `velo_branch` `switch`); calling one returns
+an `isError: true` result that names `Unsupported` and the store tool to use.
+`velo_history`, `velo_metadata`, `velo_blame`, `velo_merge_plan` and branch
+`list` and `create` work as usual.
+
+Example session:
+
+1. Create the first snapshot (the whole call is one line):
+   `velo_save_tree {"branch": "attempt-1", "message": "start", "files": {"app.py": "print(1)\n", "notes.md": "todo\n"}}`
+   returns the snapshot id.
+2. Change one file and delete the other:
+   `velo_save_tree {"branch": "attempt-1", "message": "cache", "files": {"app.py": "print(2)\n", "notes.md": null}}`
+   carries the previous tree forward.
+3. `velo_read_file {"snapshot": "attempt-1", "path": "app.py"}` reads it back.
+4. `velo_history {"meta": [{"namespace": "mcp", "key": "run"}]}` lists both
+   snapshots with this run's identity.
+
+A velo error, and bad arguments, are tool results with `isError: true` (the
+text of a bad-argument result starts `InvalidParams:` and says what was wrong, so
+the model can correct the call); only malformed requests and unknown tool names
+are JSON-RPC errors. Only protocol lines go to stdout; diagnostics go to stderr.
+
+## Large results
+
+No tool sends multi-megabyte text by accident. A cut result has
+`truncated: true`, a `hint` on how to get the rest and the value to pass for it:
+
+| Tool | Bound | Next page |
+| --- | --- | --- |
+| `velo_history` | `limit`, default 200 entries | `offset` = `next_offset`, same filters |
+| `velo_blame` | `limit`, default 2000 lines | `start_line` = `next_start_line` |
+| `velo_tree_at` | `limit`, default 5000 files; result is `{files, total, truncated}` | `offset` = `next_offset` |
+| `velo_read_file` | `max_bytes`, default 1 MiB; result carries `size` | `offset` = `next_offset` (text is cut on a character boundary) |
+
+## Protocol versions
+
+`2025-11-25`, `2025-06-18`, `2025-03-26` and `2024-11-05` are accepted; the
+client's version is echoed when supported, else the newest (`2025-11-25`).
+
+## Tried clients
+
+Each client below is run against the built server by
+[`conformance/`](conformance) (how to run it locally is in its README) and, for
+the first three, in CI (`.github/workflows/mcp.yml`).
+
+| Client | Version | Transport | Result | What broke, what was fixed |
+| --- | --- | --- | --- | --- |
+| MCP Python SDK (`mcp`) | 2.3.0 | stdio | Passes: negotiates `2025-11-25`, every `inputSchema` is valid draft 2020-12, completes the agent-checkpointing scenario store-only and the `velo_save`/`velo_status` working-tree run | Bad arguments were JSON-RPC `-32602` errors, which the SDK raises as an exception and the model never sees: now `isError` results. The server did not offer `2025-11-25`: added. |
+| MCP TypeScript SDK (`@modelcontextprotocol/sdk`) | 1.32.1 | stdio | Passes: lists tools, `velo_save_tree`, `velo_history`, a bad call as `isError` | `velo_tree_at` returned a bare array as `structuredContent`, which the spec requires to be an object: now `{files, total, truncated}`. |
+| MCP Inspector CLI (`@modelcontextprotocol/inspector`) | 2.11.0 | stdio | Passes: `tools/list` and one `tools/call` exit 0 | Nothing. |
+| Claude Desktop, Cursor, VS Code | not exercised in CI | stdio | Cannot be installed headlessly | Not exercised in CI. |
+
+Found while writing the conformance clients, and fixed for every client:
+`velo_history`, `velo_blame`, `velo_read_file` and `velo_tree_at` had no bound
+and could return multi-megabyte text (see Large results).

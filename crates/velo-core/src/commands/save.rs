@@ -187,6 +187,16 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         .as_ref()
         .map(|(h, p, _, _)| (h.clone(), p.clone()));
 
+    // An amend replaces the tip under a new id, which a signature cannot survive.
+    if let Some((old, _)) = &amend_hash {
+        if crate::commands::compact::signed(guard.repo())?.contains(old) {
+            return Err(VeloError::invalid(format!(
+                "Cannot amend: snapshot {} is signed; signatures cannot survive a rewrite.",
+                &old[..16.min(old.len())]
+            )));
+        }
+    }
+
     // ── Resolve the message ───────────────────────────────────────────────────
     let message: String = match provided {
         Some(m) => m.to_string(),
@@ -369,6 +379,8 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     });
     let snapshot_hash = snapshot_hash.as_str();
 
+    crate::failpoint::hit("save.objects_stored");
+
     // ── DB transaction ────────────────────────────────────────────────────────
     let tx = guard.transaction()?;
 
@@ -437,7 +449,9 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
                 UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> '')",
         [branch.trim()],
     )?;
+    crate::failpoint::hit("save.before_commit");
     tx.commit()?;
+    crate::failpoint::hit("save.after_commit");
     guard.repo().emit_saved_raw(
         snapshot_hash,
         branch.trim(),
@@ -446,6 +460,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     );
 
     storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
+    crate::failpoint::hit("save.after_parent");
 
     // If a merge was in progress, this save finalises it — clear the merge state
     let merge_head = root.join(".velo/MERGE_HEAD");

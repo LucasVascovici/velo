@@ -83,6 +83,13 @@ pub enum Problem {
     },
     /// A rename edge is attached to a snapshot that doesn't exist.
     RenameOnMissingSnapshot { snapshot: String },
+    /// A stored signature does not verify against its snapshot id: the row was
+    /// altered, or never was a signature. Rows of an unknown algorithm are not
+    /// reported, since this build cannot judge them.
+    BadSignature {
+        snapshot: String,
+        public_key: String,
+    },
 }
 
 impl Problem {
@@ -208,6 +215,15 @@ impl fmt::Display for Problem {
                 "a rename edge is attached to snapshot {}, which does not exist",
                 &snapshot[..16.min(snapshot.len())]
             ),
+            Problem::BadSignature {
+                snapshot,
+                public_key,
+            } => write!(
+                f,
+                "the signature by key {} on snapshot {} does not verify",
+                &public_key[..16.min(public_key.len())],
+                &snapshot[..16.min(snapshot.len())]
+            ),
         }
     }
 }
@@ -234,6 +250,9 @@ pub enum Cruft {
     /// (a 5.1.1 fetch re-imported an undone snapshot). The id check ignores
     /// them; `--repair` removes the extras.
     DuplicateFileMapRows(usize),
+    /// Signature rows naming a snapshot that is in neither history nor the
+    /// trash. Nothing can ever show them; `--repair` removes them.
+    OrphanSignatures(usize),
 }
 
 impl Cruft {
@@ -260,6 +279,9 @@ impl Cruft {
                 "{} duplicate tree row(s) (a fetch re-imported an undone snapshot)",
                 n
             ),
+            Cruft::OrphanSignatures(n) => {
+                format!("{} signature(s) on snapshots that no longer exist", n)
+            }
         }
     }
 
@@ -277,6 +299,7 @@ impl Cruft {
             }
             Cruft::UnreferencedChunks(n) => format!("removed {} unreferenced chunk file(s)", n),
             Cruft::DuplicateFileMapRows(n) => format!("removed {} duplicate tree row(s)", n),
+            Cruft::OrphanSignatures(n) => format!("removed {} orphaned signature(s)", n),
         }
     }
 }
@@ -396,6 +419,7 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     let before = problems.len();
     let (ids_verified, ids_legacy, duplicate_rows) =
         check_snapshots(conn, &all_snaps, &mut problems)?;
+    check_signatures(conn, &mut problems)?;
     sections.push(Section::Snapshots {
         checked: all_snaps.len(),
         ids_verified,
@@ -906,6 +930,37 @@ fn tracks(conn: &rusqlite::Connection, snapshot: &str, path: &str) -> bool {
     .unwrap_or(false)
 }
 
+/// Every stored signature must verify against the snapshot id it names. A bad
+/// one is corruption; a row of an unknown algorithm is not reported.
+fn check_signatures(conn: &rusqlite::Connection, problems: &mut Vec<Problem>) -> Result<()> {
+    use crate::sign::{check_row, RowCheck};
+    if !crate::sign::table_exists(conn)? {
+        return Ok(());
+    }
+    let mut stmt = conn.prepare(
+        "SELECT snapshot_hash, algorithm, public_key, signature FROM signatures
+         ORDER BY snapshot_hash, public_key",
+    )?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+        ))
+    })?;
+    for row in rows {
+        let (snapshot, algorithm, public_key, signature) = row?;
+        if check_row(&snapshot, &algorithm, &public_key, &signature) == RowCheck::Invalid {
+            problems.push(Problem::BadSignature {
+                snapshot,
+                public_key,
+            });
+        }
+    }
+    Ok(())
+}
+
 // ─── Cruft ────────────────────────────────────────────────────────────────────
 
 fn count(conn: &rusqlite::Connection, sql: &str) -> usize {
@@ -963,6 +1018,18 @@ fn find_cruft(conn: &rusqlite::Connection, repo: &Repo, duplicate_rows: usize) -
     // `COUNT(*) - COUNT(DISTINCT ...)` re-sorted all of `file_map` a second time.
     if duplicate_rows > 0 {
         found.push(Cruft::DuplicateFileMapRows(duplicate_rows));
+    }
+
+    // `count` reads a missing table as zero, which is right for a repository
+    // that predates `signatures`.
+    let orphan_sigs = count(
+        conn,
+        "SELECT count(*) FROM signatures
+         WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
+           AND snapshot_hash NOT IN (SELECT hash FROM trash)",
+    );
+    if orphan_sigs > 0 {
+        found.push(Cruft::OrphanSignatures(orphan_sigs));
     }
 
     found
@@ -1030,6 +1097,14 @@ fn repair_cruft(conn: &rusqlite::Connection, cruft: &[Cruft]) -> Result<()> {
                     "DELETE FROM file_map WHERE rowid NOT IN
                        (SELECT MIN(rowid) FROM file_map
                         GROUP BY snapshot_hash, path, hash, mode)",
+                    [],
+                )?;
+            }
+            Cruft::OrphanSignatures(_) => {
+                conn.execute(
+                    "DELETE FROM signatures
+                     WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
+                       AND snapshot_hash NOT IN (SELECT hash FROM trash)",
                     [],
                 )?;
             }

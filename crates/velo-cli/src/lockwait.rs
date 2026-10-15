@@ -96,6 +96,10 @@ pub fn pid_alive(pid: u32) -> Option<bool> {
     extern "C" {
         fn kill(pid: i32, sig: i32) -> i32;
     }
+    // SAFETY: `kill` with signal 0 only checks that the process exists and that
+    // we may signal it; it delivers nothing. The declaration matches POSIX
+    // `int kill(pid_t, int)`, and no memory is passed.
+    #[allow(unsafe_code)]
     let r = unsafe { kill(pid as i32, 0) };
     if r == 0 {
         return Some(true);
@@ -112,6 +116,11 @@ pub fn pid_alive(pid: u32) -> Option<bool> {
         fn GetExitCodeProcess(h: *mut core::ffi::c_void, code: *mut u32) -> i32;
         fn CloseHandle(h: *mut core::ffi::c_void) -> i32;
     }
+    // SAFETY: the declarations match the kernel32 signatures. `OpenProcess`
+    // returns a handle we own or NULL; it is checked before use, `code` is a
+    // live local that `GetExitCodeProcess` writes through, and the handle is
+    // closed exactly once, after its last use.
+    #[allow(unsafe_code)]
     unsafe {
         let h = OpenProcess(0x1000, 0, pid);
         if h.is_null() {

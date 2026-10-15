@@ -48,6 +48,13 @@ crate is not published to crates.io.
 | 23 | `VELO_ERR_IO` | I/O error |
 | 24 | `VELO_ERR_DB` | Database error |
 | 25 | `VELO_ERR_COMPACTED` | Snapshot squashed by compaction; the message names the live id |
+| 26 | `VELO_ERR_UNSAFE_PATH` | A tree or bundle holds a path velo refuses to store or write; the message names it |
+| 27 | `VELO_ERR_LIMIT_EXCEEDED` | Received data would exceed a read limit (object, pack or string size); nothing was imported |
+| 28 | `VELO_ERR_ACCESS_DENIED` | A remote refused access (missing or invalid bearer token, or a read-only server) |
+| 29 | `VELO_ERR_WOULD_OVERWRITE_EDITS` | Taking a side would replace edits made by hand to conflicted files |
+| 30 | `VELO_ERR_MISSING_CLEAN_CHANGES` | A hand edit would drop lines the other side changed cleanly |
+| 31 | `VELO_ERR_SNAPSHOT_HAS_DEPENDENTS` | Undoing a snapshot would leave other snapshots without their parent |
+| 32 | `VELO_ERR_REMOTE_REF_ABSENT` | A remote-tracking ref names a snapshot this repository does not hold; fetch to restore it |
 | 100 | `VELO_ERR_NULL_ARGUMENT` | A required pointer was NULL |
 | 101 | `VELO_ERR_INVALID_UTF8` | A string was not UTF-8 |
 | 102 | `VELO_ERR_PANIC` | Rust panicked inside the call |

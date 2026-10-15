@@ -11,6 +11,13 @@ use crate::{emit, ref_arg, run, snapshot_arg, str_arg};
 
 /// Every branch as a JSON array of `{"name", "is_current", "tip"}`, where
 /// `tip` is null or `{"id", "message", "created_at", "created_at_ms"}`.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_branches(repo: *const VeloRepo, out_json: *mut *mut c_char) -> i32 {
     run(|| {
@@ -36,6 +43,13 @@ pub unsafe extern "C" fn velo_branches(repo: *const VeloRepo, out_json: *mut *mu
 
 /// Create branch `name` pointing at `at_or_null` (a spec), or, when that is
 /// NULL, at the current snapshot.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_branch_create(
     repo: *const VeloRepo,
@@ -60,6 +74,13 @@ pub unsafe extern "C" fn velo_branch_create(
 
 /// Point branch `name` at snapshot `to` (a spec). An unknown snapshot is
 /// `VELO_ERR_NOT_FOUND`.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_branch_set_tip(
     repo: *const VeloRepo,

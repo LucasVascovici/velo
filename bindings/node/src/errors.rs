@@ -6,6 +6,7 @@
 
 use napi::bindgen_prelude::*;
 use napi::Env;
+use napi_derive::napi;
 use velo_core::error::{InProgress, RefKind};
 use velo_core::Error;
 
@@ -46,35 +47,25 @@ fn path(p: &std::path::Path) -> String {
 /// The variant name, which becomes the rejection's `code`.
 fn code(err: &Error) -> &'static str {
     match err {
-        Error::NotARepo { .. } => "NotARepo",
-        Error::AlreadyInitialized { .. } => "AlreadyInitialized",
-        Error::NestedRepo { .. } => "NestedRepo",
-        Error::SchemaTooNew { .. } => "SchemaTooNew",
-        Error::MigrationRequired { .. } => "MigrationRequired",
-        Error::FormatTooOld { .. } => "FormatTooOld",
-        Error::Cancelled => "Cancelled",
-        Error::Locked { .. } => "Locked",
-        Error::DirtyWorkingTree { .. } => "DirtyWorkingTree",
-        Error::OperationInProgress { .. } => "OperationInProgress",
-        Error::NoOperationInProgress { .. } => "NoOperationInProgress",
-        Error::Conflicts { .. } => "Conflicts",
-        Error::Diverged { .. } => "Diverged",
-        Error::NotFastForward { .. } => "NotFastForward",
-        Error::UnbornBranch { .. } => "UnbornBranch",
-        Error::NotFound { .. } => "NotFound",
-        Error::AmbiguousPrefix { .. } => "AmbiguousPrefix",
-        Error::Compacted { .. } => "Compacted",
-        Error::Corrupt { .. } => "Corrupt",
-        Error::MissingObject { .. } => "MissingObject",
-        Error::UntrustedData { .. } => "UntrustedData",
-        Error::InvalidInput { .. } => "InvalidInput",
-        Error::Unsupported { .. } => "Unsupported",
-        Error::Io(_) => "Io",
-        Error::Db(_) => "Db",
-        // `Error` is non_exhaustive: a variant added later still rejects with
-        // a recognisable code rather than panicking.
-        _ => "Unknown",
+        Error::InvalidInput { detail } if detail == crate::callbacks::REENTRANT => "Reentrant",
+        Error::InvalidInput { detail } if detail.starts_with(crate::callbacks::DRIVER_FAILED) => {
+            "DriverFailed"
+        }
+        // `variant_name` matches every variant exhaustively, so no variant can
+        // fall through to a generic code.
+        _ => err.variant_name(),
     }
+}
+
+/// `[variant, code]` for one sample of every core error. Hidden: it exists so a
+/// test can prove no variant falls through to a generic code.
+#[cfg_attr(test, allow(dead_code))]
+#[napi(js_name = "_errorCodes")]
+pub fn error_codes() -> Vec<Vec<String>> {
+    Error::samples()
+        .iter()
+        .map(|e| vec![e.variant_name().to_string(), code(e).to_string()])
+        .collect()
 }
 
 /// Build the JS `Error` for a velo error and return it as a napi error that
@@ -89,8 +80,17 @@ pub fn to_js(env: &Env, err: Error) -> napi::Error {
 }
 
 fn build(env: &Env, err: &Error) -> napi::Result<napi::Error> {
+    // A refused re-entrant call and a failed JS driver travel as `InvalidInput`
+    // with a marked detail; their message is the detail itself.
+    let message = match err {
+        Error::InvalidInput { detail } if code(err) != "InvalidInput" => detail
+            .strip_prefix(crate::callbacks::DRIVER_FAILED)
+            .unwrap_or(detail)
+            .to_string(),
+        _ => err.to_string(),
+    };
     let mut obj: Object = env
-        .create_error(napi::Error::new(Status::GenericFailure, err.to_string()))?
+        .create_error(napi::Error::new(Status::GenericFailure, message))?
         .coerce_to_object()?;
     obj.set("code", code(err))?;
     match err {
@@ -102,6 +102,53 @@ fn build(env: &Env, err: &Error) -> napi::Result<napi::Error> {
         | Error::FormatTooOld { found, supported } => {
             obj.set("found", *found as f64)?;
             obj.set("supported", *supported as f64)?;
+        }
+        Error::WouldOverwriteEdits { paths: p } => obj.set("paths", paths(p))?,
+        Error::MissingCleanChanges {
+            path: p,
+            missing,
+            sample,
+        } => {
+            obj.set("path", path(p))?;
+            obj.set("missing", *missing as f64)?;
+            obj.set("sample", sample.clone())?;
+        }
+        Error::SnapshotHasDependents {
+            snapshot,
+            branches,
+            dependents,
+        } => {
+            obj.set("snapshot", snapshot.as_str())?;
+            obj.set("dependents", *dependents as f64)?;
+            obj.set(
+                "branches",
+                branches
+                    .iter()
+                    .map(|(b, n)| vec![b.as_str().to_string(), n.to_string()])
+                    .collect::<Vec<_>>(),
+            )?;
+        }
+        Error::RemoteRefAbsent {
+            remote,
+            branch,
+            snapshot,
+        } => {
+            obj.set("remote", remote.as_str())?;
+            obj.set("branch", branch.as_str())?;
+            obj.set("snapshot", snapshot.as_str())?;
+        }
+        Error::UnsafePath { path: p, problem } => {
+            obj.set("path", p.as_str())?;
+            obj.set("problem", problem.to_string())?;
+        }
+        Error::LimitExceeded { limit, max, found } => {
+            obj.set("limit", limit.to_string())?;
+            obj.set("max", *max as f64)?;
+            obj.set("found", found.map(|n| n as f64))?;
+        }
+        Error::AccessDenied { remote, detail } => {
+            obj.set("remote", remote.as_str())?;
+            obj.set("detail", detail.as_str())?;
         }
         Error::Locked { held_by, .. } => obj.set("heldBy", held_by.map(f64::from))?,
         Error::DirtyWorkingTree { paths: p } | Error::Conflicts { paths: p } => {
@@ -139,8 +186,10 @@ fn build(env: &Env, err: &Error) -> napi::Result<napi::Error> {
         Error::MissingObject { hash } => obj.set("hash", hash.as_str())?,
         Error::Corrupt { detail }
         | Error::UntrustedData { detail }
-        | Error::InvalidInput { detail }
         | Error::Unsupported { detail } => obj.set("detail", detail.as_str())?,
+        Error::InvalidInput { detail } if code(err) == "InvalidInput" => {
+            obj.set("detail", detail.as_str())?
+        }
         _ => {}
     }
     Ok(napi::Error::from(obj.to_unknown()))

@@ -1,0 +1,9 @@
+{
+  "name": "velo-mcp-conformance",
+  "private": true,
+  "type": "module",
+  "description": "Drives velo-mcp with the official MCP TypeScript SDK",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

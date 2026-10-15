@@ -13,13 +13,15 @@
 //! - `push` — fast-forward-only (the remote enforces it).
 //! - `pull` — fetch the current branch, then fast-forward if behind, or (if
 //!   diverged) leave `remotes/<remote>/<branch>` to `velo merge`.
+//! - `sync` — one step: fetch, then push, fast-forward or merge as needed. See
+//!   [`sync()`] and [`Synced`].
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use crate::commands::require_working_tree;
 use crate::commands::{branch_tip, bundle, get_dirty_files, remote as remotemod};
-use crate::error::{Result, VeloError};
+use crate::error::{InProgress, Result, VeloError};
 use crate::progress::{Cancel, Observer, Phase, PhaseGuard, Silent};
 use crate::storage;
 use crate::transport::{self, PushOutcome};
@@ -147,6 +149,17 @@ pub struct CloneOptions<'a> {
 /// # Ok(()) }
 /// ```
 pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> Result<Cloned> {
+    clone_with_token(url, spawn, options, None)
+}
+
+/// [`clone`] with a bearer token for an HTTP(S) source. The token comes from
+/// the caller (never the URL) and is ignored by other transports.
+pub fn clone_with_token(
+    url: &str,
+    spawn: &transport::Spawn,
+    options: CloneOptions<'_>,
+    token: Option<&str>,
+) -> Result<Cloned> {
     let CloneOptions {
         dir,
         observer,
@@ -161,7 +174,7 @@ pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> 
     }
 
     // Pull everything from the remote (empty have-set = send it all).
-    let mut remote = transport::open(url, spawn)?;
+    let mut remote = transport::open_with_token(url, spawn, token)?;
     let (refs, pack) = {
         // No repository exists yet, so the phase is driven from the observer the
         // caller handed us rather than from a `Repo`.
@@ -185,6 +198,7 @@ pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> 
 
     std::fs::create_dir_all(&target)?;
     crate::commands::init::run(&target)?;
+    crate::failpoint::hit("clone.after_init");
 
     // Clone creates the repository, so it opens the result and holds the write
     // lock for the import. Nothing else can be touching it yet, but the guard is
@@ -199,6 +213,7 @@ pub fn clone(url: &str, spawn: &transport::Spawn, options: CloneOptions<'_>) -> 
 
     let (snaps, objs) = bundle::import_pack(&guard, &pack)?;
     guard.repo().emit_imported(snaps);
+    crate::failpoint::hit("clone.after_import");
 
     conn.execute(
         "INSERT OR REPLACE INTO remotes (name, url) VALUES ('origin', ?)",
@@ -280,7 +295,8 @@ pub fn fetch(
     options: Options<'_>,
 ) -> Result<Fetched> {
     let url = remote_url(guard.repo(), remote_name)?;
-    let mut remote = transport::open(&url, spawn)?;
+    let token = guard.repo().token_for_url(&url);
+    let mut remote = transport::open_with_token(&url, spawn, token.as_deref())?;
     let have = local_snapshots(guard.repo())?;
     let (refs, mut pack) = {
         let transfer = options.phase(guard, Phase::Transferring);
@@ -372,7 +388,8 @@ pub fn push_report(
 
     let url = remote_url(guard.repo(), remote_name)?;
     let objects = guard.repo().objects();
-    let mut remote = transport::open(&url, spawn)?;
+    let token = guard.repo().token_for_url(&url);
+    let mut remote = transport::open_with_token(&url, spawn, token.as_deref())?;
 
     // Build the pack once the remote has told us what it already has, so we
     // send only new commits and only objects it lacks. The advertised refs also
@@ -494,7 +511,8 @@ pub fn pull(
     let branch = guard.repo().head_branch().into_string();
     let url = remote_url(guard.repo(), remote_name)?;
 
-    let mut remote = transport::open(&url, spawn)?;
+    let token = guard.repo().token_for_url(&url);
+    let mut remote = transport::open_with_token(&url, spawn, token.as_deref())?;
     let have = local_snapshots(guard.repo())?;
     let (refs, pack) = {
         let transfer = options.phase(guard, Phase::Transferring);
@@ -586,6 +604,239 @@ pub fn pull(
             behind,
         })
     }
+}
+
+// ─── sync (one step) ──────────────────────────────────────────────────────────
+
+/// What a one-step [`sync()`] did. It models what happened, not what to print.
+///
+/// | Situation after the fetch | Result |
+/// |---|---|
+/// | the remote has no such branch | [`Synced::Pushed`] (branch created there) |
+/// | both tips are the same | [`Synced::Nothing`] |
+/// | the remote's tip is in our history | [`Synced::Pushed`] |
+/// | our tip is in the remote's history | [`Synced::FastForwarded`] |
+/// | diverged, merge is clean | [`Synced::Merged`] (saved, then pushed) |
+/// | diverged, merge conflicts | [`Synced::Conflicted`] (nothing pushed) |
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Synced {
+    /// Local and remote already agree; nothing moved.
+    Nothing { branch: String, remote: String },
+    /// Local was ahead (or the remote lacked the branch) and was pushed.
+    Pushed { report: PushReport },
+    /// Local was behind; the branch and working tree moved to `to`.
+    FastForwarded {
+        branch: String,
+        remote: String,
+        to: SnapshotId,
+    },
+    /// Histories had diverged; the merge was clean, saved as `merge`, and pushed.
+    Merged {
+        branch: String,
+        remote: String,
+        merge: SnapshotId,
+        report: PushReport,
+    },
+    /// Histories had diverged and the merge conflicts. The repository is left
+    /// exactly as `velo merge` leaves it and nothing was pushed: resolve, save,
+    /// and sync again.
+    Conflicted {
+        branch: String,
+        remote: String,
+        paths: Vec<PathBuf>,
+    },
+}
+
+/// How to run [`sync()`]. A separate type from [`Options`], which is a plain
+/// public struct that must not gain fields.
+#[derive(Default)]
+#[non_exhaustive]
+pub struct SyncOptions<'a> {
+    /// Where to report progress, overriding the repository's own observer.
+    pub observer: Option<&'a dyn Observer>,
+    /// Checked between transfer chunks.
+    pub cancel: Option<&'a Cancel>,
+    /// Who is recorded on a merge snapshot the sync creates.
+    pub author: Option<&'a crate::Author>,
+    /// The merge snapshot's message; defaults to `Merge <remote>/<branch> into <branch>`.
+    pub message: Option<&'a str>,
+}
+
+impl<'a> SyncOptions<'a> {
+    /// Report progress to `observer`.
+    pub fn observer(mut self, observer: &'a dyn Observer) -> Self {
+        self.observer = Some(observer);
+        self
+    }
+    /// Allow the transfers to be cancelled.
+    pub fn cancel(mut self, cancel: &'a Cancel) -> Self {
+        self.cancel = Some(cancel);
+        self
+    }
+    /// Record `author` on a merge snapshot.
+    pub fn author(mut self, author: &'a crate::Author) -> Self {
+        self.author = Some(author);
+        self
+    }
+    /// Use `message` for a merge snapshot.
+    pub fn message(mut self, message: &'a str) -> Self {
+        self.message = Some(message);
+        self
+    }
+}
+
+/// Fetch, then push, fast-forward or merge as needed, under the caller's lock.
+///
+/// The outcomes are tabulated on [`Synced`]. A merge is saved and pushed only
+/// when it is clean; a conflicted one stops in the state `velo merge` leaves, so
+/// no side is ever chosen and nothing unseen is pushed. The push is
+/// fast-forward-only: if the remote moved again, [`VeloError::NotFastForward`]
+/// is returned and the local merge snapshot stays, so running `sync` again
+/// continues. `branch` must be the checked-out branch (default), because a
+/// merge needs the working tree.
+///
+/// A merge, rebase or cherry-pick in progress is [`VeloError::OperationInProgress`]
+/// and unsaved changes are [`VeloError::DirtyWorkingTree`], both before any
+/// network I/O.
+pub fn sync(
+    guard: &WriteGuard,
+    remote_name: &str,
+    branch: Option<&str>,
+    spawn: &transport::Spawn,
+    options: SyncOptions<'_>,
+) -> Result<Synced> {
+    use crate::commands::{merge, save};
+    let repo = guard.repo();
+    require_working_tree(repo, "sync")?;
+    let root = guard.root();
+    if root.join(".velo/MERGE_HEAD").exists() {
+        return Err(VeloError::OperationInProgress {
+            what: InProgress::Merge,
+        });
+    }
+    if root.join(".velo/REBASE_STATE").exists() {
+        return Err(VeloError::OperationInProgress {
+            what: InProgress::Rebase,
+        });
+    }
+    let dirty = get_dirty_files(repo);
+    if !dirty.is_empty() {
+        let mut paths: Vec<PathBuf> = dirty.keys().map(PathBuf::from).collect();
+        paths.sort();
+        return Err(VeloError::DirtyWorkingTree { paths });
+    }
+    let head = repo.head_branch().into_string();
+    let branch = match branch {
+        Some(b) if b != head => {
+            return Err(VeloError::invalid(format!(
+                "Cannot sync branch '{}' while '{}' is checked out; switch to it first.",
+                b, head
+            )));
+        }
+        _ => head,
+    };
+
+    let transfer = || Options {
+        observer: options.observer,
+        cancel: options.cancel,
+    };
+    let fetched = fetch(guard, remote_name, spawn, transfer())?;
+    let remote = remote_name.to_string();
+    let conn = guard.conn();
+    let push_now = || push_report(guard, remote_name, Some(&branch), spawn, transfer());
+
+    let Some(remote_tip) = fetched
+        .refs
+        .iter()
+        .find(|r| r.branch == branch)
+        .map(|r| r.hash.clone())
+    else {
+        return Ok(Synced::Pushed {
+            report: push_now()?,
+        });
+    };
+    let local_tip = branch_tip(conn, &branch);
+    let (ahead, behind) = match &local_tip {
+        Some(lt) if *lt == remote_tip => {
+            return Ok(Synced::Nothing { branch, remote });
+        }
+        Some(lt) => crate::commands::ahead_behind(conn, lt, &remote_tip),
+        None => (0, 1),
+    };
+
+    if behind == 0 {
+        return Ok(Synced::Pushed {
+            report: push_now()?,
+        });
+    }
+    if ahead == 0 {
+        let to = fast_forward_to(guard, &remote, &branch, &remote_tip)?;
+        return Ok(Synced::FastForwarded { branch, remote, to });
+    }
+
+    let source = format!("{}/{}", remote, branch);
+    match merge::run(guard, merge::Mode::Bring { source: &source })? {
+        merge::Outcome::Merged(tw) => {
+            if !tw.is_clean() {
+                let paths = tw.conflicts().into_iter().map(PathBuf::from).collect();
+                return Ok(Synced::Conflicted {
+                    branch,
+                    remote,
+                    paths,
+                });
+            }
+            let default = format!("Merge {} into {}", source, branch);
+            let message = options.message.unwrap_or(&default);
+            let saved = save::run(
+                guard,
+                Some(message),
+                save::Options {
+                    author: options.author,
+                    ..Default::default()
+                },
+            )?
+            .into_result()
+            .ok_or_else(|| VeloError::invalid("The clean merge produced no snapshot."))?;
+            let report = push_now()?;
+            Ok(Synced::Merged {
+                branch,
+                remote,
+                merge: saved.hash,
+                report,
+            })
+        }
+        // Another writer cannot interleave under the lock, but the merge's own
+        // classification is authoritative, so map it faithfully.
+        merge::Outcome::FastForwarded { to, .. } => Ok(Synced::FastForwarded {
+            branch,
+            remote,
+            to: SnapshotId::from_stored(to.as_str()),
+        }),
+        merge::Outcome::AlreadyUpToDate { .. } => Ok(Synced::Pushed {
+            report: push_now()?,
+        }),
+        other => Err(VeloError::invalid(format!(
+            "Unexpected merge outcome during sync: {:?}",
+            other
+        ))),
+    }
+}
+
+/// Move `branch` and the working tree to `remote_tip`, which `fetch` has already
+/// imported under the tracking name: relabel its commits, record the ref, restore.
+fn fast_forward_to(
+    guard: &WriteGuard,
+    remote: &str,
+    branch: &str,
+    remote_tip: &str,
+) -> Result<SnapshotId> {
+    let conn = guard.conn();
+    adopt_tracking_commits(conn, remote, branch, remote_tip)?;
+    remotemod::set_remote_ref(conn, remote, branch, remote_tip)?;
+    let to = SnapshotId::from_stored(remote_tip);
+    crate::commands::restore::run(guard, &to, crate::commands::restore::Options::default())?;
+    Ok(to)
 }
 
 // ─── helpers ────────────────────────────────────────────────────────────────────

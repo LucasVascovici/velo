@@ -1,0 +1,13 @@
+{
+  "name": "velo-wasm-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Page-reload persistence test for the velo WebAssembly binding",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.49.1"
+  }
+}

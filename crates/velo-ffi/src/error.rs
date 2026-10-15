@@ -39,6 +39,26 @@ pub const VELO_ERR_DB: i32 = 24;
 /// The snapshot was squashed or re-minted by compaction. The message names the
 /// live id that replaced it.
 pub const VELO_ERR_COMPACTED: i32 = 25;
+/// A path in a tree or bundle is one velo refuses to store or write (escapes the
+/// root, reserved name, file/directory collision, ...). The message names it.
+pub const VELO_ERR_UNSAFE_PATH: i32 = 26;
+
+/// Received data would exceed a configured read limit (object, pack or string
+/// size). Nothing was imported.
+pub const VELO_ERR_LIMIT_EXCEEDED: i32 = 27;
+
+/// A remote refused access: missing or invalid bearer token, or a read-only
+/// server. The message carries the server's reason, never the token.
+pub const VELO_ERR_ACCESS_DENIED: i32 = 28;
+
+/// Taking a side would replace edits made by hand to conflicted files.
+pub const VELO_ERR_WOULD_OVERWRITE_EDITS: i32 = 29;
+/// A hand edit accepted as a resolution would drop lines the other side changed cleanly.
+pub const VELO_ERR_MISSING_CLEAN_CHANGES: i32 = 30;
+/// Undoing a snapshot would leave other snapshots without their parent.
+pub const VELO_ERR_SNAPSHOT_HAS_DEPENDENTS: i32 = 31;
+/// A remote-tracking ref names a snapshot this repository does not hold.
+pub const VELO_ERR_REMOTE_REF_ABSENT: i32 = 32;
 
 /// A required pointer argument was NULL.
 pub const VELO_ERR_NULL_ARGUMENT: i32 = 100;
@@ -79,6 +99,13 @@ pub fn code_of(error: &Error) -> i32 {
         Error::NotFound { .. } => VELO_ERR_NOT_FOUND,
         Error::AmbiguousPrefix { .. } => VELO_ERR_AMBIGUOUS_PREFIX,
         Error::Compacted { .. } => VELO_ERR_COMPACTED,
+        Error::UnsafePath { .. } => VELO_ERR_UNSAFE_PATH,
+        Error::LimitExceeded { .. } => VELO_ERR_LIMIT_EXCEEDED,
+        Error::AccessDenied { .. } => VELO_ERR_ACCESS_DENIED,
+        Error::WouldOverwriteEdits { .. } => VELO_ERR_WOULD_OVERWRITE_EDITS,
+        Error::MissingCleanChanges { .. } => VELO_ERR_MISSING_CLEAN_CHANGES,
+        Error::SnapshotHasDependents { .. } => VELO_ERR_SNAPSHOT_HAS_DEPENDENTS,
+        Error::RemoteRefAbsent { .. } => VELO_ERR_REMOTE_REF_ABSENT,
         Error::Corrupt { .. } => VELO_ERR_CORRUPT,
         Error::MissingObject { .. } => VELO_ERR_MISSING_OBJECT,
         Error::UntrustedData { .. } => VELO_ERR_UNTRUSTED_DATA,
@@ -170,7 +197,7 @@ mod tests {
         let p = || PathBuf::from("x");
         let s = || "x".to_string();
         let live: velo_core::SnapshotId = "a".repeat(64).parse().expect("a valid id");
-        let cases: Vec<(Error, i32)> = vec![
+        let mut cases: Vec<(Error, i32)> = vec![
             (Error::NotARepo { searched_from: p() }, 1),
             (Error::AlreadyInitialized { at: p() }, 2),
             (Error::NestedRepo { outer: p() }, 3),
@@ -261,8 +288,30 @@ mod tests {
                 },
                 25,
             ),
+            (
+                Error::UnsafePath {
+                    path: s(),
+                    problem: velo_core::safe_path::PathProblem::Absolute,
+                },
+                26,
+            ),
+            (
+                Error::LimitExceeded {
+                    limit: velo_core::limits::Limit::StringBytes,
+                    max: 1,
+                    found: None,
+                },
+                27,
+            ),
         ];
-        assert_eq!(cases.len(), 25, "one case per variant");
+        cases.push((
+            Error::AccessDenied {
+                remote: s(),
+                detail: s(),
+            },
+            28,
+        ));
+        assert_eq!(cases.len(), 28, "one case per variant");
         for (error, code) in cases {
             assert_eq!(code_of(&error), code, "{error:?}");
         }

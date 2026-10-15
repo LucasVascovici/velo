@@ -187,6 +187,41 @@ cannot observe it, an implementation must **carry the parent's mode forward**
 rather than resetting to `0`. Symlink creation may fall back to writing a regular
 file containing the target text where the platform forbids symlinks.
 
+### 3.1 Paths
+
+A snapshot id commits to its rows whatever they say, so the id cannot vouch for
+a path. These rules are normative.
+
+**Store rule** (the same on every platform). A path is stored with forward
+slashes and is refused if it is empty; starts with `/`; has a first component
+of the form `X:` (a drive); has an empty, `.` or `..` component (so no
+trailing slash); contains a NUL byte; or has any component equal to `.velo`
+ignoring case and trailing dots or spaces.
+
+**Platform rule** (applied when a path is written to a working tree). The store
+rule, plus on Windows: the device names `CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`
+and `LPT1`-`LPT9` in any case, with or without an extension; the characters
+`< > : " | ? *`, backslash and control characters 0x01-0x1F (`:` also covers
+alternate data streams); a component ending in a dot or a space; and the 8.3
+alias `velo~1`. A repository holding `aux.c` is therefore valid on Linux and is
+refused only when written out on Windows.
+
+**Exclusivity.** No path may be both a file in one entry and a directory
+prefix of another entry of the same tree (`a` and `a/b`).
+
+**Symlinks.** A symlink entry is refused if its target is absolute (`/x`,
+`C:/x`, a UNC path) or, resolved lexically from the link's own directory,
+climbs above the root. A working-tree write is refused if any existing
+directory on the way to the target is a symlink.
+
+**Where it is enforced.** Importers (`save_tree`, git import, bundle apply,
+fetch, pull, clone and the push receive side) must refuse an offending path
+with `UnsafePath` *before committing or storing anything*. Every writer of a
+working tree (restore, switch, undo, redo, merge, cherry-pick, rebase, stash,
+resolve, clone checkout) validates the whole target tree before writing the
+first file. A repository that already holds a refused path stays readable;
+only writing it out is refused.
+
 ---
 
 ## 4. Snapshot identity
@@ -347,6 +382,7 @@ Present in v1 and v2 (v2 additions marked):
 | `settings` | **v3, additive** — `key`(PK) → `value`. The one key today is `objects`: `database` when objects live in the `objects` table (§2.5). A missing row, or a missing table, means files, which is every repository created before the setting existed. Written once at creation |
 | `objects` | **v3, additive** — `hash`(PK), `data` BLOB: one Zstd frame of the full object content (§2.5). Empty unless `settings.objects` is `database` |
 | `compactions` | **v3, additive** — `old_hash`(PK) → `new_hash`, `compacted_at_ms`: one row per snapshot id that compaction removed or re-minted (§11.3); **local only**, never collected by `gc`, not in bundles |
+| `signatures` | **v3, additive** — `(snapshot_hash, public_key)`(PK), `algorithm`, `signature`: Ed25519 signatures over snapshot ids, hex (§11.1). Outside identity; a missing table means no signatures. `fsck` verifies every row |
 
 Indexes are performance-only and may be rebuilt: `idx_filemap_snap`,
 `idx_filemap_path`, `idx_snap_branch`, `idx_trash_branch`, `idx_stash_name`,
@@ -391,6 +427,13 @@ may ignore or delete it.
 `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`. WAL is required:
 readers must not block a writer.
 
+**Durability.** With `synchronous=NORMAL` in WAL mode a committed transaction is
+not forced to disk at commit, so a power loss may roll back the most recent
+commits; the database stays consistent. Files outside the database
+(`.velo/PARENT`, `.velo/HEAD`, objects) are written by temp-file-and-rename
+without an `fsync`. What a crash or power loss can leave, and how it is tested,
+is in [CRASH_SAFETY.md](CRASH_SAFETY.md).
+
 ---
 
 ## 8. Display vs identity
@@ -416,8 +459,8 @@ output.
 Little-endian. Strings are `u32` byte-length followed by UTF-8 bytes.
 
 ```
-magic      : 8 bytes  "VELOBND1"   (v1)  /  "VELOBND2"  (v2 and v3)
-version    : u32                    1 (v1) / 2 / 3
+magic      : 8 bytes  "VELOBND1"   (v1)  /  "VELOBND2"  (v2, v3 and v4)
+version    : u32                    1 (v1) / 2 / 3 / 4
 snapshots  : u32 count, then per row:
                hash, message, branch, parent_hash, merge_parent,
                created_at            (v1: string / v2: i64 epoch ms)
@@ -426,7 +469,9 @@ meta       : u32 count, then per row: snapshot_id, namespace, key, value   (v2+)
 tags       : u32 count, then per row: name, snapshot_hash
 objects    : u32 count, then per row: hash, u32 len, len bytes
                (the raw, already-Zstd-compressed object, verbatim)
-renames    : u32 count, then per row: snapshot_hash, from_path, to_path    (v3 only)
+renames    : u32 count, then per row: snapshot_hash, from_path, to_path    (v3+)
+signatures : u32 count, then per row: snapshot_hash, algorithm,
+               public_key, signature                                      (v4 only)
 ```
 
 Version 3 appends `renames` after `objects` and changes nothing before it, so a
@@ -443,6 +488,16 @@ carried. Edges naming snapshots the receiver does not hold are dropped on
 import: storing one would manufacture exactly the problem §7.4 has `fsck`
 report.
 
+Version 4 appends `signatures` (§11.1) after `renames` and changes nothing
+before it. It is written **exactly when the bundle carries at least one
+signature**; a bundle with none is version 3, byte for byte as before, so an
+unsigned repository's bundles stay readable by 5.1.x. A v3-only reader refuses a
+version-4 bundle, which is the point: it would otherwise import the history and
+silently drop the signatures. Rows for snapshots the receiver does not hold are
+dropped on import, as for renames. Sync packs send only the snapshots the peer
+lacks, so a countersignature added later to an already-shared snapshot is not
+re-sent by sync; a `bundle create` of that history carries it.
+
 Rules:
 
 - A reader **must** reject a `version` it does not understand with a clear error
@@ -455,6 +510,16 @@ Rules:
   **transactional**.
 - Packs used for sync share this encoding but may legitimately omit objects the
   peer already holds. Only `bundle create` guarantees self-containment.
+- A reader **must** bound every allocation it makes on the strength of a number
+  in the data: a section count must fit in the bytes that remain (at least 28,
+  20, 16, 8, 8 and 12 bytes per snapshot, file_map, meta, tag, object and rename
+  row), a string length and a decompressed object size must stay under explicit
+  ceilings, and the whole bundle must too. `velo-core` defaults to 16 MiB per
+  string, 1 GiB per decompressed object and 16 GiB per bundle, all configurable
+  on the handle (`Repo::limited`). Refusal is the typed `LimitExceeded` error
+  (a count that cannot fit is reported as a truncated bundle). The ceilings are
+  a reader's policy and are **not part of the format**: another implementation
+  may choose other values.
 
 ### 9.1 Packs over HTTP
 
@@ -466,6 +531,39 @@ a refs block followed by the pack; `POST receive` takes branch and new tip
 (`OK <snapshots> <objects>` or `REJECT <reason>`). A refused push is a `200`
 carrying `REJECT`, as over ssh; other non-2xx codes are failures.
 Fast-forward-only semantics are unchanged.
+
+**Addressing.** A server holding one repository answers at `<any prefix>/velo/v1/`.
+A server holding a directory of repositories answers at
+`/<repo path>/velo/v1/`, where `<repo path>` is a relative path under the
+served directory. The repository path follows the tree-path rule: no `..`,
+no `.velo` component, no empty segment, no absolute or backslash form, and no
+`%` at all (the server never percent-decodes). A violation is `400 bad-path`;
+a path that is safe but names no repository is `404 not-found`.
+
+**Authentication.** A request may carry `Authorization: Bearer <token>`; the
+scheme is case-insensitive. A server with tokens configured compares the token
+in constant time against every configured token. A read token permits `refs`
+and `upload`; a write token also permits `receive`. A host may replace this
+check with its own, deciding per repository and operation.
+
+**Refusals.** Every refusal is a one-line `text/plain` body,
+`velo: <kind>: <detail>\n`:
+
+| Status | Kind | Meaning |
+| :--- | :--- | :--- |
+| 400 | `bad-path` | unsafe or malformed repository path |
+| 401 | `unauthenticated` | no valid token; carries `WWW-Authenticate: Bearer` |
+| 403 | `forbidden` | valid token that does not permit the operation |
+| 403 | `read-only` | `receive` on a server that only serves fetch |
+| 404 | `not-found` | unknown endpoint or repository |
+| 405 | `method-not-allowed` | wrong method for the endpoint (`GET refs`, `POST upload`/`receive`) |
+| 413 | `too-large` | request body or a received object exceeds a limit |
+| 500 | `error` | any other server-side failure |
+| 503 | `busy` | the repository is locked by another writer |
+
+Checks run in the order route, repository, authorization, read-only, size, so
+an unauthenticated caller learns nothing about size limits. A refused push never
+changes the repository.
 
 ---
 
@@ -547,12 +645,12 @@ stays in the files location.
 
 ## 11. Decided, not yet implemented
 
-Apart from D6 (§11.2) and D7 (§11.3), both now implemented, nothing in this
-section is written or read by the current code. These are decisions
+Apart from D6 (§11.2) and D7 (§11.3), both implemented, and the storage half
+of D5 (§11.1), nothing in this section is written or read by the current code. These are decisions
 taken before any code exists, because each is cheap now and a format break
 later. Later work implements them to the letter.
 
-### 11.1 Signatures (D5)
+### 11.1 Signatures (D5) — implemented
 
 - **What is signed:** the snapshot id. The signed message is the ASCII bytes
   `velo-signature-v1\n` followed by the 64-char lowercase hex id. Nothing else
@@ -566,7 +664,7 @@ later. Later work implements them to the letter.
 - **Outside identity, like rename edges (§7.3).** A countersignature adds a row
   and never mints a new snapshot. The consequence is the same as for rename
   edges: a dropped signature cannot be detected from the id.
-- **Storage, when implemented:**
+- **Storage (implemented, `velo_core::sign`):**
 
   ```sql
   signatures (
@@ -578,12 +676,16 @@ later. Later work implements them to the letter.
   )
   ```
 
-  The table is additive and changes no id.
+  The table is additive and changes no id. A reader of a repository without
+  the table treats it as empty; `fsck` reports a row that fails strict
+  verification as corruption, ignores unknown-algorithm rows, and treats a row
+  naming a snapshot in neither `snapshots` nor `trash` as cruft.
 - **Transport:** bundle wire version 4 appends a `signatures` section after
   `renames` (u32 count; per row: snapshot_hash, algorithm, public_key,
-  signature). Every writer that supports signatures writes version 4, so a
-  v3-only reader *refuses* the bundle instead of importing it and silently
-  dropping the signatures. Readers verify every signature before committing an
+  signature). Version 4 is written **only when the bundle carries at least one
+  signature**, so an unsigned repository's bundles stay version 3. A v3-only
+  reader still refuses any bundle that carries signatures, instead of importing
+  it and silently dropping them. Readers verify every signature before committing an
   import, and one invalid signature rejects the whole import (`UntrustedData`).
   Rows for snapshots the receiver does not hold are dropped, as for renames.
   Sync packs share the encoding.
@@ -638,8 +740,20 @@ rewritten chain gets a new parent and therefore a new id (it is *re-minted*).
     must survive); a snapshot that is the parent or merge parent of a snapshot
     outside the rewrite; anything reachable from a remote-tracking ref; the
     snapshot `.velo/PARENT` names, unless it is the newest member of its range.
-  - Never squashed **or** re-minted: once signatures exist, signed snapshots,
-    because re-minting invalidates the signature.
+  - Never squashed **or** re-minted: signed snapshots, because re-minting
+    invalidates the signature. A compaction whose range contains a signed
+    snapshot, or whose rewrite would re-mint a signed descendant, is refused
+    and changes nothing. Retention treats a signed snapshot as a barrier like a
+    published one: only snapshots newer than the newest signed snapshot on the
+    chain are eligible, and it is reported as protected (`signed`).
+  - Other id-rewriting commands keep the same rule and refuse with
+    `InvalidInput` before writing anything: `squash` when a signed snapshot is
+    in the squashed range, `rebase` when it would replay a signed snapshot,
+    and `save --amend` when the tip is signed. `undo` does not rewrite, so it
+    stays allowed; `redo` restores the snapshot.
+  - `gc` never deletes `signatures` rows, and does not expire a trash entry
+    whose snapshot is signed, so an undone signed snapshot stays recoverable by
+    `redo`.
   - Tagged snapshots *may* be re-minted as descendants. The tag is retargeted to
     the new id and the move is recorded.
 - **The squashed snapshot** takes the newest member's tree, message, timestamp
@@ -647,7 +761,7 @@ rewritten chain gets a new parent and therefore a new id (it is *re-minted*).
   parent. Rename edges are composed across the range.
 - `gc` never collects `compactions` rows.
 
-### 11.4 Open: tree metadata growth
+### 11.4 Decided: tree metadata growth
 
 Every snapshot stores its whole tree in `file_map`, so rows grow as
 snapshots x files even when one file changed. Phase 15.9 measured this and
@@ -736,7 +850,7 @@ This run did not break the 174 MB down by table. The `fsck` and
 the rows are read (one ordered scan, parallel id hashing, no `DISTINCT` over
 the whole table), not in how they are stored.
 
-**The decision remains open and nothing changed in the format.** No column,
+**Round three left the decision open and changed nothing in the format.** No column,
 index or row layout was altered by this measurement; the schema is as section 7.2
 describes. A change that stored a tree once and shared it between snapshots
 that did not touch it would cut the rows and the size, and would also change
@@ -770,9 +884,90 @@ the decision below: share trees between snapshots, store hashes as blobs, or
 key `file_map` on `(snapshot_hash, path)` `WITHOUT ROWID`. Nothing in the
 format changed.
 
-**Decision:** open. This is the same decision as 14.1 and 14.5, so it belongs
-with those format decisions and is made there once. Nothing was changed in
-Phase 15: no schema, index or code path.
+**Round five (18.10): the format-compatible options at envelope sizes.**
+Measured with the `#[ignore]`d `round_five_options_at_*_rows` tests in
+`crates/velo-core/src/tests/metadata_growth.rs` (`cargo test -p velo-core
+--release metadata_growth -- --ignored --nocapture --test-threads=1`) and the
+`bench/scale/scale.py` harness. Machine: Intel Core i7-1370P (Family 6 Model
+186), Windows 11, NTFS with Defender real-time scanning on, release build,
+SQLite via rusqlite. Two runs each. Options 2 and 3 are measured on scratch
+tables, never the real schema; one parent snapshot of N rows, 10 snapshots for
+the scratch tables.
+
+| Option | Rows | Run 1 | Run 2 |
+| --- | --- | --- | --- |
+| 1. read tree + per-row insert loop | 10,000 | 25.1 ms | 25.3 ms |
+| 1. `INSERT ... SELECT` + 1 insert | 10,000 | 21.8 ms | 21.2 ms |
+| 1. read tree + per-row insert loop | 100,000 | 324.7 ms | 345.0 ms |
+| 1. `INSERT ... SELECT` + 1 insert | 100,000 | 286.1 ms | 254.3 ms |
+| 2. hex TEXT, bytes per row / insert | 100,000 | 290.1 B / 1.05 s | 290.1 B / 1.07 s |
+| 2. 32-byte BLOB, bytes per row / insert | 100,000 | 184.0 B / 0.85 s | 184.0 B / 0.81 s |
+| 2. hex TEXT, bytes per row / insert | 10,000 | 287.1 B / 78 ms | 287.1 B / 80 ms |
+| 2. 32-byte BLOB, bytes per row / insert | 10,000 | 178.6 B / 48 ms | 178.6 B / 47 ms |
+| 3. rowid + 2 indexes: B/row, insert, lookup | 100,000 | 290.1 B, 1.05 s, 88 us | 290.1 B, 1.00 s, 104 us |
+| 3. `WITHOUT ROWID`: B/row, insert, lookup | 100,000 | 191.5 B, 0.40 s, 47 us | 191.5 B, 0.37 s, 46 us |
+| 3. rowid + 2 indexes: B/row, insert, lookup | 10,000 | 287.1 B, 73 ms, 55 us | 287.1 B, 74 ms, 52 us |
+| 3. `WITHOUT ROWID`: B/row, insert, lookup | 10,000 | 186.4 B, 51 ms, 47 us | 186.4 B, 65 ms, 48 us |
+
+Whole-save latency, `scale.py --files 100000 --snapshots 20` (one file changed
+per snapshot; 2,000,020 `file_map` rows afterwards): the first save (every file
+new) took 483 s and 491 s; the median of saves 2-20 was 3.67 s and 3.66 s, and
+the median of the last 10% (two saves) 5.4 s and 5.3 s.
+
+**Carry-forward decision.** The rule was: adopt `INSERT ... SELECT` in `save`
+only if it makes a one-file-changed save at 100,000 files at least 20% faster
+end to end. It saves at most about 60-90 ms of a 3.7-5.4 s save, under 3%, so
+it does not clear the rule and `commands/save.rs` and `tree.rs` are unchanged.
+The whole row insert is about 0.3 s of the save; the rest is scanning, hashing
+and writing. Carry-forward would also give up the in-Rust tree the save needs
+anyway.
+
+Options 2 and 3 change column types or the table definition, so they are format
+changes and are **recorded, not implemented**: 32-byte blobs cut about 36% of
+the bytes per row and `WITHOUT ROWID` about 34%, with `WITHOUT ROWID` also
+inserting 2.6x faster and halving point lookups. Whether that is worth a format
+change is the overall decision of 18.10-c.
+
+**Round six (18.10-c): the envelope and the retention policy.** Published with
+its method in [SCALE.md](SCALE.md). The harness (`bench/scale/scale.py`, release
+CLI, one file changed per snapshot) reached 10,000 files x 2,000 snapshots and
+100,000 files x 200 snapshots, 20 million `file_map` rows (a 5.3 GiB database)
+each, on Windows 11 and on Linux (WSL2). What the numbers say:
+
+- Reading is not the problem: `history`, `history --file`, open and `restore`
+  stay at or under 3 s and mostly under 120 ms at 20 million rows.
+- Save grows with the table: at 10,000 files it levels at about 1.9 s; at
+  100,000 files it rose from 3.6 s to 14.5 s (Windows) and from 3.0 s to
+  20.2 s (Linux) over 200 snapshots and had not levelled.
+- `fsck` takes 26-38 s on Linux and 31-127 s on Windows at 20 million rows;
+  `gc` 5-8 s on Linux, 6.5 s and 392 s on Windows (Defender scanning, not rows).
+- The default retention policy (everything for a day, hourly for a month, daily
+  after) applied to 2,000 snapshots of a 10,000-file tree over 60 days cut
+  snapshots, rows and live content by 62% (20.0 million to 7.6 million rows,
+  5.17 GiB to 1.99 GiB live). The database file did not shrink, because SQLite
+  keeps the freed pages and velo has no `VACUUM`.
+
+**Decision.** Metadata growth is bounded by retention, not by a format change,
+for the agent-checkpointing workload that produces the long histories:
+
+1. **Retention bounds the rows.** The default policy is the documented
+   recommendation, and rows are then limited by the policy (a day of
+   snapshots, at most 24 a day for a month, one a day beyond) rather than by
+   how long the agent has run. Run it daily; one pass over 20 million rows took
+   20 minutes.
+2. **Carry-forward `INSERT ... SELECT` is not adopted** (18.10-b: under 3% of a
+   100,000-file save). `save` keeps the per-row insert loop.
+3. **32-byte blob hashes and `WITHOUT ROWID` are deferred.** They would cut about
+   a third of the bytes per row (36% and 34%) and `WITHOUT ROWID` would also
+   insert 2.6x faster, but both change the on-disk format and the bundle
+   layout, and neither changes the shape of the growth: a snapshot still owns
+   one row per file. They are recorded here, not scheduled.
+4. **A tree-object model is a 6.0 conversation**, to be had with the golden
+   corpus (Phase 18.3) in hand so that a migration can be proven against every
+   released format. It is the only option that removes the files x snapshots
+   product itself, and the 100,000-file save latency above is the case for it.
+   Until then the stated envelope in SCALE.md is the claim: beyond 20 million
+   rows or 100,000 files, velo has not been measured.
 
 ---
 
@@ -783,7 +978,7 @@ Phase 15: no schema, index or code path.
 - **No delta/packfile encoding.** Objects stay whole-content addressed: a name
   is always the hash of the full content. Storage-level chunking *below*
   identity is decided as D6 (§11.2); it is not delta encoding and changes no id.
-- **No signing yet.** Content addressing gives tamper-*evidence*, not
-  authentication. Signatures are decided as D5 (§11.1), outside identity, and
-  not yet implemented.
+- **No built-in trust.** Content addressing gives tamper-*evidence*, not
+  authentication. Signatures (§11.1) are stored outside identity and verified
+  against keys the caller trusts; velo makes no trust decision of its own.
 - **No downgrade path.** Migrations are forward-only.

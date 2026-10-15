@@ -51,6 +51,74 @@ jobs:
           cargo clippy --manifest-path bindings/wasm/Cargo.toml
           --target wasm32-unknown-unknown --all-targets -- -D warnings
       - name: Test under Node
-        run: wasm-pack test --node bindings/wasm
+        # `--test node` keeps the browser-only test files (which configure a
+        # dedicated worker) from running under the wrong runner.
+        run: wasm-pack test --node bindings/wasm --test node
+      - name: Test in headless Chrome (dedicated worker, OPFS)
+        run: >
+          wasm-pack test --headless --chrome bindings/wasm
+          --test browser --test browser_memory
+      - name: Test in headless Firefox (dedicated worker, OPFS)
+        run: >
+          wasm-pack test --headless --firefox bindings/wasm
+          --test browser --test browser_memory
       - name: Build for the web
+        run: wasm-pack build bindings/wasm --release --target web
+      - name: Package size budget
+        env:
+          # Budget for the gzip -9 size of the release .wasm, in bytes: the
+          # value measured when the budget was set (863812) plus 10%. To raise
+          # it deliberately, change this number in the same pull request as
+          # the change that grew the package, and say why in the description
+          # and in the Size section of bindings/wasm/README.md.
+          GZIP_BUDGET: "950000"
+        run: |
+          f=bindings/wasm/pkg/velo_wasm_bg.wasm
+          raw=$(stat -c%s "$f")
+          gz=$(gzip -9 -c "$f" | wc -c)
+          sudo apt-get install -y brotli
+          br=$(brotli -q 11 -c "$f" | wc -c)
+          js=$(stat -c%s bindings/wasm/pkg/velo_wasm.js)
+          echo "velo_wasm_bg.wasm raw=$raw gzip-9=$gz brotli-11=$br; velo_wasm.js=$js"
+          {
+            echo "### velo-wasm package size"
+            echo "| raw | gzip -9 | brotli -q 11 | JS glue | gzip budget |"
+            echo "| ---: | ---: | ---: | ---: | ---: |"
+            echo "| $raw | $gz | $br | $js | $GZIP_BUDGET |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "$gz" -gt "$GZIP_BUDGET" ]; then
+            echo "::error::gzip size $gz exceeds the budget $GZIP_BUDGET"
+            exit 1
+          fi
+
+  reload:
+    name: velo-wasm � page-reload persistence (Playwright, Chromium)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: bindings/wasm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: bindings/wasm/e2e/package-lock.json
+      - name: Install clang
+        run: sudo apt-get update && sudo apt-get install -y clang
+      - name: Install wasm-pack
+        run: cargo install wasm-pack --locked
+      - name: Build the package for the web
         run: wasm-pack build bindings/wasm --target web
+      - name: Install e2e dependencies
+        working-directory: bindings/wasm/e2e
+        run: npm ci
+      - name: Install Chromium
+        working-directory: bindings/wasm/e2e
+        run: npx playwright install --with-deps chromium
+      - name: Reload test
+        working-directory: bindings/wasm/e2e
+        run: npx playwright test --project chromium

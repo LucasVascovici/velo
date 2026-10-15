@@ -13,7 +13,7 @@ description = "Node.js binding for velo-core"
 crate-type = ["cdylib"]
 
 [dependencies]
-velo-core = { path = "../../crates/velo-core" }
+velo-core = { path = "../../crates/velo-core", features = ["json", "yaml", "toml"] }
 napi = { version = "3", default-features = false, features = ["napi6", "async"] }
 napi-derive = "3"
 

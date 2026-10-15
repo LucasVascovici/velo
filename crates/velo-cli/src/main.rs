@@ -1,3 +1,5 @@
+#![deny(unsafe_code)]
+
 use clap::{builder::styling, Parser, Subcommand};
 
 // All repository logic lives in `velo-core`; this crate is the presentation
@@ -394,6 +396,86 @@ NOTES
         paths: Vec<String>,
     },
 
+    /// Generate a signing key and print its public half.
+    ///
+    /// Writes a fresh 32-byte Ed25519 seed, as lowercase hex, to FILE and
+    /// prints the matching public key on stdout.  Works anywhere; it does
+    /// not need a repository.
+    ///
+    /// Examples
+    ///   velo keygen --out ~/.velo-signing-key
+    ///   velo keygen --out key.txt
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · FILE is a secret: velo never stores, uploads or manages it.
+      Keep it out of the repository and out of backups you share.
+    · An existing FILE is never overwritten.
+    · Give the public key to whoever should trust your signatures;
+      they put it in the trust file that velo verify reads."
+    )]
+    Keygen {
+        /// File to write the secret key to (created, mode 0600 on Unix).
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
+
+    /// Sign a snapshot with a key file.
+    ///
+    /// The signature covers the snapshot id, so it vouches for the whole
+    /// tree, the parents, the message, the time, the metadata and the
+    /// author.  Defaults to the snapshot you are on.
+    ///
+    /// Examples
+    ///   velo sign --key ~/.velo-signing-key
+    ///   velo sign v1.0 --key ~/.velo-signing-key
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · Create a key with velo keygen.
+    · Signing the same snapshot twice with the same key changes nothing.
+    · Signatures never change a snapshot's id."
+    )]
+    Sign {
+        /// Hash (or prefix), tag or branch to sign. Defaults to the current snapshot.
+        #[arg(value_name = "SNAPSHOT")]
+        snapshot: Option<String>,
+
+        /// Secret key file written by velo keygen.
+        #[arg(long, value_name = "FILE")]
+        key: PathBuf,
+    },
+
+    /// Check a snapshot's signatures against a list of trusted keys.
+    ///
+    /// The trust file holds one public key (64 hex characters) per line;
+    /// blank lines and lines starting with # are ignored.  Exits 0 when
+    /// a valid signature comes from a trusted key and none is invalid;
+    /// otherwise prints why and exits 1.
+    ///
+    /// Examples
+    ///   velo verify --trust trusted.keys
+    ///   velo verify v1.0 --trust trusted.keys
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · Velo verifies; you decide whom to trust.  There is no key
+      registry, revocation or web of trust.
+    · Nothing on disk is changed — verify is entirely read-only."
+    )]
+    Verify {
+        /// Hash (or prefix), tag or branch to check. Defaults to the current snapshot.
+        #[arg(value_name = "SNAPSHOT")]
+        snapshot: Option<String>,
+
+        /// File of trusted public keys, one per line.
+        #[arg(long, value_name = "FILE")]
+        trust: PathBuf,
+    },
+
     /// Apply the changes from one snapshot onto the current branch.
     ///
     /// Uses 3-way merge logic: the snapshot's parent acts as the
@@ -423,12 +505,17 @@ NOTES
 
     /// Switch to a branch (creates it if it does not exist).
     ///
+    /// A name that is a near miss of an existing branch (`mian` for `main`)
+    /// is not created silently: a terminal is asked, a script is refused with
+    /// exit code 2.  --create (-c) creates the branch regardless.
+    ///
     /// Restores the working tree to the latest snapshot on the target
     /// branch.  Aborts if there are unsaved changes unless --force is used.
     ///
     /// Examples
     ///   velo switch feature/auth    # switch (creates if new)
     ///   velo switch main --force    # discard unsaved changes and switch
+    ///   velo switch --create mian   # create it even though `main` exists
     #[command(
         verbatim_doc_comment,
         after_help = "\
@@ -445,6 +532,10 @@ NOTES
         /// Discard unsaved changes without prompting.
         #[arg(short, long, help = "Discard unsaved changes and switch")]
         force: bool,
+
+        /// Create the branch; skips the near-miss check on the name.
+        #[arg(short, long, help = "Create the branch (error if it exists)")]
+        create: bool,
     },
 
     /// List branches, or delete one.
@@ -998,6 +1089,10 @@ NOTES
     },
 
     /// Send a branch's commits to a remote (fast-forward only).
+    ///
+    /// Exits with code 4 when the remote refuses the push because it is not a
+    /// fast-forward (the remote has commits you lack); `velo sync` fetches,
+    /// integrates and pushes in one step.
     #[command(
         verbatim_doc_comment,
         after_help = "\
@@ -1020,6 +1115,31 @@ NOTES
         /// Remote name (default: origin).
         #[arg(value_name = "REMOTE", default_value = "origin")]
         remote: String,
+    },
+
+    /// Fetch, merge if it is clean, and push: one step to share your work.
+    ///
+    /// Examples
+    ///   velo sync                 # origin, the current branch
+    ///   velo sync origin main
+    ///
+    /// Behind the remote it fast-forwards; ahead it pushes; diverged and clean
+    /// it merges, saves the merge and pushes it.
+    #[command(
+        verbatim_doc_comment,
+        after_help = "NOTES
+    · A merge with conflicts is never pushed: sync stops with exit code 3 and
+      leaves the merge as `velo merge` would. Run `velo resolve`, `velo save`,
+      then `velo sync` again.
+    · There is no --force: if the remote moves again mid-sync, it exits 4."
+    )]
+    Sync {
+        /// Remote name (default: origin).
+        #[arg(value_name = "REMOTE", default_value = "origin")]
+        remote: String,
+        /// Branch to sync (default: the current branch).
+        #[arg(value_name = "BRANCH")]
+        branch: Option<String>,
     },
 
     /// Manage remotes (paths, or ssh://host/path URLs).
@@ -1051,13 +1171,20 @@ NOTES
 
     /// Serve a repository over HTTP, for `velo clone http://...`, `velo push` and `velo pull`.
     ///
-    /// A reference server: it handles one request at a time and has NO
-    /// authentication and no TLS. Anyone who can reach the port can read
-    /// the history and push to it. Put it behind a reverse proxy that
-    /// authenticates and terminates TLS for anything public.
+    /// A reference server. By default fetch is anonymous and push is
+    /// refused; give it a token to accept pushes. There is no TLS: put a
+    /// reverse proxy in front of anything public (see "Hosting a remote" in
+    /// the README). Pushes stay fast-forward only; there is no --force.
+    ///
+    /// Tokens: VELO_SERVE_TOKEN is one write token; --token-file holds lines
+    /// of `read <token>` or `write <token>`. Once any token is configured,
+    /// every request needs one. Clients send theirs in VELO_TOKEN.
     ///
     ///   velo serve-http /srv/project
-    ///   velo serve-http /srv/project --listen 0.0.0.0:8417
+    ///   VELO_SERVE_TOKEN=s3cret velo serve-http /srv/project --listen 0.0.0.0:8417
+    ///   velo serve-http /srv/project --read-only
+    ///   velo serve-http /srv/repos --directory --token-file tokens.txt
+    ///   velo serve-http /srv/project --allow-anonymous-push
     #[command(verbatim_doc_comment)]
     ServeHttp {
         #[arg(value_name = "PATH")]
@@ -1065,6 +1192,27 @@ NOTES
         /// Address to listen on (port 0 picks a free one).
         #[arg(long, value_name = "ADDR", default_value = "127.0.0.1:8417")]
         listen: String,
+        /// Serve PATH as a directory of repositories, at http://host/<repo>/.
+        #[arg(long)]
+        directory: bool,
+        /// File of `read <token>` / `write <token>` lines; `#` starts a comment.
+        #[arg(long, value_name = "FILE")]
+        token_file: Option<String>,
+        /// Refuse every push, whatever the token.
+        #[arg(long)]
+        read_only: bool,
+        /// With no tokens configured, accept pushes from anyone.
+        #[arg(long)]
+        allow_anonymous_push: bool,
+        /// Largest request body accepted, in bytes.
+        #[arg(long, value_name = "N", default_value_t = 1 << 30)]
+        max_request_bytes: u64,
+        /// Seconds allowed to receive one request body.
+        #[arg(long, value_name = "SECS", default_value_t = 300)]
+        request_timeout: u64,
+        /// Requests served at once; more get 503 busy.
+        #[arg(long, value_name = "N", default_value_t = 8)]
+        max_connections: usize,
     },
 }
 
@@ -1188,6 +1336,92 @@ enum StashSub {
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
+/// A nudge for a git habit that clap rejects as an argument rather than as a
+/// subcommand. Keyed on the words of the command line that are not flags and
+/// on the offending token clap reported, so each row names exactly one habit.
+fn clap_habit_hint(args: &[String], offending: &str) -> Option<&'static str> {
+    if offending == "-C" {
+        return Some("hint: velo has no -C; cd <dir> first, then run velo");
+    }
+    let words: Vec<&str> = args
+        .iter()
+        .map(String::as_str)
+        .filter(|a| !a.starts_with('-'))
+        .collect();
+    Some(
+        match (words.first().copied()?, words.get(1).copied(), offending) {
+            ("history", _, tok) if !tok.starts_with('-') => {
+                "hint: velo history --branch <ref> shows another branch's history"
+            }
+            ("stash", Some("push"), "-m" | "--message") => {
+                "hint: the shelf name is an argument: velo stash push \"<name>\""
+            }
+            ("grep", _, "-n" | "--line-number") => {
+                "hint: velo grep always shows line numbers; there is no -n"
+            }
+            ("diff", _, "--stat" | "--numstat" | "--shortstat") => {
+                "hint: velo diff has no summary mode; it prints every change, and -- <path> narrows it"
+            }
+            _ => return None,
+        },
+    )
+}
+
+/// A nudge for a `velo show` target typed out of git habit. These are not
+/// argument errors, so they are offered after the lookup itself fails.
+fn show_habit_hint(args: &[String]) -> Option<&'static str> {
+    let mut words = args.iter().filter(|a| !a.starts_with('-'));
+    if words.next().map(String::as_str) != Some("show") {
+        return None;
+    }
+    let target = words.next()?;
+    if target == "HEAD" || target.starts_with("HEAD~") || target.starts_with("HEAD^") {
+        Some("hint: velo has no HEAD; name a branch, tag or snapshot id (velo history lists them)")
+    } else if target.contains(':') {
+        Some("hint: velo show <ref> -- <path> shows a path's changes; velo restore <ref> -- <path> pulls the file out")
+    } else {
+        None
+    }
+}
+
+/// Edit distance counting a swap of two neighbours as one edit.
+fn damerau_levenshtein(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
+}
+
+/// The existing branch a new name is probably a typo of, if any: within two
+/// edits, and neither a prefix of the other (`feat` beside `feature` is a
+/// deliberate new name).
+fn near_miss<'a>(name: &str, existing: &'a [String]) -> Option<&'a str> {
+    existing
+        .iter()
+        .filter(|b| !b.starts_with("remotes/") && !b.starts_with("_deleted_"))
+        .filter(|b| !b.starts_with(name) && !name.starts_with(b.as_str()))
+        .map(|b| (damerau_levenshtein(name, b), b))
+        .filter(|(d, _)| *d <= 2)
+        .min_by_key(|(d, _)| *d)
+        .map(|(_, b)| b.as_str())
+}
+
 /// A nudge for a command people type out of git habit, keyed on the first
 /// argument that is not a flag.
 fn git_habit_hint(args: impl Iterator<Item = String>) -> Option<&'static str> {
@@ -1203,7 +1437,11 @@ fn git_habit_hint(args: impl Iterator<Item = String>) -> Option<&'static str> {
 }
 
 fn main() {
+    // SAFETY: `SetConsoleOutputCP` takes a plain integer code page and touches no
+    // memory of ours; the declaration matches the kernel32 signature. Failure is
+    // harmless (output stays in the old code page), so the result is ignored.
     #[cfg(windows)]
+    #[allow(unsafe_code)]
     unsafe {
         #[link(name = "kernel32")]
         extern "system" {
@@ -1215,12 +1453,27 @@ fn main() {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(e) => {
-            let wrong_subcommand = e.kind() == clap::error::ErrorKind::InvalidSubcommand;
+            use clap::error::{ContextKind, ContextValue, ErrorKind};
+            let kind = e.kind();
+            let offending = match e.get(ContextKind::InvalidArg) {
+                Some(ContextValue::String(s)) => s.clone(),
+                Some(ContextValue::Strings(v)) => v.first().cloned().unwrap_or_default(),
+                _ => String::new(),
+            };
             let _ = e.print();
-            if wrong_subcommand {
-                if let Some(hint) = git_habit_hint(std::env::args().skip(1)) {
-                    eprintln!("{hint}");
+            let hint = match kind {
+                ErrorKind::InvalidSubcommand => git_habit_hint(std::env::args().skip(1)),
+                ErrorKind::UnknownArgument
+                | ErrorKind::InvalidValue
+                | ErrorKind::TooManyValues
+                | ErrorKind::ArgumentConflict => {
+                    let args: Vec<String> = std::env::args().skip(1).collect();
+                    clap_habit_hint(&args, &offending)
                 }
+                _ => None,
+            };
+            if let Some(hint) = hint {
+                eprintln!("{hint}");
             }
             std::process::exit(e.exit_code());
         }
@@ -1235,6 +1488,10 @@ fn main() {
             eprintln!("{} {}", console::style("error:").red().bold(), e);
             if let Some(hint) = hint_for(&e, force_form) {
                 eprintln!("{}", hint);
+            } else if let Some(hint) =
+                show_habit_hint(&std::env::args().skip(1).collect::<Vec<_>>())
+            {
+                eprintln!("{hint}");
             }
             error_code(&e)
         }
@@ -1253,6 +1510,10 @@ enum Exit {
     Conflicts,
     /// Local and remote histories diverged.
     Diverged,
+    /// `velo verify` found no trusted signature, or an invalid one.
+    Untrusted,
+    /// A usage refusal made after parsing (a near-miss branch name).
+    Usage,
 }
 
 impl Exit {
@@ -1261,6 +1522,8 @@ impl Exit {
             Exit::Success => 0,
             Exit::Conflicts => 3,
             Exit::Diverged => 4,
+            Exit::Untrusted => 1,
+            Exit::Usage => 2,
         }
     }
 }
@@ -1305,6 +1568,61 @@ fn spawn_config() -> Result<velo_core::transport::Spawn> {
         spawn = spawn.remote_bin(bin);
     }
     Ok(spawn)
+}
+
+/// The bearer token for a remote, from the environment: `VELO_TOKEN_<NAME>`
+/// (the name uppercased, every non-alphanumeric character as `_`), then the
+/// general `VELO_TOKEN`. Empty values count as unset. Tokens are read only from
+/// the environment: one stored in the repository would travel in backups, and
+/// one in a URL would land in shell history and `velo remote`'s output.
+fn token_for(remote_name: &str) -> Option<String> {
+    token_from(|k| std::env::var(k).ok(), remote_name)
+}
+
+/// The environment variable that holds the token for one remote: the name
+/// uppercased, every non-alphanumeric character replaced with `_`.
+fn token_var(name: &str) -> String {
+    let mangled: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    format!("VELO_TOKEN_{mangled}")
+}
+
+/// The lookup behind [`token_for`], with the environment passed in.
+fn token_from(get: impl Fn(&str) -> Option<String>, name: &str) -> Option<String> {
+    get(&token_var(name))
+        .filter(|t| !t.is_empty())
+        .or_else(|| get("VELO_TOKEN").filter(|t| !t.is_empty()))
+}
+
+#[cfg(test)]
+mod token_tests {
+    use super::*;
+
+    #[test]
+    fn token_var_uppercases_and_mangles() {
+        assert_eq!(token_var("origin"), "VELO_TOKEN_ORIGIN");
+        assert_eq!(token_var("my-remote.v2"), "VELO_TOKEN_MY_REMOTE_V2");
+    }
+
+    #[test]
+    fn token_from_prefers_the_specific_variable() {
+        let env = |k: &str| match k {
+            "VELO_TOKEN_MY_REMOTE_V2" => Some("specific".to_string()),
+            "VELO_TOKEN" => Some("general".to_string()),
+            _ => None,
+        };
+        assert_eq!(token_from(env, "my-remote.v2").as_deref(), Some("specific"));
+        assert_eq!(token_from(env, "other").as_deref(), Some("general"));
+        assert_eq!(token_from(|_| None, "other"), None);
+    }
 }
 
 /// What to do about an error, for the kinds that have an obvious next step.
@@ -1519,6 +1837,13 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 remote
             ));
         }
+        VeloError::AccessDenied { .. } => {
+            lines.push(
+                "  Set VELO_TOKEN_<REMOTE> (the remote's name, uppercased) or VELO_TOKEN to a bearer token for it."
+                    .into(),
+            );
+            lines.push("  Never put the token in the URL.".into());
+        }
         _ => return None,
     }
     Some(lines.join(
@@ -1577,6 +1902,7 @@ fn not_a_repo_hint(cmd: &Commands) -> VeloError {
         Commands::Remote { .. }
         | Commands::Push { .. }
         | Commands::Pull { .. }
+        | Commands::Sync { .. }
         | Commands::Fetch { .. } => {
             "  Sync commands run inside a repository — this folder isn't one yet.\n  \
              · velo clone <url> [dir]   get a working copy of an existing repository\n  \
@@ -1900,9 +2226,87 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Grep { .. }
             | Commands::Conflicts { .. }
             | Commands::ExportGit { .. }
+            | Commands::Verify { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
     )
+}
+
+/// Write a fresh signing key to `out` and print the public half.
+///
+/// The randomness is the operating system's, read here because core takes no
+/// entropy source. The file is created exclusively, so an existing key is
+/// never overwritten, and with mode 0600 on Unix so it is never briefly
+/// readable by others.
+fn keygen(out: &Path) -> Result<()> {
+    use std::io::Write;
+
+    let mut seed = [0u8; 32];
+    getrandom::fill(&mut seed)
+        .map_err(|e| VeloError::Io(std::io::Error::other(format!("no system randomness: {e}"))))?;
+    let key = velo_core::sign::SigningKey::from_seed(seed);
+    let hex: String = seed.iter().map(|b| format!("{b:02x}")).collect();
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(out).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            VeloError::invalid(format!(
+                "{} already exists; velo keygen will not overwrite a key. Choose another --out.",
+                out.display()
+            ))
+        } else {
+            VeloError::Io(e)
+        }
+    })?;
+    file.write_all(format!("{hex}\n").as_bytes())
+        .map_err(VeloError::Io)?;
+    file.sync_all().map_err(VeloError::Io)?;
+
+    render::sign::print_keygen(&key.public_key().to_string(), out);
+    Ok(())
+}
+
+/// The snapshot named on the command line, or the one the working tree is on.
+fn resolve_or_current(
+    repo: &velo_core::Repo,
+    root: &Path,
+    spec: Option<&str>,
+) -> Result<velo_core::SnapshotId> {
+    match spec {
+        Some(spec) => commands::resolve_snapshot_id(repo, spec),
+        None => {
+            let branch = std::fs::read_to_string(root.join(".velo/HEAD")).map_err(VeloError::Io)?;
+            commands::resolve_snapshot_id(repo, branch.trim())
+        }
+    }
+}
+
+fn read_signing_key(path: &Path) -> Result<velo_core::sign::SigningKey> {
+    let text = std::fs::read_to_string(path)
+        .map_err(|e| VeloError::invalid(format!("cannot read key file {}: {e}", path.display())))?;
+    velo_core::sign::SigningKey::from_hex(text.trim())
+}
+
+/// A trust file: one public key per line, `#` comments and blank lines allowed.
+fn read_trust_file(path: &Path) -> Result<velo_core::sign::TrustedKeys> {
+    let text = std::fs::read_to_string(path).map_err(|e| {
+        VeloError::invalid(format!("cannot read trust file {}: {e}", path.display()))
+    })?;
+    let mut keys = velo_core::sign::TrustedKeys::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        keys.insert(line.parse()?);
+    }
+    Ok(keys)
 }
 
 /// `N` or `N-M`, 1-based and inclusive, to a half-open range.
@@ -1929,24 +2333,306 @@ fn parse_line_range(spec: &str) -> Result<std::ops::Range<usize>> {
     Ok(start..end + 1)
 }
 
+/// The CLI's access policy, a small [`serve::http::Authorize`] over `Tokens`.
+///
+/// Which variant is active is decided once at start-up from the flags and
+/// `VELO_SERVE_TOKEN`; see [`serve_http`] for the rules.
+enum ServePolicy {
+    /// Tokens are configured: every request needs a valid one.
+    Tokens(serve::http::Tokens),
+    /// No tokens: fetch is anonymous, push is refused as unauthenticated.
+    AnonymousRead,
+    /// Everything is allowed (the pre-5.2 behaviour, or a read-only mirror).
+    Open,
+}
+
+impl serve::http::Authorize for ServePolicy {
+    fn authorize(
+        &self,
+        repository: &str,
+        operation: serve::http::Operation,
+        bearer: Option<&str>,
+    ) -> serve::http::Access {
+        use serve::http::Access;
+        match self {
+            ServePolicy::Tokens(t) => t.authorize(repository, operation, bearer),
+            ServePolicy::AnonymousRead if operation.is_write() => Access::Unauthenticated,
+            ServePolicy::AnonymousRead | ServePolicy::Open => Access::Allow,
+        }
+    }
+}
+
+/// Parse a `--token-file`: lines of `read <token>` or `write <token>`, with
+/// `#` comments and blank lines allowed.
+fn parse_token_file(path: &str) -> Result<serve::http::Tokens> {
+    let text = std::fs::read_to_string(path).map_err(VeloError::Io)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(meta) = std::fs::metadata(path) {
+            if meta.permissions().mode() & 0o077 != 0 {
+                eprintln!(
+                    "warning: token file '{path}' is readable by other users; run chmod 600 on it"
+                );
+            }
+        }
+    }
+    let mut tokens = serve::http::Tokens::new();
+    for (i, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match line.split_once(char::is_whitespace) {
+            Some(("read", t)) if !t.trim().is_empty() => tokens = tokens.read(t.trim()),
+            Some(("write", t)) if !t.trim().is_empty() => tokens = tokens.write(t.trim()),
+            _ => {
+                return Err(VeloError::invalid(format!(
+                    "{path}:{}: expected 'read <token>' or 'write <token>'",
+                    i + 1
+                )))
+            }
+        }
+    }
+    Ok(tokens)
+}
+
+/// Options of `velo serve-http`, gathered from the flags.
+struct ServeHttpOptions<'a> {
+    path: &'a str,
+    listen: &'a str,
+    directory: bool,
+    token_file: Option<&'a str>,
+    read_only: bool,
+    allow_anonymous_push: bool,
+    max_request_bytes: u64,
+    request_timeout: u64,
+    max_connections: usize,
+}
+
+/// A refusal made by the front end itself, in the core's `velo: <kind>: <detail>` form.
+fn front_refusal(
+    status: u16,
+    kind: &str,
+    detail: &str,
+) -> tiny_http::Response<std::io::Cursor<Vec<u8>>> {
+    tiny_http::Response::from_data(format!("velo: {kind}: {detail}\n").into_bytes())
+        .with_status_code(status)
+        .with_header(
+            tiny_http::Header::from_bytes("Content-Type", "text/plain").expect("static header"),
+        )
+}
+
+/// Why reading a request body stopped early.
+enum BodyError {
+    TooLarge,
+    Timeout,
+    Io(std::io::Error),
+}
+
+/// Read a body in chunks, refusing past `max` bytes (covers chunked bodies
+/// that carry no Content-Length) or once `timeout` has elapsed. A socket read
+/// that never returns is not interrupted: tiny_http has no read timeout, so
+/// that case is bounded only by the proxy in front.
+fn read_body(
+    reader: &mut dyn std::io::Read,
+    max: u64,
+    timeout: std::time::Duration,
+) -> std::result::Result<Vec<u8>, BodyError> {
+    let start = std::time::Instant::now();
+    let mut limited = std::io::Read::take(reader, max.saturating_add(1));
+    let mut body = Vec::new();
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        if start.elapsed() > timeout {
+            return Err(BodyError::Timeout);
+        }
+        let n = std::io::Read::read(&mut limited, &mut chunk).map_err(BodyError::Io)?;
+        if n == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..n]);
+        if body.len() as u64 > max {
+            return Err(BodyError::TooLarge);
+        }
+    }
+    Ok(body)
+}
+
+/// Serve one received request: size and time limits, then the core service.
+fn serve_one(
+    mut req: tiny_http::Request,
+    service: &serve::http::Service,
+    limits: (u64, std::time::Duration),
+) {
+    let (max, timeout) = limits;
+    let method = req.method().to_string();
+    let full = req.url().to_string();
+    let too_large = || {
+        front_refusal(
+            413,
+            "too-large",
+            &format!("request body exceeds {max} bytes"),
+        )
+    };
+
+    if req.body_length().is_some_and(|n| n as u64 > max) {
+        eprintln!("{method} {full} -> 413");
+        let _ = req.respond(too_large());
+        return;
+    }
+    let body = match read_body(req.as_reader(), max, timeout) {
+        Ok(b) => b,
+        Err(BodyError::TooLarge) => {
+            eprintln!("{method} {full} -> 413");
+            let _ = req.respond(too_large());
+            return;
+        }
+        Err(BodyError::Timeout) => {
+            eprintln!("{method} {full} -> 408");
+            let _ = req.respond(front_refusal(
+                408,
+                "timeout",
+                &format!("request not received within {} seconds", timeout.as_secs()),
+            ));
+            return;
+        }
+        Err(BodyError::Io(e)) => {
+            eprintln!("{method} {full} -> 400: {e}");
+            let _ = req.respond(front_refusal(
+                400,
+                "error",
+                "the request body could not be read",
+            ));
+            return;
+        }
+    };
+    // The Authorization header is passed through but never logged.
+    let auth = req
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("Authorization"))
+        .map(|h| h.value.as_str().to_string());
+    let resp = service.handle(&serve::http::Request::new(
+        &method,
+        &full,
+        auth.as_deref(),
+        &body,
+    ));
+    eprintln!(
+        "{method} {full} -> {} ({} bytes)",
+        resp.status,
+        resp.body.len()
+    );
+    let mut out = tiny_http::Response::from_data(resp.body)
+        .with_status_code(resp.status)
+        .with_header(
+            tiny_http::Header::from_bytes("Content-Type", resp.content_type)
+                .expect("static header"),
+        );
+    if resp.www_authenticate {
+        out = out.with_header(
+            tiny_http::Header::from_bytes("WWW-Authenticate", "Bearer").expect("static header"),
+        );
+    }
+    let _ = req.respond(out);
+}
+
+/// Releases one active-request slot when dropped, panic or not.
+struct ActiveSlot<'a>(&'a std::sync::atomic::AtomicUsize);
+
+impl Drop for ActiveSlot<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 /// Run the reference HTTP server until the process is killed.
 ///
-/// Requests are served one at a time: the core handlers take the repository
-/// write lock themselves, and a reference server has no need for more. The only
+/// Known limit: tiny_http reads and discards the unread remainder of a request
+/// body when it drops the request, even after a 413, allocating a buffer of
+/// the declared Content-Length. A panic from that (an absurd length) is caught
+/// per request, but a merely huge length can make the allocator abort the
+/// process, and tiny_http offers no way to answer without the drain. The
+/// reverse proxy's `client_max_body_size` (or equivalent) is therefore
+/// required, not optional, when this server faces untrusted clients.
+///
+/// A front end over the core `Service`: it owns the socket, the connection
+/// pool, and the body size and time limits; routing, authorization and
+/// read-only are the service's. Policy: with tokens (a `--token-file` or
+/// `VELO_SERVE_TOKEN`) every request needs a valid one; with none, fetch is
+/// anonymous and push is refused unless `--allow-anonymous-push`. The only
 /// thing written to stdout is the single `listening on` line, so a caller can
 /// read it to learn the port chosen for `--listen ...:0`.
-fn serve_http(path: &str, listen: &str) -> Result<()> {
+fn serve_http(o: ServeHttpOptions<'_>) -> Result<()> {
     use std::io::Write;
-    use tiny_http::{Header, Method, Response, Server};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
 
-    let root = Path::new(path);
-    // Fail at start-up, not on the first request, if this is not a repository.
-    serve::http::refs(root)?;
+    let root = Path::new(o.path);
+    if !o.directory {
+        // Fail at start-up, not on the first request, if this is not a repository.
+        serve::http::refs(root)?;
+    } else if !root.is_dir() {
+        return Err(VeloError::invalid(format!(
+            "'{}' is not a directory",
+            o.path
+        )));
+    }
+
+    let mut tokens = match o.token_file {
+        Some(f) => parse_token_file(f)?,
+        None => serve::http::Tokens::new(),
+    };
+    let mut have_tokens = o.token_file.is_some();
+    if let Ok(t) = std::env::var("VELO_SERVE_TOKEN") {
+        if !t.is_empty() {
+            tokens = tokens.write(t);
+            have_tokens = true;
+        }
+    }
+    let (policy, described) = if have_tokens {
+        (
+            ServePolicy::Tokens(tokens),
+            "a bearer token is required for every request",
+        )
+    } else if o.read_only || o.allow_anonymous_push {
+        (
+            ServePolicy::Open,
+            if o.read_only {
+                "anonymous fetch; push refused (read-only)"
+            } else {
+                "anonymous fetch and anonymous push (no authentication)"
+            },
+        )
+    } else {
+        (
+            ServePolicy::AnonymousRead,
+            "anonymous fetch; push refused (set VELO_SERVE_TOKEN or pass --token-file to enable it)",
+        )
+    };
+    let mut described = described.to_string();
+    if have_tokens && o.read_only {
+        described.push_str("; read-only, pushes are refused");
+    }
+    eprintln!("velo serve-http: {described}");
+
+    let limits = velo_core::Limits::default().with_max_pack_bytes(o.max_request_bytes);
+    let base = if o.directory {
+        serve::http::Service::directory(root)
+    } else {
+        serve::http::Service::single(root)
+    };
+    let service = Arc::new(
+        base.authorize_with(policy)
+            .read_only(o.read_only)
+            .limits(limits),
+    );
 
     let io_err = |e: Box<dyn std::error::Error + Send + Sync>| {
         VeloError::Io(std::io::Error::other(e.to_string()))
     };
-    let server = Server::http(listen).map_err(io_err)?;
+    let server = Arc::new(tiny_http::Server::http(o.listen).map_err(io_err)?);
     let addr = server
         .server_addr()
         .to_ip()
@@ -1957,62 +2643,47 @@ fn serve_http(path: &str, listen: &str) -> Result<()> {
         out.flush().map_err(VeloError::Io)?;
     }
 
-    let text = |s: &str| Header::from_bytes("Content-Type", s).expect("static header");
-    for mut req in server.incoming_requests() {
-        let method = req.method().clone();
-        let full = req.url().to_string();
-        let route = full.split('?').next().unwrap_or("").to_string();
-
-        let (want, endpoint) = if route.ends_with("/velo/v1/refs") {
-            (Method::Get, 0)
-        } else if route.ends_with("/velo/v1/upload") {
-            (Method::Post, 1)
-        } else if route.ends_with("/velo/v1/receive") {
-            (Method::Post, 2)
-        } else {
-            eprintln!("{method} {full} -> 404");
-            let _ = req.respond(
-                Response::from_string("not found\n")
-                    .with_status_code(404)
-                    .with_header(text("text/plain")),
-            );
-            continue;
-        };
-        if method != want {
-            eprintln!("{method} {full} -> 405");
-            let _ = req.respond(
-                Response::from_string("method not allowed\n")
-                    .with_status_code(405)
-                    .with_header(text("text/plain")),
-            );
-            continue;
-        }
-
-        let mut body = Vec::new();
-        let result = match req.as_reader().read_to_end(&mut body) {
-            Err(e) => Err(VeloError::Io(e)),
-            Ok(_) => match endpoint {
-                0 => serve::http::refs(root),
-                1 => serve::http::upload(root, &body),
-                _ => serve::http::receive(root, &body),
-            },
-        };
-        match result {
-            Ok(bytes) => {
-                eprintln!("{method} {full} -> 200 ({} bytes)", bytes.len());
-                let _ = req.respond(
-                    Response::from_data(bytes).with_header(text("application/octet-stream")),
-                );
+    // `max_connections` workers serve requests; one extra thread exists only
+    // to answer 503 when they are all busy, since tiny_http would otherwise
+    // queue the request past its timeout.
+    let max_conn = o.max_connections.max(1);
+    let active = Arc::new(AtomicUsize::new(0));
+    let limits = (
+        o.max_request_bytes,
+        std::time::Duration::from_secs(o.request_timeout),
+    );
+    let mut threads = Vec::new();
+    for _ in 0..=max_conn {
+        let (server, service, active) = (server.clone(), service.clone(), active.clone());
+        threads.push(std::thread::spawn(move || {
+            while let Ok(req) = server.recv() {
+                if active.fetch_add(1, Ordering::SeqCst) >= max_conn {
+                    active.fetch_sub(1, Ordering::SeqCst);
+                    eprintln!("{} {} -> 503", req.method(), req.url());
+                    // Dropping a Request drains its unread body in tiny_http,
+                    // which blocks on a stalled client. Do that off this
+                    // thread so it goes straight back to `recv()`.
+                    std::thread::spawn(move || {
+                        let _ = req.respond(front_refusal(
+                            503,
+                            "busy",
+                            "all connections are in use; retry shortly",
+                        ));
+                    });
+                    continue;
+                }
+                // The guard frees the slot even if the request panics, and
+                // catch_unwind keeps the worker alive: tiny_http's drain of an
+                // oversized body can panic (capacity overflow) on drop.
+                let _slot = ActiveSlot(&active);
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    serve_one(req, &service, limits);
+                }));
             }
-            Err(e) => {
-                eprintln!("{method} {full} -> 500: {e}");
-                let _ = req.respond(
-                    Response::from_string(e.to_string())
-                        .with_status_code(500)
-                        .with_header(text("text/plain")),
-                );
-            }
-        }
+        }));
+    }
+    for t in threads {
+        let _ = t.join();
     }
     Ok(())
 }
@@ -2029,7 +2700,7 @@ fn run(cli: Cli) -> Result<Exit> {
             return Ok(Exit::Success);
         }
         Commands::Clone { url, dir } => {
-            let cloned = commands::sync::clone(
+            let cloned = commands::sync::clone_with_token(
                 url,
                 &spawn_config()?,
                 commands::sync::CloneOptions {
@@ -2039,14 +2710,40 @@ fn run(cli: Cli) -> Result<Exit> {
                     // is for an embedder whose user closes a window instead.
                     ..Default::default()
                 },
+                token_for("origin").as_deref(),
             )?;
             render::sync::print_cloned(&cloned);
             return Ok(Exit::Success);
         }
+        Commands::Keygen { out } => {
+            keygen(out)?;
+            return Ok(Exit::Success);
+        }
         Commands::ServeUpload { path } => return serve::upload(path).map(|()| Exit::Success),
         Commands::ServeReceive { path } => return serve::receive(path).map(|()| Exit::Success),
-        Commands::ServeHttp { path, listen } => {
-            return serve_http(path, listen).map(|()| Exit::Success)
+        Commands::ServeHttp {
+            path,
+            listen,
+            directory,
+            token_file,
+            read_only,
+            allow_anonymous_push,
+            max_request_bytes,
+            request_timeout,
+            max_connections,
+        } => {
+            return serve_http(ServeHttpOptions {
+                path,
+                listen,
+                directory: *directory,
+                token_file: token_file.as_deref(),
+                read_only: *read_only,
+                allow_anonymous_push: *allow_anonymous_push,
+                max_request_bytes: *max_request_bytes,
+                request_timeout: *request_timeout,
+                max_connections: *max_connections,
+            })
+            .map(|()| Exit::Success)
         }
         _ => {}
     }
@@ -2070,6 +2767,17 @@ fn run(cli: Cli) -> Result<Exit> {
                 .with("*.yml", velo_merge::YamlDriver)?
                 .with("*.toml", velo_merge::TomlDriver)?,
         );
+    // Bearer tokens for HTTP remotes come from the environment, looked up by
+    // the remote's name. The provider is handed a URL, so map URLs to names once.
+    let remote_names: Vec<(String, String)> = commands::remote::list(&repo)
+        .map(|l| l.into_iter().map(|r| (r.url, r.name)).collect())
+        .unwrap_or_default();
+    let repo = repo.credentials(move |url| {
+        remote_names
+            .iter()
+            .find(|(u, _)| u == url)
+            .and_then(|(_, name)| token_for(name))
+    });
 
     // Serialise mutating commands against other velo processes. Read-only
     // commands skip the lock so they never block on a long-running mutation.
@@ -2093,6 +2801,7 @@ fn run(cli: Cli) -> Result<Exit> {
     match cli.command {
         Commands::Init
         | Commands::Clone { .. }
+        | Commands::Keygen { .. }
         | Commands::ServeUpload { .. }
         | Commands::ServeReceive { .. }
         | Commands::ServeHttp { .. } => unreachable!(),
@@ -2206,7 +2915,8 @@ fn run(cli: Cli) -> Result<Exit> {
                     limit: Some(limit),
                 },
             )?;
-            render::history::print(&history, view);
+            let signed = velo_core::sign::signed_snapshots(&repo)?;
+            render::history::print(&history, view, &signed);
         }
 
         Commands::Mv { from, to } => {
@@ -2237,7 +2947,28 @@ fn run(cli: Cli) -> Result<Exit> {
         Commands::Show { target, paths } => {
             let id = commands::resolve_snapshot_id(&repo, &target)?;
             let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
-            render::diff::print_snapshot(&commands::show::run(&repo, &id, &paths)?);
+            let signed = velo_core::sign::signed_snapshots(&repo)?;
+            render::diff::print_snapshot(
+                &commands::show::run(&repo, &id, &paths)?,
+                signed.contains(&id),
+            );
+        }
+
+        Commands::Sign { snapshot, key } => {
+            let id = resolve_or_current(&repo, &root, snapshot.as_deref())?;
+            let key = read_signing_key(&key)?;
+            let sig = velo_core::sign::sign(write(), &id, &key)?;
+            render::sign::print_signed(&id, &sig.public_key);
+        }
+
+        Commands::Verify { snapshot, trust } => {
+            let id = resolve_or_current(&repo, &root, snapshot.as_deref())?;
+            let policy = read_trust_file(&trust)?;
+            let verification = velo_core::sign::verify(&repo, &id, &policy)?;
+            render::sign::print_verification(&verification);
+            if !verification.is_trusted() {
+                exit = Exit::Untrusted;
+            }
         }
 
         Commands::CherryPick { target } => {
@@ -2250,7 +2981,52 @@ fn run(cli: Cli) -> Result<Exit> {
             }
         }
 
-        Commands::Switch { name, force } => {
+        Commands::Switch {
+            name,
+            force,
+            create,
+        } => {
+            let existing: Vec<String> = commands::branches::list(&repo)?
+                .iter()
+                .map(|b| b.name.as_str().to_string())
+                .collect();
+            let exists = existing.contains(&name);
+            if create && exists {
+                return Err(VeloError::invalid(format!(
+                    "branch '{name}' already exists; switch to it with: velo switch {name}"
+                )));
+            }
+            let mut name = name;
+            if !create && !exists {
+                if let Some(close) = near_miss(&name, &existing) {
+                    use std::io::IsTerminal;
+                    let close = close.to_string();
+                    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
+                        print!(
+                            "No branch '{name}'. Did you mean '{close}'? \
+                             [y = switch to {close} / c = create {name} / N = cancel] "
+                        );
+                        let _ = std::io::Write::flush(&mut std::io::stdout());
+                        let mut answer = String::new();
+                        let _ = std::io::stdin().read_line(&mut answer);
+                        match answer.trim().to_lowercase().as_str() {
+                            "y" => name = close,
+                            "c" => {}
+                            _ => {
+                                println!("Cancelled.");
+                                return Ok(Exit::Success);
+                            }
+                        }
+                    } else {
+                        eprintln!(
+                            "{} no branch '{name}'; did you mean '{close}'? \
+                             To create it: velo switch --create {name}",
+                            console::style("error:").red().bold()
+                        );
+                        return Ok(Exit::Usage);
+                    }
+                }
+            }
             render::switch::print(&commands::switch::run(write(), &name, force)?);
         }
 
@@ -2601,6 +3377,21 @@ fn run(cli: Cli) -> Result<Exit> {
                     }
                     return Err(e);
                 }
+            }
+        }
+        Commands::Sync { remote, branch } => {
+            let author = author::from_env()?;
+            let synced =
+                commands::sync::sync(write(), &remote, branch.as_deref(), &spawn_config()?, {
+                    let options = commands::sync::SyncOptions::default();
+                    match author.as_ref() {
+                        Some(a) => options.author(a),
+                        None => options,
+                    }
+                })?;
+            render::sync::print_synced(&synced);
+            if matches!(synced, commands::sync::Synced::Conflicted { .. }) {
+                exit = Exit::Conflicts;
             }
         }
         Commands::Pull { remote } => {

@@ -1,0 +1,81 @@
+name: Reproducible build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  reproducible:
+    name: Two builds, one hash
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: build-a
+      - uses: actions/checkout@v4
+        with:
+          path: build-b
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y musl-tools
+
+      # The same settings release.yml uses. The two checkouts live in different
+      # directories, so --remap-path-prefix is what makes the paths embedded in
+      # the binary identical.
+      - name: Build twice
+        shell: bash
+        run: |
+          set -eu
+          export CC=musl-gcc
+          export CARGO_INCREMENTAL=0
+          for d in build-a build-b; do
+            ( cd "$d"
+              export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+              export RUSTFLAGS="--remap-path-prefix=$PWD=/build --remap-path-prefix=$HOME/.cargo=/cargo"
+              cargo build -p velo-cli --release --locked --target x86_64-unknown-linux-musl )
+          done
+          mkdir -p out
+          cp build-a/target/x86_64-unknown-linux-musl/release/velo out/velo-a
+          cp build-b/target/x86_64-unknown-linux-musl/release/velo out/velo-b
+
+      - name: Compare hashes
+        id: compare
+        shell: bash
+        run: |
+          sha256sum out/velo-a out/velo-b
+          A=$(sha256sum out/velo-a | cut -d' ' -f1)
+          B=$(sha256sum out/velo-b | cut -d' ' -f1)
+          if [ "$A" = "$B" ]; then
+            echo "Reproducible: $A"
+          else
+            echo "::error::the two builds differ"
+            echo "differs=true" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+      - name: Install diffoscope
+        if: failure() && steps.compare.outputs.differs == 'true'
+        run: sudo apt-get install -y diffoscope-minimal
+
+      - name: Run diffoscope
+        if: failure() && steps.compare.outputs.differs == 'true'
+        run: diffoscope --html out/diffoscope.html --text out/diffoscope.txt out/velo-a out/velo-b || true
+
+      - name: Upload diffoscope report
+        if: failure() && steps.compare.outputs.differs == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: diffoscope-report
+          path: out/diffoscope.*

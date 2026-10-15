@@ -1,0 +1,167 @@
+# Packaging, without publishing.
+#
+# This workflow builds what a PyPI and an npm upload would send (abi3 wheels
+# and a Node tarball carrying the native addon), keeps them as workflow
+# artifacts, installs each into a clean environment that has no Rust
+# toolchain, and runs the cookbook scripts against the installed package.
+# That install test catches the bug that only shows when no toolchain is
+# present, such as a file missing from the package.
+#
+# Nothing is uploaded to a registry: there is no publish, twine upload,
+# npm publish or release-asset step anywhere in this file.
+name: Packages
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  wheels:
+    name: Wheel build · ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest, manylinux: auto }
+          - { name: macos, os: macos-latest, manylinux: "off" }
+          - { name: windows, os: windows-latest, manylinux: "off" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the abi3 wheel
+        uses: PyO3/maturin-action@v1
+        with:
+          working-directory: bindings/python
+          command: build
+          args: --release --out dist
+          manylinux: ${{ matrix.manylinux }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+
+  wheel-install:
+    name: Wheel install · ${{ matrix.name }} · py${{ matrix.python }}
+    needs: wheels
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        name: [linux, macos, windows]
+        python: ["3.9", "3.12"]
+        include:
+          - { name: linux, os: ubuntu-latest }
+          - { name: macos, os: macos-latest }
+          - { name: windows, os: windows-latest }
+    steps:
+      # The checkout is only for the example scripts. There is deliberately no
+      # Rust toolchain step in this job.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: wheelhouse
+      - name: Assert no cargo is used
+        if: matrix.name == 'linux'
+        shell: bash
+        run: |
+          # Hide any preinstalled toolchain so a build-from-source fallback
+          # would fail instead of quietly succeeding.
+          sudo rm -f /usr/local/bin/cargo /usr/local/bin/rustc
+          rm -rf "$HOME/.cargo/bin"
+          if command -v cargo; then echo "cargo is still on PATH"; exit 1; fi
+      - name: Install into a fresh venv and run the cookbook scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+          src="$GITHUB_WORKSPACE/bindings/python/examples"
+          wheel=$(ls "$GITHUB_WORKSPACE"/wheelhouse/*.whl)
+          work=$(mktemp -d)
+          cd "$work"   # outside the checkout, so the source tree cannot shadow the package
+          python -m venv venv
+          if [ -d venv/Scripts ]; then py=venv/Scripts/python; else py=venv/bin/python; fi
+          "$py" -m pip install --only-binary=:all: "$wheel"
+          for script in agent_checkpointing config_registry document_editor; do
+            echo "::group::$script"
+            "$py" "$src/$script.py"
+            echo "::endgroup::"
+          done
+
+  node-prebuilds:
+    name: Node prebuild · ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest }
+          - { name: macos, os: macos-latest }
+          - { name: windows, os: windows-latest }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build the addon and pack the tarball
+        working-directory: bindings/node
+        shell: bash
+        run: |
+          npm install
+          npx napi build --platform --release
+          npm pack
+          tar -tzf velo-core-*.tgz > tarball.txt
+          cat tarball.txt
+          grep -q '\.node$' tarball.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: node-${{ matrix.name }}
+          path: bindings/node/*.tgz
+          if-no-files-found: error
+
+  node-install:
+    name: Node install · ${{ matrix.name }}
+    needs: node-prebuilds
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest }
+          - { name: macos, os: macos-latest }
+          - { name: windows, os: windows-latest }
+    steps:
+      # The checkout is only for the example script. No Rust toolchain here.
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: node-${{ matrix.name }}
+          path: tarballs
+      - name: Install into an empty directory and run the cookbook script
+        shell: bash
+        run: |
+          set -euo pipefail
+          tgz=$(ls "$GITHUB_WORKSPACE"/tarballs/*.tgz)
+          work=$(mktemp -d)
+          cd "$work"
+          npm init -y
+          npm install "$tgz"
+          # Copy the script in so `@velo/core` resolves from this directory.
+          cp "$GITHUB_WORKSPACE/bindings/node/examples/config_registry.mjs" .
+          node config_registry.mjs

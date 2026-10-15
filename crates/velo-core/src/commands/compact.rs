@@ -95,6 +95,8 @@ pub enum Protected {
     Published,
     /// `.velo/PARENT` names it.
     CheckedOut,
+    /// It carries a signature, which a squash or re-mint would invalidate.
+    Signed,
 }
 
 impl fmt::Display for Protected {
@@ -105,6 +107,7 @@ impl fmt::Display for Protected {
             Protected::ParentOfOutside => "the parent of a snapshot outside the rewrite",
             Protected::Published => "reachable from a remote-tracking ref",
             Protected::CheckedOut => "the checked-out snapshot",
+            Protected::Signed => "signed",
         })
     }
 }
@@ -123,7 +126,15 @@ pub(crate) fn published(conn: &rusqlite::Connection) -> Result<HashSet<String>> 
     Ok(set)
 }
 
-/// The context-free reasons, given the published set.
+/// Every snapshot that carries a signature row; empty when the table is absent.
+pub(crate) fn signed(repo: &crate::Repo) -> Result<HashSet<String>> {
+    Ok(crate::sign::signed_snapshots(repo)?
+        .into_iter()
+        .map(|id| id.into_string())
+        .collect())
+}
+
+/// The context-free reasons, given the published and signed sets.
 ///
 /// `ParentOfOutside` is not here: it depends on which snapshots are being
 /// rewritten, so it is judged by [`outside_dependant`] against a rewrite set.
@@ -131,6 +142,7 @@ pub(crate) fn protection_in(
     conn: &rusqlite::Connection,
     checked_out: &str,
     published: &HashSet<String>,
+    signed: &HashSet<String>,
     id: &str,
 ) -> Option<Protected> {
     let exists = |sql: &str| -> bool {
@@ -147,7 +159,10 @@ pub(crate) fn protection_in(
         return Some(Protected::Published);
     }
     // D7: signed snapshots are never squashed or re-minted, because re-minting
-    // invalidates the signature. Signatures do not exist yet; the check goes here.
+    // invalidates the signature.
+    if signed.contains(id) {
+        return Some(Protected::Signed);
+    }
     if !checked_out.is_empty() && checked_out == id {
         return Some(Protected::CheckedOut);
     }
@@ -172,7 +187,8 @@ pub(crate) fn protection(
     id: &str,
 ) -> Option<Protected> {
     let published = published(conn).ok()?;
-    protection_in(conn, &checked_out(repo), &published, id)
+    let signed = signed(repo).ok()?;
+    protection_in(conn, &checked_out(repo), &published, &signed, id)
 }
 
 /// A snapshot outside `rewrite` that has one inside it as a parent or merge
@@ -414,6 +430,7 @@ pub fn run(
     let rewrite: HashSet<String> = chain[start..].iter().map(|m| m.hash.clone()).collect();
     let published = published(conn)?;
     let checked_out = checked_out(guard.repo());
+    let signed = signed(guard.repo())?;
     let refuse = |id: &str, why: Protected| {
         Error::invalid(format!(
             "Cannot compact: snapshot {} is {}.",
@@ -424,7 +441,7 @@ pub fn run(
 
     for &(lo, hi) in &spans {
         for (i, m) in chain.iter().enumerate().take(hi + 1).skip(lo) {
-            match protection_in(conn, &checked_out, &published, &m.hash) {
+            match protection_in(conn, &checked_out, &published, &signed, &m.hash) {
                 // The checked-out snapshot may be the newest of a range: it
                 // becomes the squashed snapshot, with the same tree.
                 Some(Protected::CheckedOut) if i == hi => {}
@@ -436,6 +453,15 @@ pub fn run(
     for m in &chain[start..] {
         if published.contains(&m.hash) {
             return Err(refuse(&m.hash, Protected::Published));
+        }
+        // A signed descendant would be re-minted under a new id, which its
+        // signature cannot survive.
+        if signed.contains(&m.hash) {
+            return Err(Error::invalid(format!(
+                "Cannot compact: snapshot {} is signed and would be re-minted; \
+                 signatures cannot survive a rewrite.",
+                &m.hash[..16.min(m.hash.len())]
+            )));
         }
     }
     if let Some((inside, _outside)) = outside_dependant(conn, &rewrite)? {
@@ -586,11 +612,14 @@ pub fn run(
             params![old, new, now],
         )?;
     }
+    crate::failpoint::hit("compact.before_commit");
     tx.commit()?;
+    crate::failpoint::hit("compact.after_commit");
 
     // The tree is identical, so pointing PARENT at the new id keeps the working
     // tree consistent with it.
     if let (Some(new), true) = (mapping.get(&checked_out), guard.repo().has_working_tree()) {
+        crate::failpoint::hit("compact.before_parent");
         crate::storage::write_atomic(&root.join(".velo/PARENT"), new.as_bytes())?;
     }
 

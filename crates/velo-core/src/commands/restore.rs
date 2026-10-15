@@ -200,11 +200,33 @@ pub(crate) fn run_with(
             .collect()
     };
 
-    let ghosts_removed = if partial {
-        0
+    let ghosts = if partial {
+        Vec::new()
     } else {
-        remove_ghosts(root, conn, &snapshot_files, &walked)?
+        ghost_paths(root, conn, &snapshot_files, &walked)?
     };
+
+    // The whole target is validated before the first ghost is removed or file
+    // written: a refusal leaves the working tree exactly as it was.
+    {
+        let objects = guard.repo().objects();
+        // A ghost that is a symlink is gone by the time its directory is
+        // written, so it must not make the paths below it unsafe.
+        let ghosts = &ghosts;
+        let replaced: HashSet<String> = ghosts.iter().cloned().collect();
+        crate::safe_path::validate_write_set_replacing(
+            root,
+            snapshot_files.iter().map(|(p, _, _)| p.as_str()),
+            to_write
+                .iter()
+                .map(|(p, h, m)| (p.as_str(), h.as_str(), *m)),
+            |h| objects.get(h),
+            &replaced,
+        )?;
+    }
+
+    crate::failpoint::hit("restore.before_write");
+    let ghosts_removed = remove_ghosts(root, &ghosts);
 
     {
         let progress = PhaseGuard::new(
@@ -233,7 +255,9 @@ pub(crate) fn run_with(
     // A whole-tree rewrite lands a tree that no pending move describes, so the
     // moves are forgotten rather than attached to whatever gets saved next.
     crate::commands::mv::discard_pending(guard.conn())?;
+    crate::failpoint::hit("restore.before_parent");
     storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
+    crate::failpoint::hit("restore.after_parent");
     let message: String = conn
         .query_row(
             "SELECT message FROM snapshots WHERE hash = ?",
@@ -267,18 +291,18 @@ fn mode_matches(on_disk: i64, target: i64) -> bool {
         && matches!(target, storage::MODE_REGULAR | storage::MODE_EXEC)
 }
 
-/// Delete files the snapshot we're leaving tracked but the target doesn't have.
+/// The files the snapshot we're leaving tracked and the target doesn't have.
 ///
 /// Only *tracked* files qualify. Anything on disk belonging to neither snapshot
 /// is untracked: it exists in no object, so removing it would be unrecoverable.
 /// Git's `--force` discards tracked modifications and never touches untracked
 /// files; Velo matches that.
-fn remove_ghosts(
+fn ghost_paths(
     root: &Path,
     conn: &rusqlite::Connection,
     target: &[(String, String, i64)],
     walked: &HashMap<String, i64>,
-) -> Result<usize> {
+) -> Result<Vec<String>> {
     let source_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let target_set: HashSet<&str> = target.iter().map(|(p, _, _)| p.as_str()).collect();
     // The candidates come from the database (tracked at the left tree, absent
@@ -287,17 +311,23 @@ fn remove_ghosts(
     // tracked-file walk this replaces did, so an ignored or untracked file is
     // still never a ghost, and no second directory walk is paid for.
     let mut stmt = conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
-    let ghosts: Vec<PathBuf> = stmt
+    let ghosts: Vec<String> = stmt
         .query_map([source_hash.trim()], |r| r.get::<_, String>(0))?
         .filter_map(|r| r.ok())
         .filter(|rel| walked.contains_key(rel) && !target_set.contains(rel.as_str()))
-        .map(|rel| root.join(crate::db::db_to_path(&rel)))
         .collect();
-    drop(stmt);
+    Ok(ghosts)
+}
 
+/// Delete the ghosts found by [`ghost_paths`] and any directory they leave empty.
+fn remove_ghosts(root: &Path, ghosts: &[String]) -> usize {
     if ghosts.is_empty() {
-        return Ok(0);
+        return 0;
     }
+    let ghosts: Vec<PathBuf> = ghosts
+        .iter()
+        .map(|rel| root.join(crate::db::db_to_path(rel)))
+        .collect();
     let parents: Vec<PathBuf> = ghosts
         .iter()
         .filter_map(|p| p.parent().map(Path::to_path_buf))
@@ -308,7 +338,7 @@ fn remove_ghosts(
     for dir in parents {
         remove_empty_parents(&dir, root);
     }
-    Ok(ghosts.len())
+    ghosts.len()
 }
 
 /// One restored file's `index_cache` row: path, mtime (ns), size, hash.
@@ -334,6 +364,9 @@ fn write_files(
     progress: &PhaseGuard<'_>,
     cancel: Option<&Cancel>,
 ) -> Result<()> {
+    // Only the first file to land reports the crash point; the workers race, so
+    // "first" means first in time, not first in the list.
+    let first_written = std::sync::atomic::AtomicBool::new(false);
     let results: Vec<std::result::Result<CacheRow, String>> = objects.par_with_content(
         files,
         |(_, hash, _)| hash.as_str(),
@@ -345,7 +378,12 @@ fn write_files(
             if cancel.is_some_and(Cancel::is_cancelled) {
                 return None;
             }
-            let full_path = root.join(crate::db::db_to_path(rel_path));
+            // Validated as a set before the first write; joined again through
+            // the checked path in case the directory changed in between.
+            let full_path = match crate::safe_path::join_checked(root, rel_path) {
+                Ok(p) => p,
+                Err(e) => return Some(Err(e.to_string())),
+            };
             if let Some(parent) = full_path.parent() {
                 if let Err(e) = fs::create_dir_all(parent) {
                     return Some(Err(format!("mkdir '{}': {}", rel_path, e)));
@@ -354,6 +392,9 @@ fn write_files(
             match content {
                 Ok(data) => match storage::apply_file(&full_path, *mode, &data) {
                     Ok(_) => {
+                        if !first_written.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                            crate::failpoint::hit("restore.after_first_file");
+                        }
                         // A file that cannot be stat-ed is simply not seeded.
                         let meta = fs::symlink_metadata(&full_path).ok()?;
                         let mtime_ns = meta

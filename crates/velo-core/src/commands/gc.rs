@@ -49,14 +49,16 @@ impl Collected {
 
 /// How to run a collection pass.
 ///
-/// The last of the four commands [7.6](../../../ARCHITECTURE.md) named to get
+/// The last of the four commands design item 7.6 named to get
 /// per-call progress. `gc` is the longest purely local operation velo has, and
 /// it reported through the handle observer only — so a GUI running a collection
 /// alongside anything else could not tell the two apart, and could not stop
 /// either.
 #[derive(Default)]
 pub struct Options<'a> {
-    /// Trash newer than this survives.
+    /// Trash newer than this survives. Trash whose snapshot is signed survives
+    /// regardless, and `gc` never deletes a signature row, so an undone signed
+    /// snapshot stays recoverable by `redo`.
     pub keep_days: u32,
     /// Where to report progress, overriding the repository's own observer.
     pub observer: Option<&'a dyn Observer>,
@@ -111,10 +113,20 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
     let cutoff_ms = crate::commands::snapshot_timestamp_ms() - i64::from(keep_days) * 86_400_000;
     // Rows a live snapshot still builds on are kept: they are the only copy of
     // a parent that an older `undo` removed, and `velo redo` restores it.
+    // A signed snapshot's trash entry is kept too: expiring it would make an
+    // undone signed snapshot unrecoverable. The table may not exist yet.
+    let keep_signed = if crate::sign::table_exists(&conn)? {
+        " AND hash NOT IN (SELECT snapshot_hash FROM signatures)"
+    } else {
+        ""
+    };
     collected.expired_trash = conn.execute(
-        "DELETE FROM trash WHERE deleted_at_ms <= ?
-           AND hash NOT IN (SELECT parent_hash FROM snapshots
-                UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> '')",
+        &format!(
+            "DELETE FROM trash WHERE deleted_at_ms <= ?
+               AND hash NOT IN (SELECT parent_hash FROM snapshots
+                    UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> '')
+               {keep_signed}"
+        ),
         [cutoff_ms],
     )?;
 
@@ -185,6 +197,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         drop(conn);
     } else {
         conn.commit()?;
+        crate::failpoint::hit("gc.after_prune");
     }
 
     // No total: the directory is streamed rather than counted first, so a
@@ -211,6 +224,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
             doomed.insert(name);
         } else {
             objects.remove(&name)?;
+            crate::failpoint::hit("gc.after_object");
         }
         collected.objects += 1;
         collected.bytes_freed += size;
@@ -242,6 +256,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
             }
             if !dry_run {
                 objects.remove_chunk(&name)?;
+                crate::failpoint::hit("gc.after_chunk");
             }
             collected.chunks += 1;
             collected.bytes_freed += size;

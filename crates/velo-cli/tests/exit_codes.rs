@@ -72,7 +72,8 @@ fn diverged() -> (TempDir, PathBuf, PathBuf) {
     (root, a, b)
 }
 
-const RECIPE: [&str; 4] = [
+const RECIPE: [&str; 5] = [
+    "velo sync",
     "velo pull",
     "velo merge origin/main",
     "velo save \"Merge origin/main\"",

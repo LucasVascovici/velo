@@ -1,0 +1,23 @@
+{
+  "snapshots": [
+    "f91ed46195146182c22caba37c227830e2c59b1f6354eac7197560533933cbe8",
+    "4d657305bbabf3f10cf452c3234648362844150b7b49c5d01ab94e9710dc48df"
+  ],
+  "signer_public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+  "signed": {
+    "bundle": "signed.v4.bundle",
+    "rows": [
+      "f91ed46195146182c22caba37c227830e2c59b1f6354eac7197560533933cbe8",
+      "4d657305bbabf3f10cf452c3234648362844150b7b49c5d01ab94e9710dc48df"
+    ]
+  },
+  "bad_signature": {
+    "bundle": "bad-signature.v4.bundle",
+    "flipped_row": "4d657305bbabf3f10cf452c3234648362844150b7b49c5d01ab94e9710dc48df"
+  },
+  "unknown_algorithm": {
+    "bundle": "unknown-algorithm.v4.bundle",
+    "algorithm": "test-algo"
+  },
+  "unknown_algorithm_snapshot": "f91ed46195146182c22caba37c227830e2c59b1f6354eac7197560533933cbe8"
+}

@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# cargo-fuzz needs nightly and its own lockfile; it is built only by fuzz.yml.
+exclude = ["fuzz"]
 members = [
     "crates/velo-merge",
     "crates/velo-core",
@@ -15,7 +17,7 @@ members = [
 default-members = ["crates/velo-cli"]
 
 [workspace.package]
-version = "5.1.2"
+version = "5.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/LucasVascovici/velo"
@@ -27,16 +29,18 @@ rust-version = "1.88"
 
 # Single source of truth for dependency versions across the workspace.
 [workspace.dependencies]
-velo-core = { path = "crates/velo-core", version = "5.1.2" }
-velo-merge = { path = "crates/velo-merge", version = "5.1.2" }
-velo-tui = { path = "crates/velo-tui", version = "5.1.2" }
-velo-testkit = { path = "crates/velo-testkit", version = "5.1.2" }
+velo-core = { path = "crates/velo-core", version = "5.2.0" }
+velo-merge = { path = "crates/velo-merge", version = "5.2.0" }
+velo-tui = { path = "crates/velo-tui", version = "5.2.0" }
+velo-testkit = { path = "crates/velo-testkit", version = "5.2.0" }
 
 blake3 = { version = "1.8", features = ["rayon"] }
 chrono = "0.4"
 clap = { version = "4.6", features = ["derive"] }
 console = "0.16"
+ed25519-dalek = { version = "2", default-features = false, features = ["std", "zeroize"] }
 fs2 = "0.4"
+getrandom = "0.4"
 fastcdc = "3"
 globset = "0.4"
 ignore = "0.4"

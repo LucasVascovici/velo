@@ -1,6 +1,21 @@
 import datetime
 import os
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union, final
+
+__all__ = [
+    "Author", "Blame", "BlameLine", "Branch", "Entry", "LineOrigin",
+    "MergePlan", "PlannedFile", "Repo", "Signature", "SigningKey", "SyncResult",
+    "PushReport", "Verification", "Tag", "TreeEntry", "TreeFile", "VeloError",
+    "NotARepo", "AlreadyInitialized", "NestedRepo", "SchemaTooNew",
+    "MigrationRequired", "FormatTooOld", "Cancelled", "Locked",
+    "DirtyWorkingTree", "OperationInProgress", "NoOperationInProgress",
+    "Conflicts", "Diverged", "NotFastForward", "UnbornBranch", "NotFound",
+    "AmbiguousPrefix", "Compacted", "Corrupt", "MissingObject",
+    "UntrustedData", "UnsafePath", "LimitExceeded", "AccessDenied",
+    "WouldOverwriteEdits", "MissingCleanChanges", "SnapshotHasDependents",
+    "RemoteRefAbsent", "InvalidInput", "Unsupported", "VeloIOError",
+    "DatabaseError", "ReentrantCall",
+]
 
 class VeloError(Exception): ...
 class NotARepo(VeloError):
@@ -23,6 +38,16 @@ class Locked(VeloError):
     held_by: Optional[int]
 class DirtyWorkingTree(VeloError):
     paths: List[str]
+class WouldOverwriteEdits(VeloError):
+    paths: List[str]
+class MissingCleanChanges(VeloError):
+    path: str
+    missing: int
+    sample: List[str]
+class SnapshotHasDependents(VeloError):
+    snapshot: str
+    dependents: int
+    branches: List[Tuple[str, int]]
 class OperationInProgress(VeloError):
     what: str
 class NoOperationInProgress(VeloError):
@@ -36,6 +61,10 @@ class Diverged(VeloError):
 class NotFastForward(VeloError):
     branch: str
     remote: str
+class RemoteRefAbsent(VeloError):
+    remote: str
+    branch: str
+    snapshot: str
 class UnbornBranch(VeloError):
     branch: str
 class NotFound(VeloError):
@@ -53,13 +82,25 @@ class MissingObject(VeloError):
     hash: str
 class UntrustedData(VeloError):
     detail: str
+class UnsafePath(VeloError):
+    path: str
+    problem: str
+class LimitExceeded(VeloError):
+    limit: str
+    max: int
+    found: Optional[int]
+class AccessDenied(VeloError):
+    remote: str
+    detail: str
 class InvalidInput(VeloError):
     detail: str
 class Unsupported(VeloError):
     detail: str
 class VeloIOError(VeloError): ...
 class DatabaseError(VeloError): ...
+class ReentrantCall(VeloError): ...
 
+@final
 class TreeEntry:
     path: str
     @staticmethod
@@ -71,16 +112,19 @@ class TreeEntry:
     @staticmethod
     def stored(path: str, object: str, kind: str = "regular") -> TreeEntry: ...
 
+@final
 class TreeFile:
     path: str
     object: str
     kind: str
 
+@final
 class Author:
     name: str
     email: Optional[str]
-    def __init__(self, name: str, email: Optional[str] = None) -> None: ...
+    def __new__(cls, name: str, email: Optional[str] = None) -> Author: ...
 
+@final
 class Entry:
     id: str
     message: str
@@ -92,6 +136,7 @@ class Entry:
     tag: Optional[str]
     is_merge: bool
 
+@final
 class LineOrigin:
     id: str
     created_at: datetime.datetime
@@ -101,17 +146,20 @@ class LineOrigin:
     branch: str
     path: str
 
+@final
 class BlameLine:
     line_no: int
     text: str
     line_count: int
     origin: Optional[LineOrigin]
 
+@final
 class Blame:
     path: str
     snapshot: str
     lines: List[BlameLine]
 
+@final
 class Branch:
     name: str
     is_current: bool
@@ -119,6 +167,7 @@ class Branch:
     tip_message: Optional[str]
     tip_created_at_ms: Optional[int]
 
+@final
 class PlannedFile:
     path: str
     action: str
@@ -129,12 +178,66 @@ class PlannedFile:
     ours: Optional[str]
     theirs: Optional[str]
 
+@final
 class MergePlan:
     base: Optional[str]
     files: List[PlannedFile]
     is_clean: bool
     conflicts: List[PlannedFile]
 
+@final
+class Tag:
+    name: str
+    snapshot: str
+    message: Optional[str]
+
+@final
+class SigningKey:
+    @staticmethod
+    def from_seed(seed: bytes) -> SigningKey: ...
+    @staticmethod
+    def from_hex(text: str) -> SigningKey: ...
+    @property
+    def public_key(self) -> str: ...
+
+@final
+class Signature:
+    snapshot: str
+    algorithm: str
+    public_key: str
+    signature: str
+
+@final
+class Verification:
+    snapshot: str
+    trusted: List[str]
+    untrusted: List[str]
+    invalid: List[str]
+    unverifiable: List[str]
+    @property
+    def is_trusted(self) -> bool: ...
+
+@final
+class PushReport:
+    outcome: str
+    branch: str
+    remote: str
+    snapshots: int
+    objects: int
+    created: Optional[str]
+    also_published: List[str]
+
+@final
+class SyncResult:
+    kind: str
+    branch: str
+    remote: str
+    to: Optional[str]
+    merge: Optional[str]
+    paths: Optional[List[str]]
+    report: Optional[PushReport]
+
+@final
 class Repo:
     @staticmethod
     def init(path: Union[str, os.PathLike]) -> Repo: ...
@@ -196,3 +299,44 @@ class Repo:
     def branches(self) -> List[Branch]: ...
     def create_branch(self, name: str, at: Optional[str] = None) -> None: ...
     def set_branch_tip(self, name: str, to: str) -> None: ...
+    def on_event(
+        self, callback: Callable[[Dict[str, Any]], Any]
+    ) -> Callable[[Dict[str, Any]], Any]: ...
+    def set_merge_driver(
+        self,
+        pattern: str,
+        driver: Union[str, Callable[[str, str, str], Optional[str]]],
+    ) -> None: ...
+    def clear_merge_drivers(self) -> None: ...
+    def retention(
+        self,
+        branch: str,
+        tiers: Optional[List[Tuple[int, int]]] = None,
+        now_ms: Optional[int] = None,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]: ...
+    def compact(
+        self,
+        branch: str,
+        ranges: List[Tuple[str, str]],
+        dry_run: bool = False,
+    ) -> Dict[str, Any]: ...
+    def tags(self) -> List[Tag]: ...
+    def create_tag(
+        self, name: str, at: Optional[str] = None, force: bool = False
+    ) -> str: ...
+    def delete_tag(self, name: str) -> None: ...
+    def fsck(self, repair: bool = False) -> Dict[str, List[Dict[str, str]]]: ...
+    def sign(self, snapshot: str, key: SigningKey) -> Signature: ...
+    def signatures(self, snapshot: str) -> List[Signature]: ...
+    def verify(self, snapshot: str, trusted_keys: List[str]) -> Verification: ...
+    def signed_snapshots(self) -> List[str]: ...
+    def sync(
+        self,
+        remote: str = "origin",
+        branch: Optional[str] = None,
+        token: Optional[str] = None,
+        author: Optional[Author] = None,
+        message: Optional[str] = None,
+        velo_bin: Optional[Union[str, os.PathLike]] = None,
+    ) -> SyncResult: ...

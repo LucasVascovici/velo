@@ -175,6 +175,7 @@ impl Repo {
                 (path, r)
             })
             .collect();
+        let hooks = self.hooks.clone();
         self.job(move |repo| {
             let branch = branch_name(&branch)?;
             let ours = snapshot_id(&ours)?;
@@ -196,6 +197,16 @@ impl Repo {
                 .collect();
             let meta = build_meta(meta)?;
             let author = build_author(author)?;
+            // A driver's conflict that has a resolution would not stop the
+            // commit by itself, so with a JS driver and resolutions the merge
+            // is planned first and a driver failure surfaces before any write.
+            if !resolutions.is_empty() && hooks.has_custom_driver() {
+                hooks.reset_error();
+                let _ = merge::plan(repo, &ours, &theirs);
+                if let Some(e) = hooks.driver_error() {
+                    return Err(e);
+                }
+            }
             let guard = repo.write()?;
             let id = merge::commit(
                 &guard,

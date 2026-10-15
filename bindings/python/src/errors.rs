@@ -23,6 +23,8 @@ macro_rules! exceptions {
         pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
             m.add("VeloError", m.py().get_type::<VeloError>())?;
             $(m.add(stringify!($name), m.py().get_type::<$name>())?;)*
+            m.add("ReentrantCall", m.py().get_type::<ReentrantCall>())?;
+            m.add_function(wrap_pyfunction!(_error_mapping, m)?)?;
             Ok(())
         }
     };
@@ -38,11 +40,15 @@ exceptions!(
     Cancelled,
     Locked,
     DirtyWorkingTree,
+    WouldOverwriteEdits,
+    MissingCleanChanges,
+    SnapshotHasDependents,
     OperationInProgress,
     NoOperationInProgress,
     Conflicts,
     Diverged,
     NotFastForward,
+    RemoteRefAbsent,
     UnbornBranch,
     NotFound,
     AmbiguousPrefix,
@@ -50,11 +56,25 @@ exceptions!(
     Corrupt,
     MissingObject,
     UntrustedData,
+    UnsafePath,
+    LimitExceeded,
+    AccessDenied,
     InvalidInput,
     Unsupported,
     VeloIOError,
     DatabaseError,
 );
+
+create_exception!(
+    _velo,
+    ReentrantCall,
+    VeloError,
+    "A merge driver or event callback called back into the repository while it was busy."
+);
+
+/// The message of every refused re-entrant call.
+pub const REENTRANT: &str =
+    "a merge driver or event callback must not call back into the repository while it is busy";
 
 fn ref_kind(kind: &RefKind) -> &'static str {
     match kind {
@@ -84,6 +104,16 @@ fn paths(paths: &[std::path::PathBuf]) -> Vec<String> {
         .iter()
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
+}
+
+fn limit(l: &velo_core::limits::Limit) -> &'static str {
+    use velo_core::limits::Limit;
+    match l {
+        Limit::ObjectBytes => "object_bytes",
+        Limit::PackBytes => "pack_bytes",
+        Limit::StringBytes => "string_bytes",
+        _ => "unknown",
+    }
 }
 
 fn path(p: &std::path::Path) -> String {
@@ -125,6 +155,26 @@ pub fn to_py(err: Error) -> PyErr {
             Error::DirtyWorkingTree { paths: p } => {
                 raise!(DirtyWorkingTree, "paths" => paths(p))
             }
+            Error::WouldOverwriteEdits { paths: p } => {
+                raise!(WouldOverwriteEdits, "paths" => paths(p))
+            }
+            Error::MissingCleanChanges {
+                path: p,
+                missing,
+                sample,
+            } => raise!(MissingCleanChanges,
+                "path" => path(p), "missing" => *missing, "sample" => sample.clone()),
+            Error::SnapshotHasDependents {
+                snapshot,
+                branches,
+                dependents,
+            } => raise!(SnapshotHasDependents,
+                "snapshot" => snapshot.as_str(),
+                "dependents" => *dependents,
+                "branches" => branches
+                    .iter()
+                    .map(|(b, n)| (b.as_str().to_string(), *n))
+                    .collect::<Vec<_>>()),
             Error::OperationInProgress { what } => {
                 raise!(OperationInProgress, "what" => in_progress(what))
             }
@@ -141,6 +191,13 @@ pub fn to_py(err: Error) -> PyErr {
             Error::NotFastForward { branch, remote } => {
                 raise!(NotFastForward, "branch" => branch.as_str(), "remote" => remote.as_str())
             }
+            Error::RemoteRefAbsent {
+                remote,
+                branch,
+                snapshot,
+            } => raise!(RemoteRefAbsent,
+                "remote" => remote.as_str(), "branch" => branch.as_str(),
+                "snapshot" => snapshot.as_str()),
             Error::UnbornBranch { branch } => raise!(UnbornBranch, "branch" => branch.as_str()),
             Error::NotFound { kind, name } => {
                 raise!(NotFound, "kind" => ref_kind(kind), "name" => name.as_str())
@@ -154,6 +211,19 @@ pub fn to_py(err: Error) -> PyErr {
             Error::Corrupt { detail } => raise!(Corrupt, "detail" => detail.as_str()),
             Error::MissingObject { hash } => raise!(MissingObject, "hash" => hash.as_str()),
             Error::UntrustedData { detail } => raise!(UntrustedData, "detail" => detail.as_str()),
+            Error::UnsafePath { path: p, problem } => {
+                raise!(UnsafePath, "path" => p.as_str(), "problem" => problem.to_string())
+            }
+            Error::LimitExceeded {
+                limit: l,
+                max,
+                found,
+            } => {
+                raise!(LimitExceeded, "limit" => limit(l), "max" => *max, "found" => *found)
+            }
+            Error::AccessDenied { remote, detail } => {
+                raise!(AccessDenied, "remote" => remote.as_str(), "detail" => detail.as_str())
+            }
             Error::InvalidInput { detail } => raise!(InvalidInput, "detail" => detail.as_str()),
             Error::Unsupported { detail } => raise!(Unsupported, "detail" => detail.as_str()),
             Error::Io(_) => raise!(VeloIOError),
@@ -163,4 +233,19 @@ pub fn to_py(err: Error) -> PyErr {
             _ => raise!(VeloError),
         }
     })
+}
+
+/// `(variant name, exception class name)` for one sample of every core error,
+/// converted through [`to_py`]. Hidden: it exists so a test can prove that no
+/// variant falls through to the generic `VeloError`.
+#[pyfunction]
+pub fn _error_mapping(py: Python<'_>) -> PyResult<Vec<(String, String)>> {
+    Error::samples()
+        .into_iter()
+        .map(|e| {
+            let variant = e.variant_name().to_string();
+            let class = to_py(e).get_type(py).name()?.to_string();
+            Ok((variant, class))
+        })
+        .collect()
 }

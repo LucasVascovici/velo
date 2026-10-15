@@ -8,6 +8,8 @@ repository.workspace = true
 homepage.workspace = true
 rust-version.workspace = true
 readme = "README.md"
+# Reads the golden corpus in the workspace's tests/corpus, outside the package.
+exclude = ["tests/corpus.rs"]
 keywords = ["version-control", "vcs", "snapshot", "history", "embeddable"]
 categories = ["development-tools", "filesystem"]
 
@@ -15,6 +17,12 @@ categories = ["development-tools", "filesystem"]
 # `ssh` — the two an embedder is most likely to be looking for.
 [package.metadata.docs.rs]
 all-features = true
+
+# `Bundle.signatures` is `#[doc(hidden)]` but cargo-semver-checks ignores that on
+# a constructible struct. The accepted exception is written up in
+# docs/STABILITY.md; remove this when `Bundle` becomes `#[non_exhaustive]` (6.0).
+[package.metadata.cargo-semver-checks.lints]
+constructible_struct_adds_field = "allow"
 
 [features]
 # Nothing on by default: an embedder should not pay for the CLI's dependencies.
@@ -29,6 +37,11 @@ http = ["dep:ureq"]
 json = ["velo-merge/json"]
 yaml = ["velo-merge/yaml"]
 toml = ["velo-merge/toml"]
+# Test-only crash points (`failpoint::set_handler`); compiled out when off.
+failpoints = []
+# Entry points for the cargo-fuzz targets in `fuzz/`; not a supported API.
+# `tempfile` is a dev-dependency, so the fuzz crate gets it through this feature.
+fuzzing = ["dep:tempfile"]
 
 [dependencies]
 velo-merge.workspace = true
@@ -36,6 +49,7 @@ velo-merge.workspace = true
 blake3.workspace = true
 fastcdc.workspace = true
 chrono.workspace = true
+ed25519-dalek.workspace = true
 globset.workspace = true
 ignore.workspace = true
 parking_lot.workspace = true
@@ -43,11 +57,17 @@ rayon.workspace = true
 regex.workspace = true
 rusqlite.workspace = true
 similar.workspace = true
+tempfile = { workspace = true, optional = true }
 ureq = { workspace = true, optional = true }
 zstd.workspace = true
 
+[[test]]
+name = "crash"
+required-features = ["failpoints"]
+
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true
 tempfile.workspace = true
 
 # File locking and mmap have no wasm equivalent; `RepoLock` is a no-op there and

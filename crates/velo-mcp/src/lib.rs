@@ -3,9 +3,15 @@
 //! [`Server::handle`] takes one JSON-RPC line and returns the response line, if
 //! any. The binary only wires it to stdin and stdout, which keeps the whole
 //! protocol testable in-process.
+#![forbid(unsafe_code)]
 
+pub mod http;
 pub mod protocol;
+mod recovery_tools;
+mod store_tools;
 pub mod tools;
+
+use std::time::Duration;
 
 use serde_json::{json, Value};
 use velo_core::Repo;
@@ -25,13 +31,22 @@ pub struct Server {
     run: String,
     client: Option<String>,
     author: Option<(String, Option<String>)>,
+    /// Set when the repository has no working tree.
+    store_only: bool,
+    lock_wait: Duration,
 }
+
+/// How long a write tool waits for the repository lock unless told otherwise.
+pub const DEFAULT_LOCK_WAIT: Duration = Duration::from_secs(5);
 
 impl Server {
     /// A server for `repo` that stamps writes with `run`.
     pub fn new(repo: Repo, run: String) -> Self {
+        let store_only = !repo.has_working_tree();
         Server {
             repo,
+            store_only,
+            lock_wait: DEFAULT_LOCK_WAIT,
             run,
             client: None,
             author: None,
@@ -42,6 +57,25 @@ impl Server {
     pub fn with_author(mut self, name: String, email: Option<String>) -> Self {
         self.author = Some((name, email));
         self
+    }
+
+    /// Wait up to `wait` for the repository write lock before a write tool
+    /// answers `Locked`. The default is [`DEFAULT_LOCK_WAIT`].
+    pub fn with_lock_wait(mut self, wait: Duration) -> Self {
+        self.lock_wait = wait;
+        self
+    }
+
+    /// Handle one request line on behalf of a session that keeps its own
+    /// client name in `client`. The HTTP transport serves many sessions from
+    /// one `Server`; swapping the name in and out is the smallest change that
+    /// keeps per-session `clientInfo` stamping correct without a second
+    /// repository handle.
+    pub fn handle_as(&mut self, line: &str, client: &mut Option<String>) -> Option<String> {
+        std::mem::swap(&mut self.client, client);
+        let reply = self.handle(line);
+        std::mem::swap(&mut self.client, client);
+        reply
     }
 
     /// Handle one request line. Notifications return `None`.
@@ -72,7 +106,7 @@ impl Server {
                 protocol::result(&id, protocol::initialize_result(requested))
             }
             "ping" => protocol::result(&id, json!({})),
-            "tools/list" => protocol::result(&id, json!({"tools": tools::list()})),
+            "tools/list" => protocol::result(&id, json!({"tools": tools::list(self.store_only)})),
             "tools/call" => self.tools_call(&id, &params),
             other => protocol::error(
                 &id,
@@ -97,6 +131,8 @@ impl Server {
             run: &self.run,
             client,
             author: self.author.as_ref(),
+            store_only: self.store_only,
+            lock_wait: self.lock_wait,
         };
         match tools::call(&ctx, name, args) {
             Ok(result) => {
@@ -107,9 +143,15 @@ impl Server {
                            "structuredContent": result, "isError": false}),
                 )
             }
-            Err(tools::ToolError::Params(msg)) => {
+            Err(tools::ToolError::UnknownTool(msg)) => {
                 protocol::error(id, protocol::INVALID_PARAMS, &msg)
             }
+            Err(tools::ToolError::Params(msg)) => protocol::result(
+                id,
+                json!({"content": [{"type": "text", "text": format!("InvalidParams: {msg}")}],
+                       "structuredContent": {"error": "InvalidParams", "message": msg},
+                       "isError": true}),
+            ),
             Err(tools::ToolError::Velo(e)) => {
                 let variant = tools::variant_name(&e);
                 let mut text = format!("{variant}: {e}");
@@ -136,6 +178,42 @@ impl Server {
                             structured["hint"] = json!(hint);
                         }
                         structured["paths"] = json!(paths);
+                    }
+                    velo_core::Error::Locked { held_by, holder } => {
+                        // The text is all many clients show the model, so who
+                        // holds the lock and since when must be in it.
+                        let pid = holder.as_ref().map(|h| h.pid).or(*held_by);
+                        let mut who = json!({"pid": pid});
+                        if let Some(h) = holder {
+                            who["command"] = json!(h.command);
+                            who["started_at_ms"] = json!(h.started_at_ms);
+                            if let Some(t) =
+                                chrono::DateTime::from_timestamp_millis(h.started_at_ms)
+                            {
+                                who["started_at"] = json!(t.to_rfc3339());
+                            }
+                        }
+                        let mut hint = String::from("Held by");
+                        match pid {
+                            Some(p) => hint.push_str(&format!(" pid {p}")),
+                            None => hint.push_str(" an unknown process"),
+                        }
+                        if let Some(c) = who["command"].as_str() {
+                            hint.push_str(&format!(", command '{c}'"));
+                        }
+                        if let Some(t) = who["started_at"].as_str() {
+                            hint.push_str(&format!(", since {t}"));
+                        }
+                        hint.push_str(&format!(
+                            ". Waited {} s for it; retry the call later.",
+                            self.lock_wait.as_secs_f64()
+                        ));
+                        text = format!(
+                            "{text}
+{hint}"
+                        );
+                        structured["holder"] = who;
+                        structured["hint"] = json!(hint);
                     }
                     _ => {}
                 }
@@ -194,7 +272,7 @@ mod tests {
         assert_eq!(r["result"]["capabilities"]["tools"]["listChanged"], false);
         assert_eq!(r["result"]["serverInfo"]["name"], "velo-mcp");
         let r = rpc(&mut s, 2, "initialize", json!({"protocolVersion": "1999"}));
-        assert_eq!(r["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(r["result"]["protocolVersion"], "2025-11-25");
         assert!(s
             .handle(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
             .is_none());
@@ -226,7 +304,15 @@ mod tests {
                 "velo_branch",
                 "velo_merge_plan",
                 "velo_merge_apply",
-                "velo_blame"
+                "velo_blame",
+                "velo_save_tree",
+                "velo_tree_at",
+                "velo_read_file",
+                "velo_undo",
+                "velo_redo",
+                "velo_tag",
+                "velo_conflicts",
+                "velo_find"
             ]
         );
     }
@@ -347,16 +433,27 @@ mod tests {
             call(&mut s, "velo_nope", json!({}))["error"]["code"],
             -32602
         );
+        assert_eq!(
+            rpc(&mut s, 2, "tools/call", json!({}))["error"]["code"],
+            -32602
+        );
+        assert_eq!(
+            rpc(&mut s, 2, "tools/call", json!({}))["error"]["code"],
+            -32602
+        );
         for ns in ["velo", "mcp"] {
             let r = call(
                 &mut s,
                 "velo_save",
                 json!({"message": "x", "meta": {ns: {"k": "v"}}}),
             );
-            assert_eq!(r["error"]["code"], -32602, "{ns}");
+            assert_eq!(r["result"]["isError"], true, "{ns}");
+            let t = r["result"]["content"][0]["text"].as_str().unwrap();
+            assert!(t.starts_with("InvalidParams: ") && t.contains(ns), "{t}");
         }
         let r = call(&mut s, "velo_save", json!({}));
-        assert_eq!(r["error"]["code"], -32602);
+        assert!(r.get("error").is_none(), "{r}");
+        assert_eq!(r["result"]["isError"], true);
     }
 
     fn sc(r: &Value) -> &Value {

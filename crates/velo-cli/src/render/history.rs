@@ -1,6 +1,7 @@
 //! Render [`History`] for the terminal: full table, oneline, or commit graph.
 
 use console::style;
+use std::collections::HashSet;
 use velo_core::commands::history::{BranchRef, EmptyReason, Entry, History, Scope};
 use velo_core::SnapshotId;
 
@@ -15,7 +16,9 @@ pub enum View {
     Graph,
 }
 
-pub fn print(history: &History, view: View) {
+/// `signed` is the set of snapshots carrying a signature, looked up once by the
+/// caller; `Entry` is not extensible, so the marker cannot ride on it.
+pub fn print(history: &History, view: View, signed: &HashSet<SnapshotId>) {
     print_header(&history.scope);
 
     if let Some(reason) = &history.empty {
@@ -24,9 +27,9 @@ pub fn print(history: &History, view: View) {
     }
 
     match view {
-        View::Graph => print_graph(history),
-        View::Oneline => print_oneline(history),
-        View::Full => print_full(history),
+        View::Graph => print_graph(history, signed),
+        View::Oneline => print_oneline(history, signed),
+        View::Full => print_full(history, signed),
     }
     println!();
 }
@@ -120,6 +123,15 @@ fn join_refs(refs: &[BranchRef]) -> String {
         .join(", ")
 }
 
+/// ` [signed]` for a signed snapshot, nothing otherwise.
+fn signed_suffix(entry: &Entry, signed: &HashSet<SnapshotId>) -> String {
+    if signed.contains(&entry.hash) {
+        format!(" {}", super::sign::marker())
+    } else {
+        String::new()
+    }
+}
+
 fn merge_suffix(entry: &Entry) -> String {
     if entry.is_merge() {
         format!(" {}", style("(merge)").dim())
@@ -141,7 +153,7 @@ fn tag_suffix(entry: &Entry, bold: bool) -> String {
 
 // ─── Full table ───────────────────────────────────────────────────────────────
 
-fn print_full(history: &History) {
+fn print_full(history: &History, signed: &HashSet<SnapshotId>) {
     // Column widths. The hash column derives from the real hash length so the
     // header and rows can't drift apart when that length changes.
     const PREFIX_W: usize = 2; // "→ " or "  "
@@ -200,7 +212,7 @@ fn print_full(history: &History) {
         };
 
         println!(
-            "{} {:<hash_w$}{:GAP$}{:<BRANCH_W$}{:GAP$}{:<DATE_W$}{:GAP$}{}{}{}{}",
+            "{} {:<hash_w$}{:GAP$}{:<BRANCH_W$}{:GAP$}{:<DATE_W$}{:GAP$}{}{}{}{}{}",
             arrow,
             hash_styled,
             "",
@@ -212,6 +224,7 @@ fn print_full(history: &History) {
             merge_suffix(e),
             decorate(history, &e.hash),
             tag_suffix(e, true),
+            signed_suffix(e, signed),
         );
     }
     println!("{}", style(&sep).dim());
@@ -219,7 +232,7 @@ fn print_full(history: &History) {
 
 // ─── Oneline ──────────────────────────────────────────────────────────────────
 
-fn print_oneline(history: &History) {
+fn print_oneline(history: &History, signed: &HashSet<SnapshotId>) {
     for e in &history.entries {
         let marker = if history.current.as_deref() == Some(e.hash.as_str()) {
             "* "
@@ -227,11 +240,12 @@ fn print_oneline(history: &History) {
             "  "
         };
         println!(
-            "{}{} {}{}  {}{}",
+            "{}{} {}{}{}  {}{}",
             marker,
             style(super::id::short(&e.hash)).yellow(),
             refs_or_origin(history, e),
             tag_suffix(e, false),
+            signed_suffix(e, signed),
             e.message,
             merge_suffix(e)
         );
@@ -272,9 +286,7 @@ fn v_row(lanes: &[Option<String>]) -> String {
     s.trim_end().to_string()
 }
 
-fn print_graph(history: &History) {
-    use std::collections::HashSet;
-
+fn print_graph(history: &History, signed: &HashSet<SnapshotId>) {
     let known: HashSet<&str> = history.entries.iter().map(|e| e.hash.as_str()).collect();
     // lanes[i] = Some(hash): lane i is live, waiting for that snapshot.
     let mut lanes: Vec<Option<String>> = Vec::new();
@@ -327,7 +339,7 @@ fn print_graph(history: &History) {
             style(short).white().to_string()
         };
         println!(
-            "{}  {}  {}  {}  {}{}{}",
+            "{}  {}  {}  {}  {}{}{}{}",
             row,
             hash_s,
             refs_or_origin(history, entry),
@@ -339,6 +351,7 @@ fn print_graph(history: &History) {
                 .as_ref()
                 .map(|t| format!("  {}", style(format!("[{}]", t)).bold().yellow()))
                 .unwrap_or_default(),
+            signed_suffix(entry, signed),
         );
 
         // ── Advance the lanes ─────────────────────────────────────────────────

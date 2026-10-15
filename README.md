@@ -188,7 +188,13 @@ repo.blame('a.txt', { at: id });
 ```
 
 `Repo.openPersistent` stores the file in OPFS from a dedicated worker. See its
-README for the details and limits (no sync in the browser).
+README for the details and limits (no sync in the browser). The save, history,
+merge and `fsck` scenario, in memory and against a reopened OPFS repository,
+is run in headless Chrome and Firefox by the CI `bindings` job; see the
+binding README for what is and is not yet confirmed.
+
+The release `.wasm` is about 2.4 MB raw, 0.86 MB with gzip and 0.66 MB with
+brotli (measured 2026-10-14; method in the binding README, budget enforced in CI).
 
 ### MCP server
 
@@ -207,12 +213,18 @@ Client configuration (the surrounding file format depends on the client):
 {"command": "velo-mcp", "args": ["--repo", "/path/to/project"]}
 ```
 
+Which real clients were tried, and what broke, is in the
+[tried clients table](crates/velo-mcp/README.md#tried-clients).
+
 ### Further reading
 
 Worked walkthroughs live in [`docs/cookbook`](docs/cookbook):
 [agent checkpointing](docs/cookbook/agent-checkpointing.md),
 [config registry](docs/cookbook/config-registry.md) and
 [document editor](docs/cookbook/document-editor.md).
+
+What is promised to adopters, and which CI job enforces each promise, is in
+[`docs/STABILITY.md`](docs/STABILITY.md).
 
 ---
 
@@ -361,6 +373,13 @@ Benchmarked on a monorepo with 571 files across 6 language modules, 40 increment
 | `velo merge` | <100 ms | LCA found via recursive CTE; no file I/O needed |
 | `velo history --all` | ~35 ms | Indexed ancestry walk in SQLite WAL mode |
 
+At scale: tested to 10,000 files x 2,000 snapshots and 100,000 files x 200
+snapshots (20 million metadata rows). History commands stay under 120 ms there;
+a save settles near 2 s at 10,000 files and reaches 14-20 s at 100,000 files
+after 200 snapshots. [docs/SCALE.md](docs/SCALE.md) has the latency tables for
+Windows and Linux, where velo degrades, the retention policy that bounds it, and
+how to reproduce every number.
+
 The warm-cache path for `velo status` is essentially N × `stat()` — no file reads, no hashing. Only files whose `mtime` or `size` changed since the last run are rehashed.
 
 
@@ -456,6 +475,7 @@ velo pull
 | Command | Description |
 | :--- | :--- |
 | `velo switch <name>` | Switch to a branch (creates it if it doesn't exist) |
+| `velo switch --create <name>` (`-c`) | Create a branch even if its name is close to an existing one; errors if it exists |
 | `velo switch <name> --force` | Switch, discarding any unsaved changes |
 | `velo branches` | List all branches with their latest snapshot |
 | `velo branches --delete <name>` | Soft-delete a branch (history preserved, purged by `velo gc`) |
@@ -509,6 +529,7 @@ velo pull
 | `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
 | `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work; merged side branches are published with it under their own names) |
 | `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
+| `velo sync [remote] [branch]` | Fetch, then fast-forward, push, or merge and push if the merge is clean; a conflict stops with exit 3 and the merge left in progress (`resolve`, `save`, `sync`). Never pushes a conflicted merge, never forces |
 
 Remote defaults to `origin`, and branch defaults to the current branch.
 
@@ -520,18 +541,17 @@ Scripts can decide on the exit code:
 |------|---------|
 | 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
 | 1 | Error |
-| 2 | Command-line usage error |
-| 3 | Conflicts left to resolve (`merge`, `cherry-pick` or `rebase` stopped on conflicts) |
-| 4 | Histories diverged (`pull`, or a `push` the remote refused) |
+| 2 | Command-line usage error, or `switch` refusing a near-miss branch name (`mian` for `main`) without a terminal; `velo switch --create <name>` creates it anyway |
+| 3 | Conflicts left to resolve (`merge`, `cherry-pick`, `rebase` or `sync` stopped on conflicts) |
+| 4 | Histories diverged (`pull`, or a `push` or `sync` the remote refused) |
 | 5 | Repository locked by another velo process |
 
 To host a repository over HTTP, run `velo serve-http <path> [--listen <addr>]`
 (default `127.0.0.1:8417`); it prints `listening on http://<addr>/`. Then
 `velo clone http://<addr>/` and the usual `push` / `pull` work against it, with
-the same fast-forward-only rule. **`serve-http` is a reference server with no
-authentication and no TLS**: anyone who can reach the port can read and push.
-Put it behind a reverse proxy that authenticates and terminates TLS for
-anything public.
+the same fast-forward-only rule. By default fetch is anonymous and **push is
+refused** until you configure a token; there is no TLS. See "Hosting a remote"
+below.
 
 After a `fetch`, `velo status` shows ahead/behind, and `origin/<branch>`
 can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
@@ -553,6 +573,9 @@ can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 | `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
 | `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
 | `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
+| `velo keygen --out <file>` | Write a new signing key (a secret) to `file` and print its public key |
+| `velo sign [snapshot] --key <file>` | Sign a snapshot (default: the current one) with a key file |
+| `velo verify [snapshot] --trust <file>` | Check a snapshot's signatures against a file of trusted public keys; exits 1 unless one is trusted |
 
 ---
 
@@ -646,6 +669,7 @@ velo clone ssh://user@host/srv/project        # ssh://[user@]host[:port]/path
 velo save "Add login page"
 velo push                  # fast-forward only
 velo pull                  # fast-forward, or tells you it diverged
+velo sync                  # fetch, merge if clean, push
 
 # Remotes
 velo remote add origin /shared/project
@@ -656,6 +680,15 @@ velo remote remove origin
 velo fetch
 ```
 
+An HTTP remote that needs a bearer token reads it from the environment:
+`VELO_TOKEN_<REMOTE>` (the remote's name, uppercased, with every character that
+is not a letter or digit written as `_`; `VELO_TOKEN_ORIGIN` for `origin`), then
+the general `VELO_TOKEN`. `velo clone` uses the `origin` variable. A URL such as
+`https://user:secret@host/` is refused, because a credential in a URL lands in
+shell history and in `velo remote`'s output. Tokens are never stored in the
+repository database either, since it travels in backups. A refused request
+shows as "refused access".
+
 `velo status` tells you where you stand relative to the last-fetched remote state
 (no network access needed):
 
@@ -664,9 +697,9 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
   ↑ 1 ahead of origin/main (as of last fetch) — velo push to publish
 ```
 ```
-  ↓ 1 behind origin/main (as of last fetch) — velo pull to catch up
+  ↓ 1 behind origin/main (as of last fetch) — velo sync to catch up
   ↕ diverged from origin/main (1 ahead, 1 behind, as of last fetch) — reconcile with:
-      velo pull, velo merge origin/main, velo save "Merge origin/main", velo push
+      velo sync   (or by hand: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push)
   ✔ up to date with origin/main (as of last fetch)
 ```
 
@@ -675,16 +708,19 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
 ```bash
 velo push
 # → Push rejected — 'main' has commits you don't have (non-fast-forward).
-#   velo pull, velo merge origin/main, velo save "Merge origin/main", velo push   (exit code 4)
+#   velo sync   (or by hand: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push)   (exit code 4)
 
-velo pull
-# → ! 'main' and 'origin/main' have diverged.
-#     Reconcile with: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push   (exit code 4)
-
-velo merge origin/main     # the normal 3-way merge — auto-merges what it can
+velo sync
+# fetches, merges what merges cleanly, saves the merge and pushes it.
+# On a conflict it stops with exit code 3 and the merge in progress, nothing pushed:
+velo resolve src/app.rs --take ours     # or edit it and `velo resolve --mark`
 velo save "Merge origin/main"
-velo push                  # now a fast-forward
+velo sync                  # now a fast-forward push
 ```
+
+`velo sync` never pushes a merge with conflicts and has no `--force`. If the
+remote moves again while it runs, it exits 4 and you run it again. The manual
+route (`velo pull`, `velo merge origin/main`, `velo save`, `velo push`) still works.
 
 Nothing is ever force-overwritten, and `pull` never rewrites your history behind
 your back.
@@ -712,6 +748,92 @@ transfers a single object, not the whole tree — a snapshot references its enti
 file tree, so naive syncing would resend everything on every push. (`bundle create`
 deliberately opts out of this, since a bundle must stand alone.)
 
+#### Hosting a remote
+
+`velo serve-http` is a small reference server. It is safe to host once you pick
+a policy; from 5.2.0 it no longer accepts anonymous pushes by default.
+
+```bash
+velo serve-http /srv/project                       # anonymous fetch, push refused (401)
+VELO_SERVE_TOKEN=s3cret velo serve-http /srv/project   # every request needs the token
+velo serve-http /srv/project --token-file tokens   # several tokens, read or write
+velo serve-http /srv/project --allow-anonymous-push    # the old open behaviour
+```
+
+**Tokens.** `VELO_SERVE_TOKEN` is one write token. `--token-file FILE` holds
+lines of `read <token>` or `write <token>` (`#` starts a comment; on Unix velo
+warns if the file is readable by others). Once any token exists, every request
+needs a valid one; a read token may fetch, only a write token may push. Clients
+send theirs in `VELO_TOKEN`, or `VELO_TOKEN_<REMOTE>` (the remote's name,
+uppercased) for one remote, never in the URL:
+
+```bash
+VELO_TOKEN=s3cret velo push
+```
+
+A refused request exits with an access-denied error naming the remote.
+
+**A read-only public mirror.** `velo serve-http /srv/project --read-only`
+serves anonymous fetches and refuses every push, even one carrying a valid token.
+
+**Limits.** Each is a typed refusal on the wire (`velo: <kind>: <detail>`):
+
+| Flag | Default | Refusal |
+|---|---|---|
+| `--max-request-bytes N` | 1 GiB | 413 `too-large` (clients report a limit exceeded) |
+| `--request-timeout SECS` | 300 | 408 `timeout`, while receiving a body |
+| `--max-connections N` | 8 | 503 `busy` when all workers are in use |
+
+The timeout bounds a body that arrives slowly. A socket that stalls completely
+is only bounded by your proxy's timeout, because the server has no socket read
+timeout of its own.
+
+**Many repositories.** `velo serve-http /srv/repos --directory` serves every
+repository under `/srv/repos`, addressed as `http://host/<repo>/` (for example
+`velo clone http://host/team/app/`). Paths containing `..`, percent-encoding or
+backslashes are refused.
+
+**TLS terminates at a proxy.** The server speaks plain HTTP on purpose. Run it
+on `127.0.0.1` and let a proxy hold the certificate.
+
+Caddy:
+
+```
+velo.example.com {
+    reverse_proxy 127.0.0.1:8417
+}
+```
+
+nginx:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name velo.example.com;
+    # ssl_certificate / ssl_certificate_key as usual
+
+    client_max_body_size 1g;     # match --max-request-bytes
+    proxy_read_timeout 300s;     # match --request-timeout
+
+    location / {
+        proxy_pass http://127.0.0.1:8417;
+    }
+}
+```
+
+**The proxy's body limit is required, not optional.** When it drops a request,
+tiny_http (the HTTP library under `serve-http`) first reads and discards the
+unread rest of the body, allocating a buffer the size of the declared
+`Content-Length`, even after velo has already answered 413. An absurd length is
+caught per request, but a merely huge one can make the allocator abort the
+whole server, and the library offers no way to answer without that drain. Set
+`client_max_body_size` (nginx) or a `request_body { max_size ... }` block
+(Caddy) so such a request never reaches velo; the proxy's read timeout also
+bounds stalled clients.
+
+**Fast-forward only.** A push the server cannot fast-forward is rejected as
+non-fast-forward. There is no `--force`, on the client or the server.
+
 ---
 
 ### Integrity & safety
@@ -731,6 +853,10 @@ Checking repository integrity…
 ✔ Repository is healthy.
 ```
 
+What velo defends against and what it does not is in
+[docs/THREAT_MODEL.md](docs/THREAT_MODEL.md); to report a vulnerability see
+[SECURITY.md](SECURITY.md).
+
 `fsck` checks that every referenced object exists **and re-hashes to its own
 name**, that every snapshot's content-addressed ID recomputes correctly, that
 parents and merge parents resolve, and that all refs (`PARENT`, tags, stash,
@@ -743,12 +869,32 @@ Underneath, a few things protect your data:
 - **Atomic writes.** Objects and refs (`PARENT`, `HEAD`, `MERGE_HEAD`) are written
   to a temp file and renamed into place, so a crash mid-write can never leave a
   truncated ref or a half-written object.
+- **Crash-tested.** Every operation that writes more than one file is killed at
+  each durable step in the test suite, and what each kill leaves (including the
+  few known windows and what a power loss can do) is in
+  [docs/CRASH_SAFETY.md](docs/CRASH_SAFETY.md).
 - **Repository lock.** Mutating commands take an advisory lock on `.velo/lock`, so
   two concurrent `velo` processes can't race (a `gc` can't delete an object a
   `save` is still committing). Read-only commands never block.
 - **Verified imports.** Anything received from a bundle or a remote is fully
   verified — objects re-hashed, snapshot IDs recomputed — inside one transaction
   before it is trusted.
+
+#### Signing snapshots
+
+```bash
+velo keygen --out ~/.velo-key        # prints the public key; the file is a secret
+velo sign --key ~/.velo-key          # sign the snapshot you are on
+velo verify --trust trusted.keys     # exit 0 only if a trusted key signed it
+```
+
+A signature covers the snapshot's id, and the id covers the whole tree, the
+parents, the message, the time, the metadata and the author, so a valid
+signature vouches for all of them. `velo history` and `velo show` mark signed
+snapshots with `[signed]`. Trust is your own list: the trust file holds one
+public key per line (blank lines and `#` comments are allowed), and velo checks
+signatures against it. Velo does not store private keys, manage or revoke keys,
+or build a web of trust.
 
 ---
 
@@ -807,7 +953,7 @@ most two parents. Importing does not touch the working tree.
 | **A library a program can hold** | `velo-core` produces no terminal output at all, takes options structs rather than positional flags, and reports progress and accepts cancellation per call. A consumer with no working tree — an editor, a registry, a server — is a first-class caller. |
 
 The full list is in [CHANGELOG.md](CHANGELOG.md); the design record, including
-what was deliberately not done, is in [ARCHITECTURE.md](ARCHITECTURE.md).
+what was deliberately not done, is kept with the maintainers.
 
 ---
 
@@ -853,7 +999,7 @@ git:
 
 ```toml
 [dependencies]
-velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.1.2" }
+velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.2.0" }
 ```
 
 It produces no terminal output at all — every command returns data — which is
@@ -878,6 +1024,8 @@ see [Use it from your language](#use-it-from-your-language).
 | macOS Apple Silicon | `velo-aarch64-macos.tar.gz` |
 | macOS Intel | `velo-x86_64-macos.tar.gz` |
 | Windows x86-64 | `velo-x86_64-windows.zip` |
+
+Each release also carries a CycloneDX software bill of materials for `velo-cli`, attached as `velo-<version>.cdx.json`. Release builds are checked for reproducibility by `.github/workflows/reproducible.yml`, which builds the Linux x86-64 musl binary twice from the same tag in different directories and fails if the hashes differ; no differences are known so far.
 
 ### Build from source
 
@@ -982,7 +1130,7 @@ Remote-tracking history is stored on internal branches named
 
 ## Development
 
-See [DEVELOPING.md](DEVELOPING.md) for the full build/test/release guide.
+Build with `cargo build --workspace` and test with `cargo test --workspace`; the CI jobs in `.github/workflows/ci.yml` are the full gate.
 
 ```bash
 cargo build --release       # binary at target/release/velo

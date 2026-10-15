@@ -1,0 +1,46 @@
+# cargo-deny configuration for the root workspace. The bindings are separate
+# workspaces with their own lockfiles and are not checked yet: their manifests
+# declare no licence.
+
+[graph]
+# The crates we ship run on all three desktop OSes and in the browser.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+]
+
+[advisories]
+# Known vulnerabilities fail the build; unmaintained crates warn so they get
+# looked at without blocking a release on a third party.
+version = 2
+unmaintained = "workspace"
+yanked = "warn"
+ignore = []
+
+[licenses]
+version = 2
+# Allow list matching the dependency tree; every entry is permissive.
+allow = [
+    "MIT",                       # the common case
+    "Apache-2.0",                # dual-licensed with MIT for most of the Rust ecosystem
+    "Apache-2.0 WITH LLVM-exception", # the LLVM exception to Apache-2.0
+    "BSD-2-Clause",              # permissive, attribution only
+    "BSD-3-Clause",              # permissive, attribution only
+    "ISC",                       # permissive, MIT-equivalent
+    "Unicode-3.0",               # unicode-ident and the ICU data crates
+    "Zlib",                      # permissive, used by small utility crates
+    "CC0-1.0",                   # public-domain dedication
+    "CDLA-Permissive-2.0",       # webpki-roots: the Mozilla CA root data (via ureq)
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "allow"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

@@ -15,12 +15,21 @@ pub struct VeloRepo {
 }
 
 fn hand_out(out: *mut *mut VeloRepo, repo: Repo) -> Result<(), Failure> {
+    // SAFETY: `out` is the caller's out-parameter, NULL or writable; `mut_arg`
+    // rejects NULL.
     let slot = unsafe { mut_arg(out, "out")? };
     *slot = Box::into_raw(Box::new(VeloRepo { repo }));
     Ok(())
 }
 
 /// Create a repository at `path` and open it. On failure `*out` is untouched.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_repo_init(path: *const c_char, out: *mut *mut VeloRepo) -> i32 {
     run(|| {
@@ -30,6 +39,13 @@ pub unsafe extern "C" fn velo_repo_init(path: *const c_char, out: *mut *mut Velo
 }
 
 /// Open the repository at `path`. On failure `*out` is untouched.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_repo_open(path: *const c_char, out: *mut *mut VeloRepo) -> i32 {
     run(|| {
@@ -39,6 +55,13 @@ pub unsafe extern "C" fn velo_repo_open(path: *const c_char, out: *mut *mut Velo
 }
 
 /// Close a repository. NULL is a no-op.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_repo_free(repo: *mut VeloRepo) {
     if !repo.is_null() {
@@ -52,6 +75,13 @@ pub unsafe extern "C" fn velo_repo_free(repo: *mut VeloRepo) {
 ///
 /// A branch with no snapshots yet is not an error: `*out_id` is set to NULL and
 /// `0` is returned. Free a non-NULL id with `velo_string_free`.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_branch_tip(
     repo: *const VeloRepo,
@@ -71,6 +101,13 @@ pub unsafe extern "C" fn velo_branch_tip(
 }
 
 /// Resolve a tag, branch, id or unique id prefix to a full snapshot id.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velo.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
 #[no_mangle]
 pub unsafe extern "C" fn velo_resolve_snapshot(
     repo: *const VeloRepo,

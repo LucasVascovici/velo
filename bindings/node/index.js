@@ -779,3 +779,5 @@ function __napiStampBindingTarget(exportsObject, target) {
 module.exports.__napiBindingTarget = __napiStampBindingTarget(nativeBinding, __napiLoadedBindingTarget)
 module.exports = nativeBinding
 module.exports.Repo = nativeBinding.Repo
+module.exports.SigningKey = nativeBinding.SigningKey
+module.exports._errorCodes = nativeBinding._errorCodes

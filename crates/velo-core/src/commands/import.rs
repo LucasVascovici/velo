@@ -114,6 +114,9 @@ struct Reader<'a> {
     input: &'a mut dyn BufRead,
     line: usize,
     pending: Option<String>,
+    /// Read ceilings from the handle: a single command line is bounded by
+    /// `max_string_bytes`, a `data` block by `max_object_bytes`.
+    limits: &'a crate::Limits,
 }
 
 impl Reader<'_> {
@@ -124,10 +127,27 @@ impl Reader<'_> {
         ))
     }
 
-    fn read_raw(&mut self) -> Result<Option<Vec<u8>>> {
+    /// One line, refusing one longer than `max` bytes. `read_until` on a bare
+    /// reader would grow without bound on a stream with no newline.
+    fn read_raw(&mut self, max: u64) -> Result<Option<Vec<u8>>> {
         let mut buf = Vec::new();
-        if self.input.read_until(b'\n', &mut buf)? == 0 {
+        let n = (&mut *self.input)
+            .take(max.saturating_add(1))
+            .read_until(b'\n', &mut buf)?;
+        if n == 0 {
             return Ok(None);
+        }
+        // Without a newline and past `max`, the line was cut off by `take`.
+        if buf.len() as u64 > max && buf.last() != Some(&b'\n') {
+            return Err(VeloError::LimitExceeded {
+                limit: if max == u64::from(self.limits.max_string_bytes) {
+                    crate::limits::Limit::StringBytes
+                } else {
+                    crate::limits::Limit::ObjectBytes
+                },
+                max,
+                found: None,
+            });
         }
         self.line += 1;
         if buf.last() == Some(&b'\n') {
@@ -141,7 +161,7 @@ impl Reader<'_> {
             return Ok(Some(line));
         }
         Ok(self
-            .read_raw()?
+            .read_raw(u64::from(self.limits.max_string_bytes))?
             .map(|b| String::from_utf8_lossy(&b).into_owned()))
     }
 
@@ -151,13 +171,22 @@ impl Reader<'_> {
 
     /// The payload of a `data` command; `spec` is what follows `data `.
     fn data(&mut self, spec: &str) -> Result<Vec<u8>> {
+        let max = self.limits.max_object_bytes;
+        let over = |found: Option<u64>| VeloError::LimitExceeded {
+            limit: crate::limits::Limit::ObjectBytes,
+            max,
+            found,
+        };
         let mut out = Vec::new();
         if let Some(delim) = spec.strip_prefix("<<") {
             loop {
-                match self.read_raw()? {
+                match self.read_raw(max)? {
                     None => return Err(self.bad(format!("data delimiter '{delim}' not found"))),
                     Some(l) if l == delim.as_bytes() => break,
                     Some(l) => {
+                        if out.len() as u64 + l.len() as u64 + 1 > max {
+                            return Err(over(None));
+                        }
                         out.extend_from_slice(&l);
                         out.push(b'\n');
                     }
@@ -168,6 +197,9 @@ impl Reader<'_> {
                 .trim()
                 .parse()
                 .map_err(|_| self.bad(format!("'{spec}' is not a data length")))?;
+            if n > max {
+                return Err(over(Some(n)));
+            }
             // `take` rather than a pre-sized buffer: a lying length must not
             // allocate before the bytes prove it.
             (&mut *self.input).take(n).read_to_end(&mut out)?;
@@ -232,6 +264,7 @@ pub fn git_fast_export(
             input,
             line: 0,
             pending: None,
+            limits: guard.repo().limits(),
         },
         fallback,
         marks: HashMap::new(),

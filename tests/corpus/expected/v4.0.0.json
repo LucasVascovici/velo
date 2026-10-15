@@ -1,0 +1,473 @@
+{
+ "branch_tips": [
+  [
+   "feature",
+   ""
+  ],
+  [
+   "main",
+   ""
+  ]
+ ],
+ "file_map": {
+  "036b95493d117210a7c3f50b5ebafd28706dc738d2dc6d58b8723b4e05bbf5f0": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   },
+   {
+    "hash": "f522d11ed192da434a59555e0148cb20660d386aaaa5d61b40fa33260cfeba7e",
+    "mode": 0,
+    "path": "src/wip.txt"
+   }
+  ],
+  "0809095adbaed0452791b35fa8e0a2fe74b3a40d1bae042fa215e6007354233c": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ],
+  "1353cbcde73fc366d00d3d9344f69c7955c332e16966c43ac756ee7562d29757": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   }
+  ],
+  "488e70362d4cb9db114ae5eca96dcc3849cc9896c20fef3a8310bfe84589c135": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   }
+  ],
+  "61c4a1dc98a2759220ba34c662f655b59e61099ffab5aae8e63153d5094a6766": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   },
+   {
+    "hash": "c9773d7e715cba0bda066b0e71afb27ddf456599561bb5a1be07251e70898868",
+    "mode": 0,
+    "path": "src/undone.txt"
+   }
+  ],
+  "ad66ecf6f4b0159372044a8ba4b088a8931c976a74fc2cb11f58b69703d4ff2b": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "c1c41c393c91bd0ba101f608072d39fca8aa10fa94bf5c4c9578ea2c1abf0be8",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   },
+   {
+    "hash": "12ebdc618737734d8962563b6bb18af2585501475f59142fca44d2456288162a",
+    "mode": 0,
+    "path": "src/feature.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/renamed.txt"
+   }
+  ],
+  "b0aec71cb50bc2a38a565fab9978329477299ad5675cb6efad5fedb438675a1d": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "a170e6a7709752ed511fbd09d7bf792dd107e7d552d8c29ea27f0938a516a625",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ],
+  "dd814181401b67caae5ec0ca23639a6444e8f377ed0d59bad960b64d139e338f": [
+   {
+    "hash": "84cbfc4e95cc22cbb8768b54e8649c307377f9f0f9df814e0baa738f6eb088cf",
+    "mode": 0,
+    "path": ".veloignore"
+   },
+   {
+    "hash": "63279918b1e7951b22a7ac6f6326fde426068468716bf64f05e640847344b85b",
+    "mode": 0,
+    "path": "README.txt"
+   },
+   {
+    "hash": "4a495ba42461748eca8fdad618f976aa726cc2903de9fcb40735a786ac1c196b",
+    "mode": 0,
+    "path": "bin/blob.bin"
+   },
+   {
+    "hash": "bef33e0ef19b240e4dabf569266621e819a1c4a802b1f0d1f49fb6b12b35c170",
+    "mode": 0,
+    "path": "crlf.txt"
+   },
+   {
+    "hash": "40478993a67c08ffff59d9f0072914d17f06063292e15c2ac7a4816b02935a5b",
+    "mode": 0,
+    "path": "src/a.txt"
+   },
+   {
+    "hash": "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+    "mode": 0,
+    "path": "src/deep/b.txt"
+   }
+  ]
+ },
+ "lacks": [
+  "velo-mcp (no app-namespace metadata; only the reserved author namespace)"
+ ],
+ "renames": [
+  [
+   "ad66ecf6f4b0159372044a8ba4b088a8931c976a74fc2cb11f58b69703d4ff2b",
+   "src/a.txt",
+   "src/renamed.txt"
+  ]
+ ],
+ "snapshot_meta": [
+  [
+   "0809095adbaed0452791b35fa8e0a2fe74b3a40d1bae042fa215e6007354233c",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "0809095adbaed0452791b35fa8e0a2fe74b3a40d1bae042fa215e6007354233c",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "1353cbcde73fc366d00d3d9344f69c7955c332e16966c43ac756ee7562d29757",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "1353cbcde73fc366d00d3d9344f69c7955c332e16966c43ac756ee7562d29757",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "488e70362d4cb9db114ae5eca96dcc3849cc9896c20fef3a8310bfe84589c135",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "488e70362d4cb9db114ae5eca96dcc3849cc9896c20fef3a8310bfe84589c135",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "61c4a1dc98a2759220ba34c662f655b59e61099ffab5aae8e63153d5094a6766",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "61c4a1dc98a2759220ba34c662f655b59e61099ffab5aae8e63153d5094a6766",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "ad66ecf6f4b0159372044a8ba4b088a8931c976a74fc2cb11f58b69703d4ff2b",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "ad66ecf6f4b0159372044a8ba4b088a8931c976a74fc2cb11f58b69703d4ff2b",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "b0aec71cb50bc2a38a565fab9978329477299ad5675cb6efad5fedb438675a1d",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "b0aec71cb50bc2a38a565fab9978329477299ad5675cb6efad5fedb438675a1d",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ],
+  [
+   "dd814181401b67caae5ec0ca23639a6444e8f377ed0d59bad960b64d139e338f",
+   "velo",
+   "author.email",
+   "corpus@example.com"
+  ],
+  [
+   "dd814181401b67caae5ec0ca23639a6444e8f377ed0d59bad960b64d139e338f",
+   "velo",
+   "author.name",
+   "Corpus Author"
+  ]
+ ],
+ "snapshots": [
+  {
+   "branch": "main",
+   "created_at_ms": 1791981946386,
+   "hash": "0809095adbaed0452791b35fa8e0a2fe74b3a40d1bae042fa215e6007354233c",
+   "merge_parent": "",
+   "message": "initial",
+   "parent_hash": ""
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981946463,
+   "hash": "dd814181401b67caae5ec0ca23639a6444e8f377ed0d59bad960b64d139e338f",
+   "merge_parent": "",
+   "message": "second",
+   "parent_hash": "0809095adbaed0452791b35fa8e0a2fe74b3a40d1bae042fa215e6007354233c"
+  },
+  {
+   "branch": "feature",
+   "created_at_ms": 1791981946585,
+   "hash": "488e70362d4cb9db114ae5eca96dcc3849cc9896c20fef3a8310bfe84589c135",
+   "merge_parent": "",
+   "message": "feature work",
+   "parent_hash": "dd814181401b67caae5ec0ca23639a6444e8f377ed0d59bad960b64d139e338f"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981946742,
+   "hash": "b0aec71cb50bc2a38a565fab9978329477299ad5675cb6efad5fedb438675a1d",
+   "merge_parent": "",
+   "message": "main work",
+   "parent_hash": "dd814181401b67caae5ec0ca23639a6444e8f377ed0d59bad960b64d139e338f"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981946902,
+   "hash": "1353cbcde73fc366d00d3d9344f69c7955c332e16966c43ac756ee7562d29757",
+   "merge_parent": "488e70362d4cb9db114ae5eca96dcc3849cc9896c20fef3a8310bfe84589c135",
+   "message": "merge feature",
+   "parent_hash": "b0aec71cb50bc2a38a565fab9978329477299ad5675cb6efad5fedb438675a1d"
+  },
+  {
+   "branch": "main",
+   "created_at_ms": 1791981947077,
+   "hash": "ad66ecf6f4b0159372044a8ba4b088a8931c976a74fc2cb11f58b69703d4ff2b",
+   "merge_parent": "",
+   "message": "rename a",
+   "parent_hash": "1353cbcde73fc366d00d3d9344f69c7955c332e16966c43ac756ee7562d29757"
+  },
+  {
+   "branch": "_stash",
+   "created_at_ms": 1791981947235,
+   "hash": "036b95493d117210a7c3f50b5ebafd28706dc738d2dc6d58b8723b4e05bbf5f0",
+   "merge_parent": "",
+   "message": "stash: wip",
+   "parent_hash": "ad66ecf6f4b0159372044a8ba4b088a8931c976a74fc2cb11f58b69703d4ff2b"
+  }
+ ],
+ "stash_names": [
+  "wip"
+ ],
+ "tag": "v4.0.0",
+ "tags": [
+  [
+   "v1",
+   "ad66ecf6f4b0159372044a8ba4b088a8931c976a74fc2cb11f58b69703d4ff2b"
+  ]
+ ],
+ "trash_ids": [
+  "61c4a1dc98a2759220ba34c662f655b59e61099ffab5aae8e63153d5094a6766"
+ ],
+ "user_version": 2
+}

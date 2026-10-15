@@ -132,6 +132,36 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
 
     refuse_if_depended_on(conn, &snapshot)?;
 
+    let now_at = parent_hash.trim().to_string();
+
+    // The tree and position move first, the database last. A kill in between
+    // leaves the snapshot still live, the position on its parent and a matching
+    // tree: clean, consistent, and `undo` simply runs again. The other order
+    // left `.velo/PARENT` naming a snapshot already in the trash, which `fsck`
+    // reports as a dangling position.
+    if now_at.is_empty() {
+        // The root snapshot goes, so there is nothing to restore to: clear the
+        // position and remove the files it tracked.
+        crate::failpoint::hit("undo.before_parent");
+        crate::storage::write_atomic(&root.join(".velo/PARENT"), b"")?;
+        crate::failpoint::hit("undo.after_parent");
+        for path in crate::commands::get_tracked_files(root, guard.repo().scope()) {
+            let _ = fs::remove_file(&path);
+        }
+    } else {
+        // restore::run writes PARENT itself.
+        crate::commands::restore::run_with(
+            guard,
+            &SnapshotId::from_stored(now_at.as_str()),
+            crate::commands::restore::Options {
+                force: true,
+                ..Default::default()
+            },
+            crate::commands::restore::Strategy::Delta,
+            Some(scan),
+        )?;
+    }
+
     // One transaction: the snapshot and its tags move together, and file_map is
     // deliberately left in place so redo can restore the tree.
     let tx = guard.transaction()?;
@@ -148,42 +178,18 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     )?;
     tx.execute("DELETE FROM tags WHERE snapshot_hash = ?", [&snapshot])?;
     tx.execute("DELETE FROM snapshots WHERE hash = ?", [&snapshot])?;
+    crate::failpoint::hit("undo.before_commit");
     tx.commit()?;
+    crate::failpoint::hit("undo.after_commit");
 
-    let now_at = parent_hash.trim().to_string();
     guard.repo().emit(Event::RefMoved {
         reference: Ref::Branch(crate::BranchName::from_stored(branch.trim())),
         from: Some(SnapshotId::from_stored(snapshot.as_str())),
         to: (!now_at.is_empty()).then(|| SnapshotId::from_stored(now_at.as_str())),
     });
-    if now_at.is_empty() {
-        // The root snapshot went, so there is nothing to restore to: clear the
-        // position and remove the files it tracked.
-        crate::storage::write_atomic(&root.join(".velo/PARENT"), b"")?;
-        for path in crate::commands::get_tracked_files(root, guard.repo().scope()) {
-            let _ = fs::remove_file(&path);
-        }
-        return Ok(Outcome {
-            snapshot,
-            message,
-            now_at: None,
-        });
-    }
-
-    // restore::run writes PARENT itself.
-    crate::commands::restore::run_with(
-        guard,
-        &SnapshotId::from_stored(now_at.as_str()),
-        crate::commands::restore::Options {
-            force: true,
-            ..Default::default()
-        },
-        crate::commands::restore::Strategy::Delta,
-        Some(scan),
-    )?;
     Ok(Outcome {
         snapshot,
         message,
-        now_at: Some(now_at),
+        now_at: (!now_at.is_empty()).then_some(now_at),
     })
 }
