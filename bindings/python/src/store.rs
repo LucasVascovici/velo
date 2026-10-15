@@ -120,20 +120,25 @@ impl Repo {
             },
             None => Policy::default(),
         };
-        let repo = self.core()?;
-        let guard = repo.write().map_err(to_py)?;
-        let report = retention::apply(
-            &guard,
-            &branch,
-            &policy,
-            retention::Options {
-                now_ms,
-                dry_run,
-                ..Default::default()
-            },
-        )
-        .map_err(to_py)?;
-        drop(guard);
+        self.check_owner()?;
+        let report = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let guard = match repo.write() {
+                Ok(g) => g,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(retention::apply(
+                &guard,
+                &branch,
+                &policy,
+                retention::Options {
+                    now_ms,
+                    dry_run,
+                    ..Default::default()
+                },
+            ))
+        })?;
+        let report = report.map_err(to_py)?;
         let out = PyDict::new(py);
         out.set_item("branch", report.branch.as_str())?;
         out.set_item("examined", report.examined)?;
@@ -173,19 +178,24 @@ impl Repo {
             .iter()
             .map(|(oldest, newest)| compact::Range { oldest, newest })
             .collect();
-        let repo = self.core()?;
-        let guard = repo.write().map_err(to_py)?;
-        let done = compact::run(
-            &guard,
-            &branch,
-            &ranges,
-            compact::Options {
-                dry_run,
-                ..Default::default()
-            },
-        )
-        .map_err(to_py)?;
-        drop(guard);
+        self.check_owner()?;
+        let done = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let guard = match repo.write() {
+                Ok(g) => g,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(compact::run(
+                &guard,
+                &branch,
+                &ranges,
+                compact::Options {
+                    dry_run,
+                    ..Default::default()
+                },
+            ))
+        })?;
+        let done = done.map_err(to_py)?;
         let out = PyDict::new(py);
         out.set_item("branch", done.branch.as_str())?;
         out.set_item("dry_run", done.dry_run)?;
@@ -233,14 +243,19 @@ impl Repo {
     /// `repair`, cruft is cleaned up; damage is only ever reported.
     #[pyo3(signature = (repair = false))]
     fn fsck<'py>(&self, py: Python<'py>, repair: bool) -> PyResult<Bound<'py, PyDict>> {
-        let repo = self.core()?;
-        let report = if repair {
-            let guard = repo.write().map_err(to_py)?;
-            fsck::repair(&guard)
-        } else {
-            fsck::check(&repo)
-        }
-        .map_err(to_py)?;
+        self.check_owner()?;
+        let report = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            Ok(if repair {
+                match repo.write() {
+                    Ok(guard) => fsck::repair(&guard),
+                    Err(e) => Err(e),
+                }
+            } else {
+                fsck::check(&repo)
+            })
+        })?;
+        let report = report.map_err(to_py)?;
         let out = PyDict::new(py);
         let problems = PyList::empty(py);
         for p in &report.problems {

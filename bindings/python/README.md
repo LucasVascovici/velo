@@ -77,3 +77,18 @@ repo.clear_merge_drivers()
   same exception, and nothing is committed. With resolutions given, the merge
   is planned first so the exception surfaces before any write; the driver then
   runs twice.
+
+## Threads
+
+- A `Repo` belongs to the thread that created it. Using it from another thread
+  raises `RuntimeError` ("velo.Repo is unsendable: it can only be used on the
+  thread that created it"); the handle is never `Sync` and never shared.
+- Use one `Repo` per thread: open another `Repo` on the same path in each
+  thread.
+- The GIL is released during the long calls (`save_tree`, `tree_at`, `history`,
+  `find_snapshots`, `blame`, `merge_base`, `merge_plan`, `merge_commit`,
+  `retention`, `compact`, `fsck`, `sign`, `verify`, `signed_snapshots`, `sync`),
+  so threads that each have their own handle run in parallel, and other Python
+  threads keep running during a long call. A write takes the repository lock
+  without waiting: while another handle holds it, the call raises `velo.Locked`
+  at once, so retry after a short delay.

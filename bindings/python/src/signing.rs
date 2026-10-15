@@ -266,13 +266,18 @@ fn sync_result(py: Python<'_>, synced: Synced) -> PyResult<SyncResult> {
 #[pymethods]
 impl Repo {
     /// Sign `snapshot` with `key`; the signature is stored beside the snapshot.
-    fn sign(&self, snapshot: &str, key: &SigningKey) -> PyResult<Signature> {
+    fn sign(&self, py: Python<'_>, snapshot: &str, key: &SigningKey) -> PyResult<Signature> {
         let id = snapshot_id(snapshot)?;
-        let repo = self.core()?;
-        let guard = repo.write().map_err(to_py)?;
-        sign::sign(&guard, &id, &key.inner)
-            .map(Signature::from)
-            .map_err(to_py)
+        self.check_owner()?;
+        let signed = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let guard = match repo.write() {
+                Ok(g) => g,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(sign::sign(&guard, &id, &key.inner))
+        })?;
+        signed.map(Signature::from).map_err(to_py)
     }
 
     /// Every signature stored for `snapshot`, valid or not.
@@ -287,15 +292,24 @@ impl Repo {
     }
 
     /// Check the signatures on `snapshot` against `trusted_keys` (hex public keys).
-    fn verify(&self, snapshot: &str, trusted_keys: Vec<String>) -> PyResult<Verification> {
+    fn verify(
+        &self,
+        py: Python<'_>,
+        snapshot: &str,
+        trusted_keys: Vec<String>,
+    ) -> PyResult<Verification> {
         let id = snapshot_id(snapshot)?;
         let trusted: TrustedKeys = trusted_keys
             .iter()
             .map(|k| k.parse::<PublicKey>())
             .collect::<Result<_, _>>()
             .map_err(to_py)?;
-        let repo = self.core()?;
-        let v = sign::verify(&repo, &id, &trusted).map_err(to_py)?;
+        self.check_owner()?;
+        let v = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            Ok(sign::verify(&repo, &id, &trusted))
+        })?;
+        let v = v.map_err(to_py)?;
         Ok(Verification {
             snapshot: v.snapshot.as_str().to_string(),
             trusted: v.trusted,
@@ -306,9 +320,13 @@ impl Repo {
     }
 
     /// The ids of snapshots that carry at least one signature.
-    fn signed_snapshots(&self) -> PyResult<Vec<String>> {
-        let repo = self.core()?;
-        let mut ids: Vec<String> = sign::signed_snapshots(&repo)
+    fn signed_snapshots(&self, py: Python<'_>) -> PyResult<Vec<String>> {
+        self.check_owner()?;
+        let found = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            Ok(sign::signed_snapshots(&repo))
+        })?;
+        let mut ids: Vec<String> = found
             .map_err(to_py)?
             .into_iter()
             .map(|s| s.as_str().to_string())
@@ -346,27 +364,41 @@ impl Repo {
         if let Some(m) = message {
             options = options.message(m);
         }
-        let repo = self.core()?;
+        self.check_owner()?;
         // `credentials` consumes a handle, so a token goes to a temporary one
-        // opened like this one (same listener and merge drivers). The shared
-        // handle is idle: we hold its lock.
-        let credentialed;
-        let target: &velo_core::Repo = match token {
+        // opened like this one (same listener and merge drivers); the shared
+        // handle is then left unlocked.
+        let credentialed = match token {
             Some(token) => {
                 let (drivers, _) = self.hooks.drivers_with(py, None).map_err(to_py)?;
-                credentialed = velo_core::Repo::open_and_migrate(&self.root)
-                    .map_err(to_py)?
-                    .listening(self.hooks.listener())
-                    .merging(drivers)
-                    .credentials(move |_url| Some(token.clone()));
-                &credentialed
+                Some(
+                    velo_core::Repo::open_and_migrate(&self.root)
+                        .map_err(to_py)?
+                        .listening(self.hooks.listener())
+                        .merging(drivers)
+                        .credentials(move |_url| Some(token.clone())),
+                )
             }
-            None => &repo,
+            None => None,
         };
-        let guard = target.write().map_err(to_py)?;
-        let synced = sync::sync(&guard, remote, branch, &spawn, options).map_err(to_py)?;
-        drop(guard);
-        sync_result(py, synced)
+        let synced = py.detach(move || -> PyResult<_> {
+            let shared;
+            let target: &velo_core::Repo = match &credentialed {
+                Some(own) => own,
+                None => {
+                    shared = self.core()?;
+                    &shared
+                }
+            };
+            let guard = match target.write() {
+                Ok(g) => g,
+                Err(e) => return Ok(Err(e)),
+            };
+            let synced = sync::sync(&guard, remote, branch, &spawn, options);
+            drop(guard);
+            Ok(synced)
+        })?;
+        sync_result(py, synced.map_err(to_py)?)
     }
 }
 

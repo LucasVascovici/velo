@@ -83,3 +83,16 @@ await repo.clearMergeDrivers()
   driver's message, and nothing is committed. With resolutions given, the merge
   is planned first so the failure surfaces before any write; the driver then
   runs twice.
+
+## Threads
+
+- Every call runs on the libuv pool, so the event loop is never blocked, and
+  calls on one handle are serialised: they run one at a time, in the order made.
+- A `Repo` belongs to the thread that opened it and cannot be transferred to a
+  `worker_thread`. Native objects are not cloneable: `postMessage` either throws
+  `DataCloneError` or delivers an empty plain object with none of the methods,
+  depending on the Node version. Either way the worker gets no usable handle.
+- Open one `Repo` per worker, on the same path. Reads run in parallel. A write
+  takes the repository lock without waiting: while another handle (in a worker
+  or another process) holds it, the call rejects at once with `code: 'Locked'`,
+  so retry after a short delay.

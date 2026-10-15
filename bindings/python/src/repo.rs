@@ -301,7 +301,7 @@ impl Repo {
         }
     }
 
-    fn check_owner(&self) -> PyResult<()> {
+    pub(crate) fn check_owner(&self) -> PyResult<()> {
         if std::thread::current().id() != self.owner {
             return Err(PyRuntimeError::new_err(
                 "velo.Repo is unsendable: it can only be used on the thread that created it",
@@ -373,6 +373,7 @@ impl Repo {
     #[allow(clippy::too_many_arguments)]
     fn save_tree(
         &self,
+        py: Python<'_>,
         branch: &str,
         message: &str,
         entries: &Bound<'_, PyAny>,
@@ -394,26 +395,34 @@ impl Repo {
             .map(|(from, to)| (PathBuf::from(from), PathBuf::from(to)))
             .collect();
 
-        let repo = self.core()?;
-        let guard = repo.write().map_err(to_py)?;
-        let id = guard
-            .save_tree(SaveTree {
+        let author = author.as_ref().map(|a| &a.inner);
+        self.check_owner()?;
+        let id = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let guard = match repo.write() {
+                Ok(g) => g,
+                Err(e) => return Ok(Err(e)),
+            };
+            Ok(guard.save_tree(SaveTree {
                 branch: &branch,
                 parent: parent.as_ref(),
                 merge_parent: merge_parent.as_ref(),
                 message,
                 entries,
                 meta: snapshot_meta,
-                author: author.as_ref().map(|a| &a.inner),
+                author,
                 renames: &renames,
                 timestamp_ms,
-            })
-            .map_err(to_py)?;
-        Ok(id.as_str().to_string())
+            }))
+        })?;
+        Ok(id.map_err(to_py)?.as_str().to_string())
     }
 
-    fn tree_at(&self, id: &str) -> PyResult<Vec<TreeFile>> {
-        let files = self.core()?.tree_at(&snapshot_id(id)?).map_err(to_py)?;
+    fn tree_at(&self, py: Python<'_>, id: &str) -> PyResult<Vec<TreeFile>> {
+        let id = snapshot_id(id)?;
+        self.check_owner()?;
+        let files = py.detach(|| -> PyResult<_> { Ok(self.core()?.tree_at(&id)) })?;
+        let files = files.map_err(to_py)?;
         Ok(files
             .into_iter()
             .map(|f| TreeFile {
@@ -490,8 +499,10 @@ impl Repo {
     /// Each `meta` tuple is `(namespace, key, value)` or `(namespace, key)`.
     #[pyo3(signature = (*, from_ = None, branch = None, all = false, paths = None,
         limit = None, meta = None))]
+    #[allow(clippy::too_many_arguments)]
     fn history(
         &self,
+        py: Python<'_>,
         from_: Option<&str>,
         branch: Option<&str>,
         all: bool,
@@ -509,25 +520,30 @@ impl Repo {
         let path_refs: Vec<&Path> = paths.iter().map(PathBuf::as_path).collect();
         let meta = meta.unwrap_or_default();
         let filters = meta_filters(&meta)?;
-        let history = velo_core::commands::history::run(
-            &*self.core()?,
-            velo_core::commands::history::Options {
-                all,
-                branch: branch.as_ref(),
-                from: from.as_ref(),
-                paths: &path_refs,
-                meta: &filters,
-                limit,
-            },
-        )
-        .map_err(to_py)?;
+        self.check_owner()?;
+        let history = py.detach(|| -> PyResult<_> {
+            Ok(velo_core::commands::history::run(
+                &*self.core()?,
+                velo_core::commands::history::Options {
+                    all,
+                    branch: branch.as_ref(),
+                    from: from.as_ref(),
+                    paths: &path_refs,
+                    meta: &filters,
+                    limit,
+                },
+            ))
+        })?;
+        let history = history.map_err(to_py)?;
         Ok(history.entries.into_iter().map(Entry::from).collect())
     }
 
     /// Snapshots whose metadata satisfies every filter, newest first.
-    fn find_snapshots(&self, meta: Vec<Vec<String>>) -> PyResult<Vec<Entry>> {
+    fn find_snapshots(&self, py: Python<'_>, meta: Vec<Vec<String>>) -> PyResult<Vec<Entry>> {
         let filters = meta_filters(&meta)?;
-        let found = self.core()?.find_snapshots(&filters).map_err(to_py)?;
+        self.check_owner()?;
+        let found = py.detach(|| -> PyResult<_> { Ok(self.core()?.find_snapshots(&filters)) })?;
+        let found = found.map_err(to_py)?;
         Ok(found.into_iter().map(Entry::from).collect())
     }
 
@@ -537,6 +553,7 @@ impl Repo {
     #[pyo3(signature = (path, *, at = None, lines = None))]
     fn blame(
         &self,
+        py: Python<'_>,
         path: &str,
         at: Option<&str>,
         lines: Option<(usize, usize)>,
@@ -553,27 +570,34 @@ impl Repo {
             }
             None => None,
         };
-        let blame = velo_core::commands::blame::run(
-            &*self.core()?,
-            Path::new(path),
-            velo_core::commands::blame::Options {
-                at: at.as_ref(),
-                lines: range,
-                ..Default::default()
-            },
-        )
-        .map_err(to_py)?;
+        self.check_owner()?;
+        let blame = py.detach(|| -> PyResult<_> {
+            Ok(velo_core::commands::blame::run(
+                &*self.core()?,
+                Path::new(path),
+                velo_core::commands::blame::Options {
+                    at: at.as_ref(),
+                    lines: range,
+                    ..Default::default()
+                },
+            ))
+        })?;
+        let blame = blame.map_err(to_py)?;
         Ok(Blame::from(blame))
     }
 
     /// The nearest common ancestor of two snapshots, if they share history.
-    fn merge_base(&self, a: &str, b: &str) -> PyResult<Option<String>> {
-        let base = velo_core::commands::merge::merge_base(
-            &*self.core()?,
-            &snapshot_id(a)?,
-            &snapshot_id(b)?,
-        )
-        .map_err(to_py)?;
+    fn merge_base(&self, py: Python<'_>, a: &str, b: &str) -> PyResult<Option<String>> {
+        let (a, b) = (snapshot_id(a)?, snapshot_id(b)?);
+        self.check_owner()?;
+        let base = py.detach(|| -> PyResult<_> {
+            Ok(velo_core::commands::merge::merge_base(
+                &*self.core()?,
+                &a,
+                &b,
+            ))
+        })?;
+        let base = base.map_err(to_py)?;
         Ok(base.map(|b| b.as_str().to_string()))
     }
 
