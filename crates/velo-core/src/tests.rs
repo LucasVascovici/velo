@@ -12260,3 +12260,6 @@ mod signed_protection;
 
 #[cfg(test)]
 mod rebase_abort;
+
+#[cfg(test)]
+mod retention_scale;

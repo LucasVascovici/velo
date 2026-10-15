@@ -373,6 +373,13 @@ Benchmarked on a monorepo with 571 files across 6 language modules, 40 increment
 | `velo merge` | <100 ms | LCA found via recursive CTE; no file I/O needed |
 | `velo history --all` | ~35 ms | Indexed ancestry walk in SQLite WAL mode |
 
+At scale: tested to 10,000 files x 2,000 snapshots and 100,000 files x 200
+snapshots (20 million metadata rows). History commands stay under 120 ms there;
+a save settles near 2 s at 10,000 files and reaches 14-20 s at 100,000 files
+after 200 snapshots. [docs/SCALE.md](docs/SCALE.md) has the latency tables for
+Windows and Linux, where velo degrades, the retention policy that bounds it, and
+how to reproduce every number.
+
 The warm-cache path for `velo status` is essentially N × `stat()` — no file reads, no hashing. Only files whose `mtime` or `size` changed since the last run are rehashed.
 
 

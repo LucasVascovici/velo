@@ -104,6 +104,19 @@ the velo-mcp README.
 There is no force option: a dirty tree is an error result and nothing is
 overwritten. See [`crates/velo-mcp/README.md`](../../crates/velo-mcp/README.md).
 
+## Keep the history bounded
+
+An agent that saves after every tool call piles up snapshots, and each one owns
+a row per file. Apply a retention policy on a schedule rather than letting it
+accumulate: `velo_core::commands::retention::Policy::default()` keeps every
+snapshot for a day, one per hour for a month, and one per day after that, and
+`commands::retention::apply` followed by `commands::gc::run` does the work. On a
+10,000-file tree with 2,000 snapshots over 60 days it cut snapshots, rows and
+live content by 62%. Run it daily; a single pass over 2,000 snapshots took 20
+minutes, and the database file does not shrink (freed pages are reused). The
+measurement, its method and the envelope velo was tested to are in
+[docs/SCALE.md](../SCALE.md).
+
 ## Against the alternatives
 
 Numbers, not adjectives: [`bench/agent/agent_bench.py`](../../bench/agent/agent_bench.py)

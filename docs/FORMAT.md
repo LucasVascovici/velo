@@ -754,7 +754,7 @@ rewritten chain gets a new parent and therefore a new id (it is *re-minted*).
   parent. Rename edges are composed across the range.
 - `gc` never collects `compactions` rows.
 
-### 11.4 Open: tree metadata growth
+### 11.4 Decided: tree metadata growth
 
 Every snapshot stores its whole tree in `file_map`, so rows grow as
 snapshots x files even when one file changed. Phase 15.9 measured this and
@@ -843,7 +843,7 @@ This run did not break the 174 MB down by table. The `fsck` and
 the rows are read (one ordered scan, parallel id hashing, no `DISTINCT` over
 the whole table), not in how they are stored.
 
-**The decision remains open and nothing changed in the format.** No column,
+**Round three left the decision open and changed nothing in the format.** No column,
 index or row layout was altered by this measurement; the schema is as section 7.2
 describes. A change that stored a tree once and shared it between snapshots
 that did not touch it would cut the rows and the size, and would also change
@@ -921,9 +921,46 @@ the bytes per row and `WITHOUT ROWID` about 34%, with `WITHOUT ROWID` also
 inserting 2.6x faster and halving point lookups. Whether that is worth a format
 change is the overall decision of 18.10-c.
 
-**Decision:** open. This is the same decision as 14.1 and 14.5, so it belongs
-with those format decisions and is made there once. Nothing was changed in
-Phase 15: no schema, index or code path.
+**Round six (18.10-c): the envelope and the retention policy.** Published with
+its method in [SCALE.md](SCALE.md). The harness (`bench/scale/scale.py`, release
+CLI, one file changed per snapshot) reached 10,000 files x 2,000 snapshots and
+100,000 files x 200 snapshots, 20 million `file_map` rows (a 5.3 GiB database)
+each, on Windows 11 and on Linux (WSL2). What the numbers say:
+
+- Reading is not the problem: `history`, `history --file`, open and `restore`
+  stay at or under 3 s and mostly under 120 ms at 20 million rows.
+- Save grows with the table: at 10,000 files it levels at about 1.9 s; at
+  100,000 files it rose from 3.6 s to 14.5 s (Windows) and from 3.0 s to
+  20.2 s (Linux) over 200 snapshots and had not levelled.
+- `fsck` takes 26-38 s on Linux and 31-127 s on Windows at 20 million rows;
+  `gc` 5-8 s on Linux, 6.5 s and 392 s on Windows (Defender scanning, not rows).
+- The default retention policy (everything for a day, hourly for a month, daily
+  after) applied to 2,000 snapshots of a 10,000-file tree over 60 days cut
+  snapshots, rows and live content by 62% (20.0 million to 7.6 million rows,
+  5.17 GiB to 1.99 GiB live). The database file did not shrink, because SQLite
+  keeps the freed pages and velo has no `VACUUM`.
+
+**Decision.** Metadata growth is bounded by retention, not by a format change,
+for the agent-checkpointing workload that produces the long histories:
+
+1. **Retention bounds the rows.** The default policy is the documented
+   recommendation, and rows are then limited by the policy (a day of
+   snapshots, at most 24 a day for a month, one a day beyond) rather than by
+   how long the agent has run. Run it daily; one pass over 20 million rows took
+   20 minutes.
+2. **Carry-forward `INSERT ... SELECT` is not adopted** (18.10-b: under 3% of a
+   100,000-file save). `save` keeps the per-row insert loop.
+3. **32-byte blob hashes and `WITHOUT ROWID` are deferred.** They would cut about
+   a third of the bytes per row (36% and 34%) and `WITHOUT ROWID` would also
+   insert 2.6x faster, but both change the on-disk format and the bundle
+   layout, and neither changes the shape of the growth: a snapshot still owns
+   one row per file. They are recorded here, not scheduled.
+4. **A tree-object model is a 6.0 conversation**, to be had with the golden
+   corpus (Phase 18.3) in hand so that a migration can be proven against every
+   released format. It is the only option that removes the files x snapshots
+   product itself, and the 100,000-file save latency above is the case for it.
+   Until then the stated envelope in SCALE.md is the claim: beyond 20 million
+   rows or 100,000 files, velo has not been measured.
 
 ---
 

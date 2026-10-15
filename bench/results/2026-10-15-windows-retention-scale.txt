@@ -1,0 +1,9 @@
+
+--- retention at scale: 10000 files x 2000 snapshots over 60 days ---
+build: 3807.681166s
+retention::apply (default policy): 1219.5014165s, examined 2000, removed 1240
+gc: 226.0982564s
+before: 2000 snapshots, 20000000 file_map rows, database 5552500736 bytes (0 free pages' bytes)
+after: 760 snapshots, 7600000 file_map rows, database 7666499584 bytes (5528506368 free pages' bytes)
+
+
