@@ -349,7 +349,16 @@ fn handler(name: &'static str) {
             .append(true)
             .open(log)
             .unwrap();
-        writeln!(f, "{name}").unwrap();
+        // One write call, so concurrent hits from the rayon pool cannot
+        // interleave a name with another's newline.
+        f.write_all(
+            format!(
+                "{name}
+"
+            )
+            .as_bytes(),
+        )
+        .unwrap();
     }
     if std::env::var("VELO_CRASH_AT").as_deref() == Ok(name) {
         std::process::abort();
@@ -589,6 +598,41 @@ fn check_point(
             Ok(_) => {
                 drop(g);
                 assert!(!work.join(".velo/REBASE_STATE").exists());
+                assert_eq!(
+                    read_tree(&work),
+                    post.0,
+                    "{ctx}: rebase --continue finished on the wrong tree"
+                );
+                let h = history::run(
+                    &repo,
+                    history::Options {
+                        all: true,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+                let by_hash: BTreeMap<String, (String, Option<String>)> = h
+                    .entries
+                    .iter()
+                    .map(|e| {
+                        (
+                            e.hash.to_string(),
+                            (e.message.clone(), e.parent.as_ref().map(|p| p.to_string())),
+                        )
+                    })
+                    .collect();
+                let mut msgs = Vec::new();
+                let mut cur = Some(position(&work));
+                while let Some(c) = cur {
+                    let Some((m, p)) = by_hash.get(&c) else { break };
+                    msgs.push(m.clone());
+                    cur = p.clone();
+                }
+                assert_eq!(
+                    msgs[..4],
+                    ["feat three", "feat two", "feat one", "main two"],
+                    "{ctx}: rebased branch lost or folded a commit"
+                );
             }
             Err(e) => assert!(
                 !matches!(e, Error::Corrupt { .. }),

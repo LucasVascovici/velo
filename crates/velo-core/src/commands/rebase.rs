@@ -197,6 +197,27 @@ fn do_continue(guard: &WriteGuard, author: Option<&Author>) -> Result<Outcome> {
         });
     }
 
+    // With no conflict pending the tree must be clean: the user saves after
+    // resolving. A dirty tree here is a replay killed between dropping a
+    // commit from REBASE_STATE and saving it; carrying on would fold that
+    // commit's changes into the next one. `--abort` still recovers.
+    let dirty = crate::commands::get_dirty_files(guard.repo());
+    if !dirty.is_empty() {
+        let mut paths: Vec<std::path::PathBuf> =
+            dirty.keys().map(std::path::PathBuf::from).collect();
+        paths.sort();
+        return Err(VeloError::DirtyWorkingTree { paths });
+    }
+
+    // Still sitting on the original head means the kill landed after the state
+    // files but before the tree moved onto the target; replaying from here would
+    // stack the commits on their own old tip. Only `--abort` is right.
+    if read_trimmed(guard.root(), "PARENT") == read_trimmed(guard.root(), "REBASE_ORIG_HEAD") {
+        return Err(VeloError::invalid(
+            "The rebase was interrupted before it moved onto the target; run `velo rebase --abort` and start again."
+                    ));
+    }
+
     let remaining = read_state(guard.root())?;
     let onto = read_trimmed(guard.root(), "REBASE_ONTO");
     if remaining.is_empty() {
