@@ -1023,6 +1023,8 @@ curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh
 
 Download the latest `velo-x86_64-windows.zip` from the [Releases page](https://github.com/LucasVascovici/velo/releases), extract `velo.exe`, and place it anywhere on your `PATH`.
 
+Large trees save slowly the first time on Windows because of Defender scanning; see [docs/WINDOWS.md](docs/WINDOWS.md) for measured numbers and the settings that help.
+
 ### As a library
 
 Velo's core is a separate crate, so a program can use the repository, history

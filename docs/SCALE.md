@@ -203,7 +203,7 @@ the retention output as `<date>-<platform>-retention-scale.txt`.
   file, so file-heavy steps (the first save, `gc`, clean `status` at 100,000
   files) are many times slower than on Linux: 520 s against 21 s for the first
   100,000-file save. Excluding the work directory from real-time scanning is
-  expected to remove most of that gap; that was not measured here. The
+  expected to remove most of that gap; that was not measured here. See [WINDOWS.md](WINDOWS.md) for the measured Windows numbers and settings. The
   committed Windows numbers are the default configuration an adopter sees, not
   the best case. Each JSON records the Defender state in `env.defender_note`.
 - **One machine, one run per cell.** The Linux runs are WSL2 on the same laptop
