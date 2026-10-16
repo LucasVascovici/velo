@@ -239,6 +239,52 @@ jobs:
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # Performance guard: workload ratios against a same-runner calibration,
+  # compared with the committed baselines in bench/perf/baseline.json.
+  perf:
+    name: Perf · ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Performance guard
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo test -p velo-core --release --locked perf_guard -- --ignored --nocapture --test-threads=1 2>&1 | tee perf.log
+
+      - name: Extract measurements
+        if: always()
+        shell: bash
+        run: sed -n 's/^.*PERF_JSON //p' perf.log > perf-${{ runner.os }}.json
+
+      - name: Upload measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ runner.os }}
+          path: perf-${{ runner.os }}.json
+          if-no-files-found: warn
+
   # Crash injection: kill save, restore, switch, undo and redo at every named
   # durable step and check what is left (crates/velo-core/tests/crash.rs).
   crash:
