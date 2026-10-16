@@ -10,7 +10,8 @@ disk I/O. Python 3, standard library only.
 
 1. Generate N files of about 200 bytes in nested directories of about 100 files
    each, in a work directory outside the repository checkout.
-2. `velo init`, one first `save`, then M-1 further saves. Each rewrites K files
+2. `velo init` (`--objects files|database` picks the object backend, default
+   files, recorded in the result `env`), one first `save`, then M-1 further saves. Each rewrites K files
    (`--change`, default 1) picked by a seeded RNG (`--seed`, default 1).
 3. Record every save latency; report the median and p95 of the first and last
    10% of saves, and their ratio (latency growth).

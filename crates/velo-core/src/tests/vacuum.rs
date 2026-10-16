@@ -58,7 +58,7 @@ fn chain(repo: &Repo, n: usize) -> Vec<SnapshotId> {
                 branch: &main,
                 parent: ids.last(),
                 message: &format!("step {i}"),
-                entries: entries,
+                entries,
                 meta: SnapshotMeta::default(),
                 author: None,
                 merge_parent: None,

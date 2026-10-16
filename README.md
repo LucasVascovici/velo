@@ -425,7 +425,7 @@ velo pull
 
 | Command | Description |
 | :--- | :--- |
-| `velo init` | Initialise a new repository in the current directory |
+| `velo init` | Initialise a new repository in the current directory (`velo init --objects database` keeps objects in `velo.db`, fixed for the repo) |
 | `velo save "<message>"` | Snapshot all tracked files with a description |
 | `velo mv <from> <to>` | Move a file **and record that it moved**, so `blame` and `history --file` follow it across |
 | `velo save "<message>" -- <path>` | Snapshot only the listed paths; other changes remain unsaved |

@@ -18,6 +18,23 @@ use velo_core::{commands, error, serve, BranchName, TagName};
 use error::{Result, VeloError};
 use velo_core::commands::resolve::TakeOption;
 
+/// `--objects` as parsed from the command line; mirrors core's
+/// `ObjectLocation`, which carries no clap derive.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum ObjectsArg {
+    Files,
+    Database,
+}
+
+impl From<ObjectsArg> for velo_core::ObjectLocation {
+    fn from(a: ObjectsArg) -> Self {
+        match a {
+            ObjectsArg::Files => velo_core::ObjectLocation::Files,
+            ObjectsArg::Database => velo_core::ObjectLocation::Database,
+        }
+    }
+}
+
 /// `--take` as parsed from the command line. Core's `TakeOption` deliberately
 /// carries no clap derive, so the CLI owns its own parseable mirror.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,8 +118,15 @@ enum Commands {
     /// A default .veloignore is written if one does not already exist.
     /// Running `init` inside an existing Velo repo is an error.
     ///
+    /// By default each object is a file under .velo/objects. With
+    /// `--objects database` objects live inside velo.db instead: no file per
+    /// object, which is the layout the browser build uses. It can be faster
+    /// where every file open is scanned (Windows Defender). The choice is
+    /// fixed for the repository's lifetime and cannot be changed later.
+    ///
     /// Example
     ///   velo init
+    ///   velo init --objects database
     #[command(
         verbatim_doc_comment,
         after_help = "\
@@ -111,7 +135,11 @@ NOTES
     · The default branch is called 'main'.
     · Edit .veloignore to exclude build artefacts, secrets, etc."
     )]
-    Init,
+    Init {
+        /// Where objects are kept: files (default) or database.
+        #[arg(long, value_enum, default_value = "files")]
+        objects: ObjectsArg,
+    },
 
     /// Snapshot the working directory with a message.
     ///
@@ -2695,8 +2723,10 @@ fn run(cli: Cli) -> Result<Exit> {
     // The serve-* commands operate on an explicit path and speak a binary
     // protocol on stdout — they must emit nothing else.
     match &cli.command {
-        Commands::Init => {
-            render::init::print(&commands::init::run(&current_dir)?);
+        Commands::Init { objects } => {
+            let location: velo_core::ObjectLocation = (*objects).into();
+            let options = velo_core::InitOptions::new().objects(location);
+            render::init::print(&commands::init::run_with(&current_dir, options)?, location);
             return Ok(Exit::Success);
         }
         Commands::Clone { url, dir } => {
@@ -2799,7 +2829,7 @@ fn run(cli: Cli) -> Result<Exit> {
     warn_if_rewriting_pushed(&repo, &root, &cli.command);
 
     match cli.command {
-        Commands::Init
+        Commands::Init { .. }
         | Commands::Clone { .. }
         | Commands::Keygen { .. }
         | Commands::ServeUpload { .. }
