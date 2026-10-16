@@ -11,18 +11,18 @@ GENERATOR = BASE.replace("sum(xs)", "sum(x for x in xs)")
 
 
 def tool_call(repo, branch, parent, run, call, model, files, message, tests=None):
-    """Save one tool call as one snapshot, recording the run in metadata."""
+    """Save one tool call as one snapshot, sending only the files it changed."""
     agent = {"run": run, "tool_call_id": call, "model": model}
     if tests is not None:
         agent["tests"] = tests
-    return repo.save_tree(
+    return repo.save_changes(
         branch=branch,
         message=message,
-        entries=files,
+        changes=files,
         parent=parent,
         author=velo.Author(f"agent-{run}"),
         meta={"agent": agent},
-    )
+    ).snapshot
 
 
 with tempfile.TemporaryDirectory() as tmp:

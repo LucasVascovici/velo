@@ -17,6 +17,15 @@ sid = repo.save_tree(branch="main", message="hi", entries={"a.txt": "hello"})
 repo.read_file_at(sid, "a.txt")
 ```
 
+Save only what changed, and get object ids back:
+
+```python
+saved = repo.save_changes(branch="main", message="edit", parent=sid,
+                          changes={"a.txt": "hi", "old.txt": None})
+saved.snapshot, saved.written   # id, {"a.txt": object id}
+# or a list: velo.Change.put / stored / delete / rename
+```
+
 Notes:
 
 - `Repo` is `unsendable`: using it from another thread raises `RuntimeError`.

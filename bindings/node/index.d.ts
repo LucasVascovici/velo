@@ -60,6 +60,11 @@ export declare class Repo {
   static open(path: string): Promise<Repo>
   /** Save a whole tree as a snapshot and resolve to its id. */
   saveTree(input: SaveTreeInput): Promise<string>
+  /**
+   * Save a parent plus changes as a snapshot and resolve to its id and the
+   * object of each file the changes put.
+   */
+  saveChanges(input: SaveChangesInput): Promise<SavedInfo>
   treeAt(id: string): Promise<Array<TreeFile>>
   readFileAt(id: string, path: string): Promise<Buffer>
   readObject(object: string): Promise<Buffer>
@@ -174,6 +179,25 @@ export interface BranchInfo {
   isCurrent: boolean
   /** The tip snapshot, or `null` for a branch with no snapshots yet. */
   tip: string | null
+}
+
+/**
+ * One change for `saveChanges`. `op` selects which other fields apply:
+ * `'put'` takes `path` and exactly one of `data` and `object` (plus `kind`),
+ * `'delete'` takes `path`, `'rename'` takes `from` and `to`.
+ */
+export interface ChangeInput {
+  /** `'put'`, `'delete'` or `'rename'`. */
+  op: string
+  path?: string
+  /** Bytes to store, for `'put'`. */
+  data?: Buffer | string
+  /** An object already in the store, for `'put'`. */
+  object?: string
+  /** `'regular'` (default), `'executable'` or `'symlink'`, for `'put'`. */
+  kind?: string
+  from?: string
+  to?: string
 }
 
 export interface CompactionInfo {
@@ -338,6 +362,23 @@ export interface RewrittenInfo {
   new: string
 }
 
+export interface SaveChangesInput {
+  branch: string
+  message: string
+  changes: Array<ChangeInput>
+  parent?: string
+  mergeParent?: string
+  meta?: Record<string, Record<string, string>>
+  author?: AuthorInput
+  timestampMs?: number
+}
+
+/** The result of `saveChanges`. */
+export interface SavedInfo {
+  snapshot: string
+  written: Array<WrittenFile>
+}
+
 export interface SaveTreeInput {
   branch: string
   message: string
@@ -462,4 +503,10 @@ export interface VerificationInfo {
   unverifiable: Array<string>
   /** True when at least one valid signature is by a trusted key and none is invalid. */
   isTrusted: boolean
+}
+
+/** A file a `saveChanges` call wrote, with its object. */
+export interface WrittenFile {
+  path: string
+  object: string
 }

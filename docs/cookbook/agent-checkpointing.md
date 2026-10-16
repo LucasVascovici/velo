@@ -12,10 +12,17 @@ Every tool call is saved with the run, the call id and the model in `agent`
 metadata, and an author naming the run:
 
 ```python
-repo.save_tree(branch=branch, message=message, entries=files, parent=parent,
-               author=velo.Author(f"agent-{run}"),
-               meta={"agent": {"run": run, "tool_call_id": call, "model": model}})
+saved = repo.save_changes(branch=branch, message=message, changes=files,
+                          parent=parent, author=velo.Author(f"agent-{run}"),
+                          meta={"agent": {"run": run, "tool_call_id": call,
+                                          "model": model}})
+saved.snapshot  # the new snapshot id; saved.written maps path -> object id
 ```
+
+`changes` holds only what the tool call touched: a value is written and `None`
+deletes the path. The rest of the parent's tree is loaded inside the database,
+so the call sends no tree and gets ids back. A list of `velo.Change` values
+adds `Change.rename` and `Change.stored`.
 
 Metadata is hashed into the snapshot id, so provenance cannot be edited after
 the fact.

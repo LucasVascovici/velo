@@ -8,7 +8,9 @@ use std::sync::{Mutex, MutexGuard, TryLockError};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
-use velo_core::tree::{FileKind, SaveTree, TreeEntry as CoreEntry};
+use velo_core::tree::{
+    Change as CoreChange, Content, FileKind, SaveChanges, SaveTree, TreeEntry as CoreEntry,
+};
 use velo_core::{Author as CoreAuthor, BranchName, ObjectHash, SnapshotId, SnapshotMeta};
 
 use crate::callbacks::{Hooks, Rule};
@@ -245,6 +247,114 @@ fn collect_entries(entries: &Bound<'_, PyAny>) -> PyResult<Vec<CoreEntry>> {
     }
 }
 
+/// One change to apply to a parent's tree with `Repo.save_changes`.
+#[pyclass(frozen, skip_from_py_object, module = "velo")]
+#[derive(Clone)]
+pub struct Change {
+    inner: CoreChange,
+}
+
+#[pymethods]
+impl Change {
+    /// Add or replace a file with `data` (bytes or str).
+    #[staticmethod]
+    #[pyo3(signature = (path, data, kind = "regular"))]
+    fn put(path: String, data: &Bound<'_, PyAny>, kind: &str) -> PyResult<Self> {
+        let bytes = if let Ok(b) = data.cast::<PyBytes>() {
+            b.as_bytes().to_vec()
+        } else if let Ok(t) = data.cast::<PyString>() {
+            t.extract::<String>()?.into_bytes()
+        } else {
+            return Err(PyTypeError::new_err("data must be bytes or str"));
+        };
+        Ok(Change {
+            inner: CoreChange::Put(CoreEntry {
+                path,
+                content: Content::Bytes(bytes),
+                kind: parse_kind(kind)?,
+            }),
+        })
+    }
+
+    /// Add or replace a file with an object already in the store.
+    #[staticmethod]
+    #[pyo3(signature = (path, object, kind = "regular"))]
+    fn stored(path: String, object: &str, kind: &str) -> PyResult<Self> {
+        let object: ObjectHash = object.parse().map_err(to_py)?;
+        Ok(Change {
+            inner: CoreChange::Put(CoreEntry::stored(path, object, parse_kind(kind)?)),
+        })
+    }
+
+    /// Remove a path present in the tree being built.
+    #[staticmethod]
+    fn delete(path: String) -> Self {
+        Change {
+            inner: CoreChange::Delete(path),
+        }
+    }
+
+    /// Move the parent's file at `from_` to `to`, recording the rename edge.
+    #[staticmethod]
+    fn rename(from_: String, to: String) -> Self {
+        Change {
+            inner: CoreChange::Rename { from: from_, to },
+        }
+    }
+
+    fn __repr__(&self) -> String {
+        match &self.inner {
+            CoreChange::Put(e) => format!("Change.put({:?})", e.path),
+            CoreChange::Delete(p) => format!("Change.delete({:?})", p),
+            CoreChange::Rename { from, to } => format!("Change.rename({:?}, {:?})", from, to),
+            _ => "Change(...)".to_string(),
+        }
+    }
+}
+
+/// The result of `Repo.save_changes`: the new snapshot and the object of each
+/// file the changes put.
+#[pyclass(frozen, get_all, module = "velo")]
+pub struct Saved {
+    snapshot: String,
+    written: BTreeMap<String, String>,
+}
+
+#[pymethods]
+impl Saved {
+    fn __repr__(&self) -> String {
+        format!("Saved({}, {} written)", self.snapshot, self.written.len())
+    }
+}
+
+fn collect_changes(changes: &Bound<'_, PyAny>) -> PyResult<Vec<CoreChange>> {
+    if let Ok(dict) = changes.cast::<PyDict>() {
+        dict.iter()
+            .map(|(k, v)| {
+                let path = k.extract::<String>()?;
+                if v.is_none() {
+                    Ok(CoreChange::Delete(path))
+                } else {
+                    Ok(CoreChange::Put(entry_from_value(path, &v)?))
+                }
+            })
+            .collect()
+    } else if let Ok(list) = changes.cast::<PyList>() {
+        list.iter()
+            .map(|item| {
+                let change: PyRef<'_, Change> = item.extract().map_err(|_| {
+                    PyTypeError::new_err("a list of changes must contain Change objects")
+                })?;
+                Ok(change.inner.clone())
+            })
+            .collect()
+    } else {
+        Err(PyTypeError::new_err(
+            "changes must be a dict or a list of Change",
+        ))
+    }
+}
+
 /// An open velo repository, bound to the thread that created it.
 ///
 /// PyO3's own `unsendable` marker enforces this with a Rust panic, which
@@ -416,6 +526,55 @@ impl Repo {
             }))
         })?;
         Ok(id.map_err(to_py)?.as_str().to_string())
+    }
+
+    /// Save `parent` plus `changes` as a snapshot, without sending the rest of
+    /// the tree. Returns the snapshot id and the object id of each file put.
+    #[pyo3(signature = (*, branch, message, changes, parent = None, merge_parent = None,
+        meta = None, author = None, timestamp_ms = None))]
+    #[allow(clippy::too_many_arguments)]
+    fn save_changes(
+        &self,
+        py: Python<'_>,
+        branch: &str,
+        message: &str,
+        changes: &Bound<'_, PyAny>,
+        parent: Option<&str>,
+        merge_parent: Option<&str>,
+        meta: Option<BTreeMap<String, BTreeMap<String, String>>>,
+        author: Option<PyRef<'_, Author>>,
+        timestamp_ms: Option<i64>,
+    ) -> PyResult<Saved> {
+        let branch = branch_name(branch)?;
+        let parent = parent.map(snapshot_id).transpose()?;
+        let merge_parent = merge_parent.map(snapshot_id).transpose()?;
+        let changes = collect_changes(changes)?;
+        let snapshot_meta = build_meta(meta)?;
+        let author = author.as_ref().map(|a| &a.inner);
+        self.check_owner()?;
+        let saved = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let guard = match repo.write() {
+                Ok(g) => g,
+                Err(e) => return Ok(Err(e)),
+            };
+            let mut spec = SaveChanges::new(&branch, parent.as_ref(), message);
+            spec.merge_parent = merge_parent.as_ref();
+            spec.changes = changes;
+            spec.meta = snapshot_meta;
+            spec.author = author;
+            spec.timestamp_ms = timestamp_ms;
+            Ok(guard.save_changes(spec))
+        })?;
+        let saved = saved.map_err(to_py)?;
+        Ok(Saved {
+            snapshot: saved.snapshot.as_str().to_string(),
+            written: saved
+                .written
+                .into_iter()
+                .map(|(p, o)| (p, o.as_str().to_string()))
+                .collect(),
+        })
     }
 
     fn tree_at(&self, py: Python<'_>, id: &str) -> PyResult<Vec<TreeFile>> {
@@ -756,6 +915,8 @@ pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<Repo>()?;
     m.add_class::<TreeEntry>()?;
     m.add_class::<TreeFile>()?;
+    m.add_class::<Change>()?;
+    m.add_class::<Saved>()?;
     m.add_class::<Author>()?;
     m.add_class::<Entry>()?;
     crate::history::register(m)?;

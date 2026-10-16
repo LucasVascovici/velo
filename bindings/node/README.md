@@ -20,6 +20,21 @@ const id = await repo.saveTree({
 await repo.readFileAt(id, 'a.txt') // <Buffer 68 65 6c 6c 6f>
 ```
 
+Save only what changed, and get object ids back:
+
+```js
+const { snapshot, written } = await repo.saveChanges({
+  branch: 'main',
+  message: 'edit',
+  parent: id,
+  changes: [
+    { op: 'put', path: 'a.txt', data: 'hi' },
+    { op: 'rename', from: 'old.txt', to: 'new.txt' },
+    { op: 'delete', path: 'gone.txt' },
+  ],
+}) // written: [{ path: 'a.txt', object: '...' }]
+```
+
 Notes:
 
 - Every method returns a `Promise`. The call runs on the libuv thread pool, so

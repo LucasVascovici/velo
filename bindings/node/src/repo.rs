@@ -13,7 +13,9 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use napi::bindgen_prelude::*;
 use napi::{Env, JsDate, ScopedTask, Task};
 use napi_derive::napi;
-use velo_core::tree::{Content, FileKind, SaveTree, TreeEntry as CoreEntry};
+use velo_core::tree::{
+    Change as CoreChange, Content, FileKind, SaveChanges, SaveTree, TreeEntry as CoreEntry,
+};
 use velo_core::{
     Author as CoreAuthor, BranchName, Error as CoreError, ObjectHash, Repo as CoreRepo, SnapshotId,
     SnapshotMeta,
@@ -290,6 +292,106 @@ pub struct SaveTreeInput {
     pub renames: Option<Vec<Vec<String>>>,
 }
 
+/// One change for `saveChanges`. `op` selects which other fields apply:
+/// `'put'` takes `path` and exactly one of `data` and `object` (plus `kind`),
+/// `'delete'` takes `path`, `'rename'` takes `from` and `to`.
+#[napi(object)]
+pub struct ChangeInput {
+    /// `'put'`, `'delete'` or `'rename'`.
+    pub op: String,
+    pub path: Option<String>,
+    /// Bytes to store, for `'put'`.
+    pub data: Option<Either<Buffer, String>>,
+    /// An object already in the store, for `'put'`.
+    pub object: Option<String>,
+    /// `'regular'` (default), `'executable'` or `'symlink'`, for `'put'`.
+    pub kind: Option<String>,
+    pub from: Option<String>,
+    pub to: Option<String>,
+}
+
+#[napi(object)]
+pub struct SaveChangesInput {
+    pub branch: String,
+    pub message: String,
+    pub changes: Vec<ChangeInput>,
+    pub parent: Option<String>,
+    pub merge_parent: Option<String>,
+    pub meta: Option<BTreeMap<String, BTreeMap<String, String>>>,
+    pub author: Option<AuthorInput>,
+    pub timestamp_ms: Option<i64>,
+}
+
+/// A file a `saveChanges` call wrote, with its object.
+#[napi(object)]
+pub struct WrittenFile {
+    pub path: String,
+    pub object: String,
+}
+
+/// The result of `saveChanges`.
+#[napi(object)]
+pub struct SavedInfo {
+    pub snapshot: String,
+    pub written: Vec<WrittenFile>,
+}
+
+/// A `ChangeInput` with the JS-thread-only `Buffer` copied out.
+struct RawChange {
+    op: String,
+    path: Option<String>,
+    data: Option<Vec<u8>>,
+    object: Option<String>,
+    kind: Option<String>,
+    from: Option<String>,
+    to: Option<String>,
+}
+
+fn build_change(raw: RawChange) -> CoreResult<CoreChange> {
+    let bad = |what: &str| CoreError::invalid(format!("change op '{}' {}.", raw.op, what));
+    let has_content = raw.data.is_some() || raw.object.is_some() || raw.kind.is_some();
+    let has_path = raw.path.is_some();
+    let has_move = raw.from.is_some() || raw.to.is_some();
+    match raw.op.as_str() {
+        "put" => {
+            if has_move {
+                return Err(bad("does not take `from` or `to`"));
+            }
+            match raw.path {
+                Some(path) => Ok(CoreChange::Put(build_entry(RawEntry {
+                    path,
+                    data: raw.data,
+                    object: raw.object,
+                    kind: raw.kind,
+                })?)),
+                None => Err(bad("needs a `path`")),
+            }
+        }
+        "delete" => {
+            if has_content || has_move {
+                return Err(bad("takes only `path`"));
+            }
+            match raw.path {
+                Some(path) => Ok(CoreChange::Delete(path)),
+                None => Err(bad("needs a `path`")),
+            }
+        }
+        "rename" => {
+            if has_content || has_path {
+                return Err(bad("takes only `from` and `to`"));
+            }
+            match (raw.from, raw.to) {
+                (Some(from), Some(to)) => Ok(CoreChange::Rename { from, to }),
+                _ => Err(bad("needs both `from` and `to`")),
+            }
+        }
+        other => Err(CoreError::invalid(format!(
+            "'{}' is not a change op; expected put, delete or rename.",
+            other
+        ))),
+    }
+}
+
 /// An `EntryInput` with the JS-thread-only `Buffer` copied out, so it can
 /// cross to the worker. Validation waits for the worker too, so a bad entry
 /// rejects like any other velo error.
@@ -446,6 +548,69 @@ impl Repo {
             })?;
             drop(guard);
             Ok(id.as_str().to_string())
+        })
+    }
+
+    /// Save a parent plus changes as a snapshot and resolve to its id and the
+    /// object of each file the changes put.
+    #[napi(ts_return_type = "Promise<SavedInfo>")]
+    pub fn save_changes(&self, input: SaveChangesInput) -> AsyncTask<Job<SavedInfo>> {
+        let SaveChangesInput {
+            branch,
+            message,
+            changes,
+            parent,
+            merge_parent,
+            meta,
+            author,
+            timestamp_ms,
+        } = input;
+        let changes: Vec<RawChange> = changes
+            .into_iter()
+            .map(|c| RawChange {
+                op: c.op,
+                path: c.path,
+                data: c.data.map(|d| match d {
+                    Either::A(buf) => buf.to_vec(),
+                    Either::B(text) => text.into_bytes(),
+                }),
+                object: c.object,
+                kind: c.kind,
+                from: c.from,
+                to: c.to,
+            })
+            .collect();
+        self.job(move |repo| {
+            let branch = branch_name(&branch)?;
+            let parent = parent.as_deref().map(snapshot_id).transpose()?;
+            let merge_parent = merge_parent.as_deref().map(snapshot_id).transpose()?;
+            let changes = changes
+                .into_iter()
+                .map(build_change)
+                .collect::<CoreResult<Vec<_>>>()?;
+            let snapshot_meta = build_meta(meta)?;
+            let author = build_author(author)?;
+
+            let guard = repo.write()?;
+            let mut spec = SaveChanges::new(&branch, parent.as_ref(), &message);
+            spec.merge_parent = merge_parent.as_ref();
+            spec.changes = changes;
+            spec.meta = snapshot_meta;
+            spec.author = author.as_ref();
+            spec.timestamp_ms = timestamp_ms;
+            let saved = guard.save_changes(spec)?;
+            drop(guard);
+            Ok(SavedInfo {
+                snapshot: saved.snapshot.as_str().to_string(),
+                written: saved
+                    .written
+                    .into_iter()
+                    .map(|(path, object)| WrittenFile {
+                        path,
+                        object: object.as_str().to_string(),
+                    })
+                    .collect(),
+            })
         })
     }
 
