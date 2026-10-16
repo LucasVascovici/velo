@@ -458,4 +458,5 @@ reason = "pending: vacuum binding (19.4-d)"
 
 [[exempt]]
 entry = "commands::report::build"
+bindings = ["python", "node"]
 reason = "audit report model for the CLI's HTML and JSON renderers; bindings already expose history, blame, snapshot_meta and verify to build their own view"
