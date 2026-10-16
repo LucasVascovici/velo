@@ -171,11 +171,7 @@ fn golden_ids_and_rows_match_the_copying_apply() {
     let (_t, repo, ids) = scenario();
     run_scenario(&repo, &ids, false);
     let got = dump(&repo);
-    let golden = include_str!("compaction_in_place.golden").replace(
-        "
-", "
-",
-    );
+    let golden = include_str!("compaction_in_place.golden").replace("\r\n", "\n");
     assert_eq!(got.trim_end(), golden.trim_end(), "\n{got}\n");
     healthy(&repo);
 }
