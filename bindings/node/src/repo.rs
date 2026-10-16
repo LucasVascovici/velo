@@ -149,6 +149,20 @@ impl Task for OpenJob {
     }
 }
 
+/// One file read by `readFilesAt`.
+#[napi(object)]
+pub struct FileData {
+    pub path: String,
+    pub data: Buffer,
+}
+
+/// Options of `materialize`: gitignore patterns that narrow the tree.
+#[napi(object)]
+pub struct MaterializeInput {
+    pub only: Option<Vec<String>>,
+    pub ignore: Option<Vec<String>>,
+}
+
 /// A file as recorded in a saved tree.
 #[napi(object)]
 pub struct TreeFile {
@@ -635,6 +649,50 @@ impl Repo {
             Ok(Buffer::from(
                 repo.read_file_at(&snapshot_id(&id)?, &path)?.to_vec(),
             ))
+        })
+    }
+
+    /// Read several files of one snapshot in a single call, in the order asked.
+    #[napi(ts_return_type = "Promise<Array<{ path: string, data: Buffer }>>")]
+    pub fn read_files_at(&self, id: String, paths: Vec<String>) -> AsyncTask<Job<Vec<FileData>>> {
+        self.job(move |repo| {
+            Ok(repo
+                .read_files_at(&snapshot_id(&id)?, &paths)?
+                .into_iter()
+                .map(|(path, data)| FileData {
+                    path,
+                    data: Buffer::from(data),
+                })
+                .collect())
+        })
+    }
+
+    /// Write a snapshot's tree into `dest`, optionally narrowed by gitignore
+    /// patterns, and resolve to the number of files written.
+    #[napi(ts_return_type = "Promise<number>")]
+    pub fn materialize(
+        &self,
+        id: String,
+        dest: String,
+        options: Option<MaterializeInput>,
+    ) -> AsyncTask<Job<u32>> {
+        self.job(move |repo| {
+            let mut scope = velo_core::Scope::new();
+            if let Some(o) = &options {
+                for p in o.only.iter().flatten() {
+                    scope = scope.only(p)?;
+                }
+                for p in o.ignore.iter().flatten() {
+                    scope = scope.ignore(p)?;
+                }
+            }
+            let done = velo_core::commands::restore::materialize(
+                repo,
+                &snapshot_id(&id)?,
+                std::path::Path::new(&dest),
+                velo_core::commands::restore::MaterializeOptions::default().scope(&scope),
+            )?;
+            Ok(done.files as u32)
         })
     }
 

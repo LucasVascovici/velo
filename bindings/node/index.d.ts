@@ -67,6 +67,13 @@ export declare class Repo {
   saveChanges(input: SaveChangesInput): Promise<SavedInfo>
   treeAt(id: string): Promise<Array<TreeFile>>
   readFileAt(id: string, path: string): Promise<Buffer>
+  /** Read several files of one snapshot in a single call, in the order asked. */
+  readFilesAt(id: string, paths: Array<string>): Promise<Array<{ path: string, data: Buffer }>>
+  /**
+   * Write a snapshot's tree into `dest`, optionally narrowed by gitignore
+   * patterns, and resolve to the number of files written.
+   */
+  materialize(id: string, dest: string, options?: MaterializeInput | undefined | null): Promise<number>
   readObject(object: string): Promise<Buffer>
   snapshot(id: string): Promise<SnapshotInfo>
   snapshotMeta(id: string): Promise<Record<string, Record<string, string>>>
@@ -218,6 +225,12 @@ export interface EntryInput {
   kind?: string
 }
 
+/** One file read by `readFilesAt`. */
+export interface FileData {
+  path: string
+  data: Buffer
+}
+
 /** One fsck finding: a variant name and a sentence. */
 export interface Finding {
   kind: string
@@ -263,6 +276,12 @@ export interface LineOriginInfo {
   branch: string
   /** The file's path at that snapshot, which differs after a rename. */
   path: string
+}
+
+/** Options of `materialize`: gitignore patterns that narrow the tree. */
+export interface MaterializeInput {
+  only?: Array<string>
+  ignore?: Array<string>
 }
 
 /** A merge to record. */

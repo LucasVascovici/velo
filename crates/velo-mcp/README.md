@@ -133,13 +133,20 @@ Content arrives in the call and trees come back by id:
 | `velo_save_tree` | Record a snapshot from `files` (`{path: content}`, `null` deletes a path) or from `changes`, an ordered array of `{"op": "put", "path", "content"}`, `{"op": "delete", "path"}` and `{"op": "rename", "from", "to"}` applied to the parent's tree (a rename records an edge, so history and blame follow it). Give exactly one of the two; `changes` cannot be combined with `replace` or a `base` other than the parent. The result lists `written: {path: object}` for every file given content. By default the files are laid over the tree of `base` (default: the parent), so only changes are sent; `replace: true` makes `files` the whole tree. `encoding` is `utf8` (default) or `base64` and applies to every value. `parent` defaults to the branch tip, a root snapshot on an unborn branch. |
 | `velo_tree_at` | The files of a snapshot as `{path, object, kind}`. |
 | `velo_read_file` | One file of a snapshot as `{content, encoding}`; non-UTF-8 content comes back base64. |
+| `velo_read_files` | Several files of one snapshot in one call: `{files: [{path, content, encoding, size}], omitted, truncated}`. `max_bytes` (default 4 MiB) is the total; files that do not fit are listed in `omitted` with a hint to call again with them. Each file falls back to base64 on its own. |
 
-These three are listed in both modes. In store mode `tools/list` omits the tools
+These four are listed in both modes. In store mode `tools/list` omits the tools
 that need a working tree (`velo_save`, `velo_restore`, `velo_status`,
 `velo_diff`, `velo_merge_apply` and `velo_branch` `switch`); calling one returns
 an `isError: true` result that names `Unsupported` and the store tool to use.
 `velo_history`, `velo_metadata`, `velo_blame`, `velo_merge_plan` and branch
 `list` and `create` work as usual.
+
+There is no MCP counterpart of the library's `materialize` (write a snapshot
+into any directory). Store-only mode has no directory to write to, and a client
+that has a checkout already has `velo_restore`. A store-only client reads a
+whole set of files with `velo_read_files` instead of one `velo_read_file` call
+per path.
 
 Example session:
 
@@ -172,6 +179,7 @@ No tool sends multi-megabyte text by accident. A cut result has
 | `velo_blame` | `limit`, default 2000 lines | `start_line` = `next_start_line` |
 | `velo_tree_at` | `limit`, default 5000 files; result is `{files, total, truncated}` | `offset` = `next_offset` |
 | `velo_read_file` | `max_bytes`, default 1 MiB; result carries `size` | `offset` = `next_offset` (text is cut on a character boundary) |
+| `velo_read_files` | `max_bytes`, default 4 MiB in total; later files go to `omitted` | call again with the paths in `omitted` |
 
 ## Protocol versions
 

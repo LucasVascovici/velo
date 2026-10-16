@@ -216,3 +216,71 @@ fn history_pages_across_a_merge_without_loss() {
     assert!(!on_main.is_empty());
     assert_eq!(page_all(&mut s, json!({"branch": "main"}), 1), on_main);
 }
+
+#[test]
+fn read_files_returns_in_order_with_base64_fallback() {
+    let (_d, mut s) = store();
+    let snap = save(&mut s, "two", json!({"a.txt": "alpha", "b.txt": "beta"}));
+    let bin = call(
+        &mut s,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "bin", "encoding": "base64",
+               "files": {"c.bin": "AP+B"}}),
+    );
+    let snap2 = ok(&bin)["snapshot"].as_str().unwrap().to_string();
+    let r = call(
+        &mut s,
+        "velo_read_files",
+        json!({"snapshot": snap2, "paths": ["c.bin", "b.txt", "a.txt"]}),
+    );
+    let p = ok(&r);
+    assert_eq!(p["truncated"], false);
+    assert_eq!(p["omitted"], json!([]));
+    let f = p["files"].as_array().unwrap();
+    let paths: Vec<_> = f.iter().map(|x| x["path"].as_str().unwrap()).collect();
+    assert_eq!(paths, ["c.bin", "b.txt", "a.txt"]);
+    assert_eq!(f[0]["encoding"], "base64");
+    assert_eq!(f[0]["content"], "AP+B");
+    assert_eq!(f[0]["size"], 3);
+    assert_eq!(f[1]["encoding"], "utf8");
+    assert_eq!(f[1]["content"], "beta");
+    let _ = snap;
+}
+
+#[test]
+fn read_files_budget_omits_the_rest_and_says_how_to_continue() {
+    let (_d, mut s) = store();
+    let snap = save(
+        &mut s,
+        "three",
+        json!({"a.txt": "x".repeat(10), "b.txt": "y".repeat(10), "c.txt": "z".repeat(3)}),
+    );
+    let r = call(
+        &mut s,
+        "velo_read_files",
+        json!({"snapshot": snap, "paths": ["a.txt", "b.txt", "c.txt"], "max_bytes": 15}),
+    );
+    let p = ok(&r);
+    assert_eq!(p["truncated"], true);
+    assert_eq!(p["files"].as_array().unwrap().len(), 1);
+    assert_eq!(p["omitted"], json!(["b.txt", "c.txt"]));
+    assert!(p["hint"].as_str().unwrap().contains("omitted"));
+    let r = call(
+        &mut s,
+        "velo_read_files",
+        json!({"snapshot": snap, "paths": ["b.txt", "c.txt"], "max_bytes": 15}),
+    );
+    assert_eq!(ok(&r)["files"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn read_files_missing_path_is_an_error() {
+    let (_d, mut s) = store();
+    let snap = save(&mut s, "one", json!({"a.txt": "a"}));
+    let r = call(
+        &mut s,
+        "velo_read_files",
+        json!({"snapshot": snap, "paths": ["a.txt", "nope.txt"]}),
+    );
+    assert_eq!(r["result"]["isError"], true, "{r}");
+}

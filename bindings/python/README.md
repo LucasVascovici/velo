@@ -15,6 +15,10 @@ import velo
 repo = velo.Repo.init("work")
 sid = repo.save_tree(branch="main", message="hi", entries={"a.txt": "hello"})
 repo.read_file_at(sid, "a.txt")
+# Several files of one snapshot in one call, in the order asked:
+repo.read_files_at(sid, ["a.txt"])      # [("a.txt", b"hello")]
+# Write a snapshot into any directory; only/ignore are gitignore patterns:
+repo.materialize(sid, "out", only=["src/**"], ignore=["*.log"])  # files written
 ```
 
 Save only what changed, and get object ids back:

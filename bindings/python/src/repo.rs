@@ -605,6 +605,52 @@ impl Repo {
         Ok(PyBytes::new(py, &data))
     }
 
+    fn read_files_at<'py>(
+        &self,
+        py: Python<'py>,
+        id: &str,
+        paths: Vec<String>,
+    ) -> PyResult<Vec<(String, Bound<'py, PyBytes>)>> {
+        let id = snapshot_id(id)?;
+        self.check_owner()?;
+        let files = py.detach(|| -> PyResult<_> { Ok(self.core()?.read_files_at(&id, &paths)) })?;
+        Ok(files
+            .map_err(to_py)?
+            .into_iter()
+            .map(|(p, data)| (p, PyBytes::new(py, &data)))
+            .collect())
+    }
+
+    #[pyo3(signature = (id, dest, only=None, ignore=None))]
+    fn materialize(
+        &self,
+        py: Python<'_>,
+        id: &str,
+        dest: PathBuf,
+        only: Option<Vec<String>>,
+        ignore: Option<Vec<String>>,
+    ) -> PyResult<usize> {
+        let id = snapshot_id(id)?;
+        let mut scope = velo_core::Scope::new();
+        for p in only.iter().flatten() {
+            scope = scope.only(p).map_err(to_py)?;
+        }
+        for p in ignore.iter().flatten() {
+            scope = scope.ignore(p).map_err(to_py)?;
+        }
+        self.check_owner()?;
+        let done = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            Ok(velo_core::commands::restore::materialize(
+                &repo,
+                &id,
+                &dest,
+                velo_core::commands::restore::MaterializeOptions::default().scope(&scope),
+            ))
+        })?;
+        Ok(done.map_err(to_py)?.files)
+    }
+
     fn read_object<'py>(&self, py: Python<'py>, object: &str) -> PyResult<Bound<'py, PyBytes>> {
         let object: ObjectHash = object.parse().map_err(to_py)?;
         let data = self.core()?.read_object(&object).map_err(to_py)?;

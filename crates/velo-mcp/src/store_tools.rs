@@ -20,7 +20,10 @@ use crate::tools::{
 /// Tools that need a working tree, with what to call in store-only mode.
 pub(crate) const NEEDS_WORKING_TREE: [(&str, &str); 5] = [
     ("velo_save", "velo_save_tree"),
-    ("velo_restore", "velo_read_file or velo_tree_at"),
+    (
+        "velo_restore",
+        "velo_read_files, velo_read_file or velo_tree_at",
+    ),
     ("velo_status", "velo_tree_at or velo_history"),
     ("velo_diff", "velo_tree_at"),
     ("velo_merge_apply", "velo_save_tree with merge_parent"),
@@ -30,6 +33,11 @@ pub(crate) const NEEDS_WORKING_TREE: [(&str, &str); 5] = [
 pub(crate) const TREE_DEFAULT_LIMIT: usize = 5000;
 /// Bytes `velo_read_file` returns when the call gives no `max_bytes`.
 pub(crate) const READ_DEFAULT_MAX_BYTES: usize = 1024 * 1024;
+/// Bytes `velo_read_files` returns in total when the call gives no `max_bytes`.
+pub(crate) const READ_FILES_DEFAULT_MAX_BYTES: usize = 4 * 1024 * 1024;
+/// Paths `velo_read_files` loads at once, so a long list that overruns the
+/// budget stops after one batch instead of reading every file first.
+const READ_FILES_BATCH: usize = 64;
 
 /// An optional integer argument of at least `min`.
 fn usize_arg(args: &Value, key: &str, min: usize) -> Result<Option<usize>, ToolError> {
@@ -93,6 +101,16 @@ pub(crate) fn list() -> Vec<Value> {
                 "max_bytes": {"type": "integer", "minimum": 1, "default": READ_DEFAULT_MAX_BYTES, "description": "Most bytes of the file to return."},
                 "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Byte offset to start at; use the next_offset of a truncated result."}
             }), json!(["snapshot", "path"]))
+        }),
+        json!({
+            "name": "velo_read_files",
+            "description": "Read several files of one snapshot in one call, in the order asked. With utf8 (the default), a file that is not valid UTF-8 comes back base64 with its own 'encoding'. 'max_bytes' (default 4 MiB) is the total across files; files that do not fit are listed in 'omitted' with truncated: true, and a hint says to call again with those paths. A path the snapshot lacks is an error.",
+            "inputSchema": obj_schema(json!({
+                "snapshot": {"type": "string"},
+                "paths": {"type": "array", "items": {"type": "string"}, "description": "Paths to read."},
+                "encoding": encoding,
+                "max_bytes": {"type": "integer", "minimum": 1, "default": READ_FILES_DEFAULT_MAX_BYTES, "description": "Most bytes to return in total across all files."}
+            }), json!(["snapshot", "paths"]))
         }),
     ]
 }
@@ -427,6 +445,68 @@ pub(crate) fn read_file_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, T
         out["next_offset"] = json!(end);
         out["hint"] = json!(format!(
             "Returned bytes {offset}..{end} of {size}. Call velo_read_file again with \"offset\": {end} for the rest, or raise 'max_bytes'."
+        ));
+    }
+    Ok(out)
+}
+
+/// Several files of one snapshot within a total byte budget. Files are
+/// returned in the order asked until one does not fit; it and every later path
+/// go to `omitted`, so the caller can ask for exactly those next.
+pub(crate) fn read_files_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let max = usize_arg(args, "max_bytes", 1)?.unwrap_or(READ_FILES_DEFAULT_MAX_BYTES);
+    let id = snapshot_arg(ctx.repo, req_str(args, "snapshot")?)?;
+    let want_b64 = encoding_arg(args)?;
+    let paths: Vec<&str> = args
+        .get("paths")
+        .and_then(Value::as_array)
+        .ok_or_else(|| bad("'paths' must be an array of strings"))?
+        .iter()
+        .map(|p| {
+            p.as_str()
+                .ok_or_else(|| bad("'paths' must be an array of strings"))
+        })
+        .collect::<Result<_, _>>()?;
+    let mut files = Vec::new();
+    let mut omitted: Vec<&str> = Vec::new();
+    let mut used = 0usize;
+    let mut full = false;
+    for chunk in paths.chunks(READ_FILES_BATCH) {
+        if full {
+            omitted.extend(chunk);
+            continue;
+        }
+        let got = ctx.repo.read_files_at(&id, chunk)?;
+        for (asked, (path, bytes)) in chunk.iter().zip(got) {
+            if full || bytes.len() > max - used {
+                full = true;
+                omitted.push(asked);
+                continue;
+            }
+            used += bytes.len();
+            let text = if want_b64 {
+                None
+            } else {
+                std::str::from_utf8(&bytes).ok()
+            };
+            let (content, encoding) = match text {
+                Some(t) => (t.to_string(), "utf8"),
+                None => (STANDARD.encode(&bytes), "base64"),
+            };
+            files.push(json!({
+                "path": path,
+                "content": content,
+                "encoding": encoding,
+                "size": bytes.len(),
+            }));
+        }
+    }
+    let truncated = !omitted.is_empty();
+    let mut out = json!({"files": files, "omitted": omitted, "truncated": truncated});
+    if truncated {
+        out["hint"] = json!(format!(
+            "{} file(s) did not fit in 'max_bytes' {max}. Call velo_read_files again with the paths in 'omitted', or raise 'max_bytes'.",
+            omitted.len()
         ));
     }
     Ok(out)

@@ -447,16 +447,11 @@ bindings = ["python", "node"]
 reason = "internal: the canonical bytes a signature covers; the bindings sign through sign::sign"
 
 [[exempt]]
-entry = "Repo::read_files_at"
-bindings = ["python", "node"]
-reason = "pending: batch reads and materialize bindings (19.3-c)"
-
-[[exempt]]
 entry = "commands::report::build"
 bindings = ["python", "node"]
 reason = "audit report model for the CLI's HTML and JSON renderers; bindings already expose history, blame, snapshot_meta and verify to build their own view"
 
 [[exempt]]
-entry = "commands::restore::materialize"
+entry = "Repo::object_at"
 bindings = ["python", "node"]
-reason = "pending: batch reads and materialize bindings (19.3-c)"
+reason = "internal: one indexed existence lookup for velo_save_tree's null-deletes; the bindings answer it with tree_at"

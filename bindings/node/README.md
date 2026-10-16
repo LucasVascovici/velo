@@ -18,6 +18,10 @@ const id = await repo.saveTree({
   entries: [{ path: 'a.txt', data: 'hello' }],
 })
 await repo.readFileAt(id, 'a.txt') // <Buffer 68 65 6c 6c 6f>
+// Several files of one snapshot in one call, in the order asked:
+await repo.readFilesAt(id, ['a.txt']) // [{ path: 'a.txt', data: <Buffer ...> }]
+// Write a snapshot into any directory; only/ignore are gitignore patterns:
+await repo.materialize(id, 'out', { only: ['src/**'], ignore: ['*.log'] }) // files written
 ```
 
 Save only what changed, and get object ids back:
