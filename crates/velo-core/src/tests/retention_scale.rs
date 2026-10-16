@@ -108,6 +108,13 @@ fn run(files: usize, snapshots: usize, days: i64) -> (Shape, Shape) {
     let branch: BranchName = "main".parse().unwrap();
     let now_ms = BASE_MS + days * DAY_MS;
 
+    #[cfg(feature = "timing")]
+    let pages_before: i64 = repo
+        .conn()
+        .query_row("PRAGMA page_count", [], |r| r.get(0))
+        .unwrap();
+    #[cfg(feature = "timing")]
+    crate::timing::drain_laps();
     let started = Instant::now();
     let report = retention::apply(
         &repo.write().unwrap(),
@@ -120,6 +127,17 @@ fn run(files: usize, snapshots: usize, days: i64) -> (Shape, Shape) {
     )
     .unwrap();
     let retained = started.elapsed();
+    #[cfg(feature = "timing")]
+    {
+        let pages_after: i64 = repo
+            .conn()
+            .query_row("PRAGMA page_count", [], |r| r.get(0))
+            .unwrap();
+        eprintln!("page_count before {pages_before}, after {pages_after}");
+        for lap in crate::timing::drain_laps() {
+            eprintln!("lap {} {:?}", lap.name, lap.elapsed);
+        }
+    }
 
     let started = Instant::now();
     gc::run(&repo.write().unwrap(), gc::Options::default()).unwrap();
@@ -160,4 +178,13 @@ fn default_policy_bounds_rows_at_small_scale() {
     assert_eq!(before.snapshots, 100);
     assert!(after.snapshots < before.snapshots);
     assert_eq!(after.rows, after.snapshots * 20);
+}
+
+/// The 18.10 shape at a fifth of the width and snapshot count, for comparing
+/// the stage laps of one change against the next (19.4-a).
+#[test]
+#[ignore = "measurement: 400 snapshots of 2,000 files; run with --release --features timing"]
+fn default_policy_at_a_reduced_18_10_shape() {
+    let (before, after) = run(2_000, 400, 60);
+    assert!(after.snapshots < before.snapshots);
 }

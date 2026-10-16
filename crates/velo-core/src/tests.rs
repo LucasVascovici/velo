@@ -12290,3 +12290,6 @@ mod save_changes;
 
 #[cfg(test)]
 mod materialize;
+
+#[cfg(test)]
+mod compaction_in_place;
