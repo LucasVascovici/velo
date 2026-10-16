@@ -23,6 +23,7 @@ pub mod progress;
 pub mod rebase;
 pub mod remote;
 pub mod restore;
+pub mod retention;
 pub mod save;
 pub mod sign;
 pub mod squash;

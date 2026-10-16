@@ -574,6 +574,8 @@ can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 | `velo gc` | Remove orphaned objects and stale undo/conflict state |
 | `velo gc --dry-run` | Report what `gc` would collect and remove nothing |
 | `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
+| `velo gc --vacuum` | Also run a full vacuum, converting a repository created before 5.3.0 to incremental `auto_vacuum` (needs free disk about the size of `velo.db`) |
+| `velo retention [--keep <age>=<every>] [--dry-run]` | Thin old snapshots by age (default: all for a day, hourly for a month, daily after), keeping signed, tagged and checked-out ones, then run `gc` and return the freed space |
 | `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
 | `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
 | `velo keygen --out <file>` | Write a new signing key (a secret) to `file` and print its public key |

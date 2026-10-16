@@ -1038,7 +1038,8 @@ WHAT GC CLEANS UP
 
 NOTES
     · Running gc while a merge is in progress is safe.
-    · The operation is idempotent — running it twice is harmless."
+    · The operation is idempotent — running it twice is harmless.
+    · A plain gc then returns freed pages to the operating system, for a repository created by 5.3.0 or later. --vacuum also converts an older one (it needs free disk about the size of velo.db and holds the write lock meanwhile)."
     )]
     Gc {
         /// Keep undone snapshot history for this many days.
@@ -1052,6 +1053,58 @@ NOTES
         /// Report what would be collected and remove nothing.
         #[arg(long, help = "Report what would be collected, remove nothing")]
         dry_run: bool,
+        /// Run a full VACUUM, converting an older repository to incremental
+        /// auto_vacuum.
+        #[arg(long, help = "Run a full vacuum, converting an older repository")]
+        vacuum: bool,
+    },
+
+    /// Thin old snapshots on a branch by age, then gc.
+    ///
+    /// Keeps every snapshot younger than the first tier, and one per bucket
+    /// after that. Signed, tagged, merge, published and checked-out snapshots
+    /// always stay. Runs `gc` and an incremental vacuum afterwards, so the
+    /// space comes back.
+    ///
+    /// Examples
+    ///   velo retention --dry-run
+    ///   velo retention --keep 1d=1h --keep 30d=1d
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · --keep AGE=EVERY: snapshots older than AGE keep one per EVERY. Durations are <n>m, <n>h, <n>d or <n>w. Tiers must ascend in age and EVERY may not shrink.
+    · With no --keep: everything for a day, one per hour for a month, one per day after.
+    · --dry-run lists what would go and every protected snapshot, and changes nothing.
+    · The removed snapshots' ids stop resolving, and `velo undo` does not bring them back.
+    · Take a backup first with velo bundle create <file> if the history matters."
+    )]
+    Retention {
+        /// The branch to thin (default: the current branch).
+        #[arg(
+            long,
+            value_name = "BRANCH",
+            help = "Branch to thin (default: current)"
+        )]
+        branch: Option<String>,
+        /// A tier, `AGE=EVERY`; repeatable.
+        #[arg(
+            long = "keep",
+            value_name = "AGE=EVERY",
+            help = "Older than AGE, keep one snapshot per EVERY (e.g. 1d=1h); repeatable"
+        )]
+        keep: Vec<String>,
+        /// Report what would go and what is protected, and change nothing.
+        #[arg(long, help = "Report what would be removed, change nothing")]
+        dry_run: bool,
+        /// Keep undone snapshot history for this many days (for the gc pass).
+        #[arg(
+            long,
+            default_value_t = 30,
+            value_name = "DAYS",
+            help = "Retain undo history for N days during gc"
+        )]
+        keep_days: u32,
     },
 
     /// Verify repository integrity (read-only).
@@ -1465,6 +1518,20 @@ fn git_habit_hint(args: impl Iterator<Item = String>) -> Option<&'static str> {
 }
 
 fn main() {
+    // Parsing this many subcommands and running the dispatcher in a debug build
+    // needs more than the 1 MiB a Windows main thread gets, so run on a thread
+    // with room to spare. Exit codes are set by `process::exit` inside.
+    let worker = std::thread::Builder::new()
+        .name("velo".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(real_main)
+        .expect("failed to start the velo worker thread");
+    if worker.join().is_err() {
+        std::process::exit(101);
+    }
+}
+
+fn real_main() {
     // SAFETY: `SetConsoleOutputCP` takes a plain integer code page and touches no
     // memory of ours; the declaration matches the kernel32 signature. Failure is
     // harmless (output stays in the old code page), so the result is ignored.
@@ -2335,6 +2402,34 @@ fn read_trust_file(path: &Path) -> Result<velo_core::sign::TrustedKeys> {
         keys.insert(line.parse()?);
     }
     Ok(keys)
+}
+
+/// A duration such as `90m`, `12h`, `1d` or `2w`, in milliseconds.
+fn parse_duration_ms(text: &str) -> Option<i64> {
+    let unit = text.chars().last()?;
+    let per: i64 = match unit {
+        'm' => 60_000,
+        'h' => 3_600_000,
+        'd' => 86_400_000,
+        'w' => 7 * 86_400_000,
+        _ => return None,
+    };
+    let n: i64 = text[..text.len() - 1].parse().ok()?;
+    n.checked_mul(per)
+}
+
+/// `AGE=EVERY`, e.g. `30d=1d`, to a retention tier.
+fn parse_keep(spec: &str) -> Result<commands::retention::Tier> {
+    let bad = || {
+        VeloError::invalid(format!(
+            "invalid --keep value '{spec}': expected AGE=EVERY with durations like 90m, 12h, 1d or 2w (e.g. 30d=1d)"
+        ))
+    };
+    let (age, every) = spec.split_once('=').ok_or_else(bad)?;
+    Ok(commands::retention::Tier {
+        older_than_ms: parse_duration_ms(age).ok_or_else(bad)?,
+        keep_one_per_ms: parse_duration_ms(every).ok_or_else(bad)?,
+    })
 }
 
 /// `N` or `N-M`, 1-based and inclusive, to a half-open range.
@@ -3320,7 +3415,16 @@ fn run(cli: Cli) -> Result<Exit> {
             }
         }
 
-        Commands::Gc { keep_days, dry_run } => {
+        Commands::Gc {
+            keep_days,
+            dry_run,
+            vacuum,
+        } => {
+            if dry_run && vacuum {
+                return Err(VeloError::invalid(
+                    "--vacuum cannot be combined with --dry-run: a vacuum changes the database",
+                ));
+            }
             render::gc::print(&commands::gc::run(
                 write(),
                 commands::gc::Options {
@@ -3329,7 +3433,22 @@ fn run(cli: Cli) -> Result<Exit> {
                     ..Default::default()
                 },
             )?);
+            if !dry_run {
+                let mode = if vacuum {
+                    commands::gc::Vacuum::Full
+                } else {
+                    commands::gc::Vacuum::Incremental
+                };
+                render::gc::print_vacuum(&commands::gc::vacuum(write(), mode)?);
+            }
         }
+
+        Commands::Retention {
+            branch,
+            keep,
+            dry_run,
+            keep_days,
+        } => run_retention(write(), &root, branch.as_deref(), &keep, dry_run, keep_days)?,
 
         Commands::Fsck { repair } => {
             let report = if repair {
@@ -3471,4 +3590,60 @@ fn parse_where(text: &str) -> Result<commands::history::MetaFilter<'_>> {
         Some(value) => commands::history::MetaFilter::equals(namespace, key, value),
         None => commands::history::MetaFilter::has(namespace, key),
     })
+}
+
+/// `velo retention`: thin a branch, then gc and vacuum.
+///
+/// Kept out of `run` because that function's frame is already large and a
+/// debug build on Windows overflows the main thread's stack if it grows.
+#[inline(never)]
+fn run_retention(
+    guard: &velo_core::WriteGuard<'_>,
+    root: &Path,
+    branch: Option<&str>,
+    keep: &[String],
+    dry_run: bool,
+    keep_days: u32,
+) -> Result<()> {
+    let branch: BranchName = match branch {
+        Some(b) => b.parse()?,
+        None => std::fs::read_to_string(root.join(".velo/HEAD"))
+            .map_err(|e| VeloError::invalid(format!("cannot read .velo/HEAD: {e}")))?
+            .trim()
+            .parse()?,
+    };
+    let policy = if keep.is_empty() {
+        commands::retention::Policy::default()
+    } else {
+        commands::retention::Policy {
+            tiers: keep
+                .iter()
+                .map(|k| parse_keep(k))
+                .collect::<Result<Vec<_>>>()?,
+        }
+    };
+    let report = commands::retention::apply(
+        guard,
+        &branch,
+        &policy,
+        commands::retention::Options {
+            dry_run,
+            ..Default::default()
+        },
+    )?;
+    render::retention::print(&report, dry_run);
+    if !dry_run && report.removed > 0 {
+        render::gc::print(&commands::gc::run(
+            guard,
+            commands::gc::Options {
+                keep_days,
+                ..Default::default()
+            },
+        )?);
+        render::gc::print_vacuum(&commands::gc::vacuum(
+            guard,
+            commands::gc::Vacuum::Incremental,
+        )?);
+    }
+    Ok(())
 }

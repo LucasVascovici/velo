@@ -107,14 +107,25 @@ overwritten. See [`crates/velo-mcp/README.md`](../../crates/velo-mcp/README.md).
 ## Keep the history bounded
 
 An agent that saves after every tool call piles up snapshots, and each one owns
-a row per file. Apply a retention policy on a schedule rather than letting it
-accumulate: `velo_core::commands::retention::Policy::default()` keeps every
-snapshot for a day, one per hour for a month, and one per day after that, and
-`commands::retention::apply` followed by `commands::gc::run` does the work. On a
-10,000-file tree with 2,000 snapshots over 60 days it cut snapshots, rows and
-live content by 62%. Run it daily; a single pass over 2,000 snapshots took 20
-minutes, and the database file does not shrink (freed pages are reused). The
-measurement, its method and the envelope velo was tested to are in
+a row per file. Thin the history on a schedule rather than letting it
+accumulate:
+
+```bash
+velo retention --dry-run          # what would go, and what is protected
+velo retention                    # thin, then gc and return the freed space
+velo retention --keep 1d=1h --keep 30d=1d   # the same tiers, spelled out
+```
+
+With no `--keep`, everything stays for a day, then one snapshot per hour for a
+month, then one per day. Signed and tagged snapshots always stay. The command
+runs `gc` and an incremental vacuum afterwards, so the database file shrinks on
+repositories created from 5.3.0.
+
+An embedder does the same through the library:
+`velo_core::commands::retention::apply` with a `Policy`, then
+`commands::gc::run` and `commands::gc::vacuum`. On a 10,000-file tree with
+2,000 snapshots over 60 days a pass cut snapshots, rows and live content by 62%.
+The measurement, its method and the envelope velo was tested to are in
 [docs/SCALE.md](../SCALE.md).
 
 ## Against the alternatives
