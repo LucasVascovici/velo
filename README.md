@@ -971,6 +971,30 @@ pre-built binary. Requires Rust 1.88 or later.
 The crates are packaged and ready for crates.io — `cargo install velo-cli` is
 what this becomes — but nothing is published there yet.
 
+### Python and Node bindings without a registry
+
+Each release attaches the abi3 Python wheels, the Node tarballs and a checksum
+file. Nothing is on PyPI or npm; a release asset can be removed, so this is
+reversible, unlike a registry version. Replace `vX.Y.Z` with a release tag.
+
+```bash
+# Python (abi3 wheel, one per platform: velo-<version>-cp39-abi3-<platform>.whl)
+pip install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/<wheel file>
+
+# Node (velo-core-<version>-<platform>.tgz, platform is linux, macos or windows)
+npm install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/velo-core-<version>-<platform>.tgz
+
+# The CLI, built from the tag
+cargo install --git https://github.com/LucasVascovici/velo --tag vX.Y.Z velo-cli
+```
+
+To verify a download, fetch `SHA256SUMS-bindings.txt` from the same release,
+put it next to the files and run `sha256sum --check --ignore-missing
+SHA256SUMS-bindings.txt` (`shasum -a 256 -c` on macOS).
+
+The bindings are 0.x and unpublished; see [docs/STABILITY.md](docs/STABILITY.md)
+for what that promises.
+
 ### Unix (Linux & macOS)
 
 ```bash

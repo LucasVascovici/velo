@@ -8,7 +8,8 @@
 # present, such as a file missing from the package.
 #
 # Nothing is uploaded to a registry: there is no publish, twine upload,
-# npm publish or release-asset step anywhere in this file.
+# npm publish or release-asset step anywhere in this file. On a tag,
+# release.yml calls this workflow and attaches the artifacts to the release.
 name: Packages
 
 on:
@@ -17,6 +18,8 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+  # Called by release.yml, which attaches the artifacts to the GitHub release.
+  workflow_call:
 
 env:
   CARGO_TERM_COLOR: always
@@ -126,6 +129,11 @@ jobs:
           tar -tzf velo-core-*.tgz > tarball.txt
           cat tarball.txt
           grep -q '\.node$' tarball.txt
+          # Every platform packs the same file name; add the platform so the
+          # three do not collide when attached to one release.
+          version=$(node -p "require('./package.json').version")
+          mv "velo-core-${version}.tgz" "velo-core-${version}-${{ matrix.name }}.tgz"
+          ls velo-core-*.tgz
       - uses: actions/upload-artifact@v4
         with:
           name: node-${{ matrix.name }}

@@ -193,3 +193,49 @@ jobs:
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # -- Wheels and Node tarballs: built and install-tested by packages.yml ----
+  bindings:
+    name: Bindings
+    needs: verify
+    uses: ./.github/workflows/packages.yml
+
+  # -- Attach the bindings, with checksums, to the release -------------------
+  # Needs the whole reusable workflow, so the install tests gate the attach.
+  # Nothing is published to a registry.
+  attach-bindings:
+    name: Attach bindings
+    needs: bindings
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: bindings-dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-*
+          path: bindings-dist
+          merge-multiple: true
+      - name: Write checksums
+        shell: bash
+        working-directory: bindings-dist
+        run: |
+          ls -l
+          test "$(ls *.whl | wc -l)" -eq 3
+          test "$(ls *.tgz | wc -l)" -eq 3
+          sha256sum *.whl *.tgz > SHA256SUMS-bindings.txt
+          cat SHA256SUMS-bindings.txt
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bindings-dist/*.whl
+            bindings-dist/*.tgz
+            bindings-dist/SHA256SUMS-bindings.txt
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
