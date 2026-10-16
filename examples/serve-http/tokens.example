@@ -1,0 +1,6 @@
+# One token per line: "read <token>" may fetch, "write <token>" may also push.
+# These values are placeholders for the demo and the CI smoke test.
+# NEVER commit real tokens: copy this file to "tokens" (git-ignored) and
+# replace them with long random values, e.g. `openssl rand -hex 32`.
+read read-token-example
+write write-token-example

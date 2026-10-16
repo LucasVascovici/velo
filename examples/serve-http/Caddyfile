@@ -1,0 +1,21 @@
+# Plain HTTP on :8080 so the example runs anywhere. TLS terminates here.
+:8080 {
+	# Required, not optional: tiny_http drains an unread body of the declared
+	# Content-Length even after velo answered 413, so a huge one can abort the
+	# server. Keep this at or below velo's --max-request-bytes (1 GiB).
+	request_body {
+		max_size 1GB
+	}
+	reverse_proxy velo:8417
+}
+
+# Production: replace the block above with this one. Caddy obtains and renews
+# a certificate for the domain automatically (ports 80 and 443 must be
+# published and the name must resolve to this host).
+#
+# velo.example.com {
+# 	request_body {
+# 		max_size 1GB
+# 	}
+# 	reverse_proxy velo:8417
+# }

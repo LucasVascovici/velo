@@ -1,0 +1,58 @@
+name: Deploy example
+
+# Proves examples/serve-http against the real binary: the read-write stack and
+# the read-only mirror, each with the smoke test.
+
+on:
+  push:
+    paths:
+      - "examples/serve-http/**"
+      - "crates/velo-cli/**"
+      - "crates/velo-core/src/serve.rs"
+      - ".github/workflows/deploy-example.yml"
+  pull_request:
+    paths:
+      - "examples/serve-http/**"
+      - "crates/velo-cli/**"
+      - "crates/velo-core/src/serve.rs"
+      - ".github/workflows/deploy-example.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: examples/serve-http
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the release binary
+        working-directory: .
+        run: cargo build --release -p velo-cli --locked
+      - name: Stage binary, tokens and repos
+        run: |
+          mkdir -p bin repos
+          cp ../../target/release/velo bin/velo
+          cp tokens.example tokens
+      - name: Read-write stack
+        run: |
+          docker compose up -d --wait
+          ./smoke.sh
+      - name: Tear down read-write stack
+        if: always()
+        run: |
+          docker compose logs || true
+          docker compose down -v || true
+      - name: Read-only mirror stack
+        run: |
+          docker compose -f compose.mirror.yml up -d --wait
+          ./smoke.sh mirror
+      - name: Tear down mirror stack
+        if: always()
+        run: |
+          docker compose -f compose.mirror.yml logs || true
+          docker compose -f compose.mirror.yml down -v || true

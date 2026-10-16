@@ -1,0 +1,29 @@
+# The read-only mirror: the same stack, but every push is refused, even one
+# carrying a valid write token. Use it with the same ./bin, ./tokens, ./repos.
+services:
+  velo:
+    image: debian:bookworm-slim
+    command: >
+      /usr/local/bin/velo serve-http /srv/repos --directory --read-only
+      --token-file /etc/velo/tokens --listen 0.0.0.0:8417
+    volumes:
+      - ./bin/velo:/usr/local/bin/velo:ro
+      - ./tokens:/etc/velo/tokens:ro
+      - ./repos:/srv/repos
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8417"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      velo:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    restart: unless-stopped

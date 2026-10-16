@@ -1,0 +1,34 @@
+# velo serve-http behind a Caddy reverse proxy. See README.md.
+#
+#   cp tokens.example tokens
+#   mkdir -p bin repos && cp /path/to/velo bin/velo
+#   docker compose up -d --wait
+services:
+  velo:
+    image: debian:bookworm-slim
+    # Bound to all interfaces *inside* the container; nothing is published, so
+    # only the caddy service can reach it over the compose network.
+    command: >
+      /usr/local/bin/velo serve-http /srv/repos --directory
+      --token-file /etc/velo/tokens --listen 0.0.0.0:8417
+    volumes:
+      - ./bin/velo:/usr/local/bin/velo:ro
+      - ./tokens:/etc/velo/tokens:ro
+      - ./repos:/srv/repos
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8417"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2
+    depends_on:
+      velo:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+    restart: unless-stopped

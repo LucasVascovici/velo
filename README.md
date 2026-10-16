@@ -754,7 +754,9 @@ deliberately opts out of this, since a bundle must stand alone.)
 #### Hosting a remote
 
 `velo serve-http` is a small reference server. It is safe to host once you pick
-a policy; from 5.2.0 it no longer accepts anonymous pushes by default.
+a policy; from 5.2.0 it no longer accepts anonymous pushes by default. A tested
+compose deployment (Caddy proxy, tokens, read-only mirror) is in
+[`examples/serve-http/`](examples/serve-http/).
 
 ```bash
 velo serve-http /srv/project                       # anonymous fetch, push refused (401)
