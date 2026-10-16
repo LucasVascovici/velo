@@ -455,3 +455,7 @@ reason = "pending: batch reads and materialize bindings (19.3-c)"
 entry = "commands::gc::vacuum"
 bindings = ["python", "node"]
 reason = "pending: vacuum binding (19.4-d)"
+
+[[exempt]]
+entry = "commands::report::build"
+reason = "audit report model for the CLI's HTML and JSON renderers; bindings already expose history, blame, snapshot_meta and verify to build their own view"

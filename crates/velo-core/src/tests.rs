@@ -12275,3 +12275,6 @@ mod batch_reads;
 
 #[cfg(test)]
 mod vacuum;
+
+#[cfg(test)]
+mod report_model;
