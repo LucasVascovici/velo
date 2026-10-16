@@ -252,6 +252,20 @@ pub(crate) fn save_tree_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, T
                     changed.push(path.to_string());
                     list.push(Change::Put(TreeEntry::file(path.to_string(), bytes)));
                 }
+                // The old path ignored a null for a path the parent never had,
+                // so keep that: only null paths present in the parent become
+                // deletes, found by a lookup each rather than a tree load.
+                let mut present = Vec::new();
+                for path in deleted.drain(..) {
+                    let there = match &parent {
+                        Some(p) => ctx.repo.object_at(p, &path)?.is_some(),
+                        None => false,
+                    };
+                    if there {
+                        present.push(path);
+                    }
+                }
+                deleted = present;
                 list.extend(deleted.iter().cloned().map(Change::Delete));
                 list
             }

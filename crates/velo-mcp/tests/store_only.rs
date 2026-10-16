@@ -335,3 +335,33 @@ fn files_and_changes_conflict_and_one_is_required() {
     );
     assert!(err_text(&replace).contains("replace"));
 }
+
+#[test]
+fn files_form_ignores_a_null_for_a_path_the_parent_lacks() {
+    let (_d, mut s) = store("n.velo");
+    let r = call(
+        &mut s,
+        1,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m1", "files": {"a": "1", "never-existed": null}}),
+    );
+    assert_eq!(ok(&r)["deleted"], json!([]));
+    let id = ok(&r)["snapshot"].as_str().unwrap().to_string();
+    let r2 = call(
+        &mut s,
+        2,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m2", "files": {"b": "2", "a": null, "ghost": null}}),
+    );
+    assert_eq!(ok(&r2)["deleted"], json!(["a"]));
+    let snap = ok(&r2)["snapshot"].as_str().unwrap().to_string();
+    let tree = tree_objects(&mut s, &snap);
+    let paths: Vec<&str> = tree
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, vec!["b"]);
+    assert!(!id.is_empty());
+}

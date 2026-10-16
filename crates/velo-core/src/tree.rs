@@ -918,6 +918,24 @@ impl Repo {
         Ok(files)
     }
 
+    /// The object id of `path` in `snapshot`, or `None` when the path is not
+    /// in that tree. One indexed lookup; the content is not read.
+    pub fn object_at(
+        &self,
+        snapshot: &SnapshotId,
+        path: impl AsRef<Path>,
+    ) -> Result<Option<ObjectHash>> {
+        let rel = db::normalise(&path.as_ref().to_string_lossy());
+        let mut stmt = self
+            .conn()
+            .prepare_cached("SELECT hash FROM file_map WHERE snapshot_hash = ? AND path = ?")?;
+        let mut rows = stmt.query(params![snapshot, rel])?;
+        match rows.next()? {
+            Some(r) => Ok(Some(r.get(0)?)),
+            None => Ok(None),
+        }
+    }
+
     /// The content of `path` as it was in `snapshot`.
     ///
     /// For a symlink this is the target path, matching how it was stored.
