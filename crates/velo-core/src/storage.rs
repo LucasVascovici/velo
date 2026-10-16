@@ -14,7 +14,9 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The rename is atomic within a filesystem on both Unix and Windows.
 pub fn write_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     let tmp = temp_sibling(path);
+    crate::timing::count("fs.create", 1);
     fs::write(&tmp, contents)?;
+    crate::timing::count("fs.rename", 1);
     match fs::rename(&tmp, path) {
         Ok(()) => Ok(()),
         Err(e) => {
@@ -66,25 +68,34 @@ pub const MODE_SYMLINK: i64 = 2;
 /// `MODE_REGULAR` (callers make the bit "sticky" via the parent tree so it
 /// survives edits on Windows).
 pub fn capture_mode(path: &Path) -> i64 {
+    crate::timing::count("fs.stat", 1);
     match fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_symlink() => MODE_SYMLINK,
-        Ok(_meta) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                if _meta.permissions().mode() & 0o111 != 0 {
-                    return MODE_EXEC;
-                }
-            }
-            MODE_REGULAR
-        }
+        Ok(meta) => mode_of(&meta),
         Err(_) => MODE_REGULAR,
     }
+}
+
+/// The mode `capture_mode` would report, from metadata the caller already
+/// holds (an `lstat`, not a followed `stat`), so a walk that has just
+/// stat-ed a file does not stat it again to learn its mode.
+pub(crate) fn mode_of(meta: &fs::Metadata) -> i64 {
+    if meta.file_type().is_symlink() {
+        return MODE_SYMLINK;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if meta.permissions().mode() & 0o111 != 0 {
+            return MODE_EXEC;
+        }
+    }
+    MODE_REGULAR
 }
 
 /// Read a symlink's target as normalised (forward-slash) bytes — the content we
 /// store for a symlink object.
 pub fn read_symlink_target(path: &Path) -> Result<Vec<u8>> {
+    crate::timing::count("fs.open_read", 1);
     let target = fs::read_link(path).map_err(VeloError::Io)?;
     Ok(crate::db::normalise(&target.to_string_lossy()).into_bytes())
 }
@@ -819,6 +830,7 @@ impl FileObjects {
             return write_atomic(&obj_path, &compressed).map_err(VeloError::Io);
         }
         let chunks_dir = self.chunks_dir();
+        crate::timing::count("fs.mkdir", 1);
         fs::create_dir_all(&chunks_dir).map_err(VeloError::Io)?;
         let mut manifest = Vec::new();
         manifest.extend_from_slice(MANIFEST_MAGIC);
@@ -836,6 +848,7 @@ impl FileObjects {
             let data = &normalised[c.offset..c.offset + c.length];
             let digest = blake3::hash(data);
             let path = chunks_dir.join(digest.to_hex().as_str());
+            crate::timing::count("fs.exists", 1);
             if !path.exists() {
                 let frame = zstd::encode_all(data, 1).map_err(VeloError::Io)?;
                 write_atomic(&path, &frame).map_err(VeloError::Io)?;
@@ -851,6 +864,7 @@ impl FileObjects {
     /// Hash and store already-normalised bytes verbatim. Returns the name.
     pub(crate) fn put(&self, normalised: &[u8]) -> Result<String> {
         let hash = blake3::hash(normalised).to_hex().to_string();
+        crate::timing::count("fs.exists", 1);
         if !self.path(&hash).exists() {
             self.store(&hash, normalised)?;
         }
@@ -859,15 +873,14 @@ impl FileObjects {
 
     /// Like [`put_file`](Self::put_file) but reads the file exactly once: the
     /// bytes that are hashed are the bytes that get stored.
+    ///
+    /// The file is opened once: its size comes from the open handle, not from
+    /// a separate `stat` of the path, and the same handle is read or mapped.
     pub(crate) fn put_file_once(&self, file_path: &Path) -> Result<String> {
         record_known_read(file_path);
-        let size = fs::metadata(file_path).map_err(VeloError::Io)?.len();
-        let data = normalise_crlf(if size >= MMAP_THRESHOLD {
-            read_mmap(file_path)?
-        } else {
-            fs::read(file_path).map_err(VeloError::Io)?
-        });
+        let data = normalise_crlf(read_open_once(file_path)?);
         let hash = blake3::hash(&data).to_hex().to_string();
+        crate::timing::count("fs.exists", 1);
         if !self.path(&hash).exists() {
             self.store(&hash, &data)?;
         }
@@ -876,6 +889,7 @@ impl FileObjects {
 
     /// Hash a working-tree file (CRLF-normalised) and store it.
     pub(crate) fn put_file(&self, file_path: &Path) -> Result<String> {
+        crate::timing::count("fs.stat", 1);
         let meta = fs::metadata(file_path).map_err(VeloError::Io)?;
         let size = meta.len();
 
@@ -885,11 +899,13 @@ impl FileObjects {
             hash_small(file_path)?
         };
 
+        crate::timing::count("fs.exists", 1);
         if !self.path(&hash).exists() {
             // Re-read for compression (mmap again for large files)
             let data = normalise_crlf(if size >= MMAP_THRESHOLD {
                 read_mmap(file_path)?
             } else {
+                crate::timing::count("fs.open_read", 1);
                 fs::read(file_path).map_err(VeloError::Io)?
             });
             // Atomic writes: a crash can't leave a half-written object under
@@ -1009,6 +1025,7 @@ impl FileObjects {
     }
 
     pub(crate) fn contains(&self, hash: &str) -> bool {
+        crate::timing::count("fs.exists", 1);
         self.path(hash).exists()
     }
 
@@ -1177,6 +1194,7 @@ pub fn normalise_crlf(data: Vec<u8>) -> Vec<u8> {
 
 /// Hash a small file by reading it fully into a Vec then hashing.
 fn hash_small(path: &Path) -> Result<String> {
+    crate::timing::count("fs.open_read", 1);
     let data = normalise_crlf(fs::read(path).map_err(VeloError::Io)?);
     Ok(blake3::hash(&data).to_hex().to_string())
 }
@@ -1208,7 +1226,14 @@ fn hash_mmap(path: &Path) -> Result<String> {
 
 #[cfg(not(target_family = "wasm"))]
 fn read_mmap(path: &Path) -> Result<Vec<u8>> {
+    crate::timing::count("fs.open_read", 1);
     let file = fs::File::open(path).map_err(VeloError::Io)?;
+    map_copy(&file)
+}
+
+/// Map an open file and copy its bytes out.
+#[cfg(not(target_family = "wasm"))]
+fn map_copy(file: &fs::File) -> Result<Vec<u8>> {
     // SAFETY: the file is opened read-only and the map is private to this
     // function. velo never writes to a stored file in place (objects are written
     // to a temporary name and renamed), so nothing in this process mutates the
@@ -1218,14 +1243,39 @@ fn read_mmap(path: &Path) -> Result<Vec<u8>> {
     // copied into a `Vec` immediately and the map dropped, so no reference into
     // the mapping outlives this function.
     #[allow(unsafe_code)]
-    let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(VeloError::Io)?;
+    let mmap = unsafe { memmap2::Mmap::map(file) }.map_err(VeloError::Io)?;
     Ok(mmap.to_vec())
 }
 
 /// There is no mmap on wasm; a plain read gives the same bytes.
 #[cfg(target_family = "wasm")]
 fn read_mmap(path: &Path) -> Result<Vec<u8>> {
+    crate::timing::count("fs.open_read", 1);
     fs::read(path).map_err(VeloError::Io)
+}
+
+/// Read an open file whole (there is no mmap on wasm).
+#[cfg(target_family = "wasm")]
+fn map_copy(file: &fs::File) -> Result<Vec<u8>> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    (&*file).read_to_end(&mut buf).map_err(VeloError::Io)?;
+    Ok(buf)
+}
+
+/// Read a whole file through one open: the size is taken from the handle to
+/// choose between a plain read and a map, so no path-based `stat` precedes it.
+fn read_open_once(path: &Path) -> Result<Vec<u8>> {
+    use std::io::Read;
+    crate::timing::count("fs.open_read", 1);
+    let mut file = fs::File::open(path).map_err(VeloError::Io)?;
+    let size = file.metadata().map_err(VeloError::Io)?.len();
+    if size >= MMAP_THRESHOLD {
+        return map_copy(&file);
+    }
+    let mut buf = Vec::with_capacity(size as usize);
+    file.read_to_end(&mut buf).map_err(VeloError::Io)?;
+    Ok(buf)
 }
 
 /// Mode-aware content hash for dirty checks: a symlink hashes to its target,
@@ -1245,6 +1295,7 @@ pub fn hash_for(path: &Path, mode: i64) -> String {
 /// Uses the same mmap strategy as `hash_and_compress` but skips compression.
 pub fn fast_hash(path: &Path) -> String {
     // Always normalise CRLF for consistent hashing across platforms.
+    crate::timing::count("fs.stat", 1);
     let size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if size >= MMAP_THRESHOLD {
         let data = read_mmap(path).unwrap_or_default();

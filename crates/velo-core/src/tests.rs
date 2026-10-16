@@ -12293,3 +12293,6 @@ mod materialize;
 
 #[cfg(test)]
 mod compaction_in_place;
+
+#[cfg(all(test, feature = "timing"))]
+mod fs_ops;

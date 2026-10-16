@@ -143,6 +143,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     crate::timing::lap("save.scan");
     let full_dirty = scan.status;
     let known_hashes = scan.hashes;
+    let unhashed = scan.unhashed;
     // Apply pathspec filter: if paths given, only snapshot matching files
     let dirty: std::collections::HashMap<String, FileStatus> = if paths.is_empty() {
         full_dirty
@@ -463,6 +464,18 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     tx.commit()?;
     crate::timing::lap("save.commit");
     crate::failpoint::hit("save.after_commit");
+    // The scan left new files unhashed so each is read once, here. Seed their
+    // cache rows from the stat the scan took *before* the read: a file edited
+    // since then has a different mtime and is simply re-hashed next time.
+    let seed: Vec<(String, i64, i64, String)> = hashed_files
+        .iter()
+        .filter_map(|(p, h, _)| {
+            unhashed
+                .get(p)
+                .map(|(mtime, size)| (p.clone(), *mtime, *size, h.clone()))
+        })
+        .collect();
+    crate::commands::seed_cache_entries(guard.repo(), &seed);
     guard.repo().emit_saved_raw(
         snapshot_hash,
         branch.trim(),

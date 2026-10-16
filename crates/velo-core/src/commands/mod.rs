@@ -694,6 +694,7 @@ fn walk_with_meta(root: &Path, scope: &crate::Scope) -> Vec<WalkEntry> {
                 if !crate::scope::permitted(restriction.as_ref(), &path) {
                     return WalkState::Continue;
                 }
+                crate::timing::count("fs.stat", 1);
                 if let Ok(meta) = fs::symlink_metadata(&path) {
                     let is_symlink = meta.file_type().is_symlink();
                     if meta.is_file() || is_symlink {
@@ -704,7 +705,9 @@ fn walk_with_meta(root: &Path, scope: &crate::Scope) -> Vec<WalkEntry> {
                             .map(|d| d.as_nanos() as i64)
                             .unwrap_or(0);
                         let size = meta.len() as i64;
-                        let mode = crate::storage::capture_mode(&path);
+                        // From the lstat above: a second `capture_mode` stat
+                        // per file bought nothing.
+                        let mode = crate::storage::mode_of(&meta);
                         acc.lock().push(WalkEntry {
                             path,
                             mtime_ns,
@@ -746,13 +749,18 @@ pub fn get_dirty_files(repo: &Repo) -> HashMap<String, FileStatus> {
 /// to the object store so it need not hash a changed file a second time.
 pub(crate) struct DirtyScan {
     pub status: HashMap<String, FileStatus>,
-    /// Current content hash per `New`/`Modified` path.
+    /// Current content hash per `Modified` path, and per `New` path whose
+    /// hash was free (a warm cache row). A `New` path may be absent here.
     pub hashes: HashMap<String, String>,
     /// Mode of every file the walk saw, tracked or not. A restore reads it
     /// instead of stat-ing each path again, and treats its key set as the
     /// tracked files on disk (the walk skips ignored and out-of-scope paths),
     /// which is what ghost removal needs without a second directory walk.
     pub modes: HashMap<String, i64>,
+    /// `(mtime_ns, size)` of each `New` path the scan did not hash (see step
+    /// 4). `save` seeds the cache from these once it has hashed the file, so
+    /// the status after a first save is as warm as it was when the scan hashed.
+    pub unhashed: HashMap<String, (i64, i64)>,
 }
 
 /// One path as the joined query sees it: its hash in the snapshot (if it is
@@ -767,6 +775,7 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     let mut dirty = HashMap::new();
     let mut hashes = HashMap::new();
     let mut modes = HashMap::new();
+    let mut unhashed = HashMap::new();
     let root = repo.root();
     let conn = repo.conn();
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
@@ -810,22 +819,27 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     let entries = walk_with_meta(root, repo.scope());
 
     // ── 4. Parallel hash (cache-aware) ────────────────────────────────────────
-    // Returns (rel_path, current_hash, mtime_ns, size, was_cache_miss)
-    let results: Vec<(String, String, i64, i64, bool, i64)> = entries
+    // Returns (rel_path, current_hash, mtime_ns, size, was_cache_miss, mode).
+    //
+    // A path the snapshot does not track is `New` whatever its content, so a
+    // cache miss on one is not hashed here: `save` hashes and stores it in a
+    // single read, where hashing it now meant opening every new file twice.
+    // Its hash is `None` and its stat goes to `DirtyScan::unhashed` so `save`
+    // can still seed the cache from the stat taken before the read.
+    let results: Vec<(String, Option<String>, i64, i64, bool, i64)> = entries
         .into_par_iter()
         .filter_map(|e| {
             // Skip paths that aren't under root or aren't valid UTF-8 rather
             // than panicking on the (rare) non-UTF-8 path.
             let rel = crate::db::normalise(e.path.strip_prefix(root).ok()?.to_str()?);
-            let (hash, miss) = if let Some(cached) = joined.get(&rel).and_then(|j| j.cache.as_ref())
-            {
-                if cached.mtime_ns == e.mtime_ns && cached.size == e.size {
-                    (cached.hash.clone(), false) // cache hit — no disk read
-                } else {
-                    (crate::storage::hash_for(&e.path, e.mode), true)
+            let j = joined.get(&rel);
+            let tracked = j.is_some_and(|j| j.snap.is_some());
+            let (hash, miss) = match j.and_then(|j| j.cache.as_ref()) {
+                Some(cached) if cached.mtime_ns == e.mtime_ns && cached.size == e.size => {
+                    (Some(cached.hash.clone()), false) // cache hit — no disk read
                 }
-            } else {
-                (crate::storage::hash_for(&e.path, e.mode), true)
+                _ if !tracked => (None, false),
+                _ => (Some(crate::storage::hash_for(&e.path, e.mode)), true),
             };
             Some((rel, hash, e.mtime_ns, e.size, miss, e.mode))
         })
@@ -849,17 +863,26 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     }
 
     // ── 6. Compare hashes against snapshot ───────────────────────────────────
-    for (rel, hash, _, _, _, mode) in results {
+    for (rel, hash, mtime, size, _, mode) in results {
         modes.insert(rel.clone(), mode);
         match joined.remove(&rel).and_then(|j| j.snap) {
             Some(snap_hash) => {
+                // A tracked path is always hashed above.
+                let hash = hash.unwrap_or_default();
                 if snap_hash != hash {
                     hashes.insert(rel.clone(), hash);
                     dirty.insert(rel, FileStatus::Modified);
                 }
             }
             None => {
-                hashes.insert(rel.clone(), hash);
+                match hash {
+                    Some(hash) => {
+                        hashes.insert(rel.clone(), hash);
+                    }
+                    None => {
+                        unhashed.insert(rel.clone(), (mtime, size));
+                    }
+                }
                 dirty.insert(rel, FileStatus::New);
             }
         }
@@ -877,6 +900,7 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
         status: dirty,
         hashes,
         modes,
+        unhashed,
     }
 }
 
