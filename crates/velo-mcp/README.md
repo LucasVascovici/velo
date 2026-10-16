@@ -130,7 +130,7 @@ Content arrives in the call and trees come back by id:
 
 | Tool | What it does |
 | --- | --- |
-| `velo_save_tree` | Record a snapshot from `files` (`{path: content}`, `null` deletes a path). By default the files are laid over the tree of `base` (default: the parent), so only changes are sent; `replace: true` makes `files` the whole tree. `encoding` is `utf8` (default) or `base64` and applies to every value. `parent` defaults to the branch tip, a root snapshot on an unborn branch. |
+| `velo_save_tree` | Record a snapshot from `files` (`{path: content}`, `null` deletes a path) or from `changes`, an ordered array of `{"op": "put", "path", "content"}`, `{"op": "delete", "path"}` and `{"op": "rename", "from", "to"}` applied to the parent's tree (a rename records an edge, so history and blame follow it). Give exactly one of the two; `changes` cannot be combined with `replace` or a `base` other than the parent. The result lists `written: {path: object}` for every file given content. By default the files are laid over the tree of `base` (default: the parent), so only changes are sent; `replace: true` makes `files` the whole tree. `encoding` is `utf8` (default) or `base64` and applies to every value. `parent` defaults to the branch tip, a root snapshot on an unborn branch. |
 | `velo_tree_at` | The files of a snapshot as `{path, object, kind}`. |
 | `velo_read_file` | One file of a snapshot as `{content, encoding}`; non-UTF-8 content comes back base64. |
 
@@ -149,6 +149,9 @@ Example session:
 2. Change one file and delete the other:
    `velo_save_tree {"branch": "attempt-1", "message": "cache", "files": {"app.py": "print(2)\n", "notes.md": null}}`
    carries the previous tree forward.
+   The same with ordered edits, including a rename:
+   `velo_save_tree {"branch": "attempt-1", "message": "move", "changes": [{"op": "put", "path": "app.py", "content": "print(3)\n"}, {"op": "rename", "from": "notes.md", "to": "docs/notes.md"}]}`
+   returns `written: {"app.py": "<object id>"}` and `renamed: [["notes.md", "docs/notes.md"]]`.
 3. `velo_read_file {"snapshot": "attempt-1", "path": "app.py"}` reads it back.
 4. `velo_history {"meta": [{"namespace": "mcp", "key": "run"}]}` lists both
    snapshots with this run's identity.

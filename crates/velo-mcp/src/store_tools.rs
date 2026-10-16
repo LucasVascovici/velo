@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde_json::{json, Value};
-use velo_core::tree::{FileKind, SaveTree, TreeEntry};
+use velo_core::tree::{Change, FileKind, SaveChanges, SaveTree, TreeEntry};
 use velo_core::{BranchName, SnapshotId};
 
 use crate::tools::{
@@ -49,14 +49,22 @@ pub(crate) fn list() -> Vec<Value> {
     vec![
         json!({
             "name": "velo_save_tree",
-            "description": "Record a snapshot from content in this call, with no working tree. 'files' maps paths to content (null deletes the path). By default the files are laid over the tree of 'base' (default: the parent), so you send only what changed; with replace=true 'files' is the whole tree. Returns the snapshot id. Records this run in metadata.",
+            "description": "Record a snapshot from content in this call, with no working tree. 'files' maps paths to content (null deletes the path). By default the files are laid over the tree of 'base' (default: the parent), so you send only what changed; with replace=true 'files' is the whole tree. Instead of 'files', 'changes' is an ordered array of {op: put, path, content}, {op: delete, path} and {op: rename, from, to}, applied to the parent's tree; a rename keeps the object and records the edge so history and blame follow it. Give exactly one of 'files' or 'changes'; 'changes' cannot be combined with replace=true or a 'base' other than the parent. Returns the snapshot id and written: {path: object} for every file given content. Records this run in metadata.",
             "inputSchema": obj_schema(json!({
                 "branch": {"type": "string", "description": "Branch to record the snapshot on."},
                 "message": {"type": "string"},
-                "files": {"type": "object", "description": "{path: content or null}.",
+                "files": {"type": "object", "description": "{path: content or null}. Give this or 'changes'.",
                           "additionalProperties": {"type": ["string", "null"]}},
+                "changes": {"type": "array", "description": "Ordered edits to the parent's tree. Give this or 'files'.",
+                            "items": {"type": "object", "properties": {
+                                "op": {"type": "string", "enum": ["put", "delete", "rename"]},
+                                "path": {"type": "string", "description": "For put and delete."},
+                                "content": {"type": "string", "description": "For put, encoded by 'encoding'."},
+                                "from": {"type": "string", "description": "For rename."},
+                                "to": {"type": "string", "description": "For rename."}},
+                                "required": ["op"]}},
                 "encoding": {"type": "string", "enum": ["utf8", "base64"], "default": "utf8",
-                             "description": "How every value in 'files' is encoded."},
+                             "description": "How every value in 'files' and every put content in 'changes' is encoded."},
                 "base": {"type": "string", "description": "Snapshot spec whose tree 'files' is laid over. Default: the parent."},
                 "parent": {"type": "string", "description": "Snapshot spec this one follows. Default: the branch tip; on an unborn branch, a root snapshot."},
                 "replace": {"type": "boolean", "description": "True means 'files' is the whole tree and 'base' is ignored."},
@@ -64,7 +72,7 @@ pub(crate) fn list() -> Vec<Value> {
                 "meta": {"type": "object", "description": "Extra metadata as {namespace: {key: value}}. The 'velo' and 'mcp' namespaces are reserved.",
                          "additionalProperties": {"type": "object", "additionalProperties": {"type": "string"}}},
                 "tool_call_id": {"type": "string", "description": "Your id for this tool call, recorded as mcp/tool_call_id."}
-            }), json!(["branch", "message", "files"]))
+            }), json!(["branch", "message"]))
         }),
         json!({
             "name": "velo_tree_at",
@@ -114,6 +122,51 @@ fn spec_arg(ctx: &Context<'_>, args: &Value, key: &str) -> Result<Option<Snapsho
         .transpose()
 }
 
+/// Decode one content string as `encoding` says.
+fn decode_content(s: &str, is_b64: bool, what: &str) -> Result<Vec<u8>, ToolError> {
+    if is_b64 {
+        STANDARD
+            .decode(s)
+            .map_err(|e| bad(format!("{what} is not valid base64: {e}")))
+    } else {
+        Ok(s.as_bytes().to_vec())
+    }
+}
+
+/// A string field of one entry of `changes`.
+fn change_str<'v>(c: &'v Value, i: usize, key: &str) -> Result<&'v str, ToolError> {
+    c.get(key)
+        .and_then(Value::as_str)
+        .ok_or_else(|| bad(format!("changes[{i}] needs a string '{key}'")))
+}
+
+/// Parse the `changes` array into core changes, decoding every put first so a
+/// bad value writes nothing.
+fn parse_changes(list: &[Value], is_b64: bool) -> Result<Vec<Change>, ToolError> {
+    let mut out = Vec::with_capacity(list.len());
+    for (i, c) in list.iter().enumerate() {
+        match change_str(c, i, "op")? {
+            "put" => {
+                let path = change_str(c, i, "path")?;
+                let content = change_str(c, i, "content")?;
+                let bytes = decode_content(content, is_b64, &format!("changes[{i}] content"))?;
+                out.push(Change::Put(TreeEntry::file(path.to_string(), bytes)));
+            }
+            "delete" => out.push(Change::Delete(change_str(c, i, "path")?.to_string())),
+            "rename" => out.push(Change::Rename {
+                from: change_str(c, i, "from")?.to_string(),
+                to: change_str(c, i, "to")?.to_string(),
+            }),
+            other => {
+                return Err(bad(format!(
+                    "changes[{i}] has unknown op '{other}'; use put, delete or rename"
+                )))
+            }
+        }
+    }
+    Ok(out)
+}
+
 pub(crate) fn save_tree_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
     let branch: BranchName = req_str(args, "branch")?.parse()?;
     let message = req_str(args, "message")?;
@@ -123,25 +176,39 @@ pub(crate) fn save_tree_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, T
         Some(Value::Bool(b)) => *b,
         Some(_) => return Err(bad("'replace' must be a boolean")),
     };
-    let files = args
-        .get("files")
-        .and_then(Value::as_object)
-        .ok_or_else(|| bad("'files' must be an object of {path: content or null}"))?;
+    let files = match args.get("files") {
+        None | Some(Value::Null) => None,
+        Some(Value::Object(o)) => Some(o),
+        Some(_) => return Err(bad("'files' must be an object of {path: content or null}")),
+    };
+    let changes = match args.get("changes") {
+        None | Some(Value::Null) => None,
+        Some(Value::Array(a)) => Some(a),
+        Some(_) => return Err(bad("'changes' must be an array of {op, ...} objects")),
+    };
+    match (files, changes) {
+        (Some(_), Some(_)) => return Err(bad("give either 'files' or 'changes', not both")),
+        (None, None) => return Err(bad("give one of 'files' or 'changes'")),
+        _ => {}
+    }
+    if changes.is_some() && replace {
+        return Err(bad(
+            "'changes' cannot be combined with replace=true: changes apply to the parent's tree, so use 'files' to replace the whole tree",
+        ));
+    }
 
     // Decode everything before touching the store, so a bad value writes nothing.
     let mut provided: BTreeMap<&str, Vec<u8>> = BTreeMap::new();
     let mut deleted: Vec<String> = Vec::new();
-    for (path, v) in files {
+    let parsed_changes = match changes {
+        Some(list) => Some(parse_changes(list, is_b64)?),
+        None => None,
+    };
+    for (path, v) in files.into_iter().flatten() {
         match v {
             Value::Null => deleted.push(path.clone()),
-            Value::String(s) if is_b64 => {
-                let bytes = STANDARD
-                    .decode(s)
-                    .map_err(|e| bad(format!("'{path}' is not valid base64: {e}")))?;
-                provided.insert(path, bytes);
-            }
             Value::String(s) => {
-                provided.insert(path, s.clone().into_bytes());
+                provided.insert(path, decode_content(s, is_b64, &format!("'{path}'"))?);
             }
             _ => return Err(bad(format!("'{path}' must be a string or null"))),
         }
@@ -154,12 +221,70 @@ pub(crate) fn save_tree_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, T
         None => ctx.repo.branch_tip(&branch)?,
     };
     let merge_parent = spec_arg(ctx, args, "merge_parent")?;
-    let base = if replace {
-        None
-    } else {
-        spec_arg(ctx, args, "base")?.or_else(|| parent.clone())
-    };
+    let explicit_base = spec_arg(ctx, args, "base")?;
+    let base_is_parent = explicit_base.is_none() || explicit_base == parent;
+    if changes.is_some() && !base_is_parent {
+        return Err(bad(
+            "'changes' apply to the parent's tree and cannot be combined with a 'base' other than the parent; use 'files' to lay content over another base",
+        ));
+    }
 
+    // The parent's tree stays inside the database unless the caller asked for
+    // a different base or a replacement.
+    if !replace && base_is_parent {
+        let mut changed: Vec<String> = Vec::new();
+        let mut renamed: Vec<(String, String)> = Vec::new();
+        let list: Vec<Change> = match parsed_changes {
+            Some(c) => {
+                for ch in &c {
+                    match ch {
+                        Change::Put(e) => changed.push(e.path.clone()),
+                        Change::Delete(p) => deleted.push(p.clone()),
+                        Change::Rename { from, to } => renamed.push((from.clone(), to.clone())),
+                        _ => {}
+                    }
+                }
+                c
+            }
+            None => {
+                let mut list = Vec::new();
+                for (path, bytes) in std::mem::take(&mut provided) {
+                    changed.push(path.to_string());
+                    list.push(Change::Put(TreeEntry::file(path.to_string(), bytes)));
+                }
+                list.extend(deleted.iter().cloned().map(Change::Delete));
+                list
+            }
+        };
+        let mut spec = SaveChanges::new(&branch, parent.as_ref(), message);
+        spec.merge_parent = merge_parent.as_ref();
+        spec.changes = list;
+        spec.meta = meta;
+        spec.author = Some(&author);
+        let guard = ctx.write()?;
+        let saved = guard.save_changes(spec);
+        drop(guard);
+        let saved = saved?;
+        deleted.sort();
+        let written: serde_json::Map<String, Value> = saved
+            .written
+            .iter()
+            .map(|(p, o)| (p.clone(), json!(o.as_str())))
+            .collect();
+        let mut out = json!({
+            "snapshot": saved.snapshot.as_str(),
+            "parent": parent.as_ref().map(|p| p.as_str()),
+            "changed": changed,
+            "deleted": deleted,
+            "written": written,
+        });
+        if !renamed.is_empty() {
+            out["renamed"] = json!(renamed);
+        }
+        return Ok(out);
+    }
+
+    let base = if replace { None } else { explicit_base };
     let mut tree: BTreeMap<String, TreeEntry> = BTreeMap::new();
     if let Some(base) = &base {
         for f in ctx.repo.tree_at(base)? {
@@ -191,11 +316,22 @@ pub(crate) fn save_tree_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, T
     drop(guard);
     let id = id?;
     deleted.sort();
+    // The ids of the files this call gave bytes for, read back from the new
+    // tree so they are the stored objects, after any line-ending normalisation.
+    let given: std::collections::BTreeSet<&str> = changed.iter().map(String::as_str).collect();
+    let written: serde_json::Map<String, Value> = ctx
+        .repo
+        .tree_at(&id)?
+        .into_iter()
+        .filter(|f| given.contains(f.path.as_str()))
+        .map(|f| (f.path, json!(f.object.as_str())))
+        .collect();
     Ok(json!({
         "snapshot": id.as_str(),
         "parent": parent.as_ref().map(|p| p.as_str()),
         "changed": changed,
         "deleted": deleted,
+        "written": written,
     }))
 }
 
