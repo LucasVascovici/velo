@@ -520,3 +520,133 @@ numbers above.
 - **Changes-only agent workload.** The row in section 4 is empty until the
   `save_changes` measurement fills it.
 - **One run per cell, one machine,** with WSL2 standing in for Linux.
+
+## 8. Snapshot storage prototype
+
+Inputs to the 19.5 decision, from `crates/velo-core/src/tests/delta_prototype.rs`
+(ignored test `delta_prototype_matrix`). It prototypes option A, parent deltas
+with a full keyframe every K snapshots, on three scratch tables in a real
+repository's connection; the production schema and `FORMAT_VERSION` are
+untouched. `proto_save` loads the parent tree, computes the id with the real
+`snapshot_id_of` recipe (identity unchanged), then writes either the changed
+rows or, when `depth % K == 0`, the full tree. Raw lines:
+`bench/results/delta-prototype-2026-10-17-windows.json` and `-linux.json`.
+This section records measurements only; the decision is 19.5-b.
+
+Setup: 100,000 files in the scale layout, one-file saves, 200 saves per K (K=512
+runs 528 so a keyframe lands), same machine and WSL2 split as section 1, one run
+per cell. Hashes in the prototype are synthetic 64-hex values, so no file content
+is written; "today" is the real `save_tree` from a one-file change at the same
+size, from the same harness style as 19.1-b (20 samples).
+
+### Save, one file changed, 100,000 files
+
+Median and p95 are over the non-keyframe saves; "keyframe save" is the slowest
+save that wrote a full tree. Times in ms.
+
+| model | Win median | Win p95 | Win keyframe save | Linux median | Linux p95 | Linux keyframe save |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| today (`save_tree`) | 5,336 | 6,851 | n/a | 1,750 | 3,022 | n/a |
+| A, K=8 | 94.8 | 135.2 | 1,008 | 83.0 | 120.0 | 990 |
+| A, K=32 | 110.5 | 132.5 | 605 | 95.9 | 133.1 | 682 |
+| A, K=128 | 110.2 | 137.1 | 571 | 89.6 | 123.3 | 414 |
+| A, K=512 | 110.2 | 135.8 | 543 | 100.5 | 134.6 | 379 |
+
+Stage medians (ms, parent tree / id / write / commit), Windows then Linux:
+
+| K | Windows | Linux |
+| --- | --- | --- |
+| 8 | 62.1 / 29.9 / 0.07 / 0.06 | 53.9 / 27.1 / 0.07 / 0.04 |
+| 32 | 73.7 / 36.5 / 0.08 / 0.07 | 61.6 / 34.0 / 0.07 / 0.04 |
+| 128 | 71.8 / 36.3 / 0.08 / 0.07 | 58.3 / 29.6 / 0.06 / 0.03 |
+| 512 | 73.5 / 36.3 / 0.08 / 0.07 | 65.6 / 34.6 / 0.07 / 0.04 |
+
+Writing the rows is no longer a cost (0.07 ms); the whole save is identity.
+The keyframe spike is one full-tree write, 0.4 to 1.0 s, once every K saves;
+the slowest keyframe in each run is a cold-cache outlier, so read it as an
+upper bound. Non-keyframe saves are not slower after a keyframe lands (max
+non-keyframe save 143 to 181 ms).
+
+### Identity cost alone
+
+Identity is the parent-tree read plus the hash of the full sorted tree.
+
+| K | Windows (ms) | Linux (ms) | id over (parent id, changes), timed only |
+| --- | ---: | ---: | ---: |
+| 8 | 92.0 | 80.9 | 0.002 ms |
+| 32 | 110.2 | 95.6 | 0.002 ms |
+| 128 | 108.1 | 87.9 | 0.002 ms |
+| 512 | 109.8 | 100.2 | 0.002 ms |
+
+So under A with today's id recipe a save costs about 80 to 110 ms of reading and
+hashing 100,000 rows, against 1.75 s (Linux) and 5.3 s (Windows) today: A
+removes the row writes but not the O(files) identity cost. An id over
+`(parent id, sorted changes)` costs about 2 microseconds, which would leave the
+save at the row write plus the commit, well under 1 ms of work in the prototype.
+That id is not the current recipe and was only timed here, not stored.
+
+### Disk per snapshot
+
+`page_count * page_size` growth over the run, divided by saves, keyframes
+included.
+
+| model | bytes per snapshot |
+| --- | ---: |
+| today (`save_tree`) | 27,868,365 |
+| A, K=8 | 2,306,314 |
+| A, K=32 | 559,985 |
+| A, K=128 | 93,655 |
+| A, K=512 | 35,739 |
+
+The disk figures are identical on both platforms (SQLite page counts are
+deterministic). They are dominated by the keyframes: at K=512 a keyframe is
+about 18 MB and the 528 saves hold one.
+
+### Reads against K
+
+`tree_at` (`proto_tree`) and a point lookup (`proto_read`, a path no delta
+touched, so the walk goes all the way to the keyframe), at depth 0, K/2 and K-1
+in the first keyframe cycle. ms, median. Today: `tree_at` 83.9 (Windows) and
+100.2 (Linux); `read_file_at` 0.35 and 0.10.
+
+| K | depth | Win `tree_at` | Win read | Linux `tree_at` | Linux read |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 8 | 0 | 60.4 | 0.025 | 56.8 | 0.004 |
+| 8 | 4 | 61.8 | 0.039 | 58.0 | 0.016 |
+| 8 | 7 | 58.6 | 0.059 | 51.1 | 0.023 |
+| 32 | 0 | 83.6 | 0.017 | 73.8 | 0.005 |
+| 32 | 16 | 70.1 | 0.115 | 58.9 | 0.063 |
+| 32 | 31 | 84.7 | 0.282 | 59.6 | 0.133 |
+| 128 | 0 | 78.4 | 0.021 | 61.7 | 0.005 |
+| 128 | 64 | 82.4 | 0.816 | 56.3 | 0.224 |
+| 128 | 127 | 83.4 | 1.43 | 62.0 | 0.468 |
+| 512 | 0 | 60.9 | 0.011 | 80.8 | 0.005 |
+| 512 | 256 | 69.2 | 1.86 | 60.4 | 0.776 |
+| 512 | 511 | 97.9 | 4.05 | 74.6 | 1.75 |
+
+`tree_at` does not grow visibly with K up to 512 deltas: reading the keyframe's
+100,000 rows is 50 to 80 ms and the deltas (one row each) are noise against it.
+The point lookup grows linearly with depth, from 0.005 ms at a keyframe to about
+4 ms at depth 511 on Windows, against 0.1 to 0.35 ms for today's single
+indexed lookup. Run-to-run spread on the 0-depth rows (58 to 84 ms) shows the
+noise floor of a `tree_at` here is about 25 ms.
+
+### Option B: rows rewritten by a one-file change
+
+Option B stores a tree object per directory, so a one-file change rewrites the
+entries of its directory plus one entry per ancestor directory. Counted from the
+generated paths (`option_b_rows` lines in the JSON); under A the same change
+writes 1 row.
+
+| layout | files | rows rewritten under B |
+| --- | ---: | ---: |
+| agent benchmark (`src/dNN/`, 20 dirs of 50) | 1,000 | 52 |
+| agent layout grown to 100,000 (20 dirs) | 100,000 | 5,002 |
+| scale layout (100 files per directory) | 100,000 | 102 |
+| flat directory (worst case) | 100,000 | 100,000 |
+
+For the agent benchmark's 1,000 files and the scale layout B rewrites about 50
+to 100 rows, but the layout decides it: the same agent paths at 100,000 files
+rewrite 5,002 rows, and a flat directory rewrites every row, no better than
+today. B's cost is a property of the project's directory shape, not of its file
+count.

@@ -12302,3 +12302,6 @@ mod perf_sqlite_options;
 
 #[cfg(test)]
 mod perf_guard;
+
+#[cfg(test)]
+mod delta_prototype;
