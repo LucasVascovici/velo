@@ -541,21 +541,38 @@ pub struct Materialized {
 /// appended unchanged. `dest` may not exist yet, but the part that does may be
 /// a symlink into the repository.
 fn canonical_prefix(p: &Path) -> PathBuf {
-    let mut existing = p.to_path_buf();
-    let mut tail: Vec<std::ffi::OsString> = Vec::new();
-    loop {
-        if let Ok(mut c) = fs::canonicalize(&existing) {
-            c.extend(tail.iter().rev());
-            return c;
+    use std::path::Component;
+    let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+    let comps: Vec<Component> = abs.components().collect();
+    // Longest existing prefix, canonicalised. `..` inside it is resolved by
+    // the filesystem, which is right for components that exist.
+    let mut split = comps.len();
+    let mut base = loop {
+        let prefix: PathBuf = comps[..split].iter().collect();
+        if let Ok(c) = fs::canonicalize(&prefix) {
+            break c;
         }
-        match (existing.parent(), existing.file_name()) {
-            (Some(parent), Some(name)) => {
-                tail.push(name.to_os_string());
-                existing = parent.to_path_buf();
+        if split == 0 {
+            break PathBuf::new();
+        }
+        split -= 1;
+    };
+    // The missing tail is resolved by text: a `..` cancels the component
+    // before it, or climbs out of the canonical prefix. It is never kept raw.
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    for c in &comps[split..] {
+        match c {
+            Component::ParentDir => {
+                if tail.pop().is_none() {
+                    base.pop();
+                }
             }
-            _ => return p.to_path_buf(),
+            Component::Normal(n) => tail.push(n.to_os_string()),
+            _ => {}
         }
     }
+    base.extend(tail);
+    base
 }
 
 /// Write the tree of `snapshot` into the directory `dest`.
