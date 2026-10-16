@@ -226,6 +226,9 @@ Worked walkthroughs live in [`docs/cookbook`](docs/cookbook):
 What is promised to adopters, and which CI job enforces each promise, is in
 [`docs/STABILITY.md`](docs/STABILITY.md).
 
+The Python and Node API reference is `api-python.zip` and `api-node.zip` on each
+release page, and the `api-python`/`api-node` artifacts of the apidocs workflow.
+
 ---
 
 ## The velo CLI

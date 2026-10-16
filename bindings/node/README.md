@@ -49,6 +49,12 @@ Notes:
   refs. Timestamps come as `createdAtMs` plus a `createdAt` `Date`.
 - Working-tree commands are not yet exposed.
 
+## API reference
+
+The generated API reference for the bindings is `api-python.zip` and
+`api-node.zip` on each release page, and the `api-python`/`api-node` artifacts
+of the apidocs workflow.
+
 ## Change events and merge drivers
 
 ```js

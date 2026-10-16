@@ -46,6 +46,12 @@ repo.merge_commit(branch="main", ours=c, theirs=b, message="merge",
 repo.create_branch("release", at=c)
 ```
 
+## API reference
+
+The generated API reference for the bindings is `api-python.zip` and
+`api-node.zip` on each release page, and the `api-python`/`api-node` artifacts
+of the apidocs workflow.
+
 ## Change events and merge drivers
 
 ```python
