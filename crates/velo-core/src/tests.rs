@@ -12272,3 +12272,6 @@ mod timing_laps;
 
 #[cfg(test)]
 mod batch_reads;
+
+#[cfg(test)]
+mod vacuum;

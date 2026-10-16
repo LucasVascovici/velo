@@ -427,6 +427,14 @@ may ignore or delete it.
 `journal_mode=WAL`, `synchronous=NORMAL`, `foreign_keys=ON`. WAL is required:
 readers must not block a writer.
 
+`auto_vacuum=INCREMENTAL` is set on repositories created from 5.3.0, before the
+first table exists, so freed pages can be handed back with
+`PRAGMA incremental_vacuum` (`gc::vacuum`). A repository created earlier stays
+`auto_vacuum=NONE` until a full `VACUUM` converts it, once. Opening never
+rewrites a repository, `user_version` does not change, and every SQLite build
+reads both modes, so older velo builds open new repositories unchanged. Any
+later schema migration needs no `VACUUM` for this reason.
+
 **Durability.** With `synchronous=NORMAL` in WAL mode a committed transaction is
 not forced to disk at commit, so a power loss may roll back the most recent
 commits; the database stays consistent. Files outside the database

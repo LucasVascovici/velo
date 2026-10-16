@@ -450,3 +450,8 @@ reason = "internal: the canonical bytes a signature covers; the bindings sign th
 entry = "Repo::read_files_at"
 bindings = ["python", "node"]
 reason = "pending: batch reads and materialize bindings (19.3-c)"
+
+[[exempt]]
+entry = "commands::gc::vacuum"
+bindings = ["python", "node"]
+reason = "pending: vacuum binding (19.4-d)"
