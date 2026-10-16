@@ -268,7 +268,7 @@ fn report_plans(repo: &Repo) {
 
 // ---- Round five (18.10-b): the format-compatible options at envelope sizes ----
 
-fn hex_hash(i: usize) -> String {
+pub(super) fn hex_hash(i: usize) -> String {
     // 64 hex characters, distinct per row, like a real blake3 name.
     format!(
         "{:016x}{:016x}{:016x}{:016x}",
@@ -279,7 +279,7 @@ fn hex_hash(i: usize) -> String {
     )
 }
 
-fn bin_hash(i: usize) -> Vec<u8> {
+pub(super) fn bin_hash(i: usize) -> Vec<u8> {
     let mut v = Vec::with_capacity(32);
     for k in [i, i * 7 + 1, i * 13 + 5, i * 31 + 9] {
         v.extend_from_slice(&(k as u64).to_be_bytes());
@@ -287,11 +287,11 @@ fn bin_hash(i: usize) -> Vec<u8> {
     v
 }
 
-fn row_path(i: usize) -> String {
+pub(super) fn row_path(i: usize) -> String {
     format!("dir{}/sub{}/file{i}.txt", i % 20, i % 97)
 }
 
-fn db_bytes(conn: &rusqlite::Connection) -> i64 {
+pub(super) fn db_bytes(conn: &rusqlite::Connection) -> i64 {
     conn.query_row(
         "SELECT (SELECT page_count FROM pragma_page_count)
               * (SELECT page_size FROM pragma_page_size)",

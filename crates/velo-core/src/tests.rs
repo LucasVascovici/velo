@@ -12296,3 +12296,6 @@ mod compaction_in_place;
 
 #[cfg(all(test, feature = "timing"))]
 mod fs_ops;
+
+#[cfg(all(test, feature = "timing"))]
+mod perf_sqlite_options;
