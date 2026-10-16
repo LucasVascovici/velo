@@ -120,29 +120,59 @@ near-identical snapshots. The recommended policy is the default of
 - one per hour for the last 30 days,
 - one per day after that.
 
-It is a library API (`retention::apply`) in this release, not a CLI command.
-Call it on a schedule (daily is enough), followed by `gc`.
+`velo retention` applies it (`--dry-run` first to see what would go), then runs
+`gc` and an incremental vacuum. Run it on a schedule (daily is enough). An
+embedder calls `retention::apply`, `gc::run` and `gc::vacuum`.
 
 **Measured** (`crates/velo-core/src/tests/retention_scale.rs`, an ignored
 test): a 10,000-file tree and 2,000 snapshots spread evenly over 60 synthetic
 days (one about every 43 minutes, three files changed per snapshot), saved with
 `save_tree` and explicit timestamps, then `retention::apply` with the default
-policy at day 60, then `gc`. Windows 11, release build, Defender on.
+policy at day 60, then `gc`, then `gc::vacuum(Incremental)`. Windows 11,
+release build, Defender on. The 18.10 column is the first run, before
+compaction was re-minted in place and before the vacuum existed; the 19.4
+column is the repeat (raw output in
+[`bench/results/2026-10-16-windows-retention-scale.txt`](../bench/results/2026-10-16-windows-retention-scale.txt)).
 
-| | Before | After retention and `gc` |
-| --- | --- | --- |
-| snapshots | 2,000 | 760 (-62%) |
-| `file_map` rows | 20,000,000 | 7,600,000 (-62%) |
-| live database content | 5.17 GiB | 1.99 GiB (-62%) |
-| `velo.db` file size | 5.17 GiB | 7.14 GiB |
-| `retention::apply` | | 1,219.5 s |
-| `gc` | | 226.1 s |
-| building the 2,000 snapshots | 3,808 s | |
+| | Before | 18.10: after retention and `gc` | 19.4: after retention, `gc` and vacuum |
+| --- | --- | --- | --- |
+| snapshots | 2,000 | 760 (-62%) | 760 (-62%) |
+| `file_map` rows | 20,000,000 | 7,600,000 (-62%) | 7,600,000 (-62%) |
+| live database content | 5.17 GiB | 1.99 GiB (-62%) | 1.99 GiB (-62%) |
+| `velo.db` file size | 5.17 GiB | 7.14 GiB | 2.06 GiB (-60%) |
+| `retention::apply` | | 1,219.5 s | 415.6 s |
+| `gc` | | 226.1 s | 165.2 s |
+| vacuum | | none | 192.5 s |
+| building the 2,000 snapshots | 3,808 s | | 3,751 s |
 
-Only the Windows run of the retention test is published. The same test was
-started on Linux (WSL2) but had not finished when the session ended, so there
-are no Linux retention numbers here; the row and snapshot counts are properties
-of the policy and do not depend on the platform, the timings do.
+The file is smaller after than before: 5,559,283,712 bytes to 2,211,880,960.
+Neither `retention::apply` nor `gc` shrinks it on its own (the file stays at
+5.18 GiB with 3.11 GiB on the freelist); the vacuum is what returns the pages,
+and leaves no free pages behind.
+
+Stage breakdown of the 415.6 s in `retention::apply` (the `timing` feature's
+laps):
+
+| Stage | Time |
+| --- | --- |
+| `retention.chain`, `.dependants`, `.classify` | 0.05 s |
+| `compact.chain`, `.eligibility`, `.refs` | 0.07 s |
+| `compact.plan` | 8.2 s |
+| `compact.delete` | 246.3 s |
+| `compact.insert` | 39.4 s |
+| `compact.commit` | 121.5 s |
+
+Deleting the dropped snapshots' `file_map` rows (6.1 of the 6.9 minutes, with the
+commit that makes them durable) dominates; choosing what to drop is
+negligible. `gc` has no stage laps. An earlier run of the same code with a
+`gc::vacuum` that freed one page instead of all of them is kept as
+`bench/results/2026-10-16-windows-retention-scale-vacuum-single-step.txt`; it
+is why the first run left the file at 5.18 GiB.
+
+Only the Windows run of the retention test is published. The Linux (WSL2) run
+was not repeated for this release, so there are still no Linux retention
+numbers; the row and snapshot counts are properties of the policy and do not
+depend on the platform, the timings do.
 
 What to take from it:
 
@@ -150,14 +180,17 @@ What to take from it:
   and at most 24 per day for the 29 days after, then one a day, so the retained
   history is set by the policy, not by how long the agent has run. Rows fall in
   step with snapshots, because every snapshot owns its whole tree.
-- **The database file does not shrink.** SQLite keeps freed pages for reuse and
-  velo has no `VACUUM`, so the 7.14 GiB file holds 5.15 GiB of free pages after
-  the pass (later saves reuse them). Retention bounds growth; it does not give
-  disk back to the operating system. The pass itself grew the file by 38%.
+- **The database file shrinks, on repositories created from 5.3.0.** They use
+  incremental auto-vacuum, and `velo retention` (or `velo gc --vacuum`) returns
+  the freed pages to the operating system: 5.18 GiB to 2.06 GiB here. A
+  repository created before 5.3.0 is not incremental; run one
+  `velo gc --vacuum` on it to convert it (a full `VACUUM`, which needs free
+  disk about the size of `velo.db` and holds the write lock), and later passes
+  are cheap. Until then retention bounds growth but the file keeps its size.
 - **Run it early and often.** Applying the policy once to 20 million rows took
-  20 minutes. Run daily, a pass thins about 30 snapshots and costs a small
-  fraction of that. Do not let 2,000 snapshots of a 10,000-file tree pile up
-  before the first pass.
+  about 7 minutes, plus 3 for the vacuum. Run daily, a pass thins about 30
+  snapshots and costs a small fraction of that. Do not let 2,000 snapshots of a
+  10,000-file tree pile up before the first pass.
 
 ## Method
 

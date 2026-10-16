@@ -349,7 +349,12 @@ pub fn vacuum(guard: &WriteGuard, mode: Vacuum) -> Result<Vacuumed> {
     match mode {
         Vacuum::Incremental => {
             if auto_vacuum_mode(conn)? == AutoVacuum::Incremental {
-                conn.execute_batch("PRAGMA incremental_vacuum;")?;
+                // `incremental_vacuum` frees one page per row stepped, and
+                // `execute_batch` steps a statement once, which would return a
+                // single page. Drain every row.
+                let mut stmt = conn.prepare("PRAGMA incremental_vacuum")?;
+                let mut rows = stmt.query([])?;
+                while rows.next()?.is_some() {}
             }
         }
         Vacuum::Full => {

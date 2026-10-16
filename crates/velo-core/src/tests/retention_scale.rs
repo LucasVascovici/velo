@@ -5,14 +5,16 @@
 //! tree) and runs on demand, in release mode:
 //!
 //! ```text
-//! cargo test -p velo-core --release retention_scale -- --ignored --nocapture
+//! cargo test -p velo-core --release --features timing retention_scale -- --ignored --nocapture
 //! ```
 //!
 //! A small non-ignored test drives the same code so the harness cannot rot.
 
+use std::path::Path;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
+use crate::commands::gc::Vacuum;
 use crate::commands::{gc, retention};
 use crate::tree::{SaveTree, TreeEntry};
 use crate::{BranchName, Repo, SnapshotId};
@@ -31,12 +33,17 @@ fn setup() -> (TempDir, Repo) {
 struct Shape {
     snapshots: i64,
     rows: i64,
+    /// `page_count * page_size`.
     db_bytes: i64,
     free_bytes: i64,
+    /// `velo.db` on disk, after a WAL checkpoint so the log does not hide it.
+    file_bytes: u64,
 }
 
-fn shape(repo: &Repo) -> Shape {
+fn shape(repo: &Repo, root: &Path) -> Shape {
     let conn = repo.conn();
+    conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))
+        .unwrap();
     let one = |sql: &str| -> i64 { conn.query_row(sql, [], |r| r.get(0)).unwrap() };
     Shape {
         snapshots: one("SELECT COUNT(*) FROM snapshots"),
@@ -45,6 +52,7 @@ fn shape(repo: &Repo) -> Shape {
                             * (SELECT page_size FROM pragma_page_size)"),
         free_bytes: one("SELECT (SELECT freelist_count FROM pragma_freelist_count)
                               * (SELECT page_size FROM pragma_page_size)"),
+        file_bytes: std::fs::metadata(root.join(".velo/velo.db")).unwrap().len(),
     }
 }
 
@@ -100,19 +108,16 @@ fn build(repo: &Repo, files: usize, snapshots: usize, days: i64) -> Duration {
     started.elapsed()
 }
 
+/// Run the measurement. Returns the shape before retention and the shape after
+/// retention, gc and an incremental vacuum.
 #[allow(clippy::print_stderr)]
 fn run(files: usize, snapshots: usize, days: i64) -> (Shape, Shape) {
-    let (_tmp, repo) = setup();
+    let (tmp, repo) = setup();
     let built = build(&repo, files, snapshots, days);
-    let before = shape(&repo);
+    let before = shape(&repo, tmp.path());
     let branch: BranchName = "main".parse().unwrap();
     let now_ms = BASE_MS + days * DAY_MS;
 
-    #[cfg(feature = "timing")]
-    let pages_before: i64 = repo
-        .conn()
-        .query_row("PRAGMA page_count", [], |r| r.get(0))
-        .unwrap();
     #[cfg(feature = "timing")]
     crate::timing::drain_laps();
     let started = Instant::now();
@@ -128,21 +133,20 @@ fn run(files: usize, snapshots: usize, days: i64) -> (Shape, Shape) {
     .unwrap();
     let retained = started.elapsed();
     #[cfg(feature = "timing")]
-    {
-        let pages_after: i64 = repo
-            .conn()
-            .query_row("PRAGMA page_count", [], |r| r.get(0))
-            .unwrap();
-        eprintln!("page_count before {pages_before}, after {pages_after}");
-        for lap in crate::timing::drain_laps() {
-            eprintln!("lap {} {:?}", lap.name, lap.elapsed);
-        }
-    }
+    let laps = crate::timing::drain_laps();
+    let after_retention = shape(&repo, tmp.path());
 
     let started = Instant::now();
     gc::run(&repo.write().unwrap(), gc::Options::default()).unwrap();
     let collected = started.elapsed();
-    let after = shape(&repo);
+    #[cfg(feature = "timing")]
+    let gc_laps = crate::timing::drain_laps();
+    let after_gc = shape(&repo, tmp.path());
+
+    let started = Instant::now();
+    let vacuumed = gc::vacuum(&repo.write().unwrap(), Vacuum::Incremental).unwrap();
+    let vacuum_time = started.elapsed();
+    let after = shape(&repo, tmp.path());
 
     eprintln!("--- retention at scale: {files} files x {snapshots} snapshots over {days} days ---");
     eprintln!("build: {built:?}");
@@ -151,11 +155,34 @@ fn run(files: usize, snapshots: usize, days: i64) -> (Shape, Shape) {
         report.examined, report.removed
     );
     eprintln!("gc: {collected:?}");
-    for (label, s) in [("before", &before), ("after", &after)] {
+    eprintln!(
+        "gc::vacuum(Incremental): {vacuum_time:?}, auto_vacuum {:?}, {} -> {} bytes",
+        vacuumed.auto_vacuum, vacuumed.bytes_before, vacuumed.bytes_after
+    );
+    for (label, s) in [
+        ("before", &before),
+        ("after retention", &after_retention),
+        ("after gc", &after_gc),
+        ("after vacuum", &after),
+    ] {
         eprintln!(
-            "{label}: {} snapshots, {} file_map rows, database {} bytes ({} free pages' bytes)",
-            s.snapshots, s.rows, s.db_bytes, s.free_bytes
+            "{label}: {} snapshots, {} file_map rows, velo.db {} bytes on disk,              page_count*page_size {} bytes ({} bytes on the freelist)",
+            s.snapshots, s.rows, s.file_bytes, s.db_bytes, s.free_bytes
         );
+    }
+    #[cfg(feature = "timing")]
+    {
+        eprintln!("--- stage laps: retention::apply ---");
+        for lap in laps
+            .iter()
+            .filter(|l| l.name.starts_with("retention.") || l.name.starts_with("compact."))
+        {
+            eprintln!("lap {} {:?}", lap.name, lap.elapsed);
+        }
+        eprintln!("--- stage laps: gc ---");
+        for lap in &gc_laps {
+            eprintln!("lap {} {:?}", lap.name, lap.elapsed);
+        }
     }
     (before, after)
 }
@@ -167,6 +194,7 @@ fn default_policy_at_ten_thousand_files_and_two_thousand_snapshots() {
     assert_eq!(before.snapshots, 2_000);
     assert!(after.snapshots < before.snapshots);
     assert!(after.rows < before.rows);
+    assert!(after.file_bytes < before.file_bytes);
 }
 
 /// The same code at a size that runs in a blink, so it stays compiled and true.
@@ -178,6 +206,9 @@ fn default_policy_bounds_rows_at_small_scale() {
     assert_eq!(before.snapshots, 100);
     assert!(after.snapshots < before.snapshots);
     assert_eq!(after.rows, after.snapshots * 20);
+    // A new repository vacuums incrementally, so the file is no larger than it
+    // was before retention ran (it once freed a single page).
+    assert!(after.file_bytes < before.file_bytes);
 }
 
 /// The 18.10 shape at a fifth of the width and snapshot count, for comparing

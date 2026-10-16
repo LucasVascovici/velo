@@ -131,7 +131,10 @@ repositories created from 5.3.0.
 An embedder does the same through the library:
 `velo_core::commands::retention::apply` with a `Policy`, then
 `commands::gc::run` and `commands::gc::vacuum`. On a 10,000-file tree with
-2,000 snapshots over 60 days a pass cut snapshots, rows and live content by 62%.
+2,000 snapshots over 60 days a pass cut snapshots, rows and live content by
+62% and the database file from 5.18 GiB to 2.06 GiB, in about 7 minutes for
+retention and 3 for the vacuum. A repository created before 5.3.0 needs one
+`velo gc --vacuum` first to switch to incremental vacuum.
 The measurement, its method and the envelope velo was tested to are in
 [docs/SCALE.md](../SCALE.md).
 
