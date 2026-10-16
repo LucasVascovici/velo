@@ -612,6 +612,93 @@ impl Repo {
         }
     }
 
+    /// The content of every path in `paths` as it was in `snapshot`, in the
+    /// order asked, as `(normalised path, bytes)` pairs.
+    ///
+    /// The hashes come from one `file_map` statement per 500 paths rather than
+    /// one per file, and the objects are read in parallel through the same
+    /// `ObjectStore::get` as [`Repo::read_file_at`], so the hash check and
+    /// every object limit apply unchanged. A path asked for twice is returned
+    /// twice. The first path that is not in the snapshot (in input order) is
+    /// an error, as is the first unreadable object.
+    pub fn read_files_at<P: AsRef<Path>>(
+        &self,
+        snapshot: &SnapshotId,
+        paths: &[P],
+    ) -> Result<Vec<(String, Vec<u8>)>> {
+        let known: bool = self
+            .conn()
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+                [snapshot],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+        if !known {
+            return Err(self.missing_snapshot(snapshot));
+        }
+        if paths.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let wanted: Vec<String> = paths
+            .iter()
+            .map(|p| db::normalise(&p.as_ref().to_string_lossy()))
+            .collect();
+        let mut unique: Vec<&str> = wanted.iter().map(String::as_str).collect();
+        unique.sort_unstable();
+        unique.dedup();
+
+        // One placeholder is the snapshot, so 499 paths plus it make the 500
+        // allowed per statement.
+        const CHUNK: usize = 499;
+        let mut hashes: std::collections::HashMap<String, ObjectHash> =
+            std::collections::HashMap::with_capacity(unique.len());
+        for chunk in unique.chunks(CHUNK) {
+            let marks = (2..chunk.len() + 2)
+                .map(|i| format!("?{i}"))
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT path, hash FROM file_map WHERE snapshot_hash = ?1 AND path IN ({marks})"
+            );
+            let mut stmt = self.conn().prepare(&sql)?;
+            let mut args: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
+            args.push(snapshot);
+            for p in chunk {
+                args.push(p);
+            }
+            let rows = stmt.query_map(args.as_slice(), |r| {
+                Ok((r.get::<_, String>(0)?, r.get::<_, ObjectHash>(1)?))
+            })?;
+            for row in rows {
+                let (path, hash) = row?;
+                hashes.insert(path, hash);
+            }
+        }
+
+        let mut items: Vec<(String, ObjectHash)> = Vec::with_capacity(wanted.len());
+        for path in wanted {
+            match hashes.get(&path) {
+                Some(hash) => items.push((path, hash.clone())),
+                None => {
+                    return Err(VeloError::invalid(format!(
+                        "'{}' is not in snapshot {}.",
+                        path,
+                        snapshot.short()
+                    )))
+                }
+            }
+        }
+
+        let read = self.objects().par_with_content(
+            &items,
+            |(_, hash)| hash.as_str(),
+            |(path, _), content| Some(content.map(|bytes| (path.clone(), bytes))),
+        );
+        read.into_iter().collect()
+    }
+
     /// The error for a snapshot id with no row: `Compacted` when compaction
     /// removed it, `NotFound` otherwise.
     fn missing_snapshot(&self, snapshot: &SnapshotId) -> VeloError {

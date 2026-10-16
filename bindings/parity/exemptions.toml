@@ -445,3 +445,8 @@ reason = "pending: clone is not bound; sync is, with the token parameter (18.8-d
 entry = "sign::message"
 bindings = ["python", "node"]
 reason = "internal: the canonical bytes a signature covers; the bindings sign through sign::sign"
+
+[[exempt]]
+entry = "Repo::read_files_at"
+bindings = ["python", "node"]
+reason = "pending: batch reads and materialize bindings (19.3-c)"

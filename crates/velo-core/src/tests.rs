@@ -12269,3 +12269,6 @@ mod fuzz_regressions;
 
 #[cfg(all(test, feature = "timing"))]
 mod timing_laps;
+
+#[cfg(test)]
+mod batch_reads;
