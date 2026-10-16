@@ -242,7 +242,7 @@ jobs:
   # Performance guard: workload ratios against a same-runner calibration,
   # compared with the committed baselines in bench/perf/baseline.json.
   perf:
-    name: Perf · ${{ matrix.os }}
+    name: Perf Â· ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
