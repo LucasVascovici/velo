@@ -96,6 +96,94 @@ fn rename_from_outside_the_parent_is_refused() {
 }
 
 #[test]
+fn a_consumed_path_cannot_be_renamed_even_after_a_put() {
+    let (_t, repo) = setup();
+    let parent = base(
+        &repo,
+        &[(
+            "a.txt", "a
+",
+        )],
+    );
+    let b = main_branch();
+    let g = repo.write().unwrap();
+    let put = || {
+        TreeEntry::file(
+            "a.txt",
+            b"new
+"
+            .to_vec(),
+        )
+    };
+    let spec = SaveChanges::new(&b, Some(&parent), "m")
+        .delete("a.txt")
+        .put(put())
+        .rename("a.txt", "c.txt");
+    invalid_naming(g.save_changes(spec), "a.txt");
+    let spec = SaveChanges::new(&b, Some(&parent), "m")
+        .rename("a.txt", "b.txt")
+        .put(put())
+        .rename("a.txt", "c.txt");
+    invalid_naming(g.save_changes(spec), "a.txt");
+    assert_eq!(snapshot_count(&repo), 1);
+}
+
+#[test]
+fn a_rename_target_cannot_be_deleted_or_renamed_onto_again() {
+    let (_t, repo) = setup();
+    let parent = base(
+        &repo,
+        &[
+            (
+                "a.txt", "a
+",
+            ),
+            (
+                "c.txt", "c
+",
+            ),
+        ],
+    );
+    let b = main_branch();
+    let g = repo.write().unwrap();
+    let stray = TreeEntry::file(
+        "stray.txt",
+        b"never stored
+"
+        .to_vec(),
+    );
+    let spec = SaveChanges::new(&b, Some(&parent), "m")
+        .put(stray.clone())
+        .rename("a.txt", "b.txt")
+        .delete("b.txt");
+    invalid_naming(g.save_changes(spec), "b.txt");
+    let spec = SaveChanges::new(&b, Some(&parent), "m")
+        .put(stray)
+        .rename("a.txt", "b.txt")
+        .delete("b.txt")
+        .rename("c.txt", "b.txt");
+    invalid_naming(g.save_changes(spec), "b.txt");
+    assert_eq!(snapshot_count(&repo), 1);
+    let (_s, scratch) = setup();
+    let hash = scratch
+        .write()
+        .unwrap()
+        .save_changes(
+            SaveChanges::new(&b, None, "m").put(TreeEntry::file(
+                "stray.txt",
+                b"never stored
+"
+                .to_vec(),
+            )),
+        )
+        .unwrap()
+        .written[0]
+        .1
+        .clone();
+    assert!(!repo.objects().contains(hash.as_str()));
+}
+
+#[test]
 fn rename_onto_an_existing_path_is_refused() {
     let (_t, repo) = setup();
     let parent = base(&repo, &[("a.txt", "a\n"), ("b.txt", "b\n")]);
@@ -230,7 +318,10 @@ fn rename_edges_are_visible_and_keep_the_object() {
     let edges = paths::recorded_by(&repo, &saved.snapshot).unwrap();
     assert_eq!(edges, [(PathBuf::from("a.txt"), PathBuf::from("d/b.txt"))]);
     let detail = show::run(&repo, &saved.snapshot, &[]).unwrap();
-    assert!(format!("{detail:?}").contains("d/b.txt"));
+    assert_eq!(
+        detail.renames,
+        [(PathBuf::from("a.txt"), PathBuf::from("d/b.txt"))]
+    );
 }
 
 #[test]
@@ -405,6 +496,8 @@ proptest! {
         let mut spec = SaveChanges::new(&branch, Some(&pa), "m").timestamp_ms(2);
         let mut renames: Vec<(PathBuf, PathBuf)> = Vec::new();
         let mut puts: BTreeSet<String> = BTreeSet::new();
+        let mut consumed: BTreeSet<String> = BTreeSet::new();
+        let mut targets: BTreeSet<String> = BTreeSet::new();
         for op in ops {
             match op {
                 Op::Put(i, c) => {
@@ -426,7 +519,9 @@ proptest! {
                 }
                 Op::Delete(i) => {
                     let p = pool_path(i);
-                    if tree.remove(&p).is_some() {
+                    // Deleting a rename target is refused, so the model skips it.
+                    if !targets.contains(&p) && tree.remove(&p).is_some() {
+                        consumed.insert(p.clone());
                         puts.remove(&p);
                         spec = spec.delete(p);
                     }
@@ -436,7 +531,11 @@ proptest! {
                     if parent_paths.contains(&from)
                         && tree.contains_key(&from)
                         && !tree.contains_key(&to)
+                        && !consumed.contains(&from)
+                        && !targets.contains(&to)
                     {
+                        consumed.insert(from.clone());
+                        targets.insert(to.clone());
                         let c = tree.remove(&from).unwrap();
                         tree.insert(to.clone(), c);
                         if puts.remove(&from) {
@@ -448,9 +547,6 @@ proptest! {
                 }
             }
         }
-        // An edge whose target was deleted later is refused on both paths.
-        prop_assume!(renames.iter().all(|(_, to)| tree.contains_key(to.to_str().unwrap())));
-
         let saved = ra.write().unwrap().save_changes(spec).unwrap();
         // The stored objects of the stored puts exist in repo B too once the
         // tree is saved there, so the comparison is on whole-tree ids.

@@ -604,6 +604,16 @@ impl WriteGuard<'_> {
         crate::timing::lap("save_changes.load_parent");
 
         let mut renames: Vec<(String, String)> = Vec::new();
+        // Every path that was a rename source or was deleted in this call. A
+        // later Put may reuse the name, but the parent's file is gone, so it
+        // cannot be a rename source again.
+        let mut consumed: std::collections::HashSet<String> = std::collections::HashSet::new();
+        // Deleting the target of a recorded rename is refused (rather than
+        // dropping the edge): the edge would be false once the path holds
+        // something else, and a second rename onto it would collide on the
+        // `renames` primary key. This runs before any object is written.
+        let mut rename_targets: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
         for change in spec.changes {
             match change {
                 Change::Put(mut entry) => {
@@ -613,21 +623,27 @@ impl WriteGuard<'_> {
                 }
                 Change::Delete(path) => {
                     let path = db::normalise(&path);
+                    if rename_targets.contains(&path) {
+                        return Err(VeloError::invalid(format!(
+                            "cannot delete '{path}': it is the target of a rename in this call."
+                        )));
+                    }
                     if working.remove(&path).is_none() {
                         return Err(VeloError::invalid(format!(
                             "cannot delete '{path}': it is not in the tree."
                         )));
                     }
+                    consumed.insert(path);
                 }
                 Change::Rename { from, to } => {
                     let from = db::normalise(&from);
                     let to = db::normalise(&to);
-                    if !in_parent.contains(&from) {
+                    if !in_parent.contains(&from) || consumed.contains(&from) {
                         return Err(VeloError::invalid(format!(
-                            "cannot rename '{from}': it is not in the parent's tree."
+                            "cannot rename '{from}': it is not in the parent's tree, or was already moved or deleted."
                         )));
                     }
-                    if working.contains_key(&to) {
+                    if working.contains_key(&to) || rename_targets.contains(&to) {
                         return Err(VeloError::invalid(format!(
                             "cannot rename onto '{to}': it already exists."
                         )));
@@ -638,6 +654,8 @@ impl WriteGuard<'_> {
                         )));
                     };
                     working.insert(to.clone(), slot);
+                    consumed.insert(from.clone());
+                    rename_targets.insert(to.clone());
                     renames.push((from, to));
                 }
             }
