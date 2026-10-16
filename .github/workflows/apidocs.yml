@@ -6,6 +6,7 @@ name: API reference
 
 on:
   push:
+    branches: ["**"]
     paths:
       - "bindings/**"
       - ".github/workflows/apidocs.yml"
