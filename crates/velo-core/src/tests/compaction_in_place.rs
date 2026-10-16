@@ -80,17 +80,30 @@ fn scenario() -> (TempDir, Repo, Vec<SnapshotId>) {
     for i in 0..10i64 {
         let body = format!("body {i}\n");
         let mut files: Vec<(&str, &str)> = vec![("keep.txt", "k\n"), ("f.txt", &body)];
-        let renames: Vec<(PathBuf, PathBuf)> = if i == 2 {
-            files.push(("moved.txt", "m\n"));
-            vec![("old.txt".into(), "moved.txt".into())]
-        } else if i == 1 {
-            files.push(("old.txt", "m\n"));
-            vec![]
-        } else if i >= 3 {
-            files.push(("moved.txt", "m\n"));
-            vec![]
-        } else {
-            vec![]
+        if i >= 3 || i == 2 {
+            files.push((
+                "moved.txt",
+                "m
+",
+            ));
+        }
+        if i <= 1 {
+            files.push((
+                "old.txt", "m
+",
+            ));
+        }
+        if i >= 8 {
+            files.push((
+                "moved2.txt",
+                "n
+",
+            ));
+        }
+        let renames: Vec<(PathBuf, PathBuf)> = match i {
+            2 => vec![("old.txt".into(), "moved.txt".into())],
+            8 => vec![("keep.txt".into(), "moved2.txt".into())],
+            _ => vec![],
         };
         let id = put(&repo, ids.last(), &files, &renames, 1_000 * (i + 1));
         ids.push(id);
