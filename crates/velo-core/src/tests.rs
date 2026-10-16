@@ -12278,3 +12278,9 @@ mod vacuum;
 
 #[cfg(test)]
 mod report_model;
+
+#[cfg(test)]
+mod perf_support;
+
+#[cfg(all(test, feature = "timing"))]
+mod perf_profile;
