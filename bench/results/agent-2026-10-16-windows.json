@@ -1,0 +1,99 @@
+{
+  "env": {
+    "date": "2026-10-16",
+    "platform": "Windows-11-10.0.22621-SP0",
+    "system": "Windows",
+    "machine": "AMD64",
+    "python": "3.12.8",
+    "git": "git version 2.42.0.windows.2",
+    "sqlite": "3.45.3",
+    "velo_binding": "unversioned binding",
+    "repo_commit": "cacabf2",
+    "workdir": "C:\\Users\\lvi\\AppData\\Local\\Temp\\velo-agent-bench-x3ysnnhf",
+    "steps": 500,
+    "files": 1000,
+    "restores": 100,
+    "seed": 1,
+    "quick": false,
+    "defender_note": "real-time scanning assumed ON, exclusions not checked for this run"
+  },
+  "results": [
+    {
+      "system": "velo (5.2 API)",
+      "provenance": "as velo",
+      "steps_s": 87.29400389989314,
+      "disk_after_steps": 152018171,
+      "restore_total_s": 113.3451087999565,
+      "restore_median_s": 0.844033599991235,
+      "who_wrote_s": 5.213395799990394,
+      "branches_s": 16.395231999995303,
+      "disk_final": 174127394
+    },
+    {
+      "system": "velo",
+      "provenance": "ids recompute from content; author and metadata are hashed into each snapshot id; signatures can be attached",
+      "steps_s": 64.35129849991063,
+      "disk_after_steps": 152276651,
+      "restore_total_s": 23.212912899936782,
+      "restore_median_s": 0.21550510000088252,
+      "who_wrote_s": 2.945078499993542,
+      "branches_s": 13.190759800068918,
+      "disk_final": 174275282
+    },
+    {
+      "system": "shadow git",
+      "provenance": "object hashes verify content; author and message per commit only by discipline, nothing binds them to a run",
+      "steps_s": 190.9000800000358,
+      "disk_after_steps": 3271358,
+      "restore_total_s": 43.596724900067784,
+      "restore_median_s": 0.42211220000172034,
+      "who_wrote_s": 2.422361800010549,
+      "branches_s": 30.951920899999095,
+      "disk_final": 4540996
+    },
+    {
+      "system": "git worktree",
+      "provenance": "as shadow git",
+      "steps_s": 174.22254850002355,
+      "disk_after_steps": 3267082,
+      "restore_total_s": 48.358240299960016,
+      "restore_median_s": 0.46565969999937806,
+      "who_wrote_s": 2.487070799994399,
+      "branches_s": 39.48633590008831,
+      "disk_final": 12580937
+    },
+    {
+      "system": "dir copy",
+      "provenance": "none",
+      "steps_s": 434.0124077997607,
+      "disk_after_steps": 488490652,
+      "restore_total_s": 74.136922900012,
+      "restore_median_s": 0.7288153000117745,
+      "who_wrote_s": 10.684212299995124,
+      "branches_s": 79.75399930001004,
+      "disk_final": 570822676
+    },
+    {
+      "system": "jsonl log",
+      "provenance": "none",
+      "steps_s": 1.39405999983137,
+      "disk_after_steps": 6352697,
+      "restore_total_s": 71.81502660000115,
+      "restore_median_s": 0.7046896999963792,
+      "who_wrote_s": 0.5524382000003243,
+      "branches_s": 0.37850080004136544,
+      "disk_final": 7285524
+    },
+    {
+      "system": "sqlite blobs",
+      "provenance": "none",
+      "steps_s": 8.844175300124334,
+      "disk_after_steps": 28520448,
+      "restore_total_s": 74.1465791999799,
+      "restore_median_s": 0.7383269999991171,
+      "who_wrote_s": 0.0017896999925142154,
+      "branches_s": 2.086403500070446,
+      "disk_final": 32997376
+    }
+  ]
+}

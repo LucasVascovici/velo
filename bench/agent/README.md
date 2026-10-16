@@ -8,14 +8,15 @@ standard library plus the velo Python binding and the `git` CLI.
 
 | system | how a step is stored |
 |---|---|
-| velo | `save_tree` per step; untouched files carried forward with `TreeEntry.stored`; author and `agent` metadata on every snapshot |
+| velo | `save_changes` per step with only the changed files (the core carries the rest of the parent's tree forward); author and `agent` metadata on every snapshot |
+| velo (5.2 API) | the baseline: `save_tree` per step; untouched files carried forward with `TreeEntry.stored`, the tree re-read with `tree_at` after every save; restore by `tree_at` plus `read_file_at` per file |
 | shadow git | `git --git-dir=shadow.git --work-tree=work add -A && commit` per step, author `agent-run-1` |
 | git worktree | an ordinary repository; each attempt in the branch workload gets its own `git worktree add -b` |
 | dir copy | `shutil.copytree` of the whole project per step |
 | jsonl log | one JSON line per step holding the full text of the changed files, `fsync`ed |
 | sqlite blobs | `blobs(step, path, data)` plus a `manifest(step, path, blob_step)` of the whole tree per step, committed per step |
 
-All six sit behind one interface (`setup`, `checkpoint`, `branch`, `merge`,
+All seven sit behind one interface (`setup`, `checkpoint`, `branch`, `merge`,
 `restore`, `who_wrote`, `disk`), so the driver is identical for each.
 
 ## Workloads
@@ -32,8 +33,8 @@ All six sit behind one interface (`setup`, `checkpoint`, `branch`, `merge`,
    becomes a new step holding the winner's state (copied directory, appended
    changed files, a new manifest). The disk column is measured after this.
 3. **Restore.** Restore step 250 (half way) 100 times into an empty directory;
-   the file count is asserted. velo does this with `tree_at` for the file list
-   plus `read_file_at` per file, written to disk; git uses
+   the file count is asserted. velo does this with one `materialize` call (the 5.2 API row
+   uses `tree_at` for the file list plus `read_file_at` per file, written to disk); git uses
    `git checkout <commit> -- .` into a separate work tree with its own index;
    the log is replayed from the start; SQLite joins the manifest to the blobs.
 4. **Who wrote this line.** 20 seeded (file, line) pairs at the end of the main

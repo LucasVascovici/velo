@@ -297,7 +297,7 @@ the timed step work over 500 steps, in seconds.
 | Rust `as_harness` | the same work, direct on `velo-core`: build entries, `save_tree`, `tree_at` re-read | 114.6 | 50.8 |
 | Rust `no_reread` | as above, but the object ids are predicted instead of re-read with `tree_at` | 121.3 | 37.7 |
 | Rust `save_tree_only` | only the `save_tree` call | 86.3 | 39.1 |
-| changes-only (added by the save_changes measurement) | to be filled by 19.2-d | - | - |
+| Python harness, `save_changes` (`agent_bench.py --only velo`, 2026-10-16 run) | `checkpoint` calls: only the changed files go through the binding with `save_changes`; no entry list, no `tree_at` re-read | 64.4 | 37.4 |
 
 The share of the Python step time that is binding and conversion overhead is
 (Python harness - Rust `as_harness`) / Python harness:
@@ -323,6 +323,34 @@ Linux (about 91 ms per step), `save_tree.commit` is 83 ms (`insert_file_map`
 `save_tree.objects` 101 ms (Defender on object files). Binding overhead is the
 smaller problem: it is about a tenth of the step time or less, while the
 `save_tree` call alone is two thirds to three quarters of it.
+
+**Did the step time fall by the share 19.1 measured?** 19.1 attributed
+10.5% (Windows) and 5.6% (Linux) of the Python step to the binding, and a
+further 22% on both platforms to the entry building and `tree_at` re-read that
+`save_changes` removes, so the calling convention as a whole was worth about
+33% on Windows and 27% on Linux (Python harness against `save_tree_only`).
+The 2026-10-16 run measured the old and the new harness back to back, so the
+comparison below uses that run's own `velo (5.2 API)` row (87.3 s Windows,
+41.2 s Linux), not the 19.1 figures, because every system's absolute times moved
+between the two days:
+
+| | 5.2 API (s) | `save_changes` (s) | fall | 19.1 share | missed by |
+|---|---:|---:|---:|---:|---:|
+| Windows | 87.3 | 64.4 | 26.2% | 32.6% | 6.4 points |
+| Linux | 41.2 | 37.4 | 9.2% | 27.3% | 18.1 points |
+
+So it fell on both platforms but did not reach the 19.1 estimate on either:
+Windows came close (it beats the 10.5% binding share by itself and misses the
+combined share by about a fifth), and Linux fell about a third of the way
+(9.2% against 27.3%). Against the 19.1 table directly the drop looks larger
+(128.1 s to 64.4 s on Windows, 53.8 s to 37.4 s on Linux), but most of that is
+the machine, not the API: the 5.2 row in the same new run is already 87.3 s and
+41.2 s. On Linux the new step total (37.4 s) is within 4% of `save_tree_only`
+(39.1 s), so the harness overhead is gone and what is left is the engine's
+commit; the estimate was too high on Linux because the 19.1 `as_harness` and
+`save_tree_only` totals were single runs. Restore, which 19.1 did not break out,
+fell from 844 ms to 216 ms median on Windows and from 145 ms to 13 ms on Linux
+(`materialize` against `tree_at` plus `read_file_at` per file).
 
 The Python harness's other workloads, from the same two runs, were: Windows
 branches 25.3 s, restore median 2,230 ms, who-wrote 9.5 s, disk 174 MB; Linux
