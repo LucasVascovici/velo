@@ -345,9 +345,10 @@ combined share by about a fifth), and Linux fell about a third of the way
 (9.2% against 27.3%). Against the 19.1 table directly the drop looks larger
 (128.1 s to 64.4 s on Windows, 53.8 s to 37.4 s on Linux), but most of that is
 the machine, not the API: the 5.2 row in the same new run is already 87.3 s and
-41.2 s. On Linux the new step total (37.4 s) is within 4% of `save_tree_only`
-(39.1 s), so the harness overhead is gone and what is left is the engine's
-commit; the estimate was too high on Linux because the 19.1 `as_harness` and
+41.2 s. On Linux the new step total (37.4 s) is near 19.1's `save_tree_only`
+(39.1 s), but that is a cross-day comparison and only indicative. What is left
+is plausibly the engine's commit. A possible, unmeasured, explanation for the
+estimate being too high on Linux is that the 19.1 `as_harness` and
 `save_tree_only` totals were single runs. Restore, which 19.1 did not break out,
 fell from 844 ms to 216 ms median on Windows and from 145 ms to 13 ms on Linux
 (`materialize` against `tree_at` plus `read_file_at` per file).

@@ -207,17 +207,18 @@ velo still loses most rows on Linux. Read the tables that way:
   every other system: 4.5x shadow git (8.4 s), 4.6x git worktree (8.1 s), 1.6x
   directory copy (23.4 s), 11.7x the log (3.2 s) and 2.4x SQLite (15.4 s); the
   engine's commit (see [`PERF.md`](../PERF.md)) is what remains. Branches lose
-  too: 3.4x shadow git, 2.5x git worktree, 2.1x directory copy, 13.7x the log
+  too: 3.4x shadow git, 2.5x git worktree, 2.1x directory copy, 13.8x the log
   and 4.0x SQLite. "Who wrote this line" loses to git by 1.5x (0.35 s against
-  0.23 s), to the copy by 2.7x, and to the log by 1.1x; SQLite answers a
+  0.23 s), to the copy by 2.6x, and to the log by 1.1x; SQLite answers a
   different question.
 - **Speed on Windows.** velo is now the fastest of the git, copy and replay
   options at steps (64 s against git's 174 to 191 s and the copy's 434 s),
   branches (13.2 s against 31 to 80 s) and restore (216 ms against 422 ms for
   shadow git), but the log and SQLite stores still beat it on steps by 46x and
   7.3x, and on branches by 35x and 6.3x. Blame loses to git by 1.2x (2.95 s
-  against 2.42 s) and to the log by 5.4x.
-- **Disk.** velo used 174 MB against git's 5 MB, most likely because every
+  against 2.42 s) and to the log by 5.3x.
+- **Disk.** velo used 174 MB against git's 5 MB (35x on Linux, 38x on Windows), git
+  worktree's 13 MB (14x), the log's 7 MB (24x) and SQLite's 33 MB (5.3x), most likely because every
   snapshot records the whole 1,000-file tree even when 999 files were carried
   forward by id (carry-forward saves the object bytes, not the per-snapshot tree
   record); this run did not break the 174 MB down. A
