@@ -504,6 +504,62 @@ NOTES
         trust: PathBuf,
     },
 
+    /// Write the repository's audit report as one offline HTML file.
+    ///
+    /// The report has a verdict from fsck, a timeline per branch (id, time,
+    /// author, message, metadata, signature badges, changed files) and the
+    /// line provenance of the files those snapshots changed.  --json prints
+    /// the same data as JSON instead.
+    ///
+    /// Examples
+    ///   velo report
+    ///   velo report --branch main --since 7d -o audit.html
+    ///   velo report --json --trust trusted.keys
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · The file is static: no script, no remote resources, a strict Content-Security-Policy.  It is safe to open offline, even when the history it shows is hostile; every message, name and line is escaped.
+    · --since takes YYYY-MM-DD, an RFC 3339 timestamp, or an age such as 12h, 7d or 2w.
+    · --trust FILE is the key file velo verify reads; without it valid signatures show as untrusted.
+    · A repository with integrity problems still gets a report, with a red verdict.
+    · Nothing on disk is changed except the report file."
+    )]
+    Report {
+        /// Only this branch (default: every branch).
+        #[arg(long, value_name = "BRANCH", help = "Only this branch (default: all)")]
+        branch: Option<String>,
+        /// Only snapshots from this time on.
+        #[arg(
+            long,
+            value_name = "WHEN",
+            value_parser = parse_since_arg,
+            help = "Only snapshots since YYYY-MM-DD, an RFC 3339 time, or <n>h|d|w ago"
+        )]
+        since: Option<i64>,
+        /// Where to write the report.
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "FILE",
+            help = "Output file (default: velo-report.html; with --json, stdout)"
+        )]
+        output: Option<PathBuf>,
+        /// Emit JSON instead of HTML.
+        #[arg(long, help = "Emit the same data as JSON")]
+        json: bool,
+        /// File of trusted public keys, one per line.
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Trusted public keys, as velo verify --trust"
+        )]
+        trust: Option<PathBuf>,
+        /// Skip the integrity check.
+        #[arg(long, help = "Do not run fsck (the verdict reads 'not checked')")]
+        no_fsck: bool,
+    },
+
     /// Apply the changes from one snapshot onto the current branch.
     ///
     /// Uses 3-way merge logic: the snapshot's parent acts as the
@@ -2322,6 +2378,7 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Conflicts { .. }
             | Commands::ExportGit { .. }
             | Commands::Verify { .. }
+            | Commands::Report { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
     )
@@ -2416,6 +2473,34 @@ fn parse_duration_ms(text: &str) -> Option<i64> {
     };
     let n: i64 = text[..text.len() - 1].parse().ok()?;
     n.checked_mul(per)
+}
+
+/// `--since`: `YYYY-MM-DD`, an RFC 3339 timestamp, or `<n>h|d|w` ago, as epoch
+/// milliseconds.
+fn parse_since_at(text: &str, now_ms: i64) -> std::result::Result<i64, String> {
+    let bad = || {
+        format!(
+            "invalid --since '{text}': expected YYYY-MM-DD, an RFC 3339 timestamp, or an age like 12h, 7d or 2w"
+        )
+    };
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d") {
+        let midnight = date.and_hms_opt(0, 0, 0).ok_or_else(bad)?;
+        return Ok(midnight.and_utc().timestamp_millis());
+    }
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Ok(t.timestamp_millis());
+    }
+    if text.ends_with(['h', 'd', 'w']) {
+        if let Some(age) = parse_duration_ms(text) {
+            return now_ms.checked_sub(age).ok_or_else(bad);
+        }
+    }
+    Err(bad())
+}
+
+/// The clap value parser for `--since`; a bad value is a usage error.
+fn parse_since_arg(text: &str) -> std::result::Result<i64, String> {
+    parse_since_at(text, chrono::Utc::now().timestamp_millis())
 }
 
 /// `AGE=EVERY`, e.g. `30d=1d`, to a retention tier.
@@ -3093,6 +3178,53 @@ fn run(cli: Cli) -> Result<Exit> {
             render::sign::print_verification(&verification);
             if !verification.is_trusted() {
                 exit = Exit::Untrusted;
+            }
+        }
+
+        Commands::Report {
+            branch,
+            since,
+            output,
+            json,
+            trust,
+            no_fsck,
+        } => {
+            let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
+            let policy = trust.as_deref().map(read_trust_file).transpose()?;
+            let mut options = commands::report::Options::new().fsck(!no_fsck);
+            if let Some(b) = branch.as_ref() {
+                options = options.branch(b);
+            }
+            if let Some(ms) = since {
+                options = options.since_ms(ms);
+            }
+            if let Some(p) = policy.as_ref() {
+                options = options.trust(p);
+            }
+            let report = commands::report::build(&repo, options)?;
+            let generated = render::report::format_ms(chrono::Utc::now().timestamp_millis());
+            let repo_name = root.display().to_string();
+            let write_file = |path: &Path, text: &str| {
+                std::fs::write(path, text).map_err(|e| {
+                    VeloError::invalid(format!("cannot write {}: {e}", path.display()))
+                })
+            };
+            if json {
+                let value = render::report::json(&report, &repo_name, &generated);
+                let text = serde_json::to_string_pretty(&value)
+                    .map_err(|e| VeloError::invalid(format!("cannot encode report: {e}")))?;
+                match output {
+                    Some(path) => {
+                        write_file(&path, &text)?;
+                        render::report::print_written(&path);
+                    }
+                    None => println!("{text}"),
+                }
+            } else {
+                let path = output.unwrap_or_else(|| PathBuf::from("velo-report.html"));
+                let view = render::report::view(&report, &repo_name, &generated);
+                write_file(&path, &render::report::html(&view))?;
+                render::report::print_written(&path);
             }
         }
 

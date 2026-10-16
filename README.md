@@ -580,6 +580,7 @@ can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 | `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
 | `velo keygen --out <file>` | Write a new signing key (a secret) to `file` and print its public key |
 | `velo sign [snapshot] --key <file>` | Sign a snapshot (default: the current one) with a key file |
+| `velo report [--branch B] [--since T] [-o FILE] [--json] [--trust FILE] [--no-fsck]` | Write a self-contained HTML audit report that opens offline: an fsck verdict, a timeline per branch with signature badges, and line provenance. Everything in it is escaped and the file contains no script. `--json` prints the same data |
 | `velo verify [snapshot] --trust <file>` | Check a snapshot's signatures against a file of trusted public keys; exits 1 unless one is trusted |
 
 ---

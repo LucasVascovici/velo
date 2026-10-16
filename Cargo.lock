@@ -1541,6 +1541,7 @@ dependencies = [
  "clap",
  "console",
  "getrandom 0.4.3",
+ "proptest",
  "serde_json",
  "similar",
  "tempfile",
