@@ -372,8 +372,31 @@ fn run(p: &Params) -> Vec<Value> {
         out.push(line);
     }
 
-    for shape in ["rowid_two_indexes", "without_rowid", "blob_hashes"] {
-        let line = row_insert(shape, p.files);
+    // The baseline for the schema variants is the scratch table shaped like
+    // today's file_map, so its own deltas are zero.
+    let mut base_ms = 0.0;
+    let mut base_bytes = 0.0;
+    for (i, shape) in ["rowid_two_indexes", "without_rowid", "blob_hashes"]
+        .iter()
+        .enumerate()
+    {
+        let mut line = row_insert(shape, p.files);
+        let ms = line["insert_ms"].as_f64().unwrap();
+        let bytes = line["bytes_per_row"].as_f64().unwrap();
+        if i == 0 {
+            base_ms = ms;
+            base_bytes = bytes;
+        }
+        let pct = |d: f64, b: f64| if b > 0.0 { d / b * 100.0 } else { 0.0 };
+        let obj = line.as_object_mut().unwrap();
+        obj.insert("baseline".into(), json!("schema_rowid_two_indexes"));
+        obj.insert("delta_ms".into(), json!(ms - base_ms));
+        obj.insert("delta_pct".into(), json!(pct(ms - base_ms, base_ms)));
+        obj.insert("delta_bytes_per_row".into(), json!(bytes - base_bytes));
+        obj.insert(
+            "delta_bytes_pct".into(),
+            json!(pct(bytes - base_bytes, base_bytes)),
+        );
         emit(&line);
         out.push(line);
     }
@@ -420,4 +443,13 @@ fn sqlite_options_run_at_a_small_size() {
     assert!(lines[3]["stages"]["wal_checkpoint_passive_ms"].is_number());
     assert!(lines[1]["delta_pct"].is_number());
     assert!(lines[12]["bytes_per_row"].as_f64().unwrap() > 0.0);
+    assert_eq!(lines[11]["delta_ms"], json!(0.0));
+    for l in lines.iter().filter(|l| {
+        l["variant"]
+            .as_str()
+            .is_some_and(|v| v == "schema_without_rowid" || v == "schema_blob_hashes")
+    }) {
+        assert!(l["delta_ms"].is_number() && l["delta_pct"].is_number());
+        assert!(l["delta_bytes_per_row"].is_number() && l["delta_bytes_pct"].is_number());
+    }
 }
