@@ -278,6 +278,119 @@ pub struct SaveTree<'a> {
     pub timestamp_ms: Option<i64>,
 }
 
+/// One change to apply to a parent snapshot's tree, for
+/// [`WriteGuard::save_changes`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Change {
+    /// Add or replace the file at `entry.path`.
+    ///
+    /// Bytes are CRLF-normalised exactly as `save_tree` does; a stored object
+    /// must already exist.
+    Put(TreeEntry),
+    /// Remove a path present in the tree being built.
+    Delete(String),
+    /// Move the parent's file at `from` to `to`, keeping its object and kind,
+    /// and record the rename edge so `blame` and `history` follow it.
+    Rename { from: String, to: String },
+}
+
+/// A snapshot to create from a parent plus changes.
+///
+/// The parent's tree is loaded inside the database, so a caller that changes
+/// one file in a large tree does not send the rest across the API.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct SaveChanges<'a> {
+    /// Branch to record the snapshot on.
+    pub branch: &'a BranchName,
+    /// The snapshot to start from, or `None` for an empty tree and a root
+    /// snapshot.
+    pub parent: Option<&'a SnapshotId>,
+    /// The second parent, when this snapshot is a merge. Its tree is not read.
+    pub merge_parent: Option<&'a SnapshotId>,
+    pub message: &'a str,
+    /// Applied in order to the parent's tree.
+    pub changes: Vec<Change>,
+    /// App-namespaced metadata, part of the snapshot's identity.
+    pub meta: SnapshotMeta,
+    /// Who made this snapshot.
+    pub author: Option<&'a Author>,
+    /// When this snapshot was made, as epoch milliseconds, or `None` for now.
+    pub timestamp_ms: Option<i64>,
+}
+
+impl<'a> SaveChanges<'a> {
+    /// A save of `parent` with no changes yet.
+    pub fn new(branch: &'a BranchName, parent: Option<&'a SnapshotId>, message: &'a str) -> Self {
+        SaveChanges {
+            branch,
+            parent,
+            merge_parent: None,
+            message,
+            changes: Vec::new(),
+            meta: SnapshotMeta::new(),
+            author: None,
+            timestamp_ms: None,
+        }
+    }
+
+    /// Add or replace a file.
+    pub fn put(mut self, entry: TreeEntry) -> Self {
+        self.changes.push(Change::Put(entry));
+        self
+    }
+
+    /// Remove a path.
+    pub fn delete(mut self, path: impl Into<String>) -> Self {
+        self.changes.push(Change::Delete(path.into()));
+        self
+    }
+
+    /// Move a file and record the rename.
+    pub fn rename(mut self, from: impl Into<String>, to: impl Into<String>) -> Self {
+        self.changes.push(Change::Rename {
+            from: from.into(),
+            to: to.into(),
+        });
+        self
+    }
+
+    /// Record a second parent.
+    pub fn merge_parent(mut self, id: &'a SnapshotId) -> Self {
+        self.merge_parent = Some(id);
+        self
+    }
+
+    /// Attach metadata.
+    pub fn meta(mut self, meta: SnapshotMeta) -> Self {
+        self.meta = meta;
+        self
+    }
+
+    /// Record an author.
+    pub fn author(mut self, a: &'a Author) -> Self {
+        self.author = Some(a);
+        self
+    }
+
+    /// Fix the timestamp, as epoch milliseconds.
+    pub fn timestamp_ms(mut self, ms: i64) -> Self {
+        self.timestamp_ms = Some(ms);
+        self
+    }
+}
+
+/// The result of [`WriteGuard::save_changes`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Saved {
+    pub snapshot: SnapshotId,
+    /// The object of every file the changes put and that is still in the final
+    /// tree, sorted by path. Files carried over from the parent are not listed.
+    pub written: Vec<(String, ObjectHash)>,
+}
+
 /// One file in a stored snapshot, without its content.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TreeFile {
@@ -399,25 +512,240 @@ impl WriteGuard<'_> {
         }
         crate::timing::lap("save_tree.objects");
 
+        let renames: Vec<(String, String)> = spec
+            .renames
+            .iter()
+            .map(|(from, to)| {
+                (
+                    db::normalise(&from.to_string_lossy()),
+                    db::normalise(&to.to_string_lossy()),
+                )
+            })
+            .collect();
+        self.commit_tree(
+            tree,
+            &renames,
+            Identity {
+                branch: spec.branch,
+                parent: spec.parent,
+                merge_parent: spec.merge_parent,
+                message: spec.message,
+                meta: spec.meta,
+                author: spec.author,
+                timestamp_ms: spec.timestamp_ms,
+            },
+        )
+    }
+}
+
+/// A tree entry while changes are being applied: carried over from the parent
+/// (already stored) or a put not yet written.
+enum Slot {
+    Parent(String, i64),
+    Put(TreeEntry),
+}
+
+impl WriteGuard<'_> {
+    /// Create a snapshot from a parent plus a list of changes.
+    ///
+    /// Returns the snapshot id and the object id of every file written. The
+    /// parent's tree is read inside the database, so only the changes cross the
+    /// API. The result is still a whole-tree snapshot: the id is the one
+    /// [`save_tree`](WriteGuard::save_tree) gives the same resulting tree.
+    ///
+    /// Changes apply in order. `Delete` of an absent path, `Rename` of a path
+    /// not in the parent's tree (or already moved or deleted by an earlier
+    /// change), and `Rename` onto an existing path are invalid-input errors. A
+    /// `Put` after a `Rename` to the same path replaces the content, which is
+    /// how an edit-and-move is expressed. The whole path rule runs before any
+    /// object is written, so a refusal writes nothing.
+    ///
+    /// # There is no "nothing changed" guard
+    ///
+    /// An empty `changes` records the parent's tree again, as a new snapshot
+    /// differing only in parent and timestamp. A caller that wants to skip that
+    /// compares the trees with [`Repo::tree_at`]; see
+    /// [`save_tree`](WriteGuard::save_tree) for the reasoning.
+    pub fn save_changes(&self, spec: SaveChanges<'_>) -> Result<Saved> {
+        crate::timing::begin();
+        for parent in [spec.parent, spec.merge_parent].into_iter().flatten() {
+            let known: bool = self
+                .conn()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+                    [parent],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if !known {
+                return Err(self.repo().missing_snapshot(parent));
+            }
+        }
+
+        let mut working: std::collections::BTreeMap<String, Slot> =
+            std::collections::BTreeMap::new();
+        if let Some(parent) = spec.parent {
+            let mut stmt = self
+                .conn()
+                .prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+            let rows = stmt.query_map([parent], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(2)?,
+                ))
+            })?;
+            for row in rows {
+                let (path, hash, mode) = row?;
+                working.insert(path, Slot::Parent(hash, mode));
+            }
+        }
+        let in_parent: std::collections::HashSet<String> = working.keys().cloned().collect();
+        crate::timing::lap("save_changes.load_parent");
+
+        let mut renames: Vec<(String, String)> = Vec::new();
+        for change in spec.changes {
+            match change {
+                Change::Put(mut entry) => {
+                    let path = db::normalise(&entry.path);
+                    entry.path = path.clone();
+                    working.insert(path, Slot::Put(entry));
+                }
+                Change::Delete(path) => {
+                    let path = db::normalise(&path);
+                    if working.remove(&path).is_none() {
+                        return Err(VeloError::invalid(format!(
+                            "cannot delete '{path}': it is not in the tree."
+                        )));
+                    }
+                }
+                Change::Rename { from, to } => {
+                    let from = db::normalise(&from);
+                    let to = db::normalise(&to);
+                    if !in_parent.contains(&from) {
+                        return Err(VeloError::invalid(format!(
+                            "cannot rename '{from}': it is not in the parent's tree."
+                        )));
+                    }
+                    if working.contains_key(&to) {
+                        return Err(VeloError::invalid(format!(
+                            "cannot rename onto '{to}': it already exists."
+                        )));
+                    }
+                    let Some(slot) = working.remove(&from) else {
+                        return Err(VeloError::invalid(format!(
+                            "cannot rename '{from}': it was already moved or deleted."
+                        )));
+                    };
+                    working.insert(to.clone(), slot);
+                    renames.push((from, to));
+                }
+            }
+        }
+
+        // The path rule is applied to the final tree and both ends of every
+        // rename before any object is written: a refusal creates nothing.
+        crate::safe_path::check_rows(working.keys().map(String::as_str))?;
+        for (from, to) in &renames {
+            crate::safe_path::check_named(from)?;
+            crate::safe_path::check_named(to)?;
+        }
+        crate::timing::lap("save_changes.apply");
+
+        let objects = self.repo().objects();
+        let mut tree: Vec<(String, String, i64)> = Vec::with_capacity(working.len());
+        let mut written: Vec<(String, ObjectHash)> = Vec::new();
+        for (path, slot) in working {
+            match slot {
+                Slot::Parent(hash, mode) => tree.push((path, hash, mode)),
+                Slot::Put(entry) => {
+                    let mode = entry.kind.mode();
+                    let object = match entry.content {
+                        // As in `save_tree`: text is CRLF-normalised so memory
+                        // and filesystem saves agree on the object.
+                        Content::Bytes(bytes) => {
+                            let content = if mode == storage::MODE_SYMLINK {
+                                bytes
+                            } else {
+                                storage::normalise_crlf(bytes)
+                            };
+                            objects.put(&content)?
+                        }
+                        Content::Stored(object) => {
+                            if !objects.contains(object.as_str()) {
+                                return Err(VeloError::MissingObject {
+                                    hash: object.into_string(),
+                                });
+                            }
+                            object.into_string()
+                        }
+                    };
+                    written.push((path.clone(), ObjectHash::from_stored(object.clone())));
+                    tree.push((path, object, mode));
+                }
+            }
+        }
+        // `working` was a BTreeMap, so both lists are already in path order.
+
+        let snapshot = self.commit_tree(
+            tree,
+            &renames,
+            Identity {
+                branch: spec.branch,
+                parent: spec.parent,
+                merge_parent: spec.merge_parent,
+                message: spec.message,
+                meta: spec.meta,
+                author: spec.author,
+                timestamp_ms: spec.timestamp_ms,
+            },
+        )?;
+        Ok(Saved { snapshot, written })
+    }
+}
+
+/// Everything that gives a snapshot its identity apart from its tree.
+struct Identity<'a> {
+    branch: &'a BranchName,
+    parent: Option<&'a SnapshotId>,
+    merge_parent: Option<&'a SnapshotId>,
+    message: &'a str,
+    meta: SnapshotMeta,
+    author: Option<&'a Author>,
+    timestamp_ms: Option<i64>,
+}
+
+impl WriteGuard<'_> {
+    /// Insert a validated whole tree as a snapshot and commit it.
+    ///
+    /// Shared by `save_tree` and `save_changes` so both give the same id and the
+    /// same rows for the same tree. The caller has already checked the parents,
+    /// applied the path rule and stored the objects; `renames` are normalised.
+    fn commit_tree(
+        &self,
+        tree: Vec<(String, String, i64)>,
+        renames: &[(String, String)],
+        id: Identity<'_>,
+    ) -> Result<SnapshotId> {
         // The author joins the metadata *before* the id is computed, because
         // that is the point: it is part of identity, not a column beside it.
-        let mut meta = spec.meta;
-        if let Some(author) = spec.author {
+        let mut meta = id.meta;
+        if let Some(author) = id.author {
             meta.set_author(author);
         }
 
-        let parent = spec.parent.map_or("", |p| p.as_str());
-        let merge_parent = spec.merge_parent.map_or("", |p| p.as_str());
+        let parent = id.parent.map_or("", |p| p.as_str());
+        let merge_parent = id.merge_parent.map_or("", |p| p.as_str());
         // The caller's clock when they supplied one, ours otherwise. This is the
         // only place the wall clock is read.
-        let timestamp_ms = spec
+        let timestamp_ms = id
             .timestamp_ms
             .unwrap_or_else(crate::commands::snapshot_timestamp_ms);
         let snapshot = SnapshotId::from_stored(crate::commands::snapshot_id(SnapshotIdentity {
             tree: &tree,
             parent,
             merge_parent,
-            message: spec.message,
+            message: id.message,
             timestamp_ms,
             meta: &meta,
         }));
@@ -452,8 +780,8 @@ impl WriteGuard<'_> {
                  VALUES (?, ?, ?, ?, ?, ?)",
                 params![
                     snapshot,
-                    spec.message,
-                    spec.branch,
+                    id.message,
+                    id.branch,
                     parent,
                     merge_parent,
                     timestamp_ms
@@ -488,9 +816,12 @@ impl WriteGuard<'_> {
             let mut ins_rename = tx.prepare(
                 "INSERT INTO renames (snapshot_hash, from_path, to_path) VALUES (?, ?, ?)",
             )?;
-            for (from, to) in spec.renames {
-                let from = db::normalise(&from.to_string_lossy());
-                let to = db::normalise(&to.to_string_lossy());
+            let present: std::collections::HashSet<&str> = if renames.is_empty() {
+                std::collections::HashSet::new()
+            } else {
+                tree.iter().map(|(p, _, _)| p.as_str()).collect()
+            };
+            for (from, to) in renames {
                 if from.is_empty() || to.is_empty() {
                     return Err(VeloError::invalid("a rename edge needs both paths."));
                 }
@@ -506,7 +837,7 @@ impl WriteGuard<'_> {
                 // it. The other half — that `from` existed in the parent — is
                 // `fsck`'s, because a caller may legitimately record a rename
                 // onto a parent it did not read.
-                if !seen.contains(&to) {
+                if !present.contains(to.as_str()) {
                     return Err(VeloError::invalid(format!(
                         "renamed to '{}', which is not in this tree.",
                         to
@@ -519,7 +850,7 @@ impl WriteGuard<'_> {
         // shared connection, so writing via `self.conn()` here would land inside
         // this transaction anyway — but only by accident of how it is
         // implemented. Being explicit says the branch row commits with the rest.
-        crate::commands::register_branch(&tx, spec.branch, &snapshot)?;
+        crate::commands::register_branch(&tx, id.branch, &snapshot)?;
         crate::timing::lap("save_tree.insert_rest");
         tx.commit()?;
         crate::timing::lap("save_tree.commit");
@@ -528,7 +859,7 @@ impl WriteGuard<'_> {
         // re-save changed nothing, so there is nothing to announce.
         if !already {
             self.repo()
-                .emit_saved(&snapshot, spec.branch, spec.parent, spec.merge_parent);
+                .emit_saved(&snapshot, id.branch, id.parent, id.merge_parent);
         }
 
         Ok(snapshot)

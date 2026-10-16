@@ -460,3 +460,8 @@ reason = "pending: vacuum binding (19.4-d)"
 entry = "commands::report::build"
 bindings = ["python", "node"]
 reason = "audit report model for the CLI's HTML and JSON renderers; bindings already expose history, blame, snapshot_meta and verify to build their own view"
+
+[[exempt]]
+entry = "WriteGuard::save_changes"
+bindings = ["python", "node"]
+reason = "pending: save_changes binding (19.2-b)"

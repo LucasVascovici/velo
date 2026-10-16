@@ -12284,3 +12284,6 @@ mod perf_support;
 
 #[cfg(all(test, feature = "timing"))]
 mod perf_profile;
+
+#[cfg(test)]
+mod save_changes;

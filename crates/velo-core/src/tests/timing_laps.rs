@@ -68,6 +68,38 @@ fn save_tree_records_its_stages() {
 }
 
 #[test]
+fn save_changes_records_its_stages() {
+    let (_t, repo) = setup();
+    let parent = tree(&repo, None, 1);
+    timing::drain_laps();
+    let b = main_branch();
+    repo.write()
+        .unwrap()
+        .save_changes(
+            crate::tree::SaveChanges::new(&b, Some(&parent), "m")
+                .timestamp_ms(2)
+                .put(TreeEntry::file(
+                    "g.txt",
+                    b"g
+"
+                    .to_vec(),
+                )),
+        )
+        .unwrap();
+    assert_eq!(
+        names(),
+        [
+            "save_changes.load_parent",
+            "save_changes.apply",
+            "save_tree.snapshot_id",
+            "save_tree.insert_file_map",
+            "save_tree.insert_rest",
+            "save_tree.commit",
+        ]
+    );
+}
+
+#[test]
 fn save_records_its_stages() {
     let (t, repo) = setup();
     fs::write(t.path().join("a.txt"), "one\n").unwrap();
