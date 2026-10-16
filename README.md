@@ -37,6 +37,8 @@ Anything that has to answer *"what did this look like at T, who changed it, why,
 and can I prove it?"* — while letting people or programs work on alternatives in
 parallel — is a candidate.
 
+To see who wrote each line of an agent run, open the [sample `velo report`](docs/report-sample.html): a static page that works offline.
+
 ---
 
 ## Where it fits

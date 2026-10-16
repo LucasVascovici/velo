@@ -245,3 +245,27 @@ python -m venv .venv                 # .venv/Scripts on Windows
 
 `--quick` runs a small version in about a minute. The full run takes roughly 25
 minutes on Linux and 40 on Windows, mostly git and the directory copy.
+
+## See what the agent did: `velo report`
+
+Blame answers one line at a time. To hand someone the whole run, write a report
+from the repository the run used:
+
+```
+velo report -o run.html
+```
+
+The page holds the timeline of every branch (both attempts and the merge), each
+snapshot's metadata (the run, tool call, model and test result), signature
+badges, the author of every line of every file at each branch tip, and the
+`fsck` verdict that every snapshot id was recomputed. The author column is the
+cookbook's answer made visible: the generator line is by `agent-run-1`, the
+lines it did not touch are by `human`.
+
+The file is static and works offline: no script, no network, a content-security
+policy that forbids both, and every message, author, metadata value and file
+line escaped, so a hostile agent cannot put markup in your audit page. `velo
+report --json` prints the same data for tooling.
+
+A generated sample of this exact scenario is in
+[`report-sample.html`](../report-sample.html).
