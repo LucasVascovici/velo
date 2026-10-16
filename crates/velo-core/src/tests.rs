@@ -12287,3 +12287,6 @@ mod perf_profile;
 
 #[cfg(test)]
 mod save_changes;
+
+#[cfg(test)]
+mod materialize;

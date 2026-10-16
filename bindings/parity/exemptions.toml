@@ -465,3 +465,8 @@ reason = "audit report model for the CLI's HTML and JSON renderers; bindings alr
 entry = "WriteGuard::save_changes"
 bindings = ["python", "node"]
 reason = "pending: save_changes binding (19.2-b)"
+
+[[exempt]]
+entry = "commands::restore::materialize"
+bindings = ["python", "node"]
+reason = "pending: batch reads and materialize bindings (19.3-c)"

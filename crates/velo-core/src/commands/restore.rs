@@ -354,24 +354,23 @@ type CacheRow = (String, i64, i64, String);
 
 /// Write every file in parallel, collecting the failures rather than the first.
 ///
-/// Each file that lands is stat-ed and its `index_cache` row is written, so the
-/// next dirty check is a cache hit instead of a re-hash of the whole tree. The
-/// seeded hash is the object name: `storage::apply_file` writes exactly the
-/// object's normalised content (for a symlink, the target string), and
-/// `storage::hash_for` of those bytes is that same name. The usual caveat of the
-/// cache applies: an edit within one mtime tick that keeps the size is missed.
+/// Each file that lands is stat-ed and its `index_cache` row is returned, so a
+/// caller that owns a cache can seed it. The seeded hash is the object name:
+/// `storage::apply_file` writes exactly the object's normalised content (for a
+/// symlink, the target string), and `storage::hash_for` of those bytes is that
+/// same name. The usual caveat of the cache applies: an edit within one mtime
+/// tick that keeps the size is missed.
 ///
-/// On error or cancellation the rows of files that were written are still
-/// seeded, and the rows of every other path in the set are invalidated, so no
-/// stale row can vouch for content that is no longer on disk.
-fn write_files(
-    guard: &crate::repo::WriteGuard<'_>,
+/// Pure with respect to the repository: it reads objects and writes under
+/// `root`, and touches no table. That is what lets `materialize` share it.
+/// Cancelled files are skipped, neither a row nor an error.
+fn write_tree_files(
     root: &Path,
     objects: &crate::storage::ObjectStore,
     files: &[(String, String, i64)],
     progress: &PhaseGuard<'_>,
     cancel: Option<&Cancel>,
-) -> Result<()> {
+) -> (Vec<CacheRow>, Vec<String>) {
     // Only the first file to land reports the crash point; the workers race, so
     // "first" means first in time, not first in the list.
     let first_written = std::sync::atomic::AtomicBool::new(false);
@@ -428,7 +427,6 @@ fn write_files(
         },
     );
 
-    crate::timing::lap("restore.write_files");
     let mut rows: Vec<CacheRow> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
     for r in results {
@@ -437,6 +435,37 @@ fn write_files(
             Err(e) => errors.push(e),
         }
     }
+    (rows, errors)
+}
+
+/// The error a write that failed for some files reports. Every failure is
+/// listed: a locked file part-way through leaves the tree half-written, and
+/// knowing which paths failed is what makes it fixable.
+fn write_error(errors: &[String]) -> VeloError {
+    VeloError::invalid(format!(
+        "{} file(s) could not be written:\n  {}",
+        errors.len(),
+        errors.join("\n  ")
+    ))
+}
+
+/// Write `files` into the working tree and keep `index_cache` honest.
+///
+/// Each file that lands has its row seeded, so the next dirty check is a cache
+/// hit instead of a re-hash of the whole tree. On error or cancellation the
+/// rows of files that were written are still seeded, and the rows of every
+/// other path in the set are invalidated, so no stale row can vouch for content
+/// that is no longer on disk.
+fn write_files(
+    guard: &crate::repo::WriteGuard<'_>,
+    root: &Path,
+    objects: &crate::storage::ObjectStore,
+    files: &[(String, String, i64)],
+    progress: &PhaseGuard<'_>,
+    cancel: Option<&Cancel>,
+) -> Result<()> {
+    let (rows, errors) = write_tree_files(root, objects, files, progress, cancel);
+    crate::timing::lap("restore.write_files");
     crate::commands::seed_cache_entries(guard.repo(), &rows);
     if rows.len() != files.len() {
         let seeded: std::collections::HashSet<&str> = rows.iter().map(|r| r.0.as_str()).collect();
@@ -456,17 +485,189 @@ fn write_files(
     if errors.is_empty() {
         return Ok(());
     }
-    // Report every failure: a locked file part-way through a restore leaves the
-    // tree half-written, and knowing which paths failed is what makes it fixable.
-    Err(VeloError::invalid(format!(
-        "{} file(s) could not be written:
-  {}",
-        errors.len(),
-        errors.join(
-            "
-  "
-        )
-    )))
+    Err(write_error(&errors))
+}
+
+/// What to do for [`materialize`]. The observer and cancellation token are per
+/// call, as for [`Options`].
+#[derive(Default)]
+#[non_exhaustive]
+pub struct MaterializeOptions<'a> {
+    /// Write only the paths this scope permits: its `only` patterns restrict
+    /// and its `ignore` patterns subtract.
+    pub scope: Option<&'a crate::Scope>,
+    /// Where to report progress, overriding the repository's own observer.
+    pub observer: Option<&'a dyn Observer>,
+    /// Checked between files; cancelling leaves written files in place.
+    pub cancel: Option<&'a Cancel>,
+}
+
+impl<'a> MaterializeOptions<'a> {
+    /// No scope, the repository's observer, no cancellation.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Limit what is written to what `scope` permits.
+    pub fn scope(mut self, s: &'a crate::Scope) -> Self {
+        self.scope = Some(s);
+        self
+    }
+
+    /// Report progress to `o` instead of the repository's observer.
+    pub fn observer(mut self, o: &'a dyn Observer) -> Self {
+        self.observer = Some(o);
+        self
+    }
+
+    /// Stop at the next file once `c` is cancelled.
+    pub fn cancel(mut self, c: &'a Cancel) -> Self {
+        self.cancel = Some(c);
+        self
+    }
+}
+
+/// What [`materialize`] wrote.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Materialized {
+    /// The snapshot that was written out.
+    pub snapshot: SnapshotId,
+    /// Files written, after the scope was applied.
+    pub files: usize,
+}
+
+/// `p` with its longest existing prefix canonicalised and the missing tail
+/// appended unchanged. `dest` may not exist yet, but the part that does may be
+/// a symlink into the repository.
+fn canonical_prefix(p: &Path) -> PathBuf {
+    let mut existing = p.to_path_buf();
+    let mut tail: Vec<std::ffi::OsString> = Vec::new();
+    loop {
+        if let Ok(mut c) = fs::canonicalize(&existing) {
+            c.extend(tail.iter().rev());
+            return c;
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                tail.push(name.to_os_string());
+                existing = parent.to_path_buf();
+            }
+            _ => return p.to_path_buf(),
+        }
+    }
+}
+
+/// Write the tree of `snapshot` into the directory `dest`.
+///
+/// This is the write half of a restore with nothing about a working tree in
+/// it: for an embedder that has no `.velo/PARENT`. It uses the same path rule
+/// and the same writer the CLI's restore does. It takes `&Repo`, so it holds no
+/// write lock and never blocks a reader.
+///
+/// `dest` is created if absent. Files at tree paths are overwritten; other
+/// files in `dest` are left alone and nothing is deleted. The whole write set
+/// is validated before the first file is written, so a hostile tree writes
+/// nothing. The repository itself is untouched: no `index_cache` row, no
+/// `PARENT`, no `HEAD`, no pending moves.
+///
+/// Refused with `InvalidInput`: a `dest` that is the root of a repository with
+/// a working tree (use [`run`]) or that lies inside its `.velo` directory.
+pub fn materialize(
+    repo: &crate::Repo,
+    snapshot: &SnapshotId,
+    dest: &Path,
+    options: MaterializeOptions<'_>,
+) -> Result<Materialized> {
+    crate::timing::begin();
+    let MaterializeOptions {
+        scope,
+        observer,
+        cancel,
+    } = options;
+    let snapshot_hash = snapshot.as_str();
+    let conn = repo.conn();
+    let exists: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?)",
+        [snapshot_hash],
+        |r| r.get(0),
+    )?;
+    if !exists {
+        if let Some(into) = crate::commands::compacted_into(conn, snapshot_hash) {
+            return Err(VeloError::Compacted {
+                id: snapshot_hash.to_string(),
+                into,
+            });
+        }
+        return Err(VeloError::not_found(RefKind::Snapshot, snapshot_hash));
+    }
+
+    if repo.has_working_tree() {
+        let dest_real = canonical_prefix(dest);
+        let root_real = canonical_prefix(repo.root());
+        if dest_real == root_real {
+            return Err(VeloError::invalid(
+                "cannot materialize into the repository's own working tree; use restore",
+            ));
+        }
+        if dest_real.starts_with(root_real.join(".velo")) {
+            return Err(VeloError::invalid(
+                "cannot materialize inside the repository's .velo directory",
+            ));
+        }
+    }
+
+    let mut files = load_tree(conn, snapshot_hash)?;
+    crate::timing::lap("materialize.tree");
+
+    // The whole tree is checked, the scoped part is written: file and directory
+    // exclusivity is a property of the tree, not of the subset.
+    let all_paths: Vec<String> = files.iter().map(|(p, _, _)| p.clone()).collect();
+    if let Some(scope) = scope {
+        let restriction = scope.restriction(dest)?;
+        let exclusions = scope.exclusions(dest)?;
+        files.retain(|(rel, _, _)| {
+            let path = Path::new(rel);
+            crate::scope::permitted(restriction.as_ref(), path)
+                && !exclusions.as_ref().is_some_and(|o| {
+                    // The walk prunes an ignored directory; here the same rule
+                    // is a match on the file or on any directory above it.
+                    o.matched(path, false).is_ignore()
+                        || path
+                            .ancestors()
+                            .skip(1)
+                            .filter(|a| !a.as_os_str().is_empty())
+                            .any(|a| o.matched(a, true).is_ignore())
+                })
+        });
+    }
+
+    let objects = repo.objects();
+    crate::safe_path::validate_write_set(
+        dest,
+        all_paths.iter().map(String::as_str),
+        files.iter().map(|(p, h, m)| (p.as_str(), h.as_str(), *m)),
+        |h| objects.get(h),
+    )?;
+    crate::timing::lap("materialize.validate");
+
+    fs::create_dir_all(dest)
+        .map_err(|e| VeloError::invalid(format!("cannot create '{}': {}", dest.display(), e)))?;
+    let progress = PhaseGuard::new(
+        observer.unwrap_or_else(|| repo.observer()),
+        Phase::Writing,
+        Some(files.len() as u64),
+    );
+    let (_rows, errors) = write_tree_files(dest, &objects, &files, &progress, cancel);
+    crate::timing::lap("materialize.write");
+    Cancel::check(cancel)?;
+    if !errors.is_empty() {
+        return Err(write_error(&errors));
+    }
+    Ok(Materialized {
+        snapshot: snapshot.clone(),
+        files: files.len(),
+    })
 }
 
 fn load_tree(
