@@ -101,6 +101,12 @@ export declare class Repo {
   createTag(name: string, at?: string | undefined | null, force?: boolean | undefined | null): Promise<string>
   deleteTag(name: string): Promise<void>
   /**
+   * Give freed pages back to the filesystem. With `full`, a repository
+   * created before 5.3.0 is converted and rewritten, which needs free disk
+   * about the size of `velo.db` and holds the write lock meanwhile.
+   */
+  vacuum(full?: boolean | undefined | null): Promise<VacuumInfo>
+  /**
    * Verify the repository. With `repair`, cruft is cleaned up; damage is
    * only ever reported.
    */
@@ -434,6 +440,14 @@ export interface TreeFile {
   object: string
   /** `'regular'`, `'executable'` or `'symlink'`. */
   kind: string
+}
+
+/** What `vacuum` did. */
+export interface VacuumInfo {
+  bytesBefore: number
+  bytesAfter: number
+  /** `"none"`, `"full"` or `"incremental"`. */
+  autoVacuum: string
 }
 
 /**

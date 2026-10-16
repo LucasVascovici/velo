@@ -9,6 +9,7 @@ use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 use velo_core::commands::compact::{self, Protected};
 use velo_core::commands::fsck::{self, Cruft};
+use velo_core::commands::gc::{self, AutoVacuum, Vacuum};
 use velo_core::commands::retention::{self, Policy, Tier};
 use velo_core::commands::tag;
 use velo_core::{SnapshotId, TagName};
@@ -236,6 +237,34 @@ impl Repo {
         let repo = self.core()?;
         let guard = repo.write().map_err(to_py)?;
         tag::delete(&guard, &name).map_err(to_py)
+    }
+
+    /// Give freed pages back to the filesystem. Returns `bytes_before`,
+    /// `bytes_after` and `auto_vacuum` (`"none"`, `"full"` or
+    /// `"incremental"`). With `full`, a repository created before 5.3.0 is
+    /// converted and rewritten, which needs free disk about the size of
+    /// `velo.db` and holds the write lock meanwhile.
+    #[pyo3(signature = (full = false))]
+    fn vacuum<'py>(&self, py: Python<'py>, full: bool) -> PyResult<Bound<'py, PyDict>> {
+        self.check_owner()?;
+        let done = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let guard = repo.write().map_err(to_py)?;
+            let mode = if full { Vacuum::Full } else { Vacuum::Incremental };
+            gc::vacuum(&guard, mode).map_err(to_py)
+        })?;
+        let out = PyDict::new(py);
+        out.set_item("bytes_before", done.bytes_before)?;
+        out.set_item("bytes_after", done.bytes_after)?;
+        out.set_item(
+            "auto_vacuum",
+            match done.auto_vacuum {
+                AutoVacuum::None => "none",
+                AutoVacuum::Full => "full",
+                _ => "incremental",
+            },
+        )?;
+        Ok(out)
     }
 
     /// Verify the repository. Returns `problems` (damage), `cruft` (harmless

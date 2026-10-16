@@ -68,6 +68,19 @@ def test_default_policy_and_protected_tag(tmp_path):
     assert {"id": ids[5], "reason": "tagged"} in report["protected"]
 
 
+def test_vacuum_after_retention(tmp_path):
+    repo = make(tmp_path)
+    spread(repo)
+    repo.retention("main", TIERS, now_ms=NOW)
+    inc = repo.vacuum()
+    assert set(inc) == {"bytes_before", "bytes_after", "auto_vacuum"}
+    assert inc["bytes_after"] <= inc["bytes_before"]
+    assert inc["auto_vacuum"] == "incremental"
+    full = repo.vacuum(full=True)
+    assert full["bytes_after"] <= full["bytes_before"]
+    assert full["auto_vacuum"] == "incremental"
+
+
 def test_compact_range(tmp_path):
     repo = make(tmp_path)
     ids = spread(repo, 6)
