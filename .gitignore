@@ -11,3 +11,4 @@
 /target-lane*
 
 !examples/outside-agent-loop/*.py
+!tests/corpus/v4/*.py
