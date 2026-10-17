@@ -10,7 +10,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use rayon::prelude::*;
-use rusqlite::params;
 
 use crate::commands::require_working_tree;
 use crate::commands::{dirty_scan, remove_empty_parents, DirtyScan};
@@ -318,10 +317,9 @@ fn ghost_paths(
     // on disk. That walk skips ignored and out-of-scope paths exactly as the
     // tracked-file walk this replaces did, so an ignored or untracked file is
     // still never a ghost, and no second directory walk is paid for.
-    let mut stmt = conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
-    let ghosts: Vec<String> = stmt
-        .query_map([source_hash.trim()], |r| r.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
+    let ghosts: Vec<String> = crate::treestore::tree_of(conn, source_hash.trim())?
+        .into_iter()
+        .map(|(path, _, _)| path)
         .filter(|rel| walked.contains_key(rel) && !target_set.contains(rel.as_str()))
         .collect();
     Ok(ghosts)
@@ -691,12 +689,5 @@ fn load_tree(
     conn: &rusqlite::Connection,
     snapshot_hash: &str,
 ) -> Result<Vec<(String, String, i64)>> {
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let tree: Vec<(String, String, i64)> = stmt
-        .query_map(params![snapshot_hash], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(tree)
+    crate::treestore::tree_of(conn, snapshot_hash)
 }

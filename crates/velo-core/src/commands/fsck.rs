@@ -922,12 +922,7 @@ fn check_renames(conn: &rusqlite::Connection, problems: &mut Vec<Problem>) -> Re
 }
 
 fn tracks(conn: &rusqlite::Connection, snapshot: &str, path: &str) -> bool {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ? AND path = ?)",
-        rusqlite::params![snapshot, path],
-        |r| r.get(0),
-    )
-    .unwrap_or(false)
+    matches!(crate::treestore::file_at(conn, snapshot, path), Ok(Some(_)))
 }
 
 /// Every stored signature must verify against the snapshot id it names. A bad

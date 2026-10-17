@@ -8,8 +8,6 @@
 
 use std::path::Path;
 
-use rusqlite::params;
-
 use crate::commands::require_working_tree;
 use crate::db;
 use crate::error::{Result, VeloError};
@@ -190,11 +188,9 @@ fn grep_snapshot(
         )
         .map_err(|_| VeloError::not_found(crate::error::RefKind::Snapshot, target))?;
 
-    let mut stmt =
-        conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ? ORDER BY path")?;
-    let files: Vec<(String, String)> = stmt
-        .query_map(params![hash], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .filter_map(|r| r.ok())
+    let files: Vec<(String, String)> = crate::treestore::tree_of(conn, &hash)?
+        .into_iter()
+        .map(|(path, object, _)| (path, object))
         .collect();
 
     // Rows are already read out of SQLite; workers see only owned data.

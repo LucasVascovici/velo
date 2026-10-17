@@ -47,7 +47,6 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
-use rusqlite::params;
 use similar::{ChangeTag, TextDiff};
 use velo_merge::{unit_texts, MergeDriver};
 
@@ -198,13 +197,11 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         None => default_start(repo)?,
     };
 
-    let tip_object: String = conn
-        .query_row(
-            "SELECT hash FROM file_map WHERE snapshot_hash = ? AND path = ?",
-            params![start_hash, rel],
-            |r| r.get(0),
-        )
-        .map_err(|_| {
+    let tip_object: String = crate::treestore::file_at(conn, &start_hash, &rel)
+        .ok()
+        .flatten()
+        .map(|e| e.hash)
+        .ok_or_else(|| {
             VeloError::invalid(format!(
                 "'{}' is not tracked in snapshot {}.",
                 file.display(),

@@ -12308,3 +12308,6 @@ mod delta_prototype;
 
 #[cfg(test)]
 mod differential;
+
+#[cfg(test)]
+mod tree_accessor;

@@ -792,6 +792,24 @@ struct Joined {
     cache: Option<CacheEntry>,
 }
 
+/// Every `index_cache` row, keyed by path. The dirty scan joins it with the
+/// snapshot's tree in memory, since the tree is no longer something SQL can
+/// join against.
+fn load_index_cache(conn: &rusqlite::Connection) -> rusqlite::Result<Vec<(String, CacheEntry)>> {
+    let mut stmt = conn.prepare("SELECT path, mtime_ns, size, hash FROM index_cache")?;
+    let rows = stmt.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            CacheEntry {
+                mtime_ns: r.get(1)?,
+                size: r.get(2)?,
+                hash: r.get(3)?,
+            },
+        ))
+    })?;
+    Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
 /// The dirty scan behind [`get_dirty_files`], also returning the hashes.
 pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     let mut dirty = HashMap::new();
@@ -805,37 +823,30 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     // ── 1. Load snapshot file map and index cache in one query ───────────────
     // Degrade gracefully: a transient DB error (e.g. a momentary lock) yields an
     // empty map rather than panicking the whole command.
-    let mut joined: HashMap<String, Joined> = conn
-        .prepare(
-            "SELECT COALESCE(f.path, c.path), f.hash, c.mtime_ns, c.size, c.hash
-             FROM (SELECT path, hash FROM file_map WHERE snapshot_hash = ?1) f
-             FULL OUTER JOIN index_cache c ON c.path = f.path",
-        )
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([parent_hash.trim()], |r| {
-                let cache = match (
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                ) {
-                    (Some(mtime_ns), Some(size), Some(hash)) => Some(CacheEntry {
-                        mtime_ns,
-                        size,
-                        hash,
-                    }),
-                    _ => None,
-                };
-                Ok((
-                    r.get::<_, String>(0)?,
-                    Joined {
-                        snap: r.get::<_, Option<String>>(1)?,
-                        cache,
-                    },
-                ))
-            })?;
-            Ok(rows.filter_map(|r| r.ok()).collect::<HashMap<_, _>>())
-        })
-        .unwrap_or_default();
+    let mut joined: HashMap<String, Joined> = HashMap::new();
+    if let (Ok(tree), Ok(cache)) = (
+        crate::treestore::tree_of(conn, parent_hash.trim()),
+        load_index_cache(conn),
+    ) {
+        for (path, hash, _) in tree {
+            joined.insert(
+                path,
+                Joined {
+                    snap: Some(hash),
+                    cache: None,
+                },
+            );
+        }
+        for (path, entry) in cache {
+            joined
+                .entry(path)
+                .or_insert(Joined {
+                    snap: None,
+                    cache: None,
+                })
+                .cache = Some(entry);
+        }
+    }
 
     // ── 3. Parallel walk ──────────────────────────────────────────────────────
     let entries = walk_with_meta(root, repo.scope());

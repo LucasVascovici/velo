@@ -116,6 +116,7 @@ pub mod storage;
 pub mod timing;
 pub mod transport;
 pub mod tree;
+pub(crate) mod treestore;
 
 #[cfg(test)]
 mod tests;

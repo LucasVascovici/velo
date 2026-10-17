@@ -585,18 +585,7 @@ impl WriteGuard<'_> {
         let mut working: std::collections::BTreeMap<String, Slot> =
             std::collections::BTreeMap::new();
         if let Some(parent) = spec.parent {
-            let mut stmt = self
-                .conn()
-                .prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-            let rows = stmt.query_map([parent], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?;
-            for row in rows {
-                let (path, hash, mode) = row?;
+            for (path, hash, mode) in crate::treestore::tree_of(self.conn(), parent)? {
                 working.insert(path, Slot::Parent(hash, mode));
             }
         }
@@ -902,18 +891,13 @@ impl Repo {
             return Err(self.missing_snapshot(snapshot));
         }
 
-        let mut stmt = self.conn().prepare(
-            "SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ? ORDER BY path",
-        )?;
-        let files: Vec<TreeFile> = stmt
-            .query_map([snapshot], |r| {
-                Ok(TreeFile {
-                    path: r.get(0)?,
-                    object: r.get(1)?,
-                    kind: FileKind::from_mode(r.get::<_, i64>(2)?),
-                })
-            })?
-            .filter_map(|r| r.ok())
+        let files: Vec<TreeFile> = crate::treestore::tree_of(self.conn(), snapshot)?
+            .into_iter()
+            .map(|(path, object, mode)| TreeFile {
+                path,
+                object: ObjectHash::from_stored(object),
+                kind: FileKind::from_mode(mode),
+            })
             .collect();
         Ok(files)
     }
@@ -926,14 +910,8 @@ impl Repo {
         path: impl AsRef<Path>,
     ) -> Result<Option<ObjectHash>> {
         let rel = db::normalise(&path.as_ref().to_string_lossy());
-        let mut stmt = self
-            .conn()
-            .prepare_cached("SELECT hash FROM file_map WHERE snapshot_hash = ? AND path = ?")?;
-        let mut rows = stmt.query(params![snapshot, rel])?;
-        match rows.next()? {
-            Some(r) => Ok(Some(r.get(0)?)),
-            None => Ok(None),
-        }
+        Ok(crate::treestore::file_at(self.conn(), snapshot, &rel)?
+            .map(|e| ObjectHash::from_stored(e.hash)))
     }
 
     /// The content of `path` as it was in `snapshot`.
@@ -941,14 +919,10 @@ impl Repo {
     /// For a symlink this is the target path, matching how it was stored.
     pub fn read_file_at(&self, snapshot: &SnapshotId, path: impl AsRef<Path>) -> Result<Vec<u8>> {
         let rel = db::normalise(&path.as_ref().to_string_lossy());
-        let object: Option<ObjectHash> = self
-            .conn()
-            .query_row(
-                "SELECT hash FROM file_map WHERE snapshot_hash = ? AND path = ?",
-                params![snapshot, rel],
-                |r| r.get(0),
-            )
-            .ok();
+        let object: Option<ObjectHash> = crate::treestore::file_at(self.conn(), snapshot, &rel)
+            .ok()
+            .flatten()
+            .map(|e| ObjectHash::from_stored(e.hash));
         match object {
             Some(object) => self.read_object(&object),
             None => {
@@ -1016,33 +990,11 @@ impl Repo {
         unique.sort_unstable();
         unique.dedup();
 
-        // One placeholder is the snapshot, so 499 paths plus it make the 500
-        // allowed per statement.
-        const CHUNK: usize = 499;
-        let mut hashes: std::collections::HashMap<String, ObjectHash> =
-            std::collections::HashMap::with_capacity(unique.len());
-        for chunk in unique.chunks(CHUNK) {
-            let marks = (2..chunk.len() + 2)
-                .map(|i| format!("?{i}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            let sql = format!(
-                "SELECT path, hash FROM file_map WHERE snapshot_hash = ?1 AND path IN ({marks})"
-            );
-            let mut stmt = self.conn().prepare(&sql)?;
-            let mut args: Vec<&dyn rusqlite::ToSql> = Vec::with_capacity(chunk.len() + 1);
-            args.push(snapshot);
-            for p in chunk {
-                args.push(p);
-            }
-            let rows = stmt.query_map(args.as_slice(), |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, ObjectHash>(1)?))
-            })?;
-            for row in rows {
-                let (path, hash) = row?;
-                hashes.insert(path, hash);
-            }
-        }
+        let hashes: std::collections::HashMap<String, ObjectHash> =
+            crate::treestore::files_at(self.conn(), snapshot, &unique)?
+                .into_iter()
+                .map(|(path, entry)| (path, ObjectHash::from_stored(entry.hash)))
+                .collect();
 
         let mut items: Vec<(String, ObjectHash)> = Vec::with_capacity(wanted.len());
         for path in wanted {

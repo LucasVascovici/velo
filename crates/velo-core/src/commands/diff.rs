@@ -123,14 +123,7 @@ impl Diff {
 /// path, and the filesystem alone cannot say so.
 pub fn tracks_path(repo: &Repo, snapshot: &SnapshotId, path: &Path) -> bool {
     let normalised = db::normalise(&path.to_string_lossy());
-    repo.conn()
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM file_map
-              WHERE snapshot_hash = ? AND (path = ? OR path LIKE ? || '/%'))",
-            rusqlite::params![snapshot, normalised, normalised],
-            |r| r.get::<_, bool>(0),
-        )
-        .unwrap_or(false)
+    crate::treestore::holds_path_or_under(repo.conn(), snapshot, &normalised).unwrap_or(false)
 }
 
 // ─── Working tree vs last snapshot ────────────────────────────────────────────
@@ -183,14 +176,11 @@ fn working_tree_change(
     }
 
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let stored: Option<String> = repo
-        .conn()
-        .query_row(
-            "SELECT hash FROM file_map WHERE path = ? AND snapshot_hash = ?",
-            [rel_path, parent_hash.trim()],
-            |r| r.get(0),
-        )
-        .ok();
+    let stored: Option<String> =
+        crate::treestore::file_at(repo.conn(), parent_hash.trim(), rel_path)
+            .ok()
+            .flatten()
+            .map(|e| e.hash);
 
     let old = match stored {
         Some(h) => {
@@ -600,12 +590,10 @@ fn load_file_map(conn: &rusqlite::Connection, snap_hash: &str) -> Result<HashMap
     if snap_hash.is_empty() {
         return Ok(HashMap::new());
     }
-    let mut stmt = conn.prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")?;
-    let map: HashMap<String, String> = stmt
-        .query_map([snap_hash], |r| Ok((r.get(0)?, r.get(1)?)))?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(map)
+    Ok(crate::treestore::tree_of(conn, snap_hash)?
+        .into_iter()
+        .map(|(path, hash, _)| (path, hash))
+        .collect())
 }
 
 /// Sorted, deduplicated union of the paths in both maps.
