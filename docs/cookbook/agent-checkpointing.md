@@ -204,8 +204,9 @@ each loss has a measured reason there:
 
 - **500 steps on Linux: 4.5x shadow git** (37.4 s against 8.4 s; the target was
   3x, the proposal 2x). One SQLite commit per step is most of it.
-- **Disk: 35x shadow git on Linux and 38x on Windows** (174 MB against 5 MB;
-  the target was 100 MB, then 3x). Every snapshot stores its whole 1,000-file
+- **Disk after 500 steps: 41x shadow git on Linux and 47x on Windows** (152 MB
+  against 3.7 MB and 3.3 MB; the target was 100 MB, then 3x). Final disk after
+  the restores and branches is 174 MB, 35x and 38x. Every snapshot stores its whole 1,000-file
   tree, and nothing that shrinks that has shipped.
 - **A one-file save at 100,000 files is not flat:** 4.27x slower after 200
   snapshots than after the first few on Linux and 5.79x on Windows (target
@@ -235,7 +236,7 @@ velo still loses most rows on Linux. Read the tables that way:
   shadow git), but the log and SQLite stores still beat it on steps by 46x and
   7.3x, and on branches by 35x and 6.3x. Blame loses to git by 1.2x (2.95 s
   against 2.42 s) and to the log by 5.3x.
-- **Disk.** velo used 174 MB against git's 5 MB (35x on Linux, 38x on Windows), git
+- **Disk.** velo used 174 MB of final disk against git's 5 MB (35x on Linux, 38x on Windows; after the 500 steps alone it is 41x and 47x), git
   worktree's 13 MB (14x), the log's 7 MB (24x) and SQLite's 33 MB (5.3x), most likely because every
   snapshot records the whole 1,000-file tree even when 999 files were carried
   forward by id (carry-forward saves the object bytes, not the per-snapshot tree

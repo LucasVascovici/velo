@@ -512,7 +512,7 @@ shadow git of the same run and 3x git is 25 s today, not the 34 s derived above.
 |---|---|---|---|
 | 1. 500 steps, at most 3x shadow git on Linux (proposed 2x); not worse than git on Windows | 37.4 s against 8.4 s: **4.5x** | 64.4 s against 190.9 s: 0.34x | **Linux missed** (by 1.5x against the 3x target, 2.2x against the proposed 2x); Windows met |
 | 2. restore, at most 2x shadow git on Linux; about 1 s on Windows | 13 ms against 29 ms: 0.45x | 216 ms against 422 ms (git); under 1 s | **met** on both |
-| 3. disk after 500 steps, at most 100 MB with a schema change, at most 3x git with deltas | 174 MB against 5 MB: 35x | 174 MB against 5 MB: 38x | **missed**; no schema change shipped |
+| 3. disk after 500 steps, at most 100 MB with a schema change, at most 3x git with deltas | 152 MB against 3.7 MB: **41x** (final disk after restores and branches, 174 MB against 5.0 MB: 35x) | 152 MB against 3.3 MB: **47x** (final disk, 174 MB against 4.5 MB: 38x) | **missed**; no schema change shipped; on this metric nothing moved since 5.2.0 (40x) |
 | 4. one-file save at 100,000 files, at most 1.5x the history-0 save | 12.6 s over the last 20 saves against 2.9 s over the first 20: **4.27x** (against the 2.1 s history-0 floor: 6.0x) | 16.3 s against 2.8 s: **5.79x** (7.8x against the floor) | **missed** on both; 200 snapshots, not 500 |
 | 5. binding overhead, at most 10% of the Python step | 5.6% (19.1) | 10.5% (19.1) | not re-measured: `save_changes` has no Rust twin of the harness; Windows was 0.5 points over when last measured |
 
