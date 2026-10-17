@@ -979,101 +979,101 @@ for the agent-checkpointing workload that produces the long histories:
    Until then the stated envelope in SCALE.md is the claim: beyond 20 million
    rows or 100,000 files, velo has not been measured.
 
-### 11.5 Decided: what a snapshot stores (Phase 19.5)
-
-Decision: **option A, parent deltas with a full keyframe every K = 128
-snapshots, identity unchanged.** It ships as format v4 in 6.0. This section is
-normative for that change; nothing here is implemented yet.
-
-**The candidates, with the prototype numbers** (100,000 files, one file
-changed per save, 200 saves per K; Windows / Linux; raw lines in the
-repository's benchmark results and the "Snapshot storage prototype" section of
-the performance notes).
-
-| | save, median | disk per snapshot | `tree_at` | point read at worst depth |
-| --- | ---: | ---: | ---: | ---: |
-| today (full rows) | 5,336 / 1,750 ms | 27,868,365 B | 83.9 / 100.2 ms | 0.35 / 0.10 ms |
-| A, K=8 | 94.8 / 83.0 ms | 2,306,314 B | 59 / 51 ms | 0.059 / 0.023 ms |
-| A, K=32 | 110.5 / 95.9 ms | 559,985 B | 85 / 60 ms | 0.28 / 0.13 ms |
-| **A, K=128** | **110.2 / 89.6 ms** | **93,655 B** | **83 / 62 ms** | **1.43 / 0.47 ms** |
-| A, K=512 | 110.2 / 100.5 ms | 35,739 B | 98 / 75 ms | 4.05 / 1.75 ms |
-
-- **A** removes the row writes (0.07 ms) and the files x snapshots growth: a
-  save is 16x (Linux) to 48x (Windows) faster at K=128 and a snapshot is 300x
-  smaller on disk. `tree_at` does not grow with K up to 512, because the
-  keyframe read (50 to 80 ms) dominates the one-row deltas. A point read walks
-  at most K-1 deltas, so it grows linearly with depth.
-- **B** (a tree object per directory) rewrites the entries of the changed
-  directory plus one per ancestor: 52 rows for the agent benchmark's 1,000
-  files, 102 for the scale layout, 5,002 for the agent layout grown to 100,000
-  files, and **100,000 for one flat directory**, no better than today. Its cost
-  depends on directory shape, not file count, and it changes identity. Not
-  chosen.
-- **C** (relational only: 32-byte blob hashes, `WITHOUT ROWID`) is the
-  round-five result in §11.4: 36% and 34% fewer bytes per row and 2.6x faster
-  inserts. It keeps one row per file per snapshot, so it does not change the
-  growth or the O(files) save. Not chosen on its own; it stays compatible with
-  A and can be taken in the same 6.0 migration or later.
-
-**Remaining cost under A.** With today's id recipe a save still reads the
-parent tree and hashes the full sorted tree, 80 to 110 ms at 100,000 files
-(parent-tree read 54 to 74 ms, hash 27 to 37 ms). That is the price of keeping
-identity unchanged, and it was weighed against a new recipe whose id over
-(parent id, sorted changes) would cost about 2 microseconds.
-
-**K and the keyframe spike.** K = 128 holds disk at about 94 KB per snapshot
-and the worst point read at about 1.4 ms (Windows). The keyframe save writes a
-full tree, 0.4 to 0.6 s at 100,000 files (the slowest keyframe in each run was
-a cold-cache outlier, so this is an upper bound), once every 128 saves. That
-spike is below today's every-save cost (1.75 s Linux, 5.3 s Windows), so the
-keyframe is **amortised inside the save's own transaction**: no background
-writer, no second code path, no state between processes. A background keyframe
-is a later optimisation if a measured need appears. K is a writer-side
-constant: a reader treats any snapshot with a keyframe marker as a keyframe, so
-K can be retuned without migrating.
-
-**Identity rule: unchanged.** A snapshot's id is the v2 recipe of §4.2: the
-BLAKE3 of the **full sorted tree** plus parent, merge parent, message, time and
-metadata. A delta or a keyframe is a storage detail below identity, as
-chunking is (§11.2). A save reconstructs the parent tree in memory (the 54 to
-74 ms read above), applies the changes and hashes the result, so two saves
-that reach the same tree by different paths get the same id input, and `fsck`
-verifies a delta snapshot by reconstructing its tree and recomputing the id.
-Every existing id stays valid and nothing is re-minted by the migration. A
-recipe over (parent id, changes) is rejected for now, knowingly: it would make
-two identical trees reached differently two different snapshots, break the
-bundle convergence of §9 and leave a second identity recipe to carry forever,
-to save the 80 to 110 ms above.
-
-**Migration (v3 to v4).** The existing `file_map` rows are keyframes. The
-migration adds a delta table and a keyframe marker and rewrites nothing, so it
-is O(1) in repository size. It still bumps `user_version` to 4, which is what
-makes older builds refuse the repository (`SchemaTooNew`) instead of reading a
-delta snapshot as an empty tree. That refusal is the whole reason this is a
-6.0. As with every migration it runs only from `open_and_migrate()` (§7.1).
-Before the code lands, the golden corpus (Phase 18.3) must gain a repository
-in the v4 format, so the migration and the reader are proven against it and
-against every released format.
-
-**Wire: unchanged.** Export keeps emitting full tree lists and import keeps
-converting them into whatever the receiving repository stores, so the bundle
-format does not change and 5.x peers can still clone from a 6.0 repository. A
-delta wire (v5) is a later optimisation.
-
-**Compaction and retention.** Removing a snapshot must first fold its changes
-into its child, or promote the child to a keyframe. Without that, deleting a
-delta's rows would silently change every descendant's tree. This composes with
-the in-place re-mint that compaction now does (one transaction: a snapshot
-whose parent was removed is re-minted with the same tree and a new parent, and
-`PARENT` and tags follow). A re-mint keeps the tree, so under A the removed
-snapshot's delta is folded into the first surviving child, or that child
-becomes a keyframe when the fold would cost more than a keyframe write.
-Retention follows the same rule. After a fold no chain may exceed K deltas.
-
-**auto_vacuum.** New repositories are already `auto_vacuum=INCREMENTAL` (§7.4),
-so the migration needs no `VACUUM`; a repository created earlier stays as it is
-until a full `VACUUM` converts it.
-
+### 11.5 Decided: what a snapshot stores (Phase 19.5)
+
+Decision: **option A, parent deltas with a full keyframe every K = 128
+snapshots, identity unchanged.** It ships as format v4 in 6.0. This section is
+normative for that change; nothing here is implemented yet.
+
+**The candidates, with the prototype numbers** (100,000 files, one file
+changed per save, 200 saves per K; Windows / Linux; raw lines in the
+repository's benchmark results and the "Snapshot storage prototype" section of
+the performance notes).
+
+| | save, median | disk per snapshot | `tree_at` | point read at worst depth |
+| --- | ---: | ---: | ---: | ---: |
+| today (full rows) | 5,336 / 1,750 ms | 27,868,365 B | 83.9 / 100.2 ms | 0.35 / 0.10 ms |
+| A, K=8 | 94.8 / 83.0 ms | 2,306,314 B | 59 / 51 ms | 0.059 / 0.023 ms |
+| A, K=32 | 110.5 / 95.9 ms | 559,985 B | 85 / 60 ms | 0.28 / 0.13 ms |
+| **A, K=128** | **110.2 / 89.6 ms** | **93,655 B** | **83 / 62 ms** | **1.43 / 0.47 ms** |
+| A, K=512 | 110.2 / 100.5 ms | 35,739 B | 98 / 75 ms | 4.05 / 1.75 ms |
+
+- **A** removes the row writes (0.07 ms) and the files x snapshots growth: a
+  save is 16x (Linux) to 48x (Windows) faster at K=128 and a snapshot is 300x
+  smaller on disk. `tree_at` does not grow with K up to 512, because the
+  keyframe read (50 to 80 ms) dominates the one-row deltas. A point read walks
+  at most K-1 deltas, so it grows linearly with depth.
+- **B** (a tree object per directory) rewrites the entries of the changed
+  directory plus one per ancestor: 52 rows for the agent benchmark's 1,000
+  files, 102 for the scale layout, 5,002 for the agent layout grown to 100,000
+  files, and **100,000 for one flat directory**, no better than today. Its cost
+  depends on directory shape, not file count, and it changes identity. Not
+  chosen.
+- **C** (relational only: 32-byte blob hashes, `WITHOUT ROWID`) is the
+  round-five result in §11.4: 36% and 34% fewer bytes per row and 2.6x faster
+  inserts. It keeps one row per file per snapshot, so it does not change the
+  growth or the O(files) save. Not chosen on its own; it stays compatible with
+  A and can be taken in the same 6.0 migration or later.
+
+**Remaining cost under A.** With today's id recipe a save still reads the
+parent tree and hashes the full sorted tree, 80 to 110 ms at 100,000 files
+(parent-tree read 54 to 74 ms, hash 27 to 37 ms). That is the price of keeping
+identity unchanged, and it was weighed against a new recipe whose id over
+(parent id, sorted changes) would cost about 2 microseconds.
+
+**K and the keyframe spike.** K = 128 holds disk at about 94 KB per snapshot
+and the worst point read at about 1.4 ms (Windows). The keyframe save writes a
+full tree, 0.4 to 0.6 s at 100,000 files (the slowest keyframe in each run was
+a cold-cache outlier, so this is an upper bound), once every 128 saves. That
+spike is below today's every-save cost (1.75 s Linux, 5.3 s Windows), so the
+keyframe is **amortised inside the save's own transaction**: no background
+writer, no second code path, no state between processes. A background keyframe
+is a later optimisation if a measured need appears. K is a writer-side
+constant: a reader treats any snapshot with a keyframe marker as a keyframe, so
+K can be retuned without migrating.
+
+**Identity rule: unchanged.** A snapshot's id is the v2 recipe of §4.2: the
+BLAKE3 of the **full sorted tree** plus parent, merge parent, message, time and
+metadata. A delta or a keyframe is a storage detail below identity, as
+chunking is (§11.2). A save reconstructs the parent tree in memory (the 54 to
+74 ms read above), applies the changes and hashes the result, so two saves
+that reach the same tree by different paths get the same id input, and `fsck`
+verifies a delta snapshot by reconstructing its tree and recomputing the id.
+Every existing id stays valid and nothing is re-minted by the migration. A
+recipe over (parent id, changes) is rejected for now, knowingly: it would make
+two identical trees reached differently two different snapshots, break the
+bundle convergence of §9 and leave a second identity recipe to carry forever,
+to save the 80 to 110 ms above.
+
+**Migration (v3 to v4).** The existing `file_map` rows are keyframes. The
+migration adds a delta table and a keyframe marker and rewrites nothing, so it
+is O(1) in repository size. It still bumps `user_version` to 4, which is what
+makes older builds refuse the repository (`SchemaTooNew`) instead of reading a
+delta snapshot as an empty tree. That refusal is the whole reason this is a
+6.0. As with every migration it runs only from `open_and_migrate()` (§7.1).
+Before the code lands, the golden corpus (Phase 18.3) must gain a repository
+in the v4 format, so the migration and the reader are proven against it and
+against every released format.
+
+**Wire: unchanged.** Export keeps emitting full tree lists and import keeps
+converting them into whatever the receiving repository stores, so the bundle
+format does not change and 5.x peers can still clone from a 6.0 repository. A
+delta wire (v5) is a later optimisation.
+
+**Compaction and retention.** Removing a snapshot must first fold its changes
+into its child, or promote the child to a keyframe. Without that, deleting a
+delta's rows would silently change every descendant's tree. This composes with
+the in-place re-mint that compaction now does (one transaction: a snapshot
+whose parent was removed is re-minted with the same tree and a new parent, and
+`PARENT` and tags follow). A re-mint keeps the tree, so under A the removed
+snapshot's delta is folded into the first surviving child, or that child
+becomes a keyframe when the fold would cost more than a keyframe write.
+Retention follows the same rule. After a fold no chain may exceed K deltas.
+
+**auto_vacuum.** New repositories are already `auto_vacuum=INCREMENTAL` (§7.4),
+so the migration needs no `VACUUM`; a repository created earlier stays as it is
+until a full `VACUUM` converts it.
+
 ---
 
 ## Non-goals
