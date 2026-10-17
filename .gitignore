@@ -10,3 +10,4 @@
 !crates/velo-mcp/conformance/*.py
 /target-lane*
 
+!examples/outside-agent-loop/*.py
