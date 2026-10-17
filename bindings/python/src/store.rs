@@ -250,7 +250,11 @@ impl Repo {
         let done = py.detach(|| -> PyResult<_> {
             let repo = self.core()?;
             let guard = repo.write().map_err(to_py)?;
-            let mode = if full { Vacuum::Full } else { Vacuum::Incremental };
+            let mode = if full {
+                Vacuum::Full
+            } else {
+                Vacuum::Incremental
+            };
             gc::vacuum(&guard, mode).map_err(to_py)
         })?;
         let out = PyDict::new(py);

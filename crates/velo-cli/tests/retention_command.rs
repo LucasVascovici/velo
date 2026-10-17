@@ -54,14 +54,13 @@ fn history() -> (TempDir, Vec<SnapshotId>) {
             .unwrap();
         ids.push(id);
     }
-    sign::sign(
-        &repo.write().unwrap(),
-        &ids[5],
-        &SigningKey::from_seed([7; 32]),
-    )
-    .unwrap();
-    let name: TagName = "keepme".parse().unwrap();
-    tag::create(&repo.write().unwrap(), &name, Some(&ids[10]), false).unwrap();
+    {
+        // One guard for both mutations, so the second does not race a release.
+        let guard = repo.write().unwrap();
+        sign::sign(&guard, &ids[5], &SigningKey::from_seed([7; 32])).unwrap();
+        let name: TagName = "keepme".parse().unwrap();
+        tag::create(&guard, &name, Some(&ids[10]), false).unwrap();
+    }
     std::fs::write(d.join(".velo/PARENT"), ids[N - 1].as_str()).unwrap();
     (tmp, ids)
 }
