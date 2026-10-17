@@ -12305,3 +12305,6 @@ mod perf_guard;
 
 #[cfg(test)]
 mod delta_prototype;
+
+#[cfg(test)]
+mod differential;

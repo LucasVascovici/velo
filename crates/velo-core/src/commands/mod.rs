@@ -180,7 +180,29 @@ pub(crate) fn snapshot_id_of<'a>(
 /// query that orders by it also tie-breaks on `rowid`, because two snapshots
 /// inside one millisecond is possible and ordering must still be total.
 pub fn snapshot_timestamp_ms() -> i64 {
+    #[cfg(test)]
+    {
+        if let Some(t) = TEST_CLOCK.with(|c| c.get()) {
+            TEST_CLOCK.with(|c| c.set(Some(t + 1)));
+            return t;
+        }
+    }
     chrono::Utc::now().timestamp_millis()
+}
+
+#[cfg(test)]
+thread_local! {
+    /// A per-thread replacement for the wall clock, so a test that runs the
+    /// same operations on two repositories gets identical snapshot ids.
+    static TEST_CLOCK: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+/// Pin (`Some`) or release (`None`) this thread's test clock. While pinned,
+/// each call to [`snapshot_timestamp_ms`] returns the value and advances it by
+/// one millisecond.
+#[cfg(test)]
+pub(crate) fn set_test_clock(value: Option<i64>) {
+    TEST_CLOCK.with(|c| c.set(value));
 }
 
 /// Render a stored `created_at_ms` as a UTC datetime.
