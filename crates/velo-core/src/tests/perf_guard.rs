@@ -34,6 +34,16 @@ const TOLERANCE: f64 = 1.6;
 const ROUNDS: usize = 3;
 const AGENT_FILES: usize = 1_000;
 const AGENT_STEPS: usize = 500;
+
+/// `VELO_PERF_AGENT_STEPS` shortens the agent workload where it is too slow to
+/// run in full (the Windows CI runner). The ratio then scales with the step
+/// count, so a shortened run is advisory, not comparable to the committed baseline.
+fn agent_steps_count() -> usize {
+    std::env::var("VELO_PERF_AGENT_STEPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(AGENT_STEPS)
+}
 const SCALE_FILES: usize = 10_000;
 const SAVE_SAMPLES: usize = 5;
 
@@ -130,7 +140,7 @@ fn agent_steps() -> Duration {
     let mut parent = guard.save_changes(spec).unwrap().snapshot;
 
     let mut total = Duration::ZERO;
-    for step in 1..=AGENT_STEPS {
+    for step in 1..=agent_steps_count() {
         let edits = agent_edit(&mut rng, &paths, &contents);
         let message = format!("step {step}");
         let mut meta = SnapshotMeta::new();
