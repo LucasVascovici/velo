@@ -69,7 +69,7 @@ fn tool_call(
 ) -> velo_core::SnapshotId {
     let branch: BranchName = branch.parse().unwrap();
     let author = Author::new(format!("agent-{run}")).unwrap();
-    repo.write()
+    repo.write_timeout(std::time::Duration::from_secs(10))
         .unwrap()
         .save_tree(SaveTree {
             branch: &branch,
@@ -96,7 +96,7 @@ fn scenario() -> TempDir {
     let human = Author::new("human").unwrap();
 
     let base = repo
-        .write()
+        .write_timeout(std::time::Duration::from_secs(10))
         .unwrap()
         .save_tree(SaveTree {
             branch: &main,
@@ -152,7 +152,9 @@ fn scenario() -> TempDir {
     meta.set("agent", "picked", "run-1").unwrap();
     let none: [(String, merge::Resolution); 0] = [];
     merge::commit(
-        &repo.write().unwrap(),
+        &repo
+            .write_timeout(std::time::Duration::from_secs(10))
+            .unwrap(),
         MergeCommit {
             branch: &main,
             ours: &base,

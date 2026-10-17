@@ -38,7 +38,7 @@ fn history() -> (TempDir, Vec<SnapshotId>) {
     let mut ids: Vec<SnapshotId> = Vec::new();
     for i in 0..N {
         let id = repo
-            .write()
+            .write_timeout(std::time::Duration::from_secs(10))
             .unwrap()
             .save_tree(SaveTree {
                 branch: &main,
@@ -56,7 +56,9 @@ fn history() -> (TempDir, Vec<SnapshotId>) {
     }
     {
         // One guard for both mutations, so the second does not race a release.
-        let guard = repo.write().unwrap();
+        let guard = repo
+            .write_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
         sign::sign(&guard, &ids[5], &SigningKey::from_seed([7; 32])).unwrap();
         let name: TagName = "keepme".parse().unwrap();
         tag::create(&guard, &name, Some(&ids[10]), false).unwrap();

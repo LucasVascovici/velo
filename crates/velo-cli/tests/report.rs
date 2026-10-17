@@ -46,7 +46,7 @@ fn setup() -> (TempDir, std::path::PathBuf) {
     let now = now_ms();
 
     let first = repo
-        .write()
+        .write_timeout(std::time::Duration::from_secs(10))
         .unwrap()
         .save_tree(SaveTree {
             branch: &main,
@@ -71,7 +71,7 @@ fn setup() -> (TempDir, std::path::PathBuf) {
     .unwrap();
     let hostile_text = format!("one\n{HOSTILE}\n");
     let second = repo
-        .write()
+        .write_timeout(std::time::Duration::from_secs(10))
         .unwrap()
         .save_tree(SaveTree {
             branch: &main,
@@ -89,9 +89,16 @@ fn setup() -> (TempDir, std::path::PathBuf) {
         })
         .unwrap();
     let key = SigningKey::from_seed([7; 32]);
-    let sig = sign::sign(&repo.write().unwrap(), &second, &key).unwrap();
+    let sig = sign::sign(
+        &repo
+            .write_timeout(std::time::Duration::from_secs(10))
+            .unwrap(),
+        &second,
+        &key,
+    )
+    .unwrap();
 
-    repo.write()
+    repo.write_timeout(std::time::Duration::from_secs(10))
         .unwrap()
         .save_tree(SaveTree {
             branch: &side,
