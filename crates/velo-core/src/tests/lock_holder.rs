@@ -134,3 +134,25 @@ fn display_names_the_holder() {
         "another Velo operation is in progress in this repository"
     );
 }
+
+#[cfg(not(target_family = "wasm"))]
+#[test]
+fn write_waits_out_a_lock_that_is_being_released_without_a_holder_record() {
+    use fs2::FileExt;
+    let (tmp, repo) = setup();
+    // Hold the OS lock without a holder record, as a forked child holding an
+    // inherited descriptor would, and let go shortly after.
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(false)
+        .open(tmp.path().join(".velo/lock"))
+        .unwrap();
+    file.lock_exclusive().unwrap();
+    let release = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(30));
+        drop(file);
+    });
+    repo.write().expect("write waits for the release");
+    release.join().unwrap();
+}
