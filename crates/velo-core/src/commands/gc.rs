@@ -130,23 +130,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         [cutoff_ms],
     )?;
 
-    collected.orphan_file_map = conn.execute(
-        // The orphans are found among the distinct snapshot hashes, walked by
-        // skipping from one to the next through `idx_filemap_snap` (one seek per
-        // snapshot), and only then deleted. Testing every one of the table's
-        // rows against both lists was the slow part.
-        "DELETE FROM file_map WHERE snapshot_hash IN (
-             WITH RECURSIVE s(h) AS (
-                 SELECT MIN(snapshot_hash) FROM file_map
-                 UNION ALL
-                 SELECT (SELECT MIN(snapshot_hash) FROM file_map WHERE snapshot_hash > s.h)
-                 FROM s WHERE h IS NOT NULL)
-             SELECT h FROM s
-             WHERE h IS NOT NULL
-               AND h NOT IN (SELECT hash FROM snapshots)
-               AND h NOT IN (SELECT hash FROM trash))",
-        [],
-    )?;
+    collected.orphan_file_map = crate::treestore::remove_orphans(&conn)?;
 
     collected.orphan_decisions = conn.execute(
         "DELETE FROM hunk_decisions WHERE file_path NOT IN (SELECT path FROM conflict_files)",
@@ -160,17 +144,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         [],
     )?;
 
-    collected.stale_cache = conn.execute(
-        // One `idx_filemap_path` probe per cached path, stopping at the first
-        // live row, instead of building the set of every path in `file_map`.
-        "DELETE FROM index_cache
-         WHERE NOT EXISTS (
-             SELECT 1 FROM file_map
-             WHERE file_map.path = index_cache.path
-               AND file_map.snapshot_hash IN (SELECT hash FROM snapshots)
-         )",
-        [],
-    )?;
+    collected.stale_cache = crate::treestore::prune_index_cache(&conn)?;
 
     // Anything the database still points at has to survive. `file_map` is the
     // only thing that references objects, and orphaned rows were pruned above.

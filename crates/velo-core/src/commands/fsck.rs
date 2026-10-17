@@ -1057,12 +1057,7 @@ fn repair_cruft(conn: &rusqlite::Connection, cruft: &[Cruft]) -> Result<()> {
                 )?;
             }
             Cruft::DuplicateFileMapRows(_) => {
-                conn.execute(
-                    "DELETE FROM file_map WHERE rowid NOT IN
-                       (SELECT MIN(rowid) FROM file_map
-                        GROUP BY snapshot_hash, path, hash, mode)",
-                    [],
-                )?;
+                crate::treestore::remove_duplicate_rows(conn)?;
             }
             Cruft::OrphanSignatures(_) => {
                 conn.execute(

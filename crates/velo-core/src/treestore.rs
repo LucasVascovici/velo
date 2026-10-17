@@ -8,6 +8,24 @@
 //! the dozens of call sites. A reader that bypasses it would quietly see the
 //! wrong files under such a layout, not crash.
 //!
+//! # Audit of everything that holds a tree
+//!
+//! - `file_map` (and, from v4, `file_delta` and `delta_base`): trees, owned
+//!   here. Only this module names them in SQL.
+//! - trashed snapshots (`trash`): the tree rows stay keyed by hash, so they are
+//!   a snapshot's tree and go through this module.
+//! - `stash` / `_stash` shelf snapshots: full trees in `file_map`, so they go
+//!   through this module.
+//! - `MERGE_ORIG`: working state (bytes), not a tree.
+//! - `renames`: edges, not a tree; `fsck` checks them with [`file_at`].
+//! - `conflict_files`, `hunk_decisions`, `snapshot_meta`, `signatures`,
+//!   `compactions`: their own state, not read or written here.
+//! - `index_cache`: derived state; it is pruned through [`prune_index_cache`]
+//!   because the prune probes trees.
+//!
+//! `tests::tree_accessor_lint` fails when SQL outside this module names a tree
+//! table.
+//!
 //! Functions take a plain `&Connection` (a `Transaction` derefs to one) and
 //! there is deliberately no trait: there is one storage format at a time.
 
@@ -337,4 +355,103 @@ fn parent_of(conn: &Connection, snapshot: &str) -> Result<String> {
         }
     }
     Ok(String::new())
+}
+
+/// Store `snapshot`'s full tree. `first_parent` is its parent_hash ("" for a
+/// root); `parent_tree` is that parent's tree when the caller already holds it
+/// (else `None`). Today the tree is written as full rows and the two parent
+/// arguments are unused; a delta layout needs them, so producers pass them now.
+pub(crate) fn store_tree(
+    tx: &Connection,
+    snapshot: &str,
+    _first_parent: &str,
+    tree: &[Row],
+    _parent_tree: Option<&[Row]>,
+) -> Result<()> {
+    let mut ins = tx.prepare_cached(
+        "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+    )?;
+    for (p, h, m) in tree {
+        ins.execute(rusqlite::params![snapshot, p, h, m])?;
+    }
+    Ok(())
+}
+
+/// Does `snapshot` have stored tree rows?
+pub(crate) fn has_tree(conn: &Connection, snapshot: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?)",
+        [snapshot],
+        |r| r.get::<_, bool>(0),
+    )?)
+}
+
+/// Delete the stored trees of `snapshots`, at most 500 ids per statement.
+/// Returns the number of rows removed.
+pub(crate) fn remove_trees(tx: &Connection, snapshots: &[&str]) -> Result<usize> {
+    let mut removed = 0usize;
+    for batch in snapshots.chunks(500) {
+        let marks = vec!["?"; batch.len()].join(", ");
+        removed += tx.execute(
+            &format!("DELETE FROM file_map WHERE snapshot_hash IN ({marks})"),
+            rusqlite::params_from_iter(batch.iter()),
+        )?;
+    }
+    Ok(removed)
+}
+
+/// Re-key a stored tree from `old` to `new` in place (compaction's re-mint).
+pub(crate) fn rekey(tx: &Connection, old: &str, new: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE file_map SET snapshot_hash = ? WHERE snapshot_hash = ?",
+        rusqlite::params![new, old],
+    )?;
+    Ok(())
+}
+
+/// gc: delete the rows of trees whose hash is in neither `snapshots` nor
+/// `trash`. Returns the rows deleted.
+pub(crate) fn remove_orphans(tx: &Connection) -> Result<usize> {
+    Ok(tx.execute(
+        // The orphans are found among the distinct snapshot hashes, walked by
+        // skipping from one to the next through `idx_filemap_snap` (one seek per
+        // snapshot), and only then deleted. Testing every one of the table's
+        // rows against both lists was the slow part.
+        "DELETE FROM file_map WHERE snapshot_hash IN (
+             WITH RECURSIVE s(h) AS (
+                 SELECT MIN(snapshot_hash) FROM file_map
+                 UNION ALL
+                 SELECT (SELECT MIN(snapshot_hash) FROM file_map WHERE snapshot_hash > s.h)
+                 FROM s WHERE h IS NOT NULL)
+             SELECT h FROM s
+             WHERE h IS NOT NULL
+               AND h NOT IN (SELECT hash FROM snapshots)
+               AND h NOT IN (SELECT hash FROM trash))",
+        [],
+    )?)
+}
+
+/// gc: delete `index_cache` rows whose path no live snapshot's tree holds.
+pub(crate) fn prune_index_cache(tx: &Connection) -> Result<usize> {
+    Ok(tx.execute(
+        // One `idx_filemap_path` probe per cached path, stopping at the first
+        // live row, instead of building the set of every path in `file_map`.
+        "DELETE FROM index_cache
+         WHERE NOT EXISTS (
+             SELECT 1 FROM file_map
+             WHERE file_map.path = index_cache.path
+               AND file_map.snapshot_hash IN (SELECT hash FROM snapshots)
+         )",
+        [],
+    )?)
+}
+
+/// fsck --repair: drop exact duplicate rows, keeping the first of each.
+pub(crate) fn remove_duplicate_rows(tx: &Connection) -> Result<usize> {
+    Ok(tx.execute(
+        "DELETE FROM file_map WHERE rowid NOT IN
+           (SELECT MIN(rowid) FROM file_map
+            GROUP BY snapshot_hash, path, hash, mode)",
+        [],
+    )?)
 }

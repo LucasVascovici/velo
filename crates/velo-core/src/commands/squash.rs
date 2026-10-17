@@ -160,19 +160,12 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
     )?;
 
     // Copy the captured tree into the new snapshot's file_map.
-    {
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-        )?;
-        for (p, h, m) in &tree {
-            ins.execute(params![new_hash, p, h, m])?;
-        }
-    }
+    crate::treestore::store_tree(&tx, new_hash, new_parent, &tree, None)?;
 
     // Remove all squashed snapshots and their file maps
     // (Objects are left in the store; gc will clean them up)
     for h in &squashed_hashes {
-        tx.execute("DELETE FROM file_map  WHERE snapshot_hash = ?", [h])?;
+        crate::treestore::remove_trees(&tx, &[*h])?;
         tx.execute("DELETE FROM snapshots WHERE hash = ?", [h])?;
     }
 

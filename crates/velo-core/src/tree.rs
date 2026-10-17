@@ -806,14 +806,7 @@ impl WriteGuard<'_> {
                     ins_meta.execute(params![snapshot, namespace, key, value])?;
                 }
             }
-            {
-                let mut ins = tx.prepare(
-                    "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-                )?;
-                for (path, object, mode) in &tree {
-                    ins.execute(params![snapshot, path, object, mode])?;
-                }
-            }
+            crate::treestore::store_tree(&tx, snapshot.as_str(), parent, &tree, None)?;
             crate::timing::lap("save_tree.insert_file_map");
             // Inside `if !already`, with everything else the snapshot owns.
             // Rename edges are not part of the id, so an identical tree saved a

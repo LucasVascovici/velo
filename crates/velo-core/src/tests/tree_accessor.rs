@@ -287,3 +287,90 @@ fn duplicate_rows_counts_exact_repeats() {
     .unwrap();
     assert_eq!(treestore::duplicate_rows(conn).unwrap(), 2);
 }
+
+#[test]
+fn store_has_and_remove_trees_round_trip() {
+    let (_tmp, repo) = setup();
+    let conn = repo.conn();
+    assert!(!treestore::has_tree(conn, "feed").unwrap());
+    let rows = vec![
+        ("a".to_string(), "h1".to_string(), 0o100644),
+        ("b".to_string(), "h2".to_string(), 0o100755),
+    ];
+    treestore::store_tree(conn, "feed", "", &rows, None).unwrap();
+    assert!(treestore::has_tree(conn, "feed").unwrap());
+    assert_eq!(treestore::tree_of(conn, "feed").unwrap(), rows);
+    assert_eq!(treestore::remove_trees(conn, &["feed", "nope"]).unwrap(), 2);
+    assert!(!treestore::has_tree(conn, "feed").unwrap());
+    // More ids than one statement may carry.
+    let ids: Vec<String> = (0..1200).map(|i| format!("id{i}")).collect();
+    let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+    assert_eq!(treestore::remove_trees(conn, &refs).unwrap(), 0);
+}
+
+#[test]
+fn rekey_moves_a_tree_to_the_new_id() {
+    let (_tmp, repo) = setup();
+    let h = history(&repo);
+    let conn = repo.conn();
+    let before = treestore::tree_of(conn, h.edit.as_str()).unwrap();
+    treestore::rekey(conn, h.edit.as_str(), "newid").unwrap();
+    assert!(!treestore::has_tree(conn, h.edit.as_str()).unwrap());
+    assert_eq!(treestore::tree_of(conn, "newid").unwrap(), before);
+}
+
+#[test]
+fn remove_orphans_keeps_snapshot_and_trash_trees() {
+    let (_tmp, repo) = setup();
+    let h = history(&repo);
+    let conn = repo.conn();
+    let rows = treestore::tree_of(conn, h.root.as_str()).unwrap();
+    treestore::store_tree(conn, "orphan1", "", &rows, None).unwrap();
+    treestore::store_tree(conn, "orphan2", "", &rows, None).unwrap();
+    // A trashed snapshot's tree survives.
+    conn.execute(
+        "INSERT INTO trash (hash, message, branch) VALUES ('trashed', 'm', 'main')",
+        [],
+    )
+    .unwrap();
+    treestore::store_tree(conn, "trashed", "", &rows, None).unwrap();
+    assert_eq!(treestore::remove_orphans(conn).unwrap(), rows.len() * 2);
+    assert!(!treestore::has_tree(conn, "orphan1").unwrap());
+    assert!(treestore::has_tree(conn, "trashed").unwrap());
+    assert!(treestore::has_tree(conn, h.root.as_str()).unwrap());
+    assert_eq!(treestore::remove_orphans(conn).unwrap(), 0);
+}
+
+#[test]
+fn prune_index_cache_drops_paths_no_live_tree_holds() {
+    let (_tmp, repo) = setup();
+    let _h = history(&repo);
+    let conn = repo.conn();
+    for p in ["a.txt", "b/c.txt", "gone.txt"] {
+        conn.execute(
+            "INSERT INTO index_cache (path, mtime_ns, size, hash) VALUES (?, 0, 0, 'h')",
+            [p],
+        )
+        .unwrap();
+    }
+    assert_eq!(treestore::prune_index_cache(conn).unwrap(), 1);
+    let left: i64 = conn
+        .query_row("SELECT COUNT(*) FROM index_cache", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(left, 2);
+}
+
+#[test]
+fn remove_duplicate_rows_keeps_one_of_each() {
+    let (_tmp, repo) = setup();
+    let h = history(&repo);
+    let conn = repo.conn();
+    conn.execute(
+        "INSERT INTO file_map (snapshot_hash, path, hash, mode)
+         SELECT snapshot_hash, path, hash, mode FROM file_map WHERE snapshot_hash = ?",
+        [h.root.as_str()],
+    )
+    .unwrap();
+    assert_eq!(treestore::remove_duplicate_rows(conn).unwrap(), 2);
+    assert_eq!(treestore::duplicate_rows(conn).unwrap(), 0);
+}

@@ -591,13 +591,6 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
             "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
              VALUES (?, ?, ?, ?, ?, ?)",
         )?;
-        let mut ins_fm = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-        )?;
-
-        let mut has_fm =
-            tx.prepare("SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?)")?;
-        let mut del_fm = tx.prepare("DELETE FROM file_map WHERE snapshot_hash = ?")?;
 
         for s in &bundle.snapshots {
             if existing.contains(&s.hash) {
@@ -605,8 +598,8 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
             }
             // Leftover rows (undo keeps them, save orphans them) are replaced,
             // never added to. The trash row stays: `redo` still needs it.
-            if has_fm.query_row([&s.hash], |r| r.get::<_, bool>(0))? {
-                del_fm.execute([&s.hash])?;
+            if crate::treestore::has_tree(&tx, &s.hash)? {
+                crate::treestore::remove_trees(&tx, &[s.hash.as_str()])?;
             }
             // Its id was verified against its content before the transaction.
             ins_snap.execute(params![
@@ -618,9 +611,11 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
                 s.created_at_ms
             ])?;
             if let Some(rows) = fm_by_snap.get(s.hash.as_str()) {
-                for r in rows {
-                    ins_fm.execute(params![r.snapshot_hash, r.path, r.hash, r.mode])?;
-                }
+                let tree: Vec<crate::treestore::Row> = rows
+                    .iter()
+                    .map(|r| (r.path.clone(), r.hash.clone(), r.mode))
+                    .collect();
+                crate::treestore::store_tree(&tx, &s.hash, &s.parent_hash, &tree, None)?;
             }
             new_snaps += 1;
         }

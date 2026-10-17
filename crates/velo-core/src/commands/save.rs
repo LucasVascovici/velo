@@ -386,7 +386,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
 
     // If amending, delete the old snapshot and its file_map first
     if let Some((old_hash, _)) = &amend_hash {
-        tx.execute("DELETE FROM file_map WHERE snapshot_hash = ?", [old_hash])?;
+        crate::treestore::remove_trees(&tx, &[old_hash.as_str()])?;
         tx.execute("DELETE FROM snapshots   WHERE hash = ?", [old_hash])?;
         // Also remove from trash (shouldn't be there, but be safe)
         tx.execute("DELETE FROM trash WHERE hash = ?", [old_hash])?;
@@ -406,14 +406,9 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     )?;
     crate::timing::lap("save.begin_tx");
 
-    {
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-        )?;
-        for (p, h, m) in &tree {
-            ins.execute(params![snapshot_hash, p, h, m])?;
-        }
-    }
+    // The carried base of an amend is the replaced snapshot, not the parent, so
+    // no parent tree is offered; for a plain save the caller has none either.
+    crate::treestore::store_tree(&tx, snapshot_hash, effective_parent.as_str(), &tree, None)?;
     crate::timing::lap("save.insert_file_map");
     {
         // The id above commits to this metadata, so it has to be stored in the

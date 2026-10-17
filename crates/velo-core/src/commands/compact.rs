@@ -592,10 +592,10 @@ pub fn run(
         .filter(|id| !sources.contains(id))
         .collect();
     for batch in gone.chunks(DELETE_BATCH) {
+        crate::treestore::remove_trees(&tx, batch)?;
         let marks = vec!["?"; batch.len()].join(", ");
         for (table, column) in [
             ("snapshots", "hash"),
-            ("file_map", "snapshot_hash"),
             ("snapshot_meta", "snapshot_id"),
             ("renames", "snapshot_hash"),
         ] {
@@ -616,10 +616,7 @@ pub fn run(
             "UPDATE snapshots SET hash = ?, parent_hash = ?, merge_parent = ? WHERE hash = ?",
             params![m.hash, m.parent, m.merge_parent, m.tree_from],
         )?;
-        tx.execute(
-            "UPDATE file_map SET snapshot_hash = ? WHERE snapshot_hash = ?",
-            params![m.hash, m.tree_from],
-        )?;
+        crate::treestore::rekey(&tx, &m.tree_from, &m.hash)?;
         tx.execute(
             "UPDATE snapshot_meta SET snapshot_id = ? WHERE snapshot_id = ?",
             params![m.hash, m.tree_from],
