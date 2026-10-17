@@ -7,7 +7,7 @@
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
-use rusqlite::{params, params_from_iter, types::Value};
+use rusqlite::{params_from_iter, types::Value};
 
 use crate::db;
 use crate::error::Result;
@@ -507,48 +507,7 @@ fn meta_clauses(meta: &[MetaFilter<'_>], args: &mut Vec<Value>) -> String {
 /// advertised "file or directory", and a directory previously matched nothing at
 /// all.
 fn changed_under(conn: &rusqlite::Connection, snapshot: &str, parent: &str, path: &str) -> bool {
-    // `_` and `%` are LIKE wildcards and are legal in filenames.
-    let prefix = format!(
-        "{}/%",
-        path.replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    );
-
-    // A root snapshot has no parent to differ from, so anything present in it is
-    // newly added.
-    if parent.is_empty() {
-        return conn
-            .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM file_map
-                      WHERE snapshot_hash = ?1
-                        AND (path = ?2 OR path LIKE ?3 ESCAPE '\\')
-                 )",
-                params![snapshot, path, prefix],
-                |r| r.get::<_, bool>(0),
-            )
-            .unwrap_or(false);
-    }
-
-    conn.query_row(
-        "SELECT EXISTS(
-             SELECT path, hash, mode FROM file_map
-              WHERE snapshot_hash = ?1 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
-             EXCEPT
-             SELECT path, hash, mode FROM file_map
-              WHERE snapshot_hash = ?2 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
-         ) OR EXISTS(
-             SELECT path, hash, mode FROM file_map
-              WHERE snapshot_hash = ?2 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
-             EXCEPT
-             SELECT path, hash, mode FROM file_map
-              WHERE snapshot_hash = ?1 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
-         )",
-        params![snapshot, parent, path, prefix],
-        |r| r.get::<_, bool>(0),
-    )
-    .unwrap_or(false)
+    crate::treestore::changed_under(conn, snapshot, parent, path).unwrap_or(false)
 }
 
 /// How one requested path answers "did this snapshot change it".
@@ -560,32 +519,18 @@ fn changed_under(conn: &rusqlite::Connection, snapshot: &str, parent: &str, path
 /// only drive them from `idx_filemap_snap`. A directory, or a path no snapshot
 /// ever tracked, keeps the prefix query.
 enum PathLookup {
-    File(HashMap<String, (String, i64)>),
+    File(HashMap<String, crate::treestore::Entry>),
     Prefix(String),
 }
 
 impl PathLookup {
     fn load(conn: &rusqlite::Connection, path: &str) -> Self {
-        // '0' is the character after '/', so this range is exactly the paths
-        // below `path/`, and it is served by `idx_filemap_path`.
-        let is_directory = conn
-            .query_row(
-                "SELECT 1 FROM file_map WHERE path >= ?1 || '/' AND path < ?1 || '0' LIMIT 1",
-                [path],
-                |_| Ok(()),
-            )
-            .is_ok();
+        let is_directory = crate::treestore::any_path_under(conn, path).unwrap_or(false);
         if !is_directory {
-            let rows: Option<HashMap<String, (String, i64)>> = (|| {
-                let mut stmt = conn
-                    .prepare("SELECT snapshot_hash, hash, mode FROM file_map WHERE path = ?")
-                    .ok()?;
-                let mapped = stmt
-                    .query_map([path], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))
-                    .ok()?;
-                mapped.collect::<rusqlite::Result<_>>().ok()
-            })();
-            if let Some(rows) = rows.filter(|r| !r.is_empty()) {
+            if let Some(rows) = crate::treestore::path_in_all(conn, path)
+                .ok()
+                .filter(|r| !r.is_empty())
+            {
                 return PathLookup::File(rows);
             }
         }

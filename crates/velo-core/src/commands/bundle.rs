@@ -288,31 +288,23 @@ pub(crate) fn build_pack_excluding(
     let mut object_hashes: HashSet<String> = HashSet::new();
     let mut peer_objects: HashSet<String> = HashSet::new();
     {
-        let mut stmt = conn.prepare(
-            "SELECT snapshot_hash, path, hash, mode FROM file_map WHERE snapshot_hash = ?",
-        )?;
         for snap in &snapshots {
-            let rows = stmt.query_map([&snap.hash], |r| {
-                Ok(FileMapRow {
-                    snapshot_hash: r.get(0)?,
-                    path: r.get(1)?,
-                    hash: r.get(2)?,
-                    mode: r.get(3)?,
-                })
-            })?;
-            for row in rows.flatten() {
-                object_hashes.insert(row.hash.clone());
-                file_map.push(row);
+            for (path, hash, mode) in crate::treestore::tree_of(conn, &snap.hash)? {
+                object_hashes.insert(hash.clone());
+                file_map.push(FileMapRow {
+                    snapshot_hash: snap.hash.clone(),
+                    path,
+                    hash,
+                    mode,
+                });
             }
         }
         // A snapshot named in `snap_set` but absent from `snapshots` has no rows
         // to send, so the loop above already covers everything in `snap_set`.
-        let mut peer_stmt = conn.prepare("SELECT hash FROM file_map WHERE snapshot_hash = ?")?;
         if !object_hashes.is_empty() {
             for p in peer_has.iter().filter(|p| !snap_set.contains(*p)) {
-                let rows = peer_stmt.query_map([p], |r| r.get::<_, String>(0))?;
-                for h in rows.flatten() {
-                    peer_objects.insert(h);
+                for (_, hash, _) in crate::treestore::tree_of(conn, p)? {
+                    peer_objects.insert(hash);
                 }
             }
         }

@@ -174,21 +174,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
 
     // Anything the database still points at has to survive. `file_map` is the
     // only thing that references objects, and orphaned rows were pruned above.
-    let referenced: HashSet<String> = {
-        // Deduplicated here, on the borrowed text, so a hash shared by every
-        // snapshot of a file is allocated once rather than once per row.
-        let mut stmt = conn.prepare("SELECT hash FROM file_map")?;
-        let mut rows = stmt.query([])?;
-        let mut set = HashSet::new();
-        while let Some(row) = rows.next()? {
-            if let Some(hash) = row.get_ref(0).ok().and_then(|v| v.as_str().ok()) {
-                if !set.contains(hash) {
-                    set.insert(hash.to_string());
-                }
-            }
-        }
-        set
-    };
+    let referenced: HashSet<String> = crate::treestore::referenced_objects(&conn)?;
 
     // The last database access. A real run makes the prunes durable before any
     // file is touched, so an I/O error later leaves trash and file_map rows

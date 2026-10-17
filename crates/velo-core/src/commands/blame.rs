@@ -454,16 +454,9 @@ impl TrackedHashes {
         path: &str,
     ) -> Result<String> {
         if !self.by_path.contains_key(path) {
-            let mut rows = HashMap::new();
-            if let Ok(mut stmt) =
-                conn.prepare_cached("SELECT snapshot_hash, hash FROM file_map WHERE path = ?")
-            {
-                if let Ok(mapped) = stmt.query_map([path], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                }) {
-                    rows.extend(mapped.flatten());
-                }
-            }
+            let rows = crate::treestore::path_in_all(conn, path)
+                .map(|m| m.into_iter().map(|(s, e)| (s, e.hash)).collect())
+                .unwrap_or_default();
             self.by_path.insert(path.to_string(), rows);
         }
         match self.by_path[path].get(snapshot) {

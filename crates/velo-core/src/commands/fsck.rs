@@ -569,15 +569,7 @@ fn check_objects(
 
 /// Every object hash the database points at, from file maps and conflict blobs.
 fn referenced_objects(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
-    let mut referenced: HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT DISTINCT hash FROM file_map")?;
-        let set: HashSet<String> = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .filter(|h| !h.is_empty())
-            .collect();
-        set
-    };
+    let mut referenced: HashSet<String> = crate::treestore::referenced_objects(conn)?;
     // Conflict sidecars reference objects too.
     let mut stmt =
         conn.prepare("SELECT ancestor_hash, our_hash, their_hash FROM conflict_files")?;
@@ -619,7 +611,7 @@ struct TreeRows {
 }
 
 /// `(path, object hash, mode)`.
-type TreeRow = (String, String, i64);
+type TreeRow = crate::treestore::Row;
 
 type SnapRow = (String, String, String, String, String, i64);
 /// Per tree: exact-duplicate rows dropped, and (snapshot index, recomputed id)
@@ -744,43 +736,20 @@ fn check_snapshots(
     };
 
     let mut seen: HashSet<usize> = HashSet::new();
-    let mut stmt = conn
-        .prepare("SELECT snapshot_hash, path, hash, mode FROM file_map ORDER BY snapshot_hash")?;
-    let mut scan = stmt.query([])?;
     let mut batch: Vec<TreeRows> = Vec::with_capacity(ID_BATCH);
-    let mut current: Option<(String, Vec<TreeRow>)> = None;
-    while let Some(row) = scan.next()? {
-        let (Ok(snap), Ok(path), Ok(hash), Ok(mode)) = (
-            row.get::<_, String>(0),
-            row.get::<_, String>(1),
-            row.get::<_, String>(2),
-            row.get::<_, i64>(3),
-        ) else {
-            continue;
-        };
-        if current.as_ref().is_some_and(|(s, _)| *s != snap) {
-            if let Some((done, rows)) = current.take() {
-                let want = wanted.get(done.as_str()).copied();
-                seen.extend(want);
-                batch.push(TreeRows { wanted: want, rows });
-            }
-            if batch.len() >= ID_BATCH {
-                absorb(process(&mut batch));
-            }
-        }
-        match &mut current {
-            Some((_, rows)) => rows.push((path, hash, mode)),
-            None => current = Some((snap, vec![(path, hash, mode)])),
-        }
-    }
-    if let Some((done, rows)) = current.take() {
-        let want = wanted.get(done.as_str()).copied();
+    crate::treestore::for_each_tree(conn, |done, rows| {
+        let want = wanted.get(done).copied();
         seen.extend(want);
-        batch.push(TreeRows { wanted: want, rows });
-    }
+        batch.push(TreeRows {
+            wanted: want,
+            rows: rows.to_vec(),
+        });
+        if batch.len() >= ID_BATCH {
+            absorb(process(&mut batch));
+        }
+        Ok(())
+    })?;
     absorb(process(&mut batch));
-    drop(scan);
-    drop(stmt);
 
     // A snapshot with no rows at all still has an id to check: the empty tree's.
     let mut empty: Vec<TreeRows> = wanted

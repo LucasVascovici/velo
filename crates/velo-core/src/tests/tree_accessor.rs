@@ -199,3 +199,91 @@ fn changes_of_a_trashed_snapshot_reads_its_parent_from_trash() {
     let del = treestore::changes_of(conn, h.delete.as_str()).unwrap();
     assert_eq!(del, vec![("a.txt".to_string(), None)]);
 }
+
+#[test]
+fn path_in_all_covers_live_and_trashed_snapshots() {
+    let (_tmp, repo) = setup();
+    let h = history(&repo);
+    let conn = repo.conn();
+    conn.execute(
+        "INSERT INTO trash (hash, message, branch, parent_hash, merge_parent, created_at_ms, deleted_at_ms)
+         SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms, 9
+         FROM snapshots WHERE hash = ?",
+        [h.delete.as_str()],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM snapshots WHERE hash = ?", [h.delete.as_str()])
+        .unwrap();
+
+    let a = treestore::path_in_all(conn, "a.txt").unwrap();
+    let mut keys: Vec<&str> = a.keys().map(String::as_str).collect();
+    keys.sort_unstable();
+    let mut want = [h.root.as_str(), h.edit.as_str()];
+    want.sort_unstable();
+    assert_eq!(keys, want);
+    assert_ne!(a[h.root.as_str()], a[h.edit.as_str()]);
+
+    // The trashed snapshot still holds b/c.txt.
+    let c = treestore::path_in_all(conn, "b/c.txt").unwrap();
+    assert_eq!(c.len(), 3);
+    assert!(c.contains_key(h.delete.as_str()));
+    assert!(treestore::path_in_all(conn, "nope").unwrap().is_empty());
+}
+
+#[test]
+fn any_path_under_and_changed_under() {
+    let (_tmp, repo) = setup();
+    let h = history(&repo);
+    let conn = repo.conn();
+    assert!(treestore::any_path_under(conn, "b").unwrap());
+    assert!(!treestore::any_path_under(conn, "b/c.txt").unwrap());
+    assert!(!treestore::any_path_under(conn, "a.txt").unwrap());
+    let (r, e, d) = (h.root.as_str(), h.edit.as_str(), h.delete.as_str());
+    assert!(treestore::changed_under(conn, r, "", "b").unwrap());
+    assert!(!treestore::changed_under(conn, e, r, "b").unwrap());
+    assert!(treestore::changed_under(conn, e, r, "a.txt").unwrap());
+    assert!(treestore::changed_under(conn, d, e, "a.txt").unwrap());
+}
+
+#[test]
+fn for_each_tree_visits_each_stored_tree_once_and_referenced_objects_is_their_union() {
+    let (_tmp, repo) = setup();
+    let h = history(&repo);
+    let conn = repo.conn();
+    let mut seen: Vec<(String, Vec<treestore::Row>)> = Vec::new();
+    treestore::for_each_tree(conn, |s, rows| {
+        seen.push((s.to_string(), rows.to_vec()));
+        Ok(())
+    })
+    .unwrap();
+    let mut ids: Vec<&str> = seen.iter().map(|s| s.0.as_str()).collect();
+    ids.sort_unstable();
+    let mut want = [h.root.as_str(), h.edit.as_str(), h.delete.as_str()];
+    want.sort_unstable();
+    assert_eq!(ids, want);
+    for (s, rows) in &seen {
+        assert_eq!(rows, &treestore::tree_of(conn, s).unwrap());
+    }
+
+    let union: std::collections::HashSet<String> = seen
+        .iter()
+        .flat_map(|(_, rows)| rows.iter().map(|r| r.1.clone()))
+        .filter(|h| !h.is_empty())
+        .collect();
+    assert_eq!(treestore::referenced_objects(conn).unwrap(), union);
+}
+
+#[test]
+fn duplicate_rows_counts_exact_repeats() {
+    let (_tmp, repo) = setup();
+    let h = history(&repo);
+    let conn = repo.conn();
+    assert_eq!(treestore::duplicate_rows(conn).unwrap(), 0);
+    conn.execute(
+        "INSERT INTO file_map (snapshot_hash, path, hash, mode)
+         SELECT snapshot_hash, path, hash, mode FROM file_map WHERE snapshot_hash = ?",
+        [h.root.as_str()],
+    )
+    .unwrap();
+    assert_eq!(treestore::duplicate_rows(conn).unwrap(), 2);
+}

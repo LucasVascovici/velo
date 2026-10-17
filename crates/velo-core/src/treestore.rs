@@ -11,7 +11,7 @@
 //! Functions take a plain `&Connection` (a `Transaction` derefs to one) and
 //! there is deliberately no trait: there is one storage format at a time.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rusqlite::Connection;
 
@@ -109,6 +109,164 @@ pub(crate) fn holds_path_or_under(conn: &Connection, snapshot: &str, path: &str)
         rusqlite::params![snapshot, path, path],
         |r| r.get::<_, bool>(0),
     )?)
+}
+
+/// Every stored snapshot (in snapshots or trash) whose tree holds `path`, with
+/// its entry.
+///
+/// One `path = ?` lookup on `idx_filemap_path` returns a row per snapshot that
+/// holds the path (a few hundred), instead of probing every snapshot's tree.
+pub(crate) fn path_in_all(conn: &Connection, path: &str) -> Result<HashMap<String, Entry>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT snapshot_hash, hash, mode FROM file_map WHERE path = ?")?;
+    let rows = stmt.query_map([path], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            Entry {
+                hash: r.get(1)?,
+                mode: r.get(2)?,
+            },
+        ))
+    })?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
+}
+
+/// Some stored tree holds a path strictly under `dir/` (history's directory
+/// probe).
+pub(crate) fn any_path_under(conn: &Connection, dir: &str) -> Result<bool> {
+    // '0' is the character after '/', so this range is exactly the paths
+    // below `dir/`, and it is served by `idx_filemap_path`.
+    Ok(conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM file_map WHERE path >= ?1 || '/' AND path < ?1 || '0')",
+        [dir],
+        |r| r.get::<_, bool>(0),
+    )?)
+}
+
+/// Whether `snapshot` differs from `parent` under `path`, which matches a file
+/// exactly or a directory by prefix. An empty `parent` makes every path under
+/// the filter an addition.
+///
+/// Change means the `(path, hash, mode)` rows under the filter differ from the
+/// parent's, in either direction: added, deleted, edited, or a mode flip. The
+/// comparison runs both ways because a deletion only appears in the parent.
+pub(crate) fn changed_under(
+    conn: &Connection,
+    snapshot: &str,
+    parent: &str,
+    path: &str,
+) -> Result<bool> {
+    // `_` and `%` are LIKE wildcards and are legal in filenames.
+    let prefix = format!(
+        "{}/%",
+        path.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+
+    // A root snapshot has no parent to differ from, so anything present in it is
+    // newly added.
+    if parent.is_empty() {
+        return Ok(conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM file_map
+                  WHERE snapshot_hash = ?1
+                    AND (path = ?2 OR path LIKE ?3 ESCAPE '\\')
+             )",
+            rusqlite::params![snapshot, path, prefix],
+            |r| r.get::<_, bool>(0),
+        )?);
+    }
+
+    Ok(conn.query_row(
+        "SELECT EXISTS(
+             SELECT path, hash, mode FROM file_map
+              WHERE snapshot_hash = ?1 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
+             EXCEPT
+             SELECT path, hash, mode FROM file_map
+              WHERE snapshot_hash = ?2 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
+         ) OR EXISTS(
+             SELECT path, hash, mode FROM file_map
+              WHERE snapshot_hash = ?2 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
+             EXCEPT
+             SELECT path, hash, mode FROM file_map
+              WHERE snapshot_hash = ?1 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
+         )",
+        rusqlite::params![snapshot, parent, path, prefix],
+        |r| r.get::<_, bool>(0),
+    )?)
+}
+
+/// Visit every stored tree once, as (snapshot hash, rows sorted by path).
+///
+/// Every row is read once, in `snapshot_hash` order, rather than once per
+/// snapshot, and grouped here. Rows are as stored, duplicates included, so
+/// fsck can still count them. Order: any (20.5 makes it chain order).
+pub(crate) fn for_each_tree(
+    conn: &Connection,
+    mut f: impl FnMut(&str, &[Row]) -> Result<()>,
+) -> Result<()> {
+    let mut stmt = conn
+        .prepare("SELECT snapshot_hash, path, hash, mode FROM file_map ORDER BY snapshot_hash")?;
+    let mut scan = stmt.query([])?;
+    let mut current: Option<(String, Vec<Row>)> = None;
+    while let Some(row) = scan.next()? {
+        let (Ok(snap), Ok(path), Ok(hash), Ok(mode)) = (
+            row.get::<_, String>(0),
+            row.get::<_, String>(1),
+            row.get::<_, String>(2),
+            row.get::<_, i64>(3),
+        ) else {
+            continue;
+        };
+        if current.as_ref().is_some_and(|(s, _)| *s != snap) {
+            if let Some((done, mut rows)) = current.take() {
+                rows.sort_unstable();
+                f(&done, &rows)?;
+            }
+        }
+        match &mut current {
+            Some((_, rows)) => rows.push((path, hash, mode)),
+            None => current = Some((snap, vec![(path, hash, mode)])),
+        }
+    }
+    if let Some((done, mut rows)) = current.take() {
+        rows.sort_unstable();
+        f(&done, &rows)?;
+    }
+    Ok(())
+}
+
+/// Distinct non-empty object hashes referenced by any stored tree row.
+pub(crate) fn referenced_objects(conn: &Connection) -> Result<HashSet<String>> {
+    // Deduplicated here, on the borrowed text, so a hash shared by every
+    // snapshot of a file is allocated once rather than once per row.
+    let mut stmt = conn.prepare("SELECT hash FROM file_map")?;
+    let mut rows = stmt.query([])?;
+    let mut set = HashSet::new();
+    while let Some(row) = rows.next()? {
+        if let Some(hash) = row.get_ref(0).ok().and_then(|v| v.as_str().ok()) {
+            if !hash.is_empty() && !set.contains(hash) {
+                set.insert(hash.to_string());
+            }
+        }
+    }
+    Ok(set)
+}
+
+/// Rows that exactly repeat another row of the same snapshot (the same
+/// `(snapshot, path, hash, mode)`), the count behind fsck's
+/// `DuplicateFileMapRows`.
+#[allow(dead_code)] // fsck counts from its own pass over `for_each_tree`; tests cover this
+pub(crate) fn duplicate_rows(conn: &Connection) -> Result<usize> {
+    let mut total = 0usize;
+    for_each_tree(conn, |_, rows| {
+        let mut distinct = rows.to_vec();
+        distinct.dedup();
+        total += rows.len() - distinct.len();
+        Ok(())
+    })?;
+    Ok(total)
 }
 
 /// What `snapshot` changed against its first parent, sorted by path: `Some` is
