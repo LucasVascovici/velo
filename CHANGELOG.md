@@ -6,6 +6,72 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 5.3.0
+
+Phase 19: profiling, `save_changes`, batch reads and `materialize`, shrinking retention and `velo retention`, the snapshot-storage decision (FORMAT.md 11.5), Windows first-run cost, `velo report`, and release-artifact packaging.
+
+### Added
+
+- **19.0-a Open the 5.3.0 release.** Bumped the workspace and the velo-* dependency versions to 5.3.0 and updated the four lockfiles, touching velo-* entries only. Updated the README tag line and pointed the semver job's baseline-rev at v5.2.0.
+
+- **19.1-a Stage timers behind a `timing` feature in velo-core.** Added the timing module and `timing` feature to velo-core. It has the exact lap names in the specified order for save, save_tree, restore, compact and retention. Added 5 tests, a CI step and a STABILITY.md line.
+
+- **19.1-b Profiling harness: save, save_tree, restore and the agent workload.** Added the perf_support and perf_profile test modules. They give two ignored measurement tests (profile_save_restore, profile_agent_workload) that emit JSON lines, plus non-ignored small-size tests so the harness cannot rot. No production code changed.
+
+- **19.1-c SQLite option experiments at the 100,000-file point.** The schema_without_rowid and schema_blob_hashes lines now carry delta_ms, delta_pct, delta_bytes_per_row and delta_bytes_pct against schema_rowid_two_indexes. That baseline line carries zero deltas. The small run asserts the fields.
+
+- **19.1-d Run the profile matrix and publish docs/PERF.md.** Ran the profile matrix on Windows and WSL2 Linux and published docs/PERF.md with the stage tables, top costs, agent split, SQLite deltas, derived targets and a not-measured list. Raw JSON lines and the reproduce commands are committed. Binding overhead is 10.5% of the step time on Windows and 5.6% on Linux.
+
+- **19.2-a `WriteGuard::save_changes`: save a parent plus changes, return ids.** save_changes now refuses a Rename whose source was already renamed or deleted in the call, even after a re-Put. It also refuses a Delete of, or later Rename onto, a path that an earlier Rename targeted. The show test asserts the rename edge exactly.
+
+- **19.2-b Bind save_changes in Python and Node.** Python Repo.save_changes (dict or velo.Change list, returns Saved) and Node saveChanges (ChangeInput ops, returns SavedInfo) are bound, and the parity exemption is removed. The example, cookbook and READMEs are updated.
+
+- **19.2-c MCP: velo_save_tree gains a changes form and returns object ids.** On the files route, null paths are checked against the parent with one indexed lookup each, using a new Repo::object_at. Paths the parent lacks are dropped, as the old tree.remove did, and the tree is still never loaded. A new store_only test covers a null for a missing path.
+
+- **19.2-d Re-run the agent benchmark with save_changes and materialize.** Fixed the three wrong cookbook factors (2.6x, 5.3x, 13.8x) and added disk factors to the Disk bullet. Reworded the PERF.md Linux sentence so the single-run point is a possible explanation and the 37.4 s vs 39.1 s comparison is marked cross-day and indicative.
+
+- **19.3-a `Repo::read_files_at`: batch reads in one result.** Added Repo::read_files_at in tree.rs: snapshot check, then one file_map statement per chunk of paths, then parallel object reads through par_with_content, with results in input order. Added 7 tests and a pending parity exemption.
+
+- **19.3-b `commands::restore::materialize`: write a snapshot into any directory.** canonical_prefix now canonicalises the longest existing prefix of the absolute path and resolves the missing tail by text. A `..` pops the last tail component or the canonical base, and a raw path is never returned. This closes the Unix hole where `<root>/sub/..` skipped the root and .velo refusals.
+
+- **19.3-c Bind read_files_at and materialize in Python, Node and MCP.** Python and Node now have read_files_at and materialize, and MCP has the velo_read_files store tool with a total byte budget and an omitted list. Both pending exemptions are removed and the parity check passes. Python pytest (64), the Python stubtest, the Node batch_reads tests (4) and the velo-mcp tests all pass.
+
+- **19.4-a Make compaction and retention fast: re-mint in place, batch the deletes.** The golden test now calls .replace("\r\n", "\n") with real escape sequences, checked by od -c. I also added a *.golden eol=lf rule to .gitattributes.
+
+- **19.4-b Return freed pages: incremental auto_vacuum for new repositories, `gc::vacuum`.** New repositories set auto_vacuum=INCREMENTAL in create_at_path. Added gc::vacuum with Vacuum, AutoVacuum and Vacuumed. FORMAT.md 7.4 records the decision and the parity exemption is added.
+
+- **19.4-c `velo retention` command, and `velo gc --vacuum`.** Added `velo retention` (--branch, repeatable --keep AGE=EVERY, --dry-run, --keep-days) and `velo gc --vacuum`. A plain `velo gc` now also runs an incremental vacuum, and `--dry-run --vacuum` is rejected. README and the cookbook are updated.
+
+- **19.4-d Bind gc::vacuum in Python and Node.** Added repo.vacuum to the Python and Node bindings (dict and VacuumInfo with bytes and auto_vacuum). Removed the parity exemption; the parity check passes, and the Python (54) and Node (46) suites pass.
+
+- **19.4-e Repeat the 18.10 retention run and publish it.** Repeated the 18.10 run on Windows: velo.db went from 5.18 GiB to 2.06 GiB. Retention took 415.6 s (18.10: 1,219.5 s), gc 165.2 s, vacuum 192.5 s. The first run did not shrink the file because gc::vacuum had a bug, which I fixed and then re-ran.
+
+- **19.5-a Prototype parent deltas with keyframes and measure them.** Added the delta/keyframe prototype on scratch tables, with a non-ignored correctness test (tree and real ids match for K 1, 4, 16) and the ignored matrix. Ran it at 100,000 files on Windows and WSL2, committed the JSON, and added PERF.md section 8. A one-file save is about 83-110 ms under A, against 1.75 s (Linux) and 5.3 s (Windows) today, and all of it is identity (parent-tree read plus hash). Disk per snapshot falls from 27.9 MB to 2.3 MB at K=8 and 36 KB at K=512.
+
+- **19.5-b Record the snapshot-storage decision in FORMAT.md.** Added FORMAT.md 11.5 choosing option A (parent deltas, keyframe every K=128, identity unchanged), with the prototype numbers, migration, wire stance and the compaction fold rule. Also added the planned v4 row to 7.1, updated the Non-goals bullet, and pointed 11.4's closing at 11.5.
+
+- **19.6-a Count filesystem operations per save and remove the redundant ones.** Added the six fs.* counters on the save path and an ignored fs_ops_per_save report. A first save now opens each new file once: the scan no longer hashes untracked files, and save seeds their cache rows after the commit. Per file, first save stat went 5.02 to 2.01, exists 2.00 to 1.00 and open_read 2.00 to 1.00. Clean status stat went 2.01 to 1.01.
+
+- **19.6-b `velo init --objects` and a matching scale.py flag.** velo init takes --objects files|database (clap ValueEnum, default files) and calls init::run_with. scale.py has --objects, passes it to init and records it in env. READMEs updated.
+
+- **19.6-c Measure Windows first-run cost and write docs/WINDOWS.md.** Measured Windows first save, gc and clean status at 10k and 100k files for defaults and --objects database, wrote docs/WINDOWS.md, and linked it from README and SCALE.md. The Defender exclusion was not measured because the account is not an administrator.
+
+- **19.7-a A performance guard in CI with calibrated ratios and committed baselines.** Replaced the raw 0xB7 byte on line 245 of ci.yml with the UTF-8 middle dot (0xC2 0xB7). iconv -f utf-8 now accepts the whole file.
+
+- **19.8-a Core report model: `commands::report::build`.** Added commands::report::build and the non_exhaustive report model types, with the module doc stating that strings are verbatim and escaping is the renderer's job. Four tests cover the model, and the parity exemption is in place.
+
+- **19.8-b `velo report`: self-contained HTML and JSON, hostile input escaped.** Added `velo report`. It writes a self-contained offline HTML file with a strict CSP, no script element and every history string escaped, or the same data as JSON with `--json`. A proptest and hostile-corpus test of the renderer, a black-box test file and the README entry are included.
+
+- **19.8-c The cookbook's agent run ends with a report; README links a sample.** Added report_cookbook.rs, which rebuilds the cookbook scenario and asserts app.py line authors (agent-run-1 vs human) plus the fsck verdict. Committed a reproducible docs/report-sample.html, a cookbook section, and a README link.
+
+- **19.10-a Attach wheels and Node tarballs, with checksums, to GitHub releases.** packages.yml is now reusable and names Node tarballs per platform. release.yml gains bindings and attach-bindings jobs that attach 3 wheels, 3 tarballs and SHA256SUMS-bindings.txt. The README documents pip, npm, cargo --tag and checksum verification.
+
+- **19.10-b Generated API reference for the Python and Node bindings.** Added branches: ["**"] under on.push in apidocs.yml so branch pushes touching bindings/** trigger it. Tag trigger is unchanged.
+
+- **19.10-c A tested serve-http deployment example: reverse proxy, tokens, read-only mirror.** Added examples/serve-http (Caddy-fronted compose stack, read-only mirror compose, tokens.example, README, smoke.sh) and the deploy-example CI workflow; README hosting section links it. No Rust changed, so cargo checks were skipped.
+
+- **19.11-a Re-run the benchmarks against the targets and report the losses.** Target 3 now reports disk after 500 steps (152 MB, 41x Linux, 47x Windows) in PERF.md and the cookbook, with final disk labelled separately. Docs only.
+
 ## 5.2.0
 
 Phase 18: hostile-input hardening, crash safety, a format-compatibility corpus, an authenticated HTTP remote, signed snapshots, `velo sync`, and binding/MCP/WASM work. Public API changes in `velo-core` are additive; one additive table (`signatures`); bundle wire version 4 is written only when a bundle carries signatures.
