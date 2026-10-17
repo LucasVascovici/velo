@@ -196,6 +196,24 @@ for git worktree it includes every attempt's checked-out tree. SQLite's `who
 wrote` is near zero because an index lookup finds the file's versions; it
 answers "which step", not a line-level blame.
 
+**Phase 19 re-run.** The tables above are still the latest agent runs: the code
+has not changed since the 2026-10-16 run, so it was not repeated. The scale
+envelope was re-run on 2026-10-17 (see [`SCALE.md`](../SCALE.md)). Against the
+targets in [`PERF.md`](../PERF.md) section 6, velo still loses three rows, and
+each loss has a measured reason there:
+
+- **500 steps on Linux: 4.5x shadow git** (37.4 s against 8.4 s; the target was
+  3x, the proposal 2x). One SQLite commit per step is most of it.
+- **Disk: 35x shadow git on Linux and 38x on Windows** (174 MB against 5 MB;
+  the target was 100 MB, then 3x). Every snapshot stores its whole 1,000-file
+  tree, and nothing that shrinks that has shipped.
+- **A one-file save at 100,000 files is not flat:** 4.27x slower after 200
+  snapshots than after the first few on Linux and 5.79x on Windows (target
+  1.5x), because each save still writes one row per file.
+
+Restore meets its target on both platforms, and 500 steps on Windows meets it
+(velo is 3x faster than shadow git there).
+
 ### What velo is, and is not, here
 
 velo still loses most rows on Linux. Read the tables that way:

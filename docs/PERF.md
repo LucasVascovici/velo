@@ -493,6 +493,56 @@ numbers above.
    target 1: if the engine step drops to 50 ms the same absolute binding cost is a
    larger share.
 
+### Result of the Phase 19 re-run (2026-10-17)
+
+The targets above, against the 5.3.0 measurements. Agent figures are the
+2026-10-16 run of the 5.3 calling convention
+([`agent-2026-10-16-windows.json`](../bench/results/agent-2026-10-16-windows.json),
+[`-linux.json`](../bench/results/agent-2026-10-16-linux.json)); it was built from
+the same code as the current tip (the only commits since touch a test module), so
+it was reused, not repeated, and its shadow git figures come from the same run.
+Envelope figures are the 5.3.0 `envelope-b` runs
+([`2026-10-17-windows-envelope-b.json`](../bench/results/2026-10-17-windows-envelope-b.json),
+[`2026-10-17-linux-envelope-b.json`](../bench/results/2026-10-17-linux-envelope-b.json)),
+beside the 5.2.0 ones in [`SCALE.md`](SCALE.md). Shadow git moved between days
+(Linux 500 steps: 11.3 s on 2026-10-15, 8.4 s on 2026-10-16), so ratios use the
+shadow git of the same run and 3x git is 25 s today, not the 34 s derived above.
+
+| target | Linux | Windows | verdict |
+|---|---|---|---|
+| 1. 500 steps, at most 3x shadow git on Linux (proposed 2x); not worse than git on Windows | 37.4 s against 8.4 s: **4.5x** | 64.4 s against 190.9 s: 0.34x | **Linux missed** (by 1.5x against the 3x target, 2.2x against the proposed 2x); Windows met |
+| 2. restore, at most 2x shadow git on Linux; about 1 s on Windows | 13 ms against 29 ms: 0.45x | 216 ms against 422 ms (git); under 1 s | **met** on both |
+| 3. disk after 500 steps, at most 100 MB with a schema change, at most 3x git with deltas | 174 MB against 5 MB: 35x | 174 MB against 5 MB: 38x | **missed**; no schema change shipped |
+| 4. one-file save at 100,000 files, at most 1.5x the history-0 save | 12.6 s over the last 20 saves against 2.9 s over the first 20: **4.27x** (against the 2.1 s history-0 floor: 6.0x) | 16.3 s against 2.8 s: **5.79x** (7.8x against the floor) | **missed** on both; 200 snapshots, not 500 |
+| 5. binding overhead, at most 10% of the Python step | 5.6% (19.1) | 10.5% (19.1) | not re-measured: `save_changes` has no Rust twin of the harness; Windows was 0.5 points over when last measured |
+
+Reasons for the misses, each from a measurement above or in the linked results:
+
+- **Target 1, Linux.** The step is 75 ms (37.4 s / 500). Section 4 puts 83 ms of
+  the median 91 ms `save_tree` lap in `save_tree.commit`, with the row insert
+  (4.5 ms) and objects (2.7 ms) small beside it, so one commit per step is what
+  remains after `save_changes` removed the re-read (9.2% off the Linux time, not
+  the 27% estimated). Reaching 3x needs about 50 ms per step. The commit stage is
+  governed by the per-snapshot rows (target 3 and 4); no safe SQLite option
+  measured in section 5 takes it under 20 ms.
+- **Target 3.** 500 snapshots x 1,000 `file_map` rows is 500,000 rows at about
+  290 bytes; every snapshot still records its whole tree. 19.1 measured 145 of
+  152 MB in those rows. The 19.5 prototype (section 8) writes only changed rows
+  and cuts the 100,000-file case from 27.9 MB to between 0.04 MB and 2.3 MB per
+  snapshot depending on the keyframe interval, but it was not run on the 1,000-file
+  agent workload and the storage decision (19.5-b) is not implemented, so the
+  agent disk figure is unchanged.
+- **Target 4.** Phase 19 did not change how a save writes rows. The growth is in
+  `save.commit` and the row insert, the parts section 5 shows moving with the
+  table (the index experiment removed 89% of the 200-snapshot save on Linux and 76% on Windows). The
+  prototype in section 8 takes the same save to 80 to 110 ms, all of it reading
+  and hashing the parent tree, but only as a prototype, so the shipped save is
+  as flat as it was. 5.2.0 measured 4.00x (Windows) and 6.80x (Linux); the 5.3.0
+  runs are 5.79x and 4.27x, within what one run per cell and a day of drift can
+  explain.
+- **Retention (not a numbered target).** The 18.10 retention run was repeated in
+  19.4-e on Windows (see [`SCALE.md`](SCALE.md)); it was not repeated on Linux.
+
 ## 7. Not measured
 
 - **100,000 files x 2,000 snapshots (both platforms).** About 200 million
@@ -516,7 +566,8 @@ numbers above.
   size takes seconds, so 500 of them would take longer than the bulk build.
 - **Restore at history 0** measures the scan only (see section 1).
 - **Other systems in the agent benchmark.** Only velo was re-run
-  (`--only velo`); the shadow git figures in section 6 are from the 18.13 run.
+  (`--only velo`); the shadow git figures in the first table of section 6 are from the 18.13 run. The re-run table
+  below it uses the full 2026-10-16 run, where every system ran together.
 - **Changes-only agent workload.** The row in section 4 is empty until the
   `save_changes` measurement fills it.
 - **One run per cell, one machine,** with WSL2 standing in for Linux.

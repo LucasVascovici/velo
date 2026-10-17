@@ -17,74 +17,94 @@ snapshots. The limits that show up inside it are below.
 
 ## Results
 
-Every number is a run of the real release CLI (`velo 5.2.0`), so it includes
-process start, database open and disk I/O. One run per cell, one file changed
-per snapshot, each file about 200 bytes, so these are metadata and scanning
-costs, not large-content costs. The per-command rows are the median of 3 runs
-(5 for open). Raw data, including every save latency, is in
-[`bench/results/`](../bench/results/).
+Every number is a run of the real release CLI, so it includes process start,
+database open and disk I/O. Each cell has two runs side by side: **5.2.0**
+(2026-10-15, the first publication of this page) and **5.3.0** (2026-10-17, the
+Phase 19 re-run: same `bench/scale/scale.py` presets, same seed, same machine,
+no change to the harness). One run per cell, one file changed per snapshot, each
+file about 200 bytes, so these are metadata and scanning costs, not
+large-content costs. The per-command rows are the median of 3 runs (5 for open).
+Raw data, including every save latency, is in
+[`bench/results/`](../bench/results/): `2026-10-15-*` is 5.2.0, `2026-10-17-*` is
+5.3.0.
 
 Machine for both platforms: Intel Core i7-1370P, 20 logical CPUs. The
 Linux runs are WSL2 (Ubuntu 22.04, kernel 5.15, ext4 inside the WSL2 virtual
 disk) on the same laptop, not a separate Linux box, so the two columns compare
-filesystems and scanners on identical hardware, not different hardware.
+filesystems and scanners on identical hardware, not different hardware. The 5.3.0
+Windows runs had Defender real-time protection on with no exclusions, as before.
+The two days are not a controlled comparison of code: the same machine gave
+shadow git a different time on the two days with no code change (see the
+cookbook), and no repeat was run to separate the code from the day.
 
 ### 10,000 files x 2,000 snapshots (`envelope-a`)
 
-| Metric | Windows 11 (NTFS, Defender on) | Linux (WSL2, ext4) |
-| --- | --- | --- |
-| first save (every file new) | 49.6 s | 0.68 s |
-| save, first 10% median / p95 | 1,208 ms / 2,456 ms | 861 ms / 1,832 ms |
-| save, last 10% median / p95 | 1,854 ms / 2,111 ms | 1,976 ms / 2,835 ms |
-| save growth, last / first median | 1.53x | 2.30x |
-| `status` (clean) | 180 ms | 101 ms |
-| `history` (all 2,000) | 50 ms | 28 ms |
-| `history --file` | 111 ms | 74 ms |
-| `restore` to snapshot 1,000 / back to tip | 965 ms / 508 ms | 329 ms / 277 ms |
-| `gc` | 6.5 s | 5.1 s |
-| `fsck` | 31.3 s | 25.6 s |
-| open (`velo branches`) | 36 ms | 3 ms |
-| `velo.db` | 5,338.6 MiB | 5,353.9 MiB |
-| `file_map` rows | 20,002,000 | 20,002,000 |
+| Metric | Win 5.2.0 | Win 5.3.0 | Linux 5.2.0 | Linux 5.3.0 |
+| --- | --- | --- | --- | --- |
+| first save (every file new) | 49.6 s | 31.5 s | 0.68 s | 0.78 s |
+| save, first 10% median / p95 | 1,208 / 2,456 ms | 1,407 / 2,076 ms | 861 / 1,832 ms | 763 / 1,498 ms |
+| save, last 10% median / p95 | 1,854 / 2,111 ms | 2,249 / 2,881 ms | 1,976 / 2,835 ms | 1,473 / 2,345 ms |
+| **save growth, last / first median** | 1.53x | **1.60x** | 2.30x | **1.93x** |
+| `status` (clean) | 180 ms | 117 ms | 101 ms | 47 ms |
+| `history` (all 2,000) | 50 ms | 39 ms | 28 ms | 13 ms |
+| `history --file` | 111 ms | 94 ms | 74 ms | 42 ms |
+| `restore` to snapshot 1,000 / back to tip | 965 / 508 ms | 479 / 885 ms | 329 / 277 ms | 222 / 208 ms |
+| `gc` | 6.5 s | 6.5 s | 5.1 s | 3.2 s |
+| `fsck` | 31.3 s | 29.3 s | 25.6 s | 17.5 s |
+| open (`velo branches`) | 36 ms | 29 ms | 3 ms | 4 ms |
+| `velo.db` | 5,338.6 MiB | 5,343.7 MiB | 5,353.9 MiB | 5,354.8 MiB |
+| `file_map` rows | 20,002,000 | 20,002,000 | 20,002,000 | 20,002,000 |
 
 ### 100,000 files x 200 snapshots (`envelope-b`)
 
-| Metric | Windows 11 (NTFS, Defender on) | Linux (WSL2, ext4) |
-| --- | --- | --- |
-| first save (every file new) | 519.9 s | 21.4 s |
-| save, first 10% median / p95 | 3,621 ms / 7,081 ms | 2,971 ms / 4,493 ms |
-| save, last 10% median / p95 | 14,470 ms / 16,551 ms | 20,187 ms / 21,821 ms |
-| save growth, last / first median | 4.00x | 6.80x |
-| `status` (clean) | 2,406 ms | 720 ms |
-| `history` (all 200) | 28 ms | 7 ms |
-| `history --file` | 44 ms | 13 ms |
-| `restore` to snapshot 100 / back to tip | 2,720 ms / 2,751 ms | 1,280 ms / 1,298 ms |
-| `gc` | 392.3 s | 8.2 s |
-| `fsck` | 127.5 s | 37.6 s |
-| open (`velo branches`) | 96 ms | 3 ms |
-| `velo.db` | 5,329.2 MiB | 5,350.9 MiB |
-| `file_map` rows | 20,000,200 | 20,000,200 |
+| Metric | Win 5.2.0 | Win 5.3.0 | Linux 5.2.0 | Linux 5.3.0 |
+| --- | --- | --- | --- | --- |
+| first save (every file new) | 519.9 s | 319.4 s | 21.4 s | 7.5 s |
+| save, first 10% median / p95 | 3,621 / 7,081 ms | 2,818 / 4,260 ms | 2,971 / 4,493 ms | 2,941 / 4,983 ms |
+| save, last 10% median / p95 | 14,470 / 16,551 ms | 16,324 / 19,195 ms | 20,187 / 21,821 ms | 12,562 / 15,688 ms |
+| **save growth, last / first median** | 4.00x | **5.79x** | 6.80x | **4.27x** |
+| `status` (clean) | 2,406 ms | 880 ms | 720 ms | 341 ms |
+| `history` (all 200) | 28 ms | 24 ms | 7 ms | 6 ms |
+| `history --file` | 44 ms | 40 ms | 13 ms | 9 ms |
+| `restore` to snapshot 100 / back to tip | 2,720 / 2,751 ms | 1,213 / 1,246 ms | 1,280 / 1,298 ms | 776 / 754 ms |
+| `gc` | 392.3 s | 149.8 s | 8.2 s | 4.8 s |
+| `fsck` | 127.5 s | 36.7 s | 37.6 s | 25.2 s |
+| open (`velo branches`) | 96 ms | 30 ms | 3 ms | 3 ms |
+| `velo.db` | 5,329.2 MiB | 5,344.3 MiB | 5,350.9 MiB | 5,350.6 MiB |
+| `file_map` rows | 20,000,200 | 20,000,200 | 20,000,200 | 20,000,200 |
+
+**Save growth is not fixed.** One changed file at 100,000 files still costs 2.8 s
+(Windows) and 2.9 s (Linux) over the first 20 saves and 16.3 s and 12.6 s over the
+last 20: 5.79x and 4.27x. That is lower than 5.2.0 on Linux (6.80x) and higher on
+Windows (4.00x), but the movement is in the first-10% baseline as much as in the
+last-10% time, and one run per cell cannot tell it from day-to-day variation.
+Phase 19 changed what a step costs the caller (`save_changes`, `materialize`,
+retention, vacuum) but not how a save writes its rows, so a save still writes
+one `file_map` row per file and still grows with the table. At 10,000 files the
+growth is 1.60x (Windows) and 1.93x (Linux) and the save settles near 2.2 s and
+1.5 s. The targets this feeds are in [`PERF.md`](PERF.md) section 6.
 
 Reading them:
 
 - **Reading history is cheap everywhere.** `history`, `history --file` and open
-  stay under 120 ms at 20 million rows. `restore` is a second or three, in
+  stay under 120 ms at 20 million rows in both runs. `restore` is a second or three, in
   proportion to the files it rewrites.
 - **Save is the cost, and it grows with the history.** At 10,000 files a save
-  settles at about 1.9 s after the first few hundred snapshots and stays flat
-  to 2,000. At 100,000 files it keeps climbing, from 3-4 s to 14-20 s over 200
+  settles at about 1.5-2.2 s after the first few hundred snapshots and stays flat
+  to 2,000. At 100,000 files it keeps climbing, from 3-4 s to 13-20 s over 200
   snapshots, and had not flattened when the run ended. Each save writes one
   row per file (100,000 rows for a one-file change) into a database that keeps
   getting larger. The runs measured that latency grows with the table; they did
   not isolate which part of SQLite's work (page cache, index maintenance, the
   WAL) is responsible.
 - **The first save of a large tree is a scan-and-hash of every file.** On
-  Windows it took 520 s for 100,000 files against 21 s on Linux, and the same
-  gap shows in `gc` (392 s against 8 s) and in clean `status`. That gap is
+  Windows it took 520 s (5.2.0) and 319 s (5.3.0) for 100,000 files against 21 s
+  and 7.5 s on Linux, and the same
+  gap shows in `gc` (392 s and 150 s against 8 s and 5 s) and in clean `status`. That gap is
   per-file open cost with Defender scanning on, not the database. See the
   caveats.
-- **`fsck` and `gc` read every row.** At 20 million rows `fsck` is 26-38 s on
-  Linux and 31-127 s on Windows. Treat it as a maintenance command, not a
+- **`fsck` and `gc` read every row.** At 20 million rows `fsck` is 18-38 s on
+  Linux and 29-127 s on Windows. Treat it as a maintenance command, not a
   prompt.
 
 ## Where it degrades, and why
@@ -94,8 +114,8 @@ lookup either reads or writes in proportion to that:
 
 | What grows | Where it showed | Consequence |
 | --- | --- | --- |
-| rows written per save = files in the tree | `save` at 100,000 files: 3.6 s rising to 14-20 s | at 100,000 files a save takes 14-20 s once the history is 200 snapshots long |
-| total rows = files x snapshots | `fsck` 26-127 s, `gc` 5-392 s, `velo.db` 5.3 GiB | maintenance commands take minutes at 20 million rows |
+| rows written per save = files in the tree | `save` at 100,000 files: 2.8-3.6 s rising to 13-20 s | at 100,000 files a save takes 13-20 s once the history is 200 snapshots long |
+| total rows = files x snapshots | `fsck` 18-127 s, `gc` 3-392 s, `velo.db` 5.3 GiB | maintenance commands take minutes at 20 million rows |
 | per-file open cost | Windows first save, `gc`, `status` at 100,000 files | Defender scanning (see caveats); not a velo limit |
 
 What stays fast: `history`, `history --file`, open, and `restore` of a tree
@@ -212,7 +232,9 @@ python bench/scale/scale.py --preset envelope-b --out b.json   # 100,000 x 200
 ```
 
 Both take hours. On the laptop above, `envelope-a` took about 1 hour 10 minutes
-and `envelope-b` about 2 hours 15 minutes on Windows. The `bench` workflow
+and `envelope-b` about 2 hours 15 minutes on Windows in the 5.2.0 run; the 5.3.0
+run took about 1 hour 10 minutes and about 1 hour 15 minutes on Windows, and
+about 50 minutes and 35 minutes on Linux. The `bench` workflow
 (`.github/workflows/bench.yml`, manual dispatch) runs the same presets on a
 GitHub-hosted Linux runner. Retention:
 
@@ -224,9 +246,8 @@ The retention test builds 2,000 snapshots of a 10,000-file tree: about 1 hour
 30 minutes on Windows, and it needs about 8 GiB of temporary disk.
 
 Results are committed as `bench/results/<date>-<platform>-<preset>.json`:
-`2026-10-15-windows-envelope-a.json`, `2026-10-15-windows-envelope-b.json`,
-`2026-10-15-linux-envelope-a.json` and `2026-10-15-linux-envelope-b.json`, with
-the retention output as `<date>-<platform>-retention-scale.txt`.
+`2026-10-15-*-envelope-{a,b}.json` (5.2.0) and `2026-10-17-*-envelope-{a,b}.json`
+(5.3.0, for Windows and Linux), with the retention output as `<date>-<platform>-retention-scale.txt`.
 
 ## Caveats
 
