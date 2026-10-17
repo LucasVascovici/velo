@@ -178,7 +178,9 @@ A tree is the complete set of files in a snapshot — not a delta. Each entry is
 
 Storage is deduplicated at the object level: unchanged files across snapshots
 reference the same object. Trees themselves are stored row-per-entry in
-`file_map`, not as a separate hashed tree object. A snapshot has exactly one
+`file_map`, not as a separate hashed tree object. From v4 a tree may instead be
+stored as a delta against its parent's tree (§11.5); what a tree *is* is
+unchanged. A snapshot has exactly one
 `file_map` row per path; `velo fsck --repair` removes exact duplicate rows (a data
 repair, not a format change).
 
@@ -336,7 +338,7 @@ tie-break on a stable secondary key (`rowid`) when timestamps collide.
 | **v1** | **No version marker.** Migrations sniff `pragma_table_info(...)` and add missing columns. There is no way to detect a repository written by a *newer* implementation. |
 | **v2** | `PRAGMA user_version` holds the repository format version, stamped when the database is created. |
 | **v3** | Same marker, stamped `3`. Adds the `.velo/chunks/` directory and the additive `settings` and `objects` tables (§7.2); a v3 repository may keep its objects in files or in the database. |
-| **v4** | *Planned, 6.0, not implemented.* Adds a delta table and a keyframe marker for snapshot storage (§11.5); existing `file_map` rows become keyframes; `user_version = 4` makes older builds refuse the repository. |
+| **v4** | *Planned, 6.0, not implemented.* Adds the `delta_base` and `file_delta` tables for snapshot storage (§11.5); a snapshot with no `delta_base` row is a keyframe, so existing `file_map` rows stay valid; `user_version = 4` makes older builds refuse the repository. |
 
 The v1 `ALTER TABLE` sniffing migrations are gone. They existed only to bring a v1
 repository forward, and v2 refuses to open one, so keeping them would have meant
@@ -384,11 +386,14 @@ Present in v1 and v2 (v2 additions marked):
 | `objects` | **v3, additive** — `hash`(PK), `data` BLOB: one Zstd frame of the full object content (§2.5). Empty unless `settings.objects` is `database` |
 | `compactions` | **v3, additive** — `old_hash`(PK) → `new_hash`, `compacted_at_ms`: one row per snapshot id that compaction removed or re-minted (§11.3); **local only**, never collected by `gc`, not in bundles |
 | `signatures` | **v3, additive** — `(snapshot_hash, public_key)`(PK), `algorithm`, `signature`: Ed25519 signatures over snapshot ids, hex (§11.1). Outside identity; a missing table means no signatures. `fsck` verifies every row |
+| `delta_base` | **v4** — `snapshot_hash`(PK) → `base_hash`: one row per snapshot stored as a delta against its first parent; no row means keyframe (§11.5). *Planned, not implemented* |
+| `file_delta` | **v4** — `(snapshot_hash, path)`(PK, `WITHOUT ROWID`), `hash`, `mode`: the changes a delta applies to its base's tree; `hash = ''` removes the path (§11.5). *Planned, not implemented* |
 
 Indexes are performance-only and may be rebuilt: `idx_filemap_snap`,
 `idx_filemap_path`, `idx_snap_branch`, `idx_trash_branch`, `idx_stash_name`,
 `idx_renames_to`, `idx_meta_lookup` (`snapshot_meta (namespace, key, value)`,
-for metadata queries).
+for metadata queries), and from v4 `idx_delta_base_base` (`delta_base
+(base_hash)`) and `idx_file_delta_path` (`file_delta (path)`).
 
 **Reserved branch names.** `_stash` is internal. `remotes/<remote>/<branch>` is
 remote-tracking. `_deleted_<name>` is a soft-deleted branch. Consumers must not
@@ -1046,7 +1051,7 @@ bundle convergence of §9 and leave a second identity recipe to carry forever,
 to save the 80 to 110 ms above.
 
 **Migration (v3 to v4).** The existing `file_map` rows are keyframes. The
-migration adds a delta table and a keyframe marker and rewrites nothing, so it
+migration adds the two tables below and rewrites nothing, so it
 is O(1) in repository size. It still bumps `user_version` to 4, which is what
 makes older builds refuse the repository (`SchemaTooNew`) instead of reading a
 delta snapshot as an empty tree. That refusal is the whole reason this is a
@@ -1068,7 +1073,81 @@ whose parent was removed is re-minted with the same tree and a new parent, and
 `PARENT` and tags follow). A re-mint keeps the tree, so under A the removed
 snapshot's delta is folded into the first surviving child, or that child
 becomes a keyframe when the fold would cost more than a keyframe write.
-Retention follows the same rule. After a fold no chain may exceed K deltas.
+Retention follows the same rule. After a fold no chain may exceed K-1 deltas (rule 7).
+
+**Storage schema (v4) — normative.** Two tables and two indexes, created by
+the migration:
+
+```sql
+-- One row per snapshot stored as a delta. A stored snapshot with no row here is a keyframe.
+CREATE TABLE IF NOT EXISTS delta_base (
+    snapshot_hash TEXT PRIMARY KEY,
+    base_hash     TEXT NOT NULL
+);
+-- What a delta snapshot changes in its base's tree. hash = '' removes the path.
+CREATE TABLE IF NOT EXISTS file_delta (
+    snapshot_hash TEXT NOT NULL,
+    path          TEXT NOT NULL,
+    hash          TEXT NOT NULL,
+    mode          INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (snapshot_hash, path)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS idx_delta_base_base ON delta_base (base_hash);
+CREATE INDEX IF NOT EXISTS idx_file_delta_path ON file_delta (path);
+```
+
+**Why the marker is the absence of a `delta_base` row, not a column on
+`snapshots`.** Tree rows are keyed by snapshot hash whether the snapshot row
+sits in `snapshots`, in `trash`, or in both (the fetch case of 17.1). A marker
+keyed the same way travels with the rows: `undo`, `redo` and import never copy
+a column, so they cannot lose or invent a marker. "No row means keyframe" is
+what every v3 snapshot already is, so the migration writes nothing, and any
+writer that still writes full `file_map` rows produces a valid keyframe.
+
+**Rules — normative.** A *stored tree* is one whose hash is in `snapshots` or
+`trash`.
+
+1. **Exclusivity.** Every stored tree is exactly one of these. A **keyframe**:
+   no `delta_base` row, a full tree in `file_map` (one row per path), no
+   `file_delta` rows. A **delta**: one `delta_base` row, zero `file_map` rows,
+   zero or more `file_delta` rows.
+2. **Base.** `base_hash` must equal the snapshot's first parent
+   (`parent_hash`), merges included; the chain is the first-parent chain. A
+   root (`parent_hash = ''`) is always a keyframe. The base must itself be a
+   stored tree.
+3. **Reconstruction.** Tree(delta) is Tree(base) with each `file_delta` row
+   applied: `hash = ''` removes `path`; anything else sets `(hash, mode)`.
+   Writers emit only rows that change the base tree. An empty delta (the same
+   tree as the base, a different message) is legal.
+4. **Chain length and K.** The *chain length* of a snapshot is the number of
+   delta links to its keyframe; a keyframe's is 0. A writer stores a snapshot
+   as a keyframe when its parent's chain length + 1 would reach K, so chains
+   are at most K-1 links. K = 128. The optional `settings` row
+   `keyframe_interval` (decimal, at least 1) overrides K **for writers only**.
+   It is a tuning and test knob, not format; readers ignore it. K = 1 means
+   every snapshot is a keyframe, the v3 storage shape.
+5. **Reader bound.** Readers accept any chain length up to a hard walk bound
+   of 4,096 links. A longer chain, a cycle, or a base that is not stored is
+   corruption (`Corrupt`), never a loop, a panic or an empty tree.
+6. **Identity** is unchanged (§4.2): the id hashes the reconstructed full
+   sorted tree.
+7. **Removal.** A stored tree that is the base of another stored delta may be
+   removed only in the same transaction that first either (a) **folds** it,
+   rewriting the dependent's delta against the removed tree's base, which is
+   allowed only when the dependent's first parent becomes that base
+   (compaction, retention, squash), or (b) **promotes** the dependent to a
+   keyframe. If the dependent's new first parent is not the removed tree's
+   base, only promotion is allowed. After a fold, no chain exceeds K-1.
+8. **Import.** The wire is unchanged: bundles and packs carry full trees. The
+   receiver stores a snapshot as a delta only if its first parent is stored
+   there (or earlier in the same import) and the chain stays within K-1;
+   otherwise as a keyframe. If the hash already has stored rows (a trashed
+   snapshot), they are **adopted** when they reconstruct exactly the received
+   tree, and otherwise **replaced** by a keyframe. They are never duplicated.
+9. **Unchanged tables.** `renames`, `snapshot_meta`, `signatures` and
+   `compactions` are unchanged and stay keyed by snapshot hash.
+10. **Migration v3 to v4.** Create the two tables and their indexes, then
+    stamp `user_version = 4`. No row is rewritten.
 
 **auto_vacuum.** New repositories are already `auto_vacuum=INCREMENTAL` (§7.4),
 so the migration needs no `VACUUM`; a repository created earlier stays as it is
