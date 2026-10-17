@@ -60,8 +60,20 @@ export declare class Repo {
   static open(path: string): Promise<Repo>
   /** Save a whole tree as a snapshot and resolve to its id. */
   saveTree(input: SaveTreeInput): Promise<string>
+  /**
+   * Save a parent plus changes as a snapshot and resolve to its id and the
+   * object of each file the changes put.
+   */
+  saveChanges(input: SaveChangesInput): Promise<SavedInfo>
   treeAt(id: string): Promise<Array<TreeFile>>
   readFileAt(id: string, path: string): Promise<Buffer>
+  /** Read several files of one snapshot in a single call, in the order asked. */
+  readFilesAt(id: string, paths: Array<string>): Promise<Array<{ path: string, data: Buffer }>>
+  /**
+   * Write a snapshot's tree into `dest`, optionally narrowed by gitignore
+   * patterns, and resolve to the number of files written.
+   */
+  materialize(id: string, dest: string, options?: MaterializeInput | undefined | null): Promise<number>
   readObject(object: string): Promise<Buffer>
   snapshot(id: string): Promise<SnapshotInfo>
   snapshotMeta(id: string): Promise<Record<string, Record<string, string>>>
@@ -100,6 +112,12 @@ export declare class Repo {
    */
   createTag(name: string, at?: string | undefined | null, force?: boolean | undefined | null): Promise<string>
   deleteTag(name: string): Promise<void>
+  /**
+   * Give freed pages back to the filesystem. With `full`, a repository
+   * created before 5.3.0 is converted and rewritten, which needs free disk
+   * about the size of `velo.db` and holds the write lock meanwhile.
+   */
+  vacuum(full?: boolean | undefined | null): Promise<VacuumInfo>
   /**
    * Verify the repository. With `repair`, cruft is cleaned up; damage is
    * only ever reported.
@@ -170,6 +188,25 @@ export interface BranchInfo {
   tip: string | null
 }
 
+/**
+ * One change for `saveChanges`. `op` selects which other fields apply:
+ * `'put'` takes `path` and exactly one of `data` and `object` (plus `kind`),
+ * `'delete'` takes `path`, `'rename'` takes `from` and `to`.
+ */
+export interface ChangeInput {
+  /** `'put'`, `'delete'` or `'rename'`. */
+  op: string
+  path?: string
+  /** Bytes to store, for `'put'`. */
+  data?: Buffer | string
+  /** An object already in the store, for `'put'`. */
+  object?: string
+  /** `'regular'` (default), `'executable'` or `'symlink'`, for `'put'`. */
+  kind?: string
+  from?: string
+  to?: string
+}
+
 export interface CompactionInfo {
   branch: string
   dryRun: boolean
@@ -186,6 +223,12 @@ export interface EntryInput {
   object?: string
   /** `'regular'` (default), `'executable'` or `'symlink'`. */
   kind?: string
+}
+
+/** One file read by `readFilesAt`. */
+export interface FileData {
+  path: string
+  data: Buffer
 }
 
 /** One fsck finding: a variant name and a sentence. */
@@ -233,6 +276,12 @@ export interface LineOriginInfo {
   branch: string
   /** The file's path at that snapshot, which differs after a rename. */
   path: string
+}
+
+/** Options of `materialize`: gitignore patterns that narrow the tree. */
+export interface MaterializeInput {
+  only?: Array<string>
+  ignore?: Array<string>
 }
 
 /** A merge to record. */
@@ -330,6 +379,23 @@ export interface RetentionReport {
 export interface RewrittenInfo {
   old: string
   new: string
+}
+
+export interface SaveChangesInput {
+  branch: string
+  message: string
+  changes: Array<ChangeInput>
+  parent?: string
+  mergeParent?: string
+  meta?: Record<string, Record<string, string>>
+  author?: AuthorInput
+  timestampMs?: number
+}
+
+/** The result of `saveChanges`. */
+export interface SavedInfo {
+  snapshot: string
+  written: Array<WrittenFile>
 }
 
 export interface SaveTreeInput {
@@ -436,6 +502,14 @@ export interface TreeFile {
   kind: string
 }
 
+/** What `vacuum` did. */
+export interface VacuumInfo {
+  bytesBefore: number
+  bytesAfter: number
+  /** `"none"`, `"full"` or `"incremental"`. */
+  autoVacuum: string
+}
+
 /**
  * Every signature on a snapshot, sorted by outcome. Each list holds public
  * keys as hex.
@@ -448,4 +522,10 @@ export interface VerificationInfo {
   unverifiable: Array<string>
   /** True when at least one valid signature is by a trusted key and none is invalid. */
   isTrusted: boolean
+}
+
+/** A file a `saveChanges` call wrote, with its object. */
+export interface WrittenFile {
+  path: string
+  object: string
 }

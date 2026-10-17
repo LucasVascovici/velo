@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
+<title>velo report</title>
+<style>
+body { font: 14px/1.45 system-ui, sans-serif; margin: 2rem auto; max-width: 70rem; padding: 0 1rem; color: #1b1f24; }
+code, pre, .code { font-family: ui-monospace, Consolas, monospace; }
+pre { margin: 0.3rem 0; white-space: pre-wrap; overflow-wrap: anywhere; }
+h1 { margin-bottom: 0.2rem; }
+.muted { color: #6a737d; }
+.verdict { padding: 0.5rem 0.8rem; border-radius: 4px; font-weight: 600; }
+.verdict.ok { background: #dafbe1; color: #116329; }
+.verdict.bad { background: #ffebe9; color: #a40e26; }
+.verdict.unchecked { background: #eaeef2; color: #424a53; }
+details { border: 1px solid #d0d7de; border-radius: 4px; margin: 0.4rem 0; padding: 0.3rem 0.6rem; }
+summary { cursor: pointer; }
+table { border-collapse: collapse; margin: 0.4rem 0; }
+th, td { border: 1px solid #d0d7de; padding: 0.15rem 0.5rem; text-align: left; vertical-align: top; }
+td.code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.badge { border-radius: 3px; padding: 0 0.4rem; font-size: 12px; font-weight: 600; }
+.badge.trusted { background: #dafbe1; color: #116329; }
+.badge.untrusted { background: #fff8c5; color: #7d4e00; }
+.badge.invalid { background: #ffebe9; color: #a40e26; }
+.badge.unverifiable { background: #ffebe9; color: #a40e26; }
+.badge.unsigned { background: #eaeef2; color: #424a53; }
+.chg { font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+<h1>Velo audit report</h1>
+<p>Repository <code>agent-checkpointing-run</code></p>
+<p class="muted">Generated 2025-01-06 09:10 UTC (fixed for the sample)</p>
+</header>
+<p class="verdict ok">fsck recomputed 5 of 5 snapshot ids: OK</p>
+<h2>Timeline</h2>
+<section class="branch" id="branch-0">
+<h3>Branch <code>attempt-1</code> <span class="muted">tip <code>fa37ab1629b2f685</code></span></h3>
+<details class="snap" id="b0-s0"><summary><code>395551d615313b6d</code> <time>2025-01-06 09:02:00 UTC</time> <span class="author">agent-run-1</span> <span class="msg">add an empty-list check</span> <span class="badge unsigned">unsigned</span></summary>
+<p>Snapshot <code>395551d615313b6dd3019b80a3ed43bd7d48f1058627799b28ab768d9e9571e8</code></p>
+<p>Parent <code>fa37ab1629b2f685a980c4235500c7bf05cc123273202dfaffdfbeed55c3e88c</code></p>
+<pre class="message">add an empty-list check</pre>
+<table class="meta"><tr><th>namespace</th><th>key</th><th>value</th></tr>
+<tr><td>agent</td><td>model</td><td class="code">model-a</td></tr>
+<tr><td>agent</td><td>run</td><td class="code">run-1</td></tr>
+<tr><td>agent</td><td>tests</td><td class="code">pass</td></tr>
+<tr><td>agent</td><td>tool_call_id</td><td class="code">call-2</td></tr>
+<tr><td>velo</td><td>author.name</td><td class="code">agent-run-1</td></tr>
+</table>
+<p>Signatures: <span class="badge unsigned">unsigned</span></p>
+<ul class="changes">
+<li><span class="chg modified">modified</span> <code>app.py</code></li>
+</ul>
+</details>
+<details class="snap" id="b0-s1"><summary><code>fa37ab1629b2f685</code> <time>2025-01-06 09:01:00 UTC</time> <span class="author">agent-run-1</span> <span class="msg">rewrite total as a generator</span> <span class="badge unsigned">unsigned</span></summary>
+<p>Snapshot <code>fa37ab1629b2f685a980c4235500c7bf05cc123273202dfaffdfbeed55c3e88c</code></p>
+<p>Parent <code>f49429f09a578d19a1771af31d2c411a16aec855ab3643b2522674cec942d48b</code></p>
+<pre class="message">rewrite total as a generator</pre>
+<table class="meta"><tr><th>namespace</th><th>key</th><th>value</th></tr>
+<tr><td>agent</td><td>model</td><td class="code">model-a</td></tr>
+<tr><td>agent</td><td>run</td><td class="code">run-1</td></tr>
+<tr><td>agent</td><td>tool_call_id</td><td class="code">call-1</td></tr>
+<tr><td>velo</td><td>author.name</td><td class="code">agent-run-1</td></tr>
+</table>
+<p>Signatures: <span class="badge unsigned">unsigned</span></p>
+<ul class="changes">
+<li><span class="chg modified">modified</span> <code>app.py</code></li>
+</ul>
+</details>
+</section>
+<section class="branch" id="branch-1">
+<h3>Branch <code>attempt-2</code> <span class="muted">tip <code>d93f46a5a462e7cb</code></span></h3>
+<details class="snap" id="b1-s0"><summary><code>d93f46a5a462e7cb</code> <time>2025-01-06 09:03:00 UTC</time> <span class="author">agent-run-2</span> <span class="msg">stub total</span> <span class="badge unsigned">unsigned</span></summary>
+<p>Snapshot <code>d93f46a5a462e7cb9a54ce49c2d943ac3694eb0afa457d378ef959f66edf5294</code></p>
+<p>Parent <code>f49429f09a578d19a1771af31d2c411a16aec855ab3643b2522674cec942d48b</code></p>
+<pre class="message">stub total</pre>
+<table class="meta"><tr><th>namespace</th><th>key</th><th>value</th></tr>
+<tr><td>agent</td><td>model</td><td class="code">model-b</td></tr>
+<tr><td>agent</td><td>run</td><td class="code">run-2</td></tr>
+<tr><td>agent</td><td>tests</td><td class="code">fail</td></tr>
+<tr><td>agent</td><td>tool_call_id</td><td class="code">call-1</td></tr>
+<tr><td>velo</td><td>author.name</td><td class="code">agent-run-2</td></tr>
+</table>
+<p>Signatures: <span class="badge unsigned">unsigned</span></p>
+<ul class="changes">
+<li><span class="chg modified">modified</span> <code>app.py</code></li>
+</ul>
+</details>
+</section>
+<section class="branch" id="branch-2">
+<h3>Branch <code>main</code> <span class="muted">tip <code>2285254744dd02ef</code></span></h3>
+<details class="snap" id="b2-s0"><summary><code>2285254744dd02ef</code> <time>2025-01-06 09:04:00 UTC</time> <span class="author">human</span> <span class="msg">take attempt-1</span> <span class="badge unsigned">unsigned</span></summary>
+<p>Snapshot <code>2285254744dd02ef456c56c71bfd2b04ff9863a05a47cdad307914aa91015136</code></p>
+<p>Parent <code>f49429f09a578d19a1771af31d2c411a16aec855ab3643b2522674cec942d48b</code></p>
+<p>Merge parent <code>395551d615313b6dd3019b80a3ed43bd7d48f1058627799b28ab768d9e9571e8</code></p>
+<pre class="message">take attempt-1</pre>
+<table class="meta"><tr><th>namespace</th><th>key</th><th>value</th></tr>
+<tr><td>agent</td><td>picked</td><td class="code">run-1</td></tr>
+<tr><td>velo</td><td>author.name</td><td class="code">human</td></tr>
+</table>
+<p>Signatures: <span class="badge unsigned">unsigned</span></p>
+<ul class="changes">
+<li><span class="chg modified">modified</span> <code>app.py</code></li>
+</ul>
+</details>
+<details class="snap" id="b2-s1"><summary><code>f49429f09a578d19</code> <time>2025-01-06 09:00:00 UTC</time> <span class="author">human</span> <span class="msg">base</span> <span class="badge unsigned">unsigned</span></summary>
+<p>Snapshot <code>f49429f09a578d19a1771af31d2c411a16aec855ab3643b2522674cec942d48b</code></p>
+<pre class="message">base</pre>
+<table class="meta"><tr><th>namespace</th><th>key</th><th>value</th></tr>
+<tr><td>velo</td><td>author.name</td><td class="code">human</td></tr>
+</table>
+<p>Signatures: <span class="badge unsigned">unsigned</span></p>
+<ul class="changes">
+<li><span class="chg added">added</span> <code>app.py</code></li>
+</ul>
+</details>
+</section>
+<h2>Line provenance</h2>
+<details class="file" id="file-0"><summary><code>app.py</code> at <code>fa37ab1629b2f685</code> (4 lines)</summary>
+<table><tr><th>line</th><th>snapshot</th><th>author</th><th>text</th></tr>
+<tr><td>1</td><td><code>f49429f09a578d19</code></td><td>human</td><td class="code">def total(xs):</td></tr>
+<tr><td>2</td><td><code>fa37ab1629b2f685</code></td><td>agent-run-1</td><td class="code">    return sum(x for x in xs)</td></tr>
+<tr><td>3</td><td><code>f49429f09a578d19</code></td><td>human</td><td class="code"></td></tr>
+<tr><td>4</td><td><code>f49429f09a578d19</code></td><td>human</td><td class="code">print(total([1, 2]))</td></tr>
+</table>
+</details>
+<details class="file" id="file-1"><summary><code>app.py</code> at <code>d93f46a5a462e7cb</code> (2 lines)</summary>
+<table><tr><th>line</th><th>snapshot</th><th>author</th><th>text</th></tr>
+<tr><td>1</td><td><code>f49429f09a578d19</code></td><td>human</td><td class="code">def total(xs):</td></tr>
+<tr><td>2</td><td><code>d93f46a5a462e7cb</code></td><td>agent-run-2</td><td class="code">    return 0</td></tr>
+</table>
+</details>
+<details class="file" id="file-2"><summary><code>app.py</code> at <code>2285254744dd02ef</code> (5 lines)</summary>
+<table><tr><th>line</th><th>snapshot</th><th>author</th><th>text</th></tr>
+<tr><td>1</td><td><code>f49429f09a578d19</code></td><td>human</td><td class="code">def total(xs):</td></tr>
+<tr><td>2</td><td><code>fa37ab1629b2f685</code></td><td>agent-run-1</td><td class="code">    return sum(x for x in xs)</td></tr>
+<tr><td>3</td><td><code>f49429f09a578d19</code></td><td>human</td><td class="code"></td></tr>
+<tr><td>4</td><td><code>f49429f09a578d19</code></td><td>human</td><td class="code">print(total([1, 2]))</td></tr>
+<tr><td>5</td><td><code>395551d615313b6d</code></td><td>agent-run-1</td><td class="code">print(total([]))</td></tr>
+</table>
+</details>
+</body>
+</html>

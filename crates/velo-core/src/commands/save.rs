@@ -96,6 +96,7 @@ pub struct Options<'a> {
 /// snapshot keeps its existing message — so fixing a forgotten file doesn't
 /// force you to retype it.
 pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> Result<Outcome> {
+    crate::timing::begin();
     require_working_tree(guard.repo(), "save")?;
     let Options {
         amend,
@@ -139,8 +140,10 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     }
 
     let scan = crate::commands::dirty_scan(guard.repo());
+    crate::timing::lap("save.scan");
     let full_dirty = scan.status;
     let known_hashes = scan.hashes;
+    let unhashed = scan.unhashed;
     // Apply pathspec filter: if paths given, only snapshot matching files
     let dirty: std::collections::HashMap<String, FileStatus> = if paths.is_empty() {
         full_dirty
@@ -281,6 +284,8 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         .filter(|s| **s == FileStatus::Deleted)
         .count();
 
+    crate::timing::lap("save.prepare");
+
     // ── Parallel hash + compress ───────────────────────────────────────────────
     let objects = guard.repo().objects();
     // The dirty scan already hashed each changed file; passing its hash lets the
@@ -313,6 +318,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     // Belt and braces: an empty dirty set means the loop above never ran, so a
     // cancellation set before the save started would otherwise slip through.
     crate::progress::Cancel::check(cancel)?;
+    crate::timing::lap("save.hash_store");
 
     // ── Assemble the complete tree for this snapshot ──────────────────────────
     // Carry forward every unchanged file from the *dirty base* (the snapshot the
@@ -359,6 +365,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     }
 
     tree.extend(hashed_files.iter().cloned());
+    crate::timing::lap("save.parent_tree");
 
     // ── Content-addressed snapshot id ─────────────────────────────────────────
     // Caller metadata first, then authorship on top so the author always wins
@@ -378,6 +385,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         meta: &snapshot_meta,
     });
     let snapshot_hash = snapshot_hash.as_str();
+    crate::timing::lap("save.snapshot_id");
 
     crate::failpoint::hit("save.objects_stored");
 
@@ -404,6 +412,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
             timestamp_ms
         ],
     )?;
+    crate::timing::lap("save.begin_tx");
 
     {
         let mut ins = tx.prepare(
@@ -413,6 +422,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
             ins.execute(params![snapshot_hash, p, h, m])?;
         }
     }
+    crate::timing::lap("save.insert_file_map");
     {
         // The id above commits to this metadata, so it has to be stored in the
         // same transaction — an id committing to rows the repository does not
@@ -449,9 +459,23 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
                 UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> '')",
         [branch.trim()],
     )?;
+    crate::timing::lap("save.insert_rest");
     crate::failpoint::hit("save.before_commit");
     tx.commit()?;
+    crate::timing::lap("save.commit");
     crate::failpoint::hit("save.after_commit");
+    // The scan left new files unhashed so each is read once, here. Seed their
+    // cache rows from the stat the scan took *before* the read: a file edited
+    // since then has a different mtime and is simply re-hashed next time.
+    let seed: Vec<(String, i64, i64, String)> = hashed_files
+        .iter()
+        .filter_map(|(p, h, _)| {
+            unhashed
+                .get(p)
+                .map(|(mtime, size)| (p.clone(), *mtime, *size, h.clone()))
+        })
+        .collect();
+    crate::commands::seed_cache_entries(guard.repo(), &seed);
     guard.repo().emit_saved_raw(
         snapshot_hash,
         branch.trim(),
@@ -460,6 +484,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     );
 
     storage::write_atomic(&root.join(".velo/PARENT"), snapshot_hash.as_bytes())?;
+    crate::timing::lap("save.parent_file");
     crate::failpoint::hit("save.after_parent");
 
     // If a merge was in progress, this save finalises it — clear the merge state

@@ -7,6 +7,7 @@
 use napi_derive::napi;
 use velo_core::commands::compact::{self, Protected};
 use velo_core::commands::fsck::{self, Cruft};
+use velo_core::commands::gc::{self, AutoVacuum, Vacuum};
 use velo_core::commands::retention::{self, Policy, Tier};
 use velo_core::commands::tag;
 use velo_core::{SnapshotId, TagName};
@@ -94,6 +95,15 @@ pub struct TagInfo {
 pub struct Finding {
     pub kind: String,
     pub detail: String,
+}
+
+/// What `vacuum` did.
+#[napi(object)]
+pub struct VacuumInfo {
+    pub bytes_before: f64,
+    pub bytes_after: f64,
+    /// `"none"`, `"full"` or `"incremental"`.
+    pub auto_vacuum: String,
 }
 
 #[napi(object)]
@@ -308,6 +318,32 @@ impl Repo {
             let name: TagName = name.parse()?;
             let guard = repo.write()?;
             tag::delete(&guard, &name)
+        })
+    }
+
+    /// Give freed pages back to the filesystem. With `full`, a repository
+    /// created before 5.3.0 is converted and rewritten, which needs free disk
+    /// about the size of `velo.db` and holds the write lock meanwhile.
+    #[napi(ts_return_type = "Promise<VacuumInfo>")]
+    pub fn vacuum(&self, full: Option<bool>) -> napi::bindgen_prelude::AsyncTask<Job<VacuumInfo>> {
+        self.job(move |repo| {
+            let guard = repo.write()?;
+            let mode = if full.unwrap_or(false) {
+                Vacuum::Full
+            } else {
+                Vacuum::Incremental
+            };
+            let done = gc::vacuum(&guard, mode)?;
+            Ok(VacuumInfo {
+                bytes_before: done.bytes_before as f64,
+                bytes_after: done.bytes_after as f64,
+                auto_vacuum: match done.auto_vacuum {
+                    AutoVacuum::None => "none",
+                    AutoVacuum::Full => "full",
+                    _ => "incremental",
+                }
+                .to_string(),
+            })
         })
     }
 

@@ -5,6 +5,8 @@ from ._velo import (
     Blame,
     BlameLine,
     Branch,
+    Change,
+    Saved,
     Entry,
     LineOrigin,
     MergePlan,
@@ -55,7 +57,7 @@ from ._velo import (
 )
 
 __all__ = [
-    "Author", "Blame", "BlameLine", "Branch", "Entry", "LineOrigin",
+    "Author", "Blame", "BlameLine", "Branch", "Change", "Saved", "Entry", "LineOrigin",
     "MergePlan", "PlannedFile", "Repo", "Signature", "SigningKey", "SyncResult",
     "PushReport", "Verification", "Tag", "TreeEntry", "TreeFile", "VeloError",
     "NotARepo", "AlreadyInitialized", "NestedRepo", "SchemaTooNew",

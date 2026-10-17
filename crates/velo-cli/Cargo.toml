@@ -29,5 +29,6 @@ similar.workspace = true
 tiny_http.workspace = true
 
 [dev-dependencies]
+proptest.workspace = true
 tempfile.workspace = true
 velo-testkit.workspace = true

@@ -72,6 +72,18 @@ test('the default policy reports tagged snapshots as protected', async () => {
   );
 });
 
+test('vacuum returns freed pages after retention', async () => {
+  const repo = await fresh();
+  await spread(repo);
+  await repo.retention('main', { tiers: TIERS, nowMs: NOW });
+  const inc = await repo.vacuum();
+  assert.ok(inc.bytesAfter <= inc.bytesBefore);
+  assert.equal(inc.autoVacuum, 'incremental');
+  const full = await repo.vacuum(true);
+  assert.ok(full.bytesAfter <= full.bytesBefore);
+  assert.equal(full.autoVacuum, 'incremental');
+});
+
 test('compact squashes a range and re-mints its descendants', async () => {
   const repo = await fresh();
   const ids = await spread(repo, 6);

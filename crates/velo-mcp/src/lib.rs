@@ -308,6 +308,7 @@ mod tests {
                 "velo_save_tree",
                 "velo_tree_at",
                 "velo_read_file",
+                "velo_read_files",
                 "velo_undo",
                 "velo_redo",
                 "velo_tag",

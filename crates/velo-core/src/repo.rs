@@ -785,12 +785,36 @@ impl Repo {
     /// shows a modal will wedge every other process.
     pub fn write(&self) -> Result<WriteGuard<'_>> {
         let lock =
-            RepoLock::try_acquire_labelled_at(&self.lock_path(), self.lock_label.as_deref())?
-                .ok_or_else(|| self.locked_error())?;
+            match RepoLock::try_acquire_labelled_at(&self.lock_path(), self.lock_label.as_deref())?
+            {
+                Some(lock) => lock,
+                None => self.retry_unattributed_refusal()?,
+            };
         Ok(WriteGuard {
             _lock: lock,
             repo: self,
         })
+    }
+
+    /// A refusal with no holder record is usually a lock that was just released
+    /// but not yet free: a process forked by another thread keeps a copy of the
+    /// lock file's descriptor until it execs. Wait a few milliseconds for that
+    /// before reporting `Locked`. A refusal with a holder record is a real
+    /// holder and is reported at once.
+    fn retry_unattributed_refusal(&self) -> Result<RepoLock> {
+        #[cfg(not(target_family = "wasm"))]
+        for _ in 0..20 {
+            if RepoLock::holder_at(&self.lock_path()).is_some() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            if let Some(lock) =
+                RepoLock::try_acquire_labelled_at(&self.lock_path(), self.lock_label.as_deref())?
+            {
+                return Ok(lock);
+            }
+        }
+        Err(self.locked_error())
     }
 
     /// Like [`Repo::write`] but returns `Ok(None)` instead of erroring when the

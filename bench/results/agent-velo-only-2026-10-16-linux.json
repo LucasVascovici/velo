@@ -1,0 +1,32 @@
+{
+  "env": {
+    "date": "2026-10-16",
+    "platform": "Linux-5.15.153.1-microsoft-standard-WSL2-x86_64-with-glibc2.35",
+    "system": "Linux",
+    "machine": "x86_64",
+    "python": "3.10.12",
+    "git": "git version 2.34.1",
+    "sqlite": "3.37.2",
+    "velo_binding": "unversioned binding",
+    "repo_commit": "",
+    "workdir": "/tmp/velo-agent-bench-yhlr4xkc",
+    "steps": 500,
+    "files": 1000,
+    "restores": 100,
+    "seed": 1,
+    "quick": false
+  },
+  "results": [
+    {
+      "system": "velo",
+      "provenance": "ids recompute from content; author and metadata are hashed into each snapshot id; signatures can be attached",
+      "steps_s": 53.82974589500003,
+      "disk_after_steps": 152035539,
+      "restore_total_s": 18.51717804899971,
+      "restore_median_s": 0.18011564099998623,
+      "who_wrote_s": 0.4001315209999916,
+      "branches_s": 7.430208095000239,
+      "disk_final": 174124282
+    }
+  ]
+}

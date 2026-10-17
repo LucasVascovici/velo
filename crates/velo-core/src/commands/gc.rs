@@ -270,3 +270,102 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
 
     Ok(collected)
 }
+
+/// How [`vacuum`] returns freed pages to the operating system.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum Vacuum {
+    /// `PRAGMA incremental_vacuum`: cheap and transactional, but only on a
+    /// repository whose `auto_vacuum` is already `INCREMENTAL` (one created
+    /// from 5.3.0). On any other repository it is a no-op.
+    Incremental,
+    /// Set `auto_vacuum = INCREMENTAL` and run a full `VACUUM`. This converts a
+    /// repository created before 5.3.0. It needs free disk about the size of
+    /// `velo.db` and holds the write lock while it runs.
+    Full,
+}
+
+/// The `auto_vacuum` mode a repository's database is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum AutoVacuum {
+    /// Freed pages stay in the file (repositories created before 5.3.0).
+    None,
+    /// SQLite returns freed pages at every commit.
+    Full,
+    /// Freed pages are returned on request, by [`vacuum`].
+    Incremental,
+}
+
+impl AutoVacuum {
+    fn from_pragma(v: i64) -> Self {
+        match v {
+            1 => AutoVacuum::Full,
+            2 => AutoVacuum::Incremental,
+            _ => AutoVacuum::None,
+        }
+    }
+}
+
+/// What [`vacuum`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Vacuumed {
+    /// The mode that was requested.
+    pub mode: Vacuum,
+    /// Size of the database (`page_count * page_size`) before, after a WAL
+    /// checkpoint.
+    pub bytes_before: u64,
+    /// Size of the database after.
+    pub bytes_after: u64,
+    /// The repository's `auto_vacuum` mode once the call finished.
+    pub auto_vacuum: AutoVacuum,
+}
+
+fn db_bytes(conn: &rusqlite::Connection) -> Result<u64> {
+    conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+    let pages: i64 = conn.query_row("PRAGMA page_count", [], |r| r.get(0))?;
+    let size: i64 = conn.query_row("PRAGMA page_size", [], |r| r.get(0))?;
+    Ok(pages.max(0) as u64 * size.max(0) as u64)
+}
+
+fn auto_vacuum_mode(conn: &rusqlite::Connection) -> Result<AutoVacuum> {
+    let v: i64 = conn.query_row("PRAGMA auto_vacuum", [], |r| r.get(0))?;
+    Ok(AutoVacuum::from_pragma(v))
+}
+
+/// Return freed pages to the operating system.
+///
+/// Call it after [`run`] and after retention or compaction, which free pages
+/// but leave the file as large as it was. `Incremental` does nothing on a
+/// repository created before 5.3.0 (its `auto_vacuum` is off) and reports
+/// [`AutoVacuum::None`]; `Full` converts such a repository once.
+///
+/// `Full` rewrites the whole database: it needs free disk about the size of
+/// `velo.db` and holds the write lock for as long as it runs.
+pub fn vacuum(guard: &WriteGuard, mode: Vacuum) -> Result<Vacuumed> {
+    let conn = guard.conn();
+    let bytes_before = db_bytes(conn)?;
+    match mode {
+        Vacuum::Incremental => {
+            if auto_vacuum_mode(conn)? == AutoVacuum::Incremental {
+                // `incremental_vacuum` frees one page per row stepped, and
+                // `execute_batch` steps a statement once, which would return a
+                // single page. Drain every row.
+                let mut stmt = conn.prepare("PRAGMA incremental_vacuum")?;
+                let mut rows = stmt.query([])?;
+                while rows.next()?.is_some() {}
+            }
+        }
+        Vacuum::Full => {
+            conn.execute_batch("PRAGMA auto_vacuum = INCREMENTAL; VACUUM;")?;
+        }
+    }
+    let bytes_after = db_bytes(conn)?;
+    Ok(Vacuumed {
+        mode,
+        bytes_before,
+        bytes_after,
+        auto_vacuum: auto_vacuum_mode(conn)?,
+    })
+}

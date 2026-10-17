@@ -39,6 +39,8 @@ yaml = ["velo-merge/yaml"]
 toml = ["velo-merge/toml"]
 # Test-only crash points (`failpoint::set_handler`); compiled out when off.
 failpoints = []
+# Test-only stage timers (timing::drain_laps); compiled out when off.
+timing = []
 # Entry points for the cargo-fuzz targets in `fuzz/`; not a supported API.
 # `tempfile` is a dev-dependency, so the fuzz crate gets it through this feature.
 fuzzing = ["dep:tempfile"]

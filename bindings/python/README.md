@@ -15,6 +15,19 @@ import velo
 repo = velo.Repo.init("work")
 sid = repo.save_tree(branch="main", message="hi", entries={"a.txt": "hello"})
 repo.read_file_at(sid, "a.txt")
+# Several files of one snapshot in one call, in the order asked:
+repo.read_files_at(sid, ["a.txt"])      # [("a.txt", b"hello")]
+# Write a snapshot into any directory; only/ignore are gitignore patterns:
+repo.materialize(sid, "out", only=["src/**"], ignore=["*.log"])  # files written
+```
+
+Save only what changed, and get object ids back:
+
+```python
+saved = repo.save_changes(branch="main", message="edit", parent=sid,
+                          changes={"a.txt": "hi", "old.txt": None})
+saved.snapshot, saved.written   # id, {"a.txt": object id}
+# or a list: velo.Change.put / stored / delete / rename
 ```
 
 Notes:
@@ -45,6 +58,12 @@ repo.merge_commit(branch="main", ours=c, theirs=b, message="merge",
                   resolutions={"n.txt": b"two\nthree\n"})
 repo.create_branch("release", at=c)
 ```
+
+## API reference
+
+The generated API reference for the bindings is `api-python.zip` and
+`api-node.zip` on each release page, and the `api-python`/`api-node` artifacts
+of the apidocs workflow.
 
 ## Change events and merge drivers
 

@@ -17,6 +17,24 @@
 //! timestamp, metadata and rename edges, new parent, new id. Every id that
 //! stopped existing is recorded in `compactions`.
 //!
+//! # One transaction, re-minted in place
+//!
+//! The apply phase re-keys rows rather than copying them: the snapshot whose
+//! tree a new snapshot takes keeps its `snapshots`, `file_map`, `snapshot_meta`
+//! and (outside a squash) `renames` rows, and they are `UPDATE`d to the new id.
+//! The other members of a squash range are deleted in batches of at most 500
+//! ids per statement. Copying a tree needs fresh pages while the old rows are
+//! still live, which is why a retention pass used to grow the file, and it
+//! writes every row twice into two indexes.
+//!
+//! The whole call stays in **one** transaction, on purpose. A partly applied
+//! re-mint leaves children pointing at deleted parents, which breaks `fsck` and
+//! the crash-safety contract. Splitting the work into several `run` calls does
+//! not help either: each call re-mints the tail after its first range again, so
+//! the work multiplies, and the longest lock hold cannot fall below one re-mint
+//! of the tail after the oldest range. The hold is therefore shortened by making
+//! that re-mint cheap, and the CLI's lock wait covers a concurrent save.
+//!
 //! # Events
 //!
 //! After the commit, [`Event::RefMoved`] is emitted for the branch and for each
@@ -238,13 +256,19 @@ struct Minted {
     hash: String,
     parent: String,
     merge_parent: String,
-    message: String,
-    created_at_ms: i64,
-    /// Whose `file_map` and `snapshot_meta` rows it copies.
+    /// Whose snapshot row, `file_map` and `snapshot_meta` rows it takes over,
+    /// re-keyed in place.
     tree_from: String,
     /// Its rename edges.
     renames: Vec<(String, String)>,
+    /// True for a squash, whose `renames` were composed and replace the
+    /// source's; false when the source's own edges carry over unchanged.
+    composed: bool,
 }
+
+/// Most ids in one batched `DELETE ... IN (...)`, well under SQLite's limit on
+/// bound parameters.
+const DELETE_BATCH: usize = 500;
 
 fn tree_of(conn: &rusqlite::Connection, id: &str) -> Result<Vec<(String, String, i64)>> {
     let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
@@ -332,6 +356,7 @@ pub fn run(
     ranges: &[Range<'_>],
     options: Options<'_>,
 ) -> Result<Compaction> {
+    crate::timing::begin();
     let Options {
         dry_run,
         observer,
@@ -383,6 +408,7 @@ pub fn run(
         .enumerate()
         .map(|(i, m)| (m.hash.as_str(), i))
         .collect();
+    crate::timing::lap("compact.chain");
 
     // ── Validate the ranges ──────────────────────────────────────────────────
     let mut spans: Vec<(usize, usize)> = Vec::new();
@@ -467,6 +493,7 @@ pub fn run(
     if let Some((inside, _outside)) = outside_dependant(conn, &rewrite)? {
         return Err(refuse(&inside, Protected::ParentOfOutside));
     }
+    crate::timing::lap("compact.eligibility");
 
     // ── Plan: mint every new snapshot, oldest first ──────────────────────────
     let progress = PhaseGuard::new(
@@ -537,14 +564,14 @@ pub fn run(
             hash: new_id,
             parent,
             merge_parent,
-            message: source.message.clone(),
-            created_at_ms: source.created_at_ms,
             tree_from: source.hash.clone(),
             renames,
+            composed: span.is_some(),
         });
         i += members.len();
     }
     Cancel::check(cancel)?;
+    crate::timing::lap("compact.plan");
 
     if dry_run {
         return Ok(result);
@@ -557,37 +584,68 @@ pub fn run(
 
     let mut retargeted: Vec<(String, String, String)> = Vec::new(); // (tag, old, new)
     let tx = guard.transaction()?;
-    for m in &minted {
-        tx.execute(
-            "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
-             VALUES (?, ?, ?, ?, ?, ?)",
-            params![m.hash, m.message, branch, m.parent, m.merge_parent, m.created_at_ms],
-        )?;
-        tx.execute(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode)
-             SELECT ?, path, hash, mode FROM file_map WHERE snapshot_hash = ?",
-            params![m.hash, m.tree_from],
-        )?;
-        tx.execute(
-            "INSERT INTO snapshot_meta (snapshot_id, namespace, key, value)
-             SELECT ?, namespace, key, value FROM snapshot_meta WHERE snapshot_id = ?",
-            params![m.hash, m.tree_from],
-        )?;
-        for (from, to) in &m.renames {
+    // The other members of each squash range, in batches, before the re-key: the
+    // pages they free are reused by the index entries the updates write, which
+    // is what keeps the file from growing. A source row is never in this set.
+    let sources: HashSet<&str> = minted.iter().map(|m| m.tree_from.as_str()).collect();
+    let gone: Vec<&str> = mapping
+        .keys()
+        .map(String::as_str)
+        .filter(|id| !sources.contains(id))
+        .collect();
+    for batch in gone.chunks(DELETE_BATCH) {
+        let marks = vec!["?"; batch.len()].join(", ");
+        for (table, column) in [
+            ("snapshots", "hash"),
+            ("file_map", "snapshot_hash"),
+            ("snapshot_meta", "snapshot_id"),
+            ("renames", "snapshot_hash"),
+        ] {
             tx.execute(
-                "INSERT INTO renames (snapshot_hash, from_path, to_path) VALUES (?, ?, ?)",
-                params![m.hash, from, to],
+                &format!("DELETE FROM {table} WHERE {column} IN ({marks})"),
+                rusqlite::params_from_iter(batch.iter()),
             )?;
         }
     }
-    for old in mapping.keys() {
-        // Old rows go after the new ones are in, so a copy above never reads a
-        // tree that has already been deleted.
-        tx.execute("DELETE FROM snapshots WHERE hash = ?", [old])?;
-        tx.execute("DELETE FROM file_map WHERE snapshot_hash = ?", [old])?;
-        tx.execute("DELETE FROM snapshot_meta WHERE snapshot_id = ?", [old])?;
-        tx.execute("DELETE FROM renames WHERE snapshot_hash = ?", [old])?;
+    crate::timing::lap("compact.delete");
+    // The rows of the member each new snapshot takes its tree from are re-keyed
+    // where they are, not copied: nothing needs fresh pages while the old ones
+    // are still live, and no index entry is written for a row that did not move.
+    // A new id never equals a live id, so no update lands on rows another one
+    // still needs.
+    for m in &minted {
+        tx.execute(
+            "UPDATE snapshots SET hash = ?, parent_hash = ?, merge_parent = ? WHERE hash = ?",
+            params![m.hash, m.parent, m.merge_parent, m.tree_from],
+        )?;
+        tx.execute(
+            "UPDATE file_map SET snapshot_hash = ? WHERE snapshot_hash = ?",
+            params![m.hash, m.tree_from],
+        )?;
+        tx.execute(
+            "UPDATE snapshot_meta SET snapshot_id = ? WHERE snapshot_id = ?",
+            params![m.hash, m.tree_from],
+        )?;
+        if m.composed {
+            // A squash: the range's edges were composed in the plan phase.
+            tx.execute(
+                "DELETE FROM renames WHERE snapshot_hash = ?",
+                [&m.tree_from],
+            )?;
+            for (from, to) in &m.renames {
+                tx.execute(
+                    "INSERT INTO renames (snapshot_hash, from_path, to_path) VALUES (?, ?, ?)",
+                    params![m.hash, from, to],
+                )?;
+            }
+        } else {
+            tx.execute(
+                "UPDATE renames SET snapshot_hash = ? WHERE snapshot_hash = ?",
+                params![m.hash, m.tree_from],
+            )?;
+        }
     }
+    crate::timing::lap("compact.insert");
     for (old, new) in &mapping {
         {
             let mut stmt = tx.prepare("SELECT name FROM tags WHERE snapshot_hash = ?")?;
@@ -612,8 +670,10 @@ pub fn run(
             params![old, new, now],
         )?;
     }
+    crate::timing::lap("compact.refs");
     crate::failpoint::hit("compact.before_commit");
     tx.commit()?;
+    crate::timing::lap("compact.commit");
     crate::failpoint::hit("compact.after_commit");
 
     // The tree is identical, so pointing PARENT at the new id keeps the working

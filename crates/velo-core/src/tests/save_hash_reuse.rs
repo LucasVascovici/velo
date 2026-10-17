@@ -142,7 +142,7 @@ fn a_stale_cached_hash_is_stored_under_the_real_hash_database_backend() {
 }
 
 #[test]
-fn dirty_scan_returns_hashes_for_new_and_modified_only() {
+fn dirty_scan_hashes_modified_files_and_leaves_new_ones_to_save() {
     let (_t, root) = setup_files();
     fs::write(root.join("keep.txt"), "keep\n").unwrap();
     fs::write(root.join("gone.txt"), "gone\n").unwrap();
@@ -154,7 +154,9 @@ fn dirty_scan_returns_hashes_for_new_and_modified_only() {
     let repo = Repo::open_and_migrate(&root).unwrap();
     let scan = commands::dirty_scan(&repo);
     assert_eq!(scan.status.len(), 3);
-    assert_eq!(scan.hashes.len(), 2);
+    // A new file is New whatever its content, so the scan does not read it;
+    // save hashes it in the same read that stores it (19.6-a).
+    assert_eq!(scan.hashes.len(), 1);
+    assert!(scan.unhashed.contains_key("add.txt"));
     assert_eq!(scan.hashes["edit.txt"], blake("two\n"));
-    assert_eq!(scan.hashes["add.txt"], blake("added\n"));
 }

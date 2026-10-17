@@ -1,0 +1,108 @@
+name: API reference
+
+# Generated reference pages for the Python (pdoc) and Node (typedoc) bindings,
+# so every method has a page and not only a .pyi or .d.ts. The sites are
+# uploaded as artifacts and, on a version tag, attached to the release.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "bindings/**"
+      - ".github/workflows/apidocs.yml"
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "bindings/**"
+      - ".github/workflows/apidocs.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  python:
+    name: Python reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build the extension and generate the site
+        shell: bash
+        working-directory: bindings/python
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install maturin pdoc
+          .venv/bin/maturin develop --release
+          # pdoc reads the docstrings and the signatures in __init__.pyi.
+          .venv/bin/python -m pdoc velo -o ../../site/python
+          grep -q "save_tree" ../../site/python/velo.html
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-python
+          path: site/python
+
+  node:
+    name: Node reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install and build
+        working-directory: bindings/node
+        run: |
+          npm ci
+          npm run build
+
+      # typedoc.json sets treatWarningsAsErrors, so a missing export or entry
+      # point fails the job.
+      - name: Generate the site
+        working-directory: bindings/node
+        run: npx typedoc
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: api-node
+          path: site/node
+
+  release:
+    name: Attach to the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [python, node]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-python
+          path: site/python
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: api-node
+          path: site/node
+
+      - name: Zip the sites
+        run: |
+          (cd site/python && zip -qr ../../api-python.zip .)
+          (cd site/node && zip -qr ../../api-node.zip .)
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            api-python.zip
+            api-node.zip

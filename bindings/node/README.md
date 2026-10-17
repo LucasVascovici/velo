@@ -18,6 +18,25 @@ const id = await repo.saveTree({
   entries: [{ path: 'a.txt', data: 'hello' }],
 })
 await repo.readFileAt(id, 'a.txt') // <Buffer 68 65 6c 6c 6f>
+// Several files of one snapshot in one call, in the order asked:
+await repo.readFilesAt(id, ['a.txt']) // [{ path: 'a.txt', data: <Buffer ...> }]
+// Write a snapshot into any directory; only/ignore are gitignore patterns:
+await repo.materialize(id, 'out', { only: ['src/**'], ignore: ['*.log'] }) // files written
+```
+
+Save only what changed, and get object ids back:
+
+```js
+const { snapshot, written } = await repo.saveChanges({
+  branch: 'main',
+  message: 'edit',
+  parent: id,
+  changes: [
+    { op: 'put', path: 'a.txt', data: 'hi' },
+    { op: 'rename', from: 'old.txt', to: 'new.txt' },
+    { op: 'delete', path: 'gone.txt' },
+  ],
+}) // written: [{ path: 'a.txt', object: '...' }]
 ```
 
 Notes:
@@ -48,6 +67,12 @@ Notes:
 - `branches()`, `createBranch(name, at?)` and `setBranchTip(name, to)` manage
   refs. Timestamps come as `createdAtMs` plus a `createdAt` `Date`.
 - Working-tree commands are not yet exposed.
+
+## API reference
+
+The generated API reference for the bindings is `api-python.zip` and
+`api-node.zip` on each release page, and the `api-python`/`api-node` artifacts
+of the apidocs workflow.
 
 ## Change events and merge drivers
 

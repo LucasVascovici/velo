@@ -37,6 +37,8 @@ Anything that has to answer *"what did this look like at T, who changed it, why,
 and can I prove it?"* — while letting people or programs work on alternatives in
 parallel — is a candidate.
 
+To see who wrote each line of an agent run, open the [sample `velo report`](docs/report-sample.html): a static page that works offline.
+
 ---
 
 ## Where it fits
@@ -225,6 +227,9 @@ Worked walkthroughs live in [`docs/cookbook`](docs/cookbook):
 
 What is promised to adopters, and which CI job enforces each promise, is in
 [`docs/STABILITY.md`](docs/STABILITY.md).
+
+The Python and Node API reference is `api-python.zip` and `api-node.zip` on each
+release page, and the `api-python`/`api-node` artifacts of the apidocs workflow.
 
 ---
 
@@ -425,7 +430,7 @@ velo pull
 
 | Command | Description |
 | :--- | :--- |
-| `velo init` | Initialise a new repository in the current directory |
+| `velo init` | Initialise a new repository in the current directory (`velo init --objects database` keeps objects in `velo.db`, fixed for the repo) |
 | `velo save "<message>"` | Snapshot all tracked files with a description |
 | `velo mv <from> <to>` | Move a file **and record that it moved**, so `blame` and `history --file` follow it across |
 | `velo save "<message>" -- <path>` | Snapshot only the listed paths; other changes remain unsaved |
@@ -571,10 +576,13 @@ can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 | `velo gc` | Remove orphaned objects and stale undo/conflict state |
 | `velo gc --dry-run` | Report what `gc` would collect and remove nothing |
 | `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
+| `velo gc --vacuum` | Also run a full vacuum, converting a repository created before 5.3.0 to incremental `auto_vacuum` (needs free disk about the size of `velo.db`) |
+| `velo retention [--keep <age>=<every>] [--dry-run]` | Thin old snapshots by age (default: all for a day, hourly for a month, daily after), keeping signed, tagged and checked-out ones, then run `gc` and return the freed space |
 | `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
 | `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
 | `velo keygen --out <file>` | Write a new signing key (a secret) to `file` and print its public key |
 | `velo sign [snapshot] --key <file>` | Sign a snapshot (default: the current one) with a key file |
+| `velo report [--branch B] [--since T] [-o FILE] [--json] [--trust FILE] [--no-fsck]` | Write a self-contained HTML audit report that opens offline: an fsck verdict, a timeline per branch with signature badges, and line provenance. Everything in it is escaped and the file contains no script. `--json` prints the same data |
 | `velo verify [snapshot] --trust <file>` | Check a snapshot's signatures against a file of trusted public keys; exits 1 unless one is trusted |
 
 ---
@@ -751,7 +759,9 @@ deliberately opts out of this, since a bundle must stand alone.)
 #### Hosting a remote
 
 `velo serve-http` is a small reference server. It is safe to host once you pick
-a policy; from 5.2.0 it no longer accepts anonymous pushes by default.
+a policy; from 5.2.0 it no longer accepts anonymous pushes by default. A tested
+compose deployment (Caddy proxy, tokens, read-only mirror) is in
+[`examples/serve-http/`](examples/serve-http/).
 
 ```bash
 velo serve-http /srv/project                       # anonymous fetch, push refused (401)
@@ -971,6 +981,30 @@ pre-built binary. Requires Rust 1.88 or later.
 The crates are packaged and ready for crates.io — `cargo install velo-cli` is
 what this becomes — but nothing is published there yet.
 
+### Python and Node bindings without a registry
+
+Each release attaches the abi3 Python wheels, the Node tarballs and a checksum
+file. Nothing is on PyPI or npm; a release asset can be removed, so this is
+reversible, unlike a registry version. Replace `vX.Y.Z` with a release tag.
+
+```bash
+# Python (abi3 wheel, one per platform: velo-<version>-cp39-abi3-<platform>.whl)
+pip install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/<wheel file>
+
+# Node (velo-core-<version>-<platform>.tgz, platform is linux, macos or windows)
+npm install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/velo-core-<version>-<platform>.tgz
+
+# The CLI, built from the tag
+cargo install --git https://github.com/LucasVascovici/velo --tag vX.Y.Z velo-cli
+```
+
+To verify a download, fetch `SHA256SUMS-bindings.txt` from the same release,
+put it next to the files and run `sha256sum --check --ignore-missing
+SHA256SUMS-bindings.txt` (`shasum -a 256 -c` on macOS).
+
+The bindings are 0.x and unpublished; see [docs/STABILITY.md](docs/STABILITY.md)
+for what that promises.
+
 ### Unix (Linux & macOS)
 
 ```bash
@@ -991,6 +1025,8 @@ curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh
 
 Download the latest `velo-x86_64-windows.zip` from the [Releases page](https://github.com/LucasVascovici/velo/releases), extract `velo.exe`, and place it anywhere on your `PATH`.
 
+Large trees save slowly the first time on Windows because of Defender scanning; see [docs/WINDOWS.md](docs/WINDOWS.md) for measured numbers and the settings that help.
+
 ### As a library
 
 Velo's core is a separate crate, so a program can use the repository, history
@@ -999,7 +1035,7 @@ git:
 
 ```toml
 [dependencies]
-velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.2.0" }
+velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "v5.3.0" }
 ```
 
 It produces no terminal output at all — every command returns data — which is

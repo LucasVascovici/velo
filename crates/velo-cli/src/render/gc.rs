@@ -1,7 +1,7 @@
 //! Render a garbage-collection tally for the terminal.
 
 use console::style;
-use velo_core::commands::gc::Collected;
+use velo_core::commands::gc::{AutoVacuum, Collected, Vacuum, Vacuumed};
 
 pub fn print(collected: &Collected) {
     let dry = collected.dry_run;
@@ -105,5 +105,25 @@ pub fn human_size(bytes: u64) -> String {
         format!("{:.1} KB", b / KB)
     } else {
         format!("{} B", bytes)
+    }
+}
+
+/// The bytes a vacuum gave back, said only when there are some. A full vacuum
+/// that changed `auto_vacuum` says so, since the repository now behaves
+/// differently from here on.
+pub fn print_vacuum(v: &Vacuumed) {
+    if v.mode == Vacuum::Full && v.auto_vacuum == AutoVacuum::Incremental {
+        println!(
+            "{}",
+            style("Database set to incremental vacuum (converted if it was not already).").dim()
+        );
+    }
+    let returned = v.bytes_before.saturating_sub(v.bytes_after);
+    if returned > 0 {
+        println!(
+            "{} Returned {} to the operating system.",
+            style("✔").green().bold(),
+            human_size(returned)
+        );
     }
 }

@@ -194,6 +194,11 @@ pub fn init_db_at_path(path: &Path) -> Result<()> {
 /// `main`.
 pub fn create_at_path(path: &Path) -> Result<Connection> {
     let conn = Connection::open(path)?;
+    // `auto_vacuum` only takes effect before the first table exists, so it is
+    // set ahead of the pragmas and the schema. INCREMENTAL lets retention and
+    // `gc` hand freed pages back cheaply (`gc::vacuum`). Opening an existing
+    // repository never changes it: only a full `VACUUM` converts an old one.
+    conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")?;
     apply_pragmas(&conn)?;
     conn.execute_batch(SCHEMA)?;
     set_format_version(&conn, crate::FORMAT_VERSION)?;

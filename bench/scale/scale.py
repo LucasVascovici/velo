@@ -90,6 +90,8 @@ def main():
     ap.add_argument("--out", default="results.json")
     ap.add_argument("--preset", choices=PRESETS)
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
+    ap.add_argument("--objects", choices=["files", "database"], default="files",
+                    help="object backend passed to velo init")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--defender-note", default=None,
                     help="Windows: free text, e.g. 'workdir excluded from real-time scanning'")
@@ -129,7 +131,7 @@ def main():
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(content(rng, p, 0))
 
-    run(velo, ["init"], work)
+    run(velo, ["init", "--objects", a.objects], work)
     saves, hashes = [], []
     for s in range(snaps):
         if s:
@@ -185,6 +187,7 @@ def main():
         "velo_version": run(velo, ["--version"], work)[1].strip(),
         "workdir": str(work),
         "files": files, "snapshots": snaps, "change_per_snapshot": a.change,
+        "objects": a.objects,
         "seed": a.seed, "python": platform.python_version(),
     }
     if os.name == "nt":

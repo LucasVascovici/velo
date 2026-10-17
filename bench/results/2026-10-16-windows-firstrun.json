@@ -1,0 +1,190 @@
+{
+ "note": "19.6-c: Windows first-run cost, 5 snapshots, 1 file changed per snapshot. Defender exclusion not measured: no permission (account is not an administrator).",
+ "runs": {
+  "10k-files": {
+   "save_first_10pct": {
+    "n": 1,
+    "median_s": 47.047537399997964,
+    "p95_s": 47.047537399997964
+   },
+   "save_last_10pct": {
+    "n": 1,
+    "median_s": 0.33327250000002095,
+    "p95_s": 0.33327250000002095
+   },
+   "save_first_s": 47.047537399997964,
+   "save_all_s": [
+    47.047537399997964,
+    0.28440559999944526,
+    0.2212604000014835,
+    0.3337199000015971,
+    0.33327250000002095
+   ],
+   "save_growth_median_ratio": 0.007083739520020773,
+   "velo_dir_bytes": 17271342,
+   "db_bytes": 15564800,
+   "file_map_rows": 50005,
+   "status_clean_s": 0.10498070000176085,
+   "history_full_s": 0.02775100000144448,
+   "history_file_s": 0.03562659999806783,
+   "restore_mid_s": 0.1478328999983205,
+   "restore_tip_s": 0.13806949999707285,
+   "gc_s": 0.41217990000222926,
+   "fsck_s": 0.4722710999994888,
+   "open_s": 0.029938099996797973,
+   "velo_dir_bytes_after_gc": 17271342,
+   "env": {
+    "platform": "Windows-11-10.0.22621-SP0",
+    "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "velo_version": "velo 5.3.0",
+    "workdir": "C:\\Users\\lvi\\AppData\\Local\\Temp\\velo-scale-deen0j6k\\repo",
+    "files": 10000,
+    "snapshots": 5,
+    "change_per_snapshot": 1,
+    "objects": "files",
+    "seed": 1,
+    "python": "3.12.8",
+    "defender_note": "real-time protection on, no exclusions"
+   }
+  },
+  "10k-database": {
+   "save_first_10pct": {
+    "n": 1,
+    "median_s": 33.11704559999998,
+    "p95_s": 33.11704559999998
+   },
+   "save_last_10pct": {
+    "n": 1,
+    "median_s": 0.3192339000015636,
+    "p95_s": 0.3192339000015636
+   },
+   "save_first_s": 33.11704559999998,
+   "save_all_s": [
+    33.11704559999998,
+    0.2637265000012121,
+    0.3187952000007499,
+    0.36269979999997304,
+    0.3192339000015636
+   ],
+   "save_growth_median_ratio": 0.009639564587294097,
+   "velo_dir_bytes": 18903108,
+   "db_bytes": 18903040,
+   "file_map_rows": 50005,
+   "status_clean_s": 0.11788329999762936,
+   "history_full_s": 0.027113400003145216,
+   "history_file_s": 0.03877169999759644,
+   "restore_mid_s": 0.16129720000026282,
+   "restore_tip_s": 0.1723560999998881,
+   "gc_s": 0.04707399999824702,
+   "fsck_s": 0.23279120000006515,
+   "open_s": 0.03603120000116178,
+   "velo_dir_bytes_after_gc": 18903108,
+   "env": {
+    "platform": "Windows-11-10.0.22621-SP0",
+    "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "velo_version": "velo 5.3.0",
+    "workdir": "C:\\Users\\lvi\\AppData\\Local\\Temp\\velo-scale-e8nqfjyu\\repo",
+    "files": 10000,
+    "snapshots": 5,
+    "change_per_snapshot": 1,
+    "objects": "database",
+    "seed": 1,
+    "python": "3.12.8",
+    "defender_note": "real-time protection on, no exclusions"
+   }
+  },
+  "100k-files": {
+   "save_first_10pct": {
+    "n": 1,
+    "median_s": 448.1059497000024,
+    "p95_s": 448.1059497000024
+   },
+   "save_last_10pct": {
+    "n": 1,
+    "median_s": 1.9224095999998099,
+    "p95_s": 1.9224095999998099
+   },
+   "save_first_s": 448.1059497000024,
+   "save_all_s": [
+    448.1059497000024,
+    1.9600816999991366,
+    2.070168799997191,
+    2.0797972999971535,
+    1.9224095999998099
+   ],
+   "save_growth_median_ratio": 0.004290078275655173,
+   "velo_dir_bytes": 171145122,
+   "db_bytes": 154079232,
+   "file_map_rows": 500005,
+   "status_clean_s": 0.8608853999976418,
+   "history_full_s": 0.01819479999903706,
+   "history_file_s": 0.02690199999778997,
+   "restore_mid_s": 1.1005532999988645,
+   "restore_tip_s": 1.088086600000679,
+   "gc_s": 4.121629000001121,
+   "fsck_s": 3.9718046999987564,
+   "open_s": 0.03202419999797712,
+   "velo_dir_bytes_after_gc": 171145122,
+   "env": {
+    "platform": "Windows-11-10.0.22621-SP0",
+    "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "velo_version": "velo 5.3.0",
+    "workdir": "C:\\Users\\lvi\\AppData\\Local\\Temp\\velo-scale-79rkqc8k\\repo",
+    "files": 100000,
+    "snapshots": 5,
+    "change_per_snapshot": 1,
+    "objects": "files",
+    "seed": 1,
+    "python": "3.12.8",
+    "defender_note": "real-time protection on, no exclusions"
+   }
+  },
+  "100k-database": {
+   "save_first_10pct": {
+    "n": 1,
+    "median_s": 347.8798383999965,
+    "p95_s": 347.8798383999965
+   },
+   "save_last_10pct": {
+    "n": 1,
+    "median_s": 2.2751544999991893,
+    "p95_s": 2.2751544999991893
+   },
+   "save_first_s": 347.8798383999965,
+   "save_all_s": [
+    347.8798383999965,
+    2.0948199999984354,
+    2.7400521999988996,
+    2.390681199998653,
+    2.2751544999991893
+   ],
+   "save_growth_median_ratio": 0.006540058516938796,
+   "velo_dir_bytes": 188010564,
+   "db_bytes": 188010496,
+   "file_map_rows": 500005,
+   "status_clean_s": 0.8463586000034411,
+   "history_full_s": 0.022189699997397838,
+   "history_file_s": 0.021425399998406647,
+   "restore_mid_s": 1.0789890000014566,
+   "restore_tip_s": 1.1689054000016768,
+   "gc_s": 0.3774728000025789,
+   "fsck_s": 2.3599886000010883,
+   "open_s": 0.02449460000207182,
+   "velo_dir_bytes_after_gc": 188010564,
+   "env": {
+    "platform": "Windows-11-10.0.22621-SP0",
+    "cpu": "Intel64 Family 6 Model 186 Stepping 2, GenuineIntel",
+    "velo_version": "velo 5.3.0",
+    "workdir": "C:\\Users\\lvi\\AppData\\Local\\Temp\\velo-scale-r9_cb3l4\\repo",
+    "files": 100000,
+    "snapshots": 5,
+    "change_per_snapshot": 1,
+    "objects": "database",
+    "seed": 1,
+    "python": "3.12.8",
+    "defender_note": "real-time protection on, no exclusions"
+   }
+  },
+  "defender-exclusion": "not measured: no permission"
+ }
+}

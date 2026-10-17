@@ -209,3 +209,159 @@ fn base64_encode(bytes: &[u8]) -> String {
     use base64::{engine::general_purpose::STANDARD, Engine};
     STANDARD.encode(bytes)
 }
+
+fn store(name: &str) -> (tempfile::TempDir, Server) {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Repo::create_file(&dir.path().join(name)).unwrap();
+    (dir, Server::new(repo, "r".into()))
+}
+
+fn err_text(r: &Value) -> String {
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    r["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+fn tree_objects(s: &mut Server, snap: &str) -> Value {
+    let t = call(s, 90, "velo_tree_at", json!({"snapshot": snap}));
+    ok(&t)["files"].clone()
+}
+
+#[test]
+fn changes_form_puts_deletes_and_renames() {
+    let (_d, mut s) = store("c.velo");
+    call(
+        &mut s,
+        1,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m1",
+               "files": {"a.txt": "one\n", "old.txt": "gone\n", "n.md": "notes\n"}}),
+    );
+    let r = call(
+        &mut s,
+        2,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m2", "changes": [
+            {"op": "put", "path": "a.txt", "content": "ONE\n"},
+            {"op": "delete", "path": "old.txt"},
+            {"op": "rename", "from": "n.md", "to": "docs/n.md"}]}),
+    );
+    let out = ok(&r).clone();
+    assert_eq!(out["renamed"], json!([["n.md", "docs/n.md"]]));
+    assert_eq!(out["deleted"], json!(["old.txt"]));
+    let snap = out["snapshot"].as_str().unwrap();
+    let files = tree_objects(&mut s, snap);
+    let paths: Vec<&str> = files
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, ["a.txt", "docs/n.md"]);
+    // Every written id is the object velo_tree_at lists for that path.
+    let written = out["written"].as_object().unwrap();
+    assert_eq!(written.len(), 1);
+    for f in files.as_array().unwrap() {
+        if let Some(o) = written.get(f["path"].as_str().unwrap()) {
+            assert_eq!(o, &f["object"]);
+        }
+    }
+    let a = call(
+        &mut s,
+        3,
+        "velo_read_file",
+        json!({"snapshot": snap, "path": "a.txt"}),
+    );
+    assert_eq!(ok(&a)["content"], "ONE\n");
+}
+
+#[test]
+fn files_form_matches_the_replace_path() {
+    // The default path goes through save_changes; replace keeps save_tree.
+    // Both must store the same tree with the same object ids.
+    let (_d1, mut fast) = store("f.velo");
+    let (_d2, mut slow) = store("s.velo");
+    let first = json!({"branch": "main", "message": "m1", "files": {"a": "1\r\n", "b": "2\n"}});
+    let second =
+        json!({"branch": "main", "message": "m2", "files": {"a": "x\n", "b": null, "c": "3\n"}});
+    call(&mut fast, 1, "velo_save_tree", first.clone());
+    call(&mut slow, 1, "velo_save_tree", first);
+    let f = call(&mut fast, 2, "velo_save_tree", second);
+    let sl = call(
+        &mut slow,
+        2,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m2", "replace": true,
+               "files": {"a": "x\n", "c": "3\n"}}),
+    );
+    let fid = ok(&f)["snapshot"].as_str().unwrap().to_string();
+    let sid = ok(&sl)["snapshot"].as_str().unwrap().to_string();
+    let ft = tree_objects(&mut fast, &fid);
+    assert_eq!(ft, tree_objects(&mut slow, &sid));
+    assert_eq!(ok(&f)["written"], ok(&sl)["written"]);
+    let w = ok(&f)["written"].as_object().unwrap();
+    assert_eq!(w.len(), 2);
+    for e in ft.as_array().unwrap() {
+        assert_eq!(&e["object"], &w[e["path"].as_str().unwrap()]);
+    }
+}
+
+#[test]
+fn files_and_changes_conflict_and_one_is_required() {
+    let (_d, mut s) = store("e.velo");
+    let both = call(
+        &mut s,
+        1,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m", "files": {"a": "1"},
+               "changes": [{"op": "put", "path": "b", "content": "2"}]}),
+    );
+    assert!(err_text(&both).contains("not both"));
+    let neither = call(
+        &mut s,
+        2,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m"}),
+    );
+    assert!(err_text(&neither).contains("'files' or 'changes'"));
+    let replace = call(
+        &mut s,
+        3,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m", "replace": true,
+               "changes": [{"op": "put", "path": "b", "content": "2"}]}),
+    );
+    assert!(err_text(&replace).contains("replace"));
+}
+
+#[test]
+fn files_form_ignores_a_null_for_a_path_the_parent_lacks() {
+    let (_d, mut s) = store("n.velo");
+    let r = call(
+        &mut s,
+        1,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m1", "files": {"a": "1", "never-existed": null}}),
+    );
+    assert_eq!(ok(&r)["deleted"], json!([]));
+    let id = ok(&r)["snapshot"].as_str().unwrap().to_string();
+    let r2 = call(
+        &mut s,
+        2,
+        "velo_save_tree",
+        json!({"branch": "main", "message": "m2", "files": {"b": "2", "a": null, "ghost": null}}),
+    );
+    assert_eq!(ok(&r2)["deleted"], json!(["a"]));
+    let snap = ok(&r2)["snapshot"].as_str().unwrap().to_string();
+    let tree = tree_objects(&mut s, &snap);
+    let paths: Vec<&str> = tree
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["path"].as_str().unwrap())
+        .collect();
+    assert_eq!(paths, vec!["b"]);
+    assert!(!id.is_empty());
+}

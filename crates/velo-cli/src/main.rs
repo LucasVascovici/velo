@@ -18,6 +18,23 @@ use velo_core::{commands, error, serve, BranchName, TagName};
 use error::{Result, VeloError};
 use velo_core::commands::resolve::TakeOption;
 
+/// `--objects` as parsed from the command line; mirrors core's
+/// `ObjectLocation`, which carries no clap derive.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum ObjectsArg {
+    Files,
+    Database,
+}
+
+impl From<ObjectsArg> for velo_core::ObjectLocation {
+    fn from(a: ObjectsArg) -> Self {
+        match a {
+            ObjectsArg::Files => velo_core::ObjectLocation::Files,
+            ObjectsArg::Database => velo_core::ObjectLocation::Database,
+        }
+    }
+}
+
 /// `--take` as parsed from the command line. Core's `TakeOption` deliberately
 /// carries no clap derive, so the CLI owns its own parseable mirror.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -101,8 +118,15 @@ enum Commands {
     /// A default .veloignore is written if one does not already exist.
     /// Running `init` inside an existing Velo repo is an error.
     ///
+    /// By default each object is a file under .velo/objects. With
+    /// `--objects database` objects live inside velo.db instead: no file per
+    /// object, which is the layout the browser build uses. It can be faster
+    /// where every file open is scanned (Windows Defender). The choice is
+    /// fixed for the repository's lifetime and cannot be changed later.
+    ///
     /// Example
     ///   velo init
+    ///   velo init --objects database
     #[command(
         verbatim_doc_comment,
         after_help = "\
@@ -111,7 +135,11 @@ NOTES
     · The default branch is called 'main'.
     · Edit .veloignore to exclude build artefacts, secrets, etc."
     )]
-    Init,
+    Init {
+        /// Where objects are kept: files (default) or database.
+        #[arg(long, value_enum, default_value = "files")]
+        objects: ObjectsArg,
+    },
 
     /// Snapshot the working directory with a message.
     ///
@@ -474,6 +502,62 @@ NOTES
         /// File of trusted public keys, one per line.
         #[arg(long, value_name = "FILE")]
         trust: PathBuf,
+    },
+
+    /// Write the repository's audit report as one offline HTML file.
+    ///
+    /// The report has a verdict from fsck, a timeline per branch (id, time,
+    /// author, message, metadata, signature badges, changed files) and the
+    /// line provenance of the files those snapshots changed.  --json prints
+    /// the same data as JSON instead.
+    ///
+    /// Examples
+    ///   velo report
+    ///   velo report --branch main --since 7d -o audit.html
+    ///   velo report --json --trust trusted.keys
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · The file is static: no script, no remote resources, a strict Content-Security-Policy.  It is safe to open offline, even when the history it shows is hostile; every message, name and line is escaped.
+    · --since takes YYYY-MM-DD, an RFC 3339 timestamp, or an age such as 12h, 7d or 2w.
+    · --trust FILE is the key file velo verify reads; without it valid signatures show as untrusted.
+    · A repository with integrity problems still gets a report, with a red verdict.
+    · Nothing on disk is changed except the report file."
+    )]
+    Report {
+        /// Only this branch (default: every branch).
+        #[arg(long, value_name = "BRANCH", help = "Only this branch (default: all)")]
+        branch: Option<String>,
+        /// Only snapshots from this time on.
+        #[arg(
+            long,
+            value_name = "WHEN",
+            value_parser = parse_since_arg,
+            help = "Only snapshots since YYYY-MM-DD, an RFC 3339 time, or <n>h|d|w ago"
+        )]
+        since: Option<i64>,
+        /// Where to write the report.
+        #[arg(
+            short = 'o',
+            long = "output",
+            value_name = "FILE",
+            help = "Output file (default: velo-report.html; with --json, stdout)"
+        )]
+        output: Option<PathBuf>,
+        /// Emit JSON instead of HTML.
+        #[arg(long, help = "Emit the same data as JSON")]
+        json: bool,
+        /// File of trusted public keys, one per line.
+        #[arg(
+            long,
+            value_name = "FILE",
+            help = "Trusted public keys, as velo verify --trust"
+        )]
+        trust: Option<PathBuf>,
+        /// Skip the integrity check.
+        #[arg(long, help = "Do not run fsck (the verdict reads 'not checked')")]
+        no_fsck: bool,
     },
 
     /// Apply the changes from one snapshot onto the current branch.
@@ -1010,7 +1094,8 @@ WHAT GC CLEANS UP
 
 NOTES
     · Running gc while a merge is in progress is safe.
-    · The operation is idempotent — running it twice is harmless."
+    · The operation is idempotent — running it twice is harmless.
+    · A plain gc then returns freed pages to the operating system, for a repository created by 5.3.0 or later. --vacuum also converts an older one (it needs free disk about the size of velo.db and holds the write lock meanwhile)."
     )]
     Gc {
         /// Keep undone snapshot history for this many days.
@@ -1024,6 +1109,58 @@ NOTES
         /// Report what would be collected and remove nothing.
         #[arg(long, help = "Report what would be collected, remove nothing")]
         dry_run: bool,
+        /// Run a full VACUUM, converting an older repository to incremental
+        /// auto_vacuum.
+        #[arg(long, help = "Run a full vacuum, converting an older repository")]
+        vacuum: bool,
+    },
+
+    /// Thin old snapshots on a branch by age, then gc.
+    ///
+    /// Keeps every snapshot younger than the first tier, and one per bucket
+    /// after that. Signed, tagged, merge, published and checked-out snapshots
+    /// always stay. Runs `gc` and an incremental vacuum afterwards, so the
+    /// space comes back.
+    ///
+    /// Examples
+    ///   velo retention --dry-run
+    ///   velo retention --keep 1d=1h --keep 30d=1d
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · --keep AGE=EVERY: snapshots older than AGE keep one per EVERY. Durations are <n>m, <n>h, <n>d or <n>w. Tiers must ascend in age and EVERY may not shrink.
+    · With no --keep: everything for a day, one per hour for a month, one per day after.
+    · --dry-run lists what would go and every protected snapshot, and changes nothing.
+    · The removed snapshots' ids stop resolving, and `velo undo` does not bring them back.
+    · Take a backup first with velo bundle create <file> if the history matters."
+    )]
+    Retention {
+        /// The branch to thin (default: the current branch).
+        #[arg(
+            long,
+            value_name = "BRANCH",
+            help = "Branch to thin (default: current)"
+        )]
+        branch: Option<String>,
+        /// A tier, `AGE=EVERY`; repeatable.
+        #[arg(
+            long = "keep",
+            value_name = "AGE=EVERY",
+            help = "Older than AGE, keep one snapshot per EVERY (e.g. 1d=1h); repeatable"
+        )]
+        keep: Vec<String>,
+        /// Report what would go and what is protected, and change nothing.
+        #[arg(long, help = "Report what would be removed, change nothing")]
+        dry_run: bool,
+        /// Keep undone snapshot history for this many days (for the gc pass).
+        #[arg(
+            long,
+            default_value_t = 30,
+            value_name = "DAYS",
+            help = "Retain undo history for N days during gc"
+        )]
+        keep_days: u32,
     },
 
     /// Verify repository integrity (read-only).
@@ -1437,6 +1574,20 @@ fn git_habit_hint(args: impl Iterator<Item = String>) -> Option<&'static str> {
 }
 
 fn main() {
+    // Parsing this many subcommands and running the dispatcher in a debug build
+    // needs more than the 1 MiB a Windows main thread gets, so run on a thread
+    // with room to spare. Exit codes are set by `process::exit` inside.
+    let worker = std::thread::Builder::new()
+        .name("velo".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(real_main)
+        .expect("failed to start the velo worker thread");
+    if worker.join().is_err() {
+        std::process::exit(101);
+    }
+}
+
+fn real_main() {
     // SAFETY: `SetConsoleOutputCP` takes a plain integer code page and touches no
     // memory of ours; the declaration matches the kernel32 signature. Failure is
     // harmless (output stays in the old code page), so the result is ignored.
@@ -2227,6 +2378,7 @@ fn is_read_only(cmd: &Commands) -> bool {
             | Commands::Conflicts { .. }
             | Commands::ExportGit { .. }
             | Commands::Verify { .. }
+            | Commands::Report { .. }
             // fsck is read-only unless it's going to repair (which mutates).
             | Commands::Fsck { repair: false }
     )
@@ -2307,6 +2459,62 @@ fn read_trust_file(path: &Path) -> Result<velo_core::sign::TrustedKeys> {
         keys.insert(line.parse()?);
     }
     Ok(keys)
+}
+
+/// A duration such as `90m`, `12h`, `1d` or `2w`, in milliseconds.
+fn parse_duration_ms(text: &str) -> Option<i64> {
+    let unit = text.chars().last()?;
+    let per: i64 = match unit {
+        'm' => 60_000,
+        'h' => 3_600_000,
+        'd' => 86_400_000,
+        'w' => 7 * 86_400_000,
+        _ => return None,
+    };
+    let n: i64 = text[..text.len() - 1].parse().ok()?;
+    n.checked_mul(per)
+}
+
+/// `--since`: `YYYY-MM-DD`, an RFC 3339 timestamp, or `<n>h|d|w` ago, as epoch
+/// milliseconds.
+fn parse_since_at(text: &str, now_ms: i64) -> std::result::Result<i64, String> {
+    let bad = || {
+        format!(
+            "invalid --since '{text}': expected YYYY-MM-DD, an RFC 3339 timestamp, or an age like 12h, 7d or 2w"
+        )
+    };
+    if let Ok(date) = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d") {
+        let midnight = date.and_hms_opt(0, 0, 0).ok_or_else(bad)?;
+        return Ok(midnight.and_utc().timestamp_millis());
+    }
+    if let Ok(t) = chrono::DateTime::parse_from_rfc3339(text) {
+        return Ok(t.timestamp_millis());
+    }
+    if text.ends_with(['h', 'd', 'w']) {
+        if let Some(age) = parse_duration_ms(text) {
+            return now_ms.checked_sub(age).ok_or_else(bad);
+        }
+    }
+    Err(bad())
+}
+
+/// The clap value parser for `--since`; a bad value is a usage error.
+fn parse_since_arg(text: &str) -> std::result::Result<i64, String> {
+    parse_since_at(text, chrono::Utc::now().timestamp_millis())
+}
+
+/// `AGE=EVERY`, e.g. `30d=1d`, to a retention tier.
+fn parse_keep(spec: &str) -> Result<commands::retention::Tier> {
+    let bad = || {
+        VeloError::invalid(format!(
+            "invalid --keep value '{spec}': expected AGE=EVERY with durations like 90m, 12h, 1d or 2w (e.g. 30d=1d)"
+        ))
+    };
+    let (age, every) = spec.split_once('=').ok_or_else(bad)?;
+    Ok(commands::retention::Tier {
+        older_than_ms: parse_duration_ms(age).ok_or_else(bad)?,
+        keep_one_per_ms: parse_duration_ms(every).ok_or_else(bad)?,
+    })
 }
 
 /// `N` or `N-M`, 1-based and inclusive, to a half-open range.
@@ -2695,8 +2903,10 @@ fn run(cli: Cli) -> Result<Exit> {
     // The serve-* commands operate on an explicit path and speak a binary
     // protocol on stdout — they must emit nothing else.
     match &cli.command {
-        Commands::Init => {
-            render::init::print(&commands::init::run(&current_dir)?);
+        Commands::Init { objects } => {
+            let location: velo_core::ObjectLocation = (*objects).into();
+            let options = velo_core::InitOptions::new().objects(location);
+            render::init::print(&commands::init::run_with(&current_dir, options)?, location);
             return Ok(Exit::Success);
         }
         Commands::Clone { url, dir } => {
@@ -2799,7 +3009,7 @@ fn run(cli: Cli) -> Result<Exit> {
     warn_if_rewriting_pushed(&repo, &root, &cli.command);
 
     match cli.command {
-        Commands::Init
+        Commands::Init { .. }
         | Commands::Clone { .. }
         | Commands::Keygen { .. }
         | Commands::ServeUpload { .. }
@@ -2968,6 +3178,53 @@ fn run(cli: Cli) -> Result<Exit> {
             render::sign::print_verification(&verification);
             if !verification.is_trusted() {
                 exit = Exit::Untrusted;
+            }
+        }
+
+        Commands::Report {
+            branch,
+            since,
+            output,
+            json,
+            trust,
+            no_fsck,
+        } => {
+            let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
+            let policy = trust.as_deref().map(read_trust_file).transpose()?;
+            let mut options = commands::report::Options::new().fsck(!no_fsck);
+            if let Some(b) = branch.as_ref() {
+                options = options.branch(b);
+            }
+            if let Some(ms) = since {
+                options = options.since_ms(ms);
+            }
+            if let Some(p) = policy.as_ref() {
+                options = options.trust(p);
+            }
+            let report = commands::report::build(&repo, options)?;
+            let generated = render::report::format_ms(chrono::Utc::now().timestamp_millis());
+            let repo_name = root.display().to_string();
+            let write_file = |path: &Path, text: &str| {
+                std::fs::write(path, text).map_err(|e| {
+                    VeloError::invalid(format!("cannot write {}: {e}", path.display()))
+                })
+            };
+            if json {
+                let value = render::report::json(&report, &repo_name, &generated);
+                let text = serde_json::to_string_pretty(&value)
+                    .map_err(|e| VeloError::invalid(format!("cannot encode report: {e}")))?;
+                match output {
+                    Some(path) => {
+                        write_file(&path, &text)?;
+                        render::report::print_written(&path);
+                    }
+                    None => println!("{text}"),
+                }
+            } else {
+                let path = output.unwrap_or_else(|| PathBuf::from("velo-report.html"));
+                let view = render::report::view(&report, &repo_name, &generated);
+                write_file(&path, &render::report::html(&view))?;
+                render::report::print_written(&path);
             }
         }
 
@@ -3290,7 +3547,16 @@ fn run(cli: Cli) -> Result<Exit> {
             }
         }
 
-        Commands::Gc { keep_days, dry_run } => {
+        Commands::Gc {
+            keep_days,
+            dry_run,
+            vacuum,
+        } => {
+            if dry_run && vacuum {
+                return Err(VeloError::invalid(
+                    "--vacuum cannot be combined with --dry-run: a vacuum changes the database",
+                ));
+            }
             render::gc::print(&commands::gc::run(
                 write(),
                 commands::gc::Options {
@@ -3299,7 +3565,22 @@ fn run(cli: Cli) -> Result<Exit> {
                     ..Default::default()
                 },
             )?);
+            if !dry_run {
+                let mode = if vacuum {
+                    commands::gc::Vacuum::Full
+                } else {
+                    commands::gc::Vacuum::Incremental
+                };
+                render::gc::print_vacuum(&commands::gc::vacuum(write(), mode)?);
+            }
         }
+
+        Commands::Retention {
+            branch,
+            keep,
+            dry_run,
+            keep_days,
+        } => run_retention(write(), &root, branch.as_deref(), &keep, dry_run, keep_days)?,
 
         Commands::Fsck { repair } => {
             let report = if repair {
@@ -3441,4 +3722,60 @@ fn parse_where(text: &str) -> Result<commands::history::MetaFilter<'_>> {
         Some(value) => commands::history::MetaFilter::equals(namespace, key, value),
         None => commands::history::MetaFilter::has(namespace, key),
     })
+}
+
+/// `velo retention`: thin a branch, then gc and vacuum.
+///
+/// Kept out of `run` because that function's frame is already large and a
+/// debug build on Windows overflows the main thread's stack if it grows.
+#[inline(never)]
+fn run_retention(
+    guard: &velo_core::WriteGuard<'_>,
+    root: &Path,
+    branch: Option<&str>,
+    keep: &[String],
+    dry_run: bool,
+    keep_days: u32,
+) -> Result<()> {
+    let branch: BranchName = match branch {
+        Some(b) => b.parse()?,
+        None => std::fs::read_to_string(root.join(".velo/HEAD"))
+            .map_err(|e| VeloError::invalid(format!("cannot read .velo/HEAD: {e}")))?
+            .trim()
+            .parse()?,
+    };
+    let policy = if keep.is_empty() {
+        commands::retention::Policy::default()
+    } else {
+        commands::retention::Policy {
+            tiers: keep
+                .iter()
+                .map(|k| parse_keep(k))
+                .collect::<Result<Vec<_>>>()?,
+        }
+    };
+    let report = commands::retention::apply(
+        guard,
+        &branch,
+        &policy,
+        commands::retention::Options {
+            dry_run,
+            ..Default::default()
+        },
+    )?;
+    render::retention::print(&report, dry_run);
+    if !dry_run && report.removed > 0 {
+        render::gc::print(&commands::gc::run(
+            guard,
+            commands::gc::Options {
+                keep_days,
+                ..Default::default()
+            },
+        )?);
+        render::gc::print_vacuum(&commands::gc::vacuum(
+            guard,
+            commands::gc::Vacuum::Incremental,
+        )?);
+    }
+    Ok(())
 }

@@ -1,9 +1,11 @@
+from __future__ import annotations
+
 import datetime
 import os
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union, final
 
 __all__ = [
-    "Author", "Blame", "BlameLine", "Branch", "Entry", "LineOrigin",
+    "Author", "Blame", "BlameLine", "Branch", "Change", "Saved", "Entry", "LineOrigin",
     "MergePlan", "PlannedFile", "Repo", "Signature", "SigningKey", "SyncResult",
     "PushReport", "Verification", "Tag", "TreeEntry", "TreeFile", "VeloError",
     "NotARepo", "AlreadyInitialized", "NestedRepo", "SchemaTooNew",
@@ -111,6 +113,22 @@ class TreeEntry:
     def symlink(path: str, target: str) -> TreeEntry: ...
     @staticmethod
     def stored(path: str, object: str, kind: str = "regular") -> TreeEntry: ...
+
+@final
+class Change:
+    @staticmethod
+    def put(path: str, data: Union[bytes, str], kind: str = "regular") -> Change: ...
+    @staticmethod
+    def stored(path: str, object: str, kind: str = "regular") -> Change: ...
+    @staticmethod
+    def delete(path: str) -> Change: ...
+    @staticmethod
+    def rename(from_: str, to: str) -> Change: ...
+
+@final
+class Saved:
+    snapshot: str
+    written: Dict[str, str]
 
 @final
 class TreeFile:
@@ -256,8 +274,28 @@ class Repo:
         timestamp_ms: Optional[int] = None,
         renames: Optional[List[Tuple[str, str]]] = None,
     ) -> str: ...
+    def save_changes(
+        self,
+        *,
+        branch: str,
+        message: str,
+        changes: Union[Dict[str, Union[bytes, str, TreeEntry, None]], List[Change]],
+        parent: Optional[str] = None,
+        merge_parent: Optional[str] = None,
+        meta: Optional[Dict[str, Dict[str, str]]] = None,
+        author: Optional[Author] = None,
+        timestamp_ms: Optional[int] = None,
+    ) -> Saved: ...
     def tree_at(self, id: str) -> List[TreeFile]: ...
     def read_file_at(self, id: str, path: str) -> bytes: ...
+    def read_files_at(self, id: str, paths: list[str]) -> list[tuple[str, bytes]]: ...
+    def materialize(
+        self,
+        id: str,
+        dest: str | os.PathLike[str],
+        only: list[str] | None = None,
+        ignore: list[str] | None = None,
+    ) -> int: ...
     def read_object(self, object: str) -> bytes: ...
     def snapshot(self, id: str) -> Entry: ...
     def snapshot_meta(self, id: str) -> Dict[str, Dict[str, str]]: ...
@@ -326,6 +364,7 @@ class Repo:
         self, name: str, at: Optional[str] = None, force: bool = False
     ) -> str: ...
     def delete_tag(self, name: str) -> None: ...
+    def vacuum(self, full: bool = False) -> Dict[str, Any]: ...
     def fsck(self, repair: bool = False) -> Dict[str, List[Dict[str, str]]]: ...
     def sign(self, snapshot: str, key: SigningKey) -> Signature: ...
     def signatures(self, snapshot: str) -> List[Signature]: ...

@@ -233,6 +233,7 @@ pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolEr
         "velo_save_tree" => store_tools::save_tree_tool(ctx, args),
         "velo_tree_at" => store_tools::tree_at_tool(ctx, args),
         "velo_read_file" => store_tools::read_file_tool(ctx, args),
+        "velo_read_files" => store_tools::read_files_tool(ctx, args),
         "velo_save" => save_tool(ctx, args),
         "velo_restore" => restore_tool(ctx, args),
         "velo_status" => status_tool(ctx),

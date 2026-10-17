@@ -31,6 +31,7 @@ WORDS = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu "
          "nu xi omicron pi rho sigma tau upsilon phi chi psi omega").split()
 
 PROVENANCE = {
+    "velo (5.2 API)": "as velo",
     "velo": "ids recompute from content; author and metadata are hashed into "
             "each snapshot id; signatures can be attached",
     "shadow git": "object hashes verify content; author and message per commit "
@@ -124,8 +125,9 @@ def scan_back(versions, line):
 #   disk()                     bytes on disk of the store
 
 
-class Velo:
-    name = "velo"
+class Velo52:
+    """The 5.2 calling convention, kept unchanged as the baseline row."""
+    name = "velo (5.2 API)"
 
     def __init__(self, root):
         import velo
@@ -186,6 +188,30 @@ class Velo:
 
     def disk(self):
         return dir_bytes(self.repo_dir)
+
+
+class Velo(Velo52):
+    """The 5.3 calling convention: save_changes sends only the changed files and
+    the core carries the parent's tree forward, so the harness neither re-reads
+    the tree nor keeps an entry list; restore is one materialize call."""
+    name = "velo"
+
+    def checkpoint(self, step, changed):
+        saved = self.repo.save_changes(
+            branch=self.branch_name, message=f"step {step}", changes=dict(changed),
+            parent=self.tip, author=self.velo.Author("agent-run-1"),
+            meta={"agent": {"run": "run-1", "tool_call_id": str(step), "model": "bench"}})
+        self.snap[step] = self.tip = saved.snapshot
+        if self.branch_name == "main":
+            self.main_tip = saved.snapshot
+
+    def branch(self, base_step, name):
+        self.repo.create_branch(name, at=self.snap[base_step])
+        self.branch_name = name
+        self.tip = self.snap[base_step]
+
+    def restore(self, step, dest):
+        self.repo.materialize(self.snap[step], dest)
 
 
 class ShadowGit:
@@ -436,7 +462,7 @@ class SqliteBlobs:
         return self.db_path.stat().st_size
 
 
-ADAPTERS = [Velo, ShadowGit, GitWorktree, DirCopy, JsonlLog, SqliteBlobs]
+ADAPTERS = [Velo52, Velo, ShadowGit, GitWorktree, DirCopy, JsonlLog, SqliteBlobs]
 
 
 # ------------------------------------------------------------------ driver

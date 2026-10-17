@@ -12,10 +12,17 @@ Every tool call is saved with the run, the call id and the model in `agent`
 metadata, and an author naming the run:
 
 ```python
-repo.save_tree(branch=branch, message=message, entries=files, parent=parent,
-               author=velo.Author(f"agent-{run}"),
-               meta={"agent": {"run": run, "tool_call_id": call, "model": model}})
+saved = repo.save_changes(branch=branch, message=message, changes=files,
+                          parent=parent, author=velo.Author(f"agent-{run}"),
+                          meta={"agent": {"run": run, "tool_call_id": call,
+                                          "model": model}})
+saved.snapshot  # the new snapshot id; saved.written maps path -> object id
 ```
+
+`changes` holds only what the tool call touched: a value is written and `None`
+deletes the path. The rest of the parent's tree is loaded inside the database,
+so the call sends no tree and gets ids back. A list of `velo.Change` values
+adds `Change.rename` and `Change.stored`.
 
 Metadata is hashed into the snapshot id, so provenance cannot be edited after
 the fact.
@@ -107,14 +114,28 @@ overwritten. See [`crates/velo-mcp/README.md`](../../crates/velo-mcp/README.md).
 ## Keep the history bounded
 
 An agent that saves after every tool call piles up snapshots, and each one owns
-a row per file. Apply a retention policy on a schedule rather than letting it
-accumulate: `velo_core::commands::retention::Policy::default()` keeps every
-snapshot for a day, one per hour for a month, and one per day after that, and
-`commands::retention::apply` followed by `commands::gc::run` does the work. On a
-10,000-file tree with 2,000 snapshots over 60 days it cut snapshots, rows and
-live content by 62%. Run it daily; a single pass over 2,000 snapshots took 20
-minutes, and the database file does not shrink (freed pages are reused). The
-measurement, its method and the envelope velo was tested to are in
+a row per file. Thin the history on a schedule rather than letting it
+accumulate:
+
+```bash
+velo retention --dry-run          # what would go, and what is protected
+velo retention                    # thin, then gc and return the freed space
+velo retention --keep 1d=1h --keep 30d=1d   # the same tiers, spelled out
+```
+
+With no `--keep`, everything stays for a day, then one snapshot per hour for a
+month, then one per day. Signed and tagged snapshots always stay. The command
+runs `gc` and an incremental vacuum afterwards, so the database file shrinks on
+repositories created from 5.3.0.
+
+An embedder does the same through the library:
+`velo_core::commands::retention::apply` with a `Policy`, then
+`commands::gc::run` and `commands::gc::vacuum`. On a 10,000-file tree with
+2,000 snapshots over 60 days a pass cut snapshots, rows and live content by
+62% and the database file from 5.18 GiB to 2.06 GiB, in about 7 minutes for
+retention and 3 for the vacuum. A repository created before 5.3.0 needs one
+`velo gc --vacuum` first to switch to incremental vacuum.
+The measurement, its method and the envelope velo was tested to are in
 [docs/SCALE.md](../SCALE.md).
 
 ## Against the alternatives
@@ -130,16 +151,17 @@ line" for 20 lines at the end of the run. Seeded, so every system sees the same
 edits. Each system's answers are checked against the generator's record.
 
 **Windows 11** (i7-1370P, Python 3.12.8, git 2.42.0.windows.2, Defender
-real-time protection ON, exclusions not readable, assumed none):
+real-time protection assumed ON, exclusions not checked):
 
 | system | 500 steps (s) | 8 attempts + merge (s) | restore step 250, median (ms) | 100 restores (s) | who wrote x20 (s) | disk (MB) |
 |---|---|---|---|---|---|---|
-| velo | 91.1 | 17.5 | 878 | 116.5 | 4.81 | 174 |
-| shadow git | 221.3 | 38.7 | 470 | 49.5 | 3.24 | 5 |
-| git worktree | 214.8 | 44.8 | 501 | 53.1 | 3.45 | 13 |
-| dir copy | 567.9 | 63.8 | 659 | 68.8 | 19.45 | 571 |
-| jsonl log | 1.3 | 1.1 | 688 | 69.3 | 0.63 | 7 |
-| sqlite blobs | 9.5 | 1.9 | 732 | 75.0 | 0.00 | 33 |
+| velo | 64.4 | 13.2 | 216 | 23.2 | 2.95 | 174 |
+| velo (5.2 API) | 87.3 | 16.4 | 844 | 113.3 | 5.21 | 174 |
+| shadow git | 190.9 | 31.0 | 422 | 43.6 | 2.42 | 5 |
+| git worktree | 174.2 | 39.5 | 466 | 48.4 | 2.49 | 13 |
+| dir copy | 434.0 | 79.8 | 729 | 74.1 | 10.68 | 571 |
+| jsonl log | 1.4 | 0.4 | 705 | 71.8 | 0.55 | 7 |
+| sqlite blobs | 8.8 | 2.1 | 738 | 74.1 | 0.00 | 33 |
 
 **Linux** (Ubuntu 22.04 under WSL2 on the same machine, ext4, Python 3.10.12,
 git 2.34.1; not a bare-metal or CI Linux box, and the `agent` job in
@@ -147,38 +169,75 @@ git 2.34.1; not a bare-metal or CI Linux box, and the `agent` job in
 
 | system | 500 steps (s) | 8 attempts + merge (s) | restore step 250, median (ms) | 100 restores (s) | who wrote x20 (s) | disk (MB) |
 |---|---|---|---|---|---|---|
-| velo | 58.1 | 8.4 | 222 | 22.6 | 0.55 | 174 |
-| shadow git | 11.3 | 3.0 | 46 | 4.5 | 0.32 | 5 |
-| git worktree | 11.2 | 3.3 | 43 | 4.3 | 0.31 | 13 |
-| dir copy | 30.1 | 5.2 | 45 | 4.8 | 0.19 | 571 |
-| jsonl log | 14.5 | 0.9 | 59 | 6.0 | 0.39 | 7 |
-| sqlite blobs | 18.3 | 2.5 | 41 | 4.2 | 0.00 | 33 |
+| velo | 37.4 | 7.3 | 13 | 1.3 | 0.35 | 174 |
+| velo (5.2 API) | 41.2 | 6.7 | 145 | 14.6 | 0.31 | 174 |
+| shadow git | 8.4 | 2.2 | 29 | 3.0 | 0.23 | 5 |
+| git worktree | 8.1 | 2.9 | 37 | 3.8 | 0.23 | 13 |
+| dir copy | 23.4 | 3.4 | 37 | 3.8 | 0.13 | 571 |
+| jsonl log | 3.2 | 0.5 | 45 | 4.8 | 0.31 | 7 |
+| sqlite blobs | 15.4 | 1.8 | 30 | 3.1 | 0.00 | 33 |
 
-Raw results: `bench/results/agent-2026-10-15-windows.json` and
-`bench/results/agent-2026-10-15-linux.json`. Disk is the store only, in
-apparent bytes (the live working directory is not counted); for git worktree it
-includes every attempt's checked-out tree. SQLite's `who wrote` is near zero
-because an index lookup finds the file's versions; it answers "which step", not
-a line-level blame.
+`velo` is the 5.3 calling convention: `save_changes` with only the changed files
+per step (no entry list, no `tree_at` re-read) and `materialize` for restore.
+`velo (5.2 API)` is the old harness, kept as it was: `save_tree` with the whole
+tree carried forward by object id, a `tree_at` re-read after every save, and a
+`read_file_at` per file on restore. Both rows are from the same run, and both
+pass the same answer checks.
+
+Raw results: `bench/results/agent-2026-10-16-windows.json` and
+`bench/results/agent-2026-10-16-linux.json`. The earlier run, with only the 5.2
+API, is in
+`bench/results/agent-2026-10-15-windows.json` and
+`bench/results/agent-2026-10-15-linux.json`; absolute times for every system
+moved between the two days (shadow git steps on Linux went from 11.3 s to 8.4 s
+with no code change), so compare rows within one table, not across days. Disk is
+the store only, in apparent bytes (the live working directory is not counted);
+for git worktree it includes every attempt's checked-out tree. SQLite's `who
+wrote` is near zero because an index lookup finds the file's versions; it
+answers "which step", not a line-level blame.
+
+**Phase 19 re-run.** The tables above are still the latest agent runs: the code
+has not changed since the 2026-10-16 run, so it was not repeated. The scale
+envelope was re-run on 2026-10-17 (see [`SCALE.md`](../SCALE.md)). Against the
+targets in [`PERF.md`](../PERF.md) section 6, velo still loses three rows, and
+each loss has a measured reason there:
+
+- **500 steps on Linux: 4.5x shadow git** (37.4 s against 8.4 s; the target was
+  3x, the proposal 2x). One SQLite commit per step is most of it.
+- **Disk after 500 steps: 41x shadow git on Linux and 47x on Windows** (152 MB
+  against 3.7 MB and 3.3 MB; the target was 100 MB, then 3x). Final disk after
+  the restores and branches is 174 MB, 35x and 38x. Every snapshot stores its whole 1,000-file
+  tree, and nothing that shrinks that has shipped.
+- **A one-file save at 100,000 files is not flat:** 4.27x slower after 200
+  snapshots than after the first few on Linux and 5.79x on Windows (target
+  1.5x), because each save still writes one row per file.
+
+Restore meets its target on both platforms, and 500 steps on Windows meets it
+(velo is 3x faster than shadow git there).
 
 ### What velo is, and is not, here
 
-velo loses most rows. Read the table that way:
+velo still loses most rows on Linux. Read the tables that way:
 
-- **Speed on Linux.** Every other system checkpoints 500 steps faster than velo:
-  git does it in 11 s against velo's 58 s, and restores are about five times slower than git, a
-  directory copy or SQLite. The harness hands velo a 1,000-entry tree each step
-  (999 carried forward) and re-reads the tree after every save to learn the new
-  object ids, and both are inside the timed region. A binding that returned the
-  ids of the files it just wrote would cut that; this benchmark measures the API
-  as it is today. Restore through `tree_at` plus one `read_file_at` per file
-  costs a call per file.
-- **Speed on Windows.** velo is the fastest of the git and copy options for
-  steps (91 s against git's 215 to 221 s and the copy's 568 s) because it does
-  not spawn processes or touch the working tree, but it is the slowest at
-  restore and the slowest of all but the directory copy at line-level blame, and the log and SQLite stores beat it by one
-  to two orders of magnitude on steps.
-- **Disk.** velo used 174 MB against git's 5 MB, most likely because every
+- **Speed on Linux.** The new calling convention took the 500 steps from 41.2 s
+  to 37.4 s (9% less) and restore from 145 ms to 13 ms (11 times faster, 14.6 s
+  to 1.3 s over 100 restores). Restore is now the one row velo wins outright on
+  Linux: 13 ms against 29 ms for shadow git, the next best. Steps still lose to
+  every other system: 4.5x shadow git (8.4 s), 4.6x git worktree (8.1 s), 1.6x
+  directory copy (23.4 s), 11.7x the log (3.2 s) and 2.4x SQLite (15.4 s); the
+  engine's commit (see [`PERF.md`](../PERF.md)) is what remains. Branches lose
+  too: 3.4x shadow git, 2.5x git worktree, 2.1x directory copy, 13.8x the log
+  and 4.0x SQLite. "Who wrote this line" loses to git by 1.5x (0.35 s against
+  0.23 s), to the copy by 2.6x, and to the log by 1.1x; SQLite answers a
+  different question.
+- **Speed on Windows.** velo is now the fastest of the git, copy and replay
+  options at steps (64 s against git's 174 to 191 s and the copy's 434 s),
+  branches (13.2 s against 31 to 80 s) and restore (216 ms against 422 ms for
+  shadow git), but the log and SQLite stores still beat it on steps by 46x and
+  7.3x, and on branches by 35x and 6.3x. Blame loses to git by 1.2x (2.95 s
+  against 2.42 s) and to the log by 5.3x.
+- **Disk.** velo used 174 MB of final disk against git's 5 MB (35x on Linux, 38x on Windows; after the 500 steps alone it is 41x and 47x), git
+  worktree's 13 MB (14x), the log's 7 MB (24x) and SQLite's 33 MB (5.3x), most likely because every
   snapshot records the whole 1,000-file tree even when 999 files were carried
   forward by id (carry-forward saves the object bytes, not the per-snapshot tree
   record); this run did not break the 174 MB down. A
@@ -187,16 +246,16 @@ velo loses most rows. Read the table that way:
 
 Where each alternative is better:
 
-- **Shadow git and git worktree.** Smallest store, fastest blame and restore on
+- **Shadow git and git worktree.** Smallest store, fast blame and restore on
   Linux, a toolchain every developer already has, and `git diff`, `git log` and
   hosting for free. A worktree per attempt costs a full checked-out tree on disk
   per attempt (13 MB against 5 MB) but lets an attempt run its tests in place.
   Git has no per-step provenance that cannot be edited: authorship is whatever
   was passed to `commit`.
 - **Directory copy.** Simplest thing that works and, on Linux, as fast to restore
-  as git (45 ms): a restore is a `copytree`. It costs the most disk by far and gets
-  slow on Windows, where 500 copies of 1,000 files took 568 s.
-- **Append-only log.** Fastest to write on Windows by two orders of magnitude and
+  as git (37 ms): a restore is a `copytree`. It costs the most disk by far and gets
+  slow on Windows, where 500 copies of 1,000 files took 434 s.
+- **Append-only log.** Fastest to write by a wide margin (46x velo on Windows, 12x on Linux) and
   tiny on disk when edits are small. Restore replays everything, so it gets
   slower with run length, and there is no branching or merging, only appending a
   winner's changes.
@@ -224,3 +283,27 @@ python -m venv .venv                 # .venv/Scripts on Windows
 
 `--quick` runs a small version in about a minute. The full run takes roughly 25
 minutes on Linux and 40 on Windows, mostly git and the directory copy.
+
+## See what the agent did: `velo report`
+
+Blame answers one line at a time. To hand someone the whole run, write a report
+from the repository the run used:
+
+```
+velo report -o run.html
+```
+
+The page holds the timeline of every branch (both attempts and the merge), each
+snapshot's metadata (the run, tool call, model and test result), signature
+badges, the author of every line of every file at each branch tip, and the
+`fsck` verdict that every snapshot id was recomputed. The author column is the
+cookbook's answer made visible: the generator line is by `agent-run-1`, the
+lines it did not touch are by `human`.
+
+The file is static and works offline: no script, no network, a content-security
+policy that forbids both, and every message, author, metadata value and file
+line escaped, so a hostile agent cannot put markup in your audit page. `velo
+report --json` prints the same data for tooling.
+
+A generated sample of this exact scenario is in
+[`report-sample.html`](../report-sample.html).

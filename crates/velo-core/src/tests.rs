@@ -12266,3 +12266,42 @@ mod retention_scale;
 
 #[cfg(test)]
 mod fuzz_regressions;
+
+#[cfg(all(test, feature = "timing"))]
+mod timing_laps;
+
+#[cfg(test)]
+mod batch_reads;
+
+#[cfg(test)]
+mod vacuum;
+
+#[cfg(test)]
+mod report_model;
+
+#[cfg(test)]
+mod perf_support;
+
+#[cfg(all(test, feature = "timing"))]
+mod perf_profile;
+
+#[cfg(test)]
+mod save_changes;
+
+#[cfg(test)]
+mod materialize;
+
+#[cfg(test)]
+mod compaction_in_place;
+
+#[cfg(all(test, feature = "timing"))]
+mod fs_ops;
+
+#[cfg(all(test, feature = "timing"))]
+mod perf_sqlite_options;
+
+#[cfg(test)]
+mod perf_guard;
+
+#[cfg(test)]
+mod delta_prototype;

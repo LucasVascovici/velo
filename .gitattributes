@@ -1,2 +1,4 @@
 install.sh text eol=lf
 tests/corpus/** -text
+
+crates/velo-core/src/tests/*.golden text eol=lf
