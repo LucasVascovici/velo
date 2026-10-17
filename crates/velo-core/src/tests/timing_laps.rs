@@ -186,8 +186,8 @@ fn retention_records_its_stages_then_compactions() {
             "compact.chain",
             "compact.eligibility",
             "compact.plan",
-            "compact.insert",
             "compact.delete",
+            "compact.insert",
             "compact.refs",
             "compact.commit",
         ]
