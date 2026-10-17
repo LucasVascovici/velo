@@ -478,6 +478,46 @@ fn a_repository_written_by_a_newer_version_is_refused_and_left_alone() {
     );
 }
 
+/// The v4 spec fixture (`tests/corpus/v4`, written by `generate_v4.py` from
+/// FORMAT.md 11.5) is a repository this build cannot read: it must be refused
+/// as too new, and refusing must not touch a byte of it. 20.3 replaces this
+/// with a test that reads the fixture back.
+#[test]
+fn the_v4_spec_fixture_is_refused_by_a_v3_build() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path().join("repo");
+    copy_dir(&corpus().join("v4/repo"), &root);
+    let db = root.join(".velo/velo.db");
+    let before = fs::read(&db).unwrap();
+
+    // The hand-built raw-block Zstd frames decode, and hash to their names.
+    let mut objects = 0;
+    for entry in fs::read_dir(root.join(".velo/objects")).unwrap() {
+        let entry = entry.unwrap();
+        let content = zstd::decode_all(&fs::read(entry.path()).unwrap()[..]).unwrap();
+        assert_eq!(
+            blake3::hash(&content).to_hex().to_string(),
+            entry.file_name().to_string_lossy(),
+            "object {:?} does not hash to its name",
+            entry.file_name()
+        );
+        objects += 1;
+    }
+    assert!(objects > 0);
+
+    match Repo::open_and_migrate(&root) {
+        Err(Error::SchemaTooNew { found, supported }) => {
+            assert_eq!((found, supported), (4, 3), "{RULE}")
+        }
+        other => panic!("{RULE}: open_and_migrate gave {:?}", other.map(|_| ())),
+    }
+    assert_eq!(
+        fs::read(&db).unwrap(),
+        before,
+        "the refused open changed velo.db"
+    );
+}
+
 #[test]
 fn a_bundle_from_a_future_wire_version_is_refused_and_imports_nothing() {
     let mut bytes = fs::read(corpus().join("bundles/v5.1.2.v3.bundle")).unwrap();

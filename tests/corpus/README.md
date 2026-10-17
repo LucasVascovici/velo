@@ -84,3 +84,31 @@ For v4.0.0 omit `--mcp`, and add `--synth-v2` to rewrite
 `bundles/synth.v2.bundle`. The script needs Python 3 and the standard library
 only. Timestamps and hashes differ on every run, so regenerating changes every
 golden file; that is why it is done only when a new format step is released.
+
+## v4 spec fixture
+
+`v4/repo/` is a format v4 repository (`user_version = 4`, FORMAT.md 11.5). It is
+**not** written by a release: `v4/generate_v4.py` builds it straight from the
+spec, sharing no code with velo (standard library plus the vendored
+`blake3_ref.py` and `ed25519_ref.py` beside it). It computes the snapshot ids
+with the section 4.2 recipe itself, so the reader and the migration can be
+proven against something the implementation did not write. Expectations
+(ids, storage, base, chain, full trees, trash, tags, signature, branch tips)
+are in `v4/expected.json`.
+
+With `keyframe_interval = 4` it holds a root keyframe, chains of length 1 to 3
+and a second keyframe, a feature branch forked mid-chain, a delta that removes
+a path, a rename (`file_delta` removal plus addition and a `renames` row), a
+merge stored as a delta against its first parent, two undone snapshots in the
+trash with the newer one's delta based on the older, the tag `v1` on a delta,
+an ed25519 signature on the merge (test key above) and author metadata in the
+reserved `velo` namespace. Objects are Zstd frames built from raw blocks.
+
+`python tests/corpus/v4/generate_v4.py --selftest` recomputes every v5.1.2
+golden id with the script's own recipe and rebuilds the fixture into a temp
+directory, requiring it to be byte-identical to the checked-in copy (the
+SQLite header's library-version field is pinned for that).
+
+Regenerate it only when FORMAT.md 11.5 changes. Never run `velo` on the
+checked-in copy; work on a copy. Until 20.3 lands, this build refuses it as
+`SchemaTooNew`.

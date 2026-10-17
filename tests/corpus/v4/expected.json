@@ -1,0 +1,569 @@
+{
+ "branch_tips": {
+  "feature": "de6fd48bd850b0401348465c1aa737243a767e3bc4b90b8aed683cd48156000e",
+  "main": "0d509744f2f7ce174e1c415d8236829729d7b606f1fd9a49afec3ae133a7ce14"
+ },
+ "head": "main",
+ "keyframe_interval": 4,
+ "parent": "0d509744f2f7ce174e1c415d8236829729d7b606f1fd9a49afec3ae133a7ce14",
+ "signatures": [
+  {
+   "algorithm": "ed25519",
+   "public_key": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+   "signature": "e0b2aafaec2396a0b6082d45f43742159ff0575d165d862d1a9faaef1852abaf244d7056d4fffb25d5f89363457131ae8af6c3dc8e497123e7a81f304862a40a",
+   "snapshot": "0d509744f2f7ce174e1c415d8236829729d7b606f1fd9a49afec3ae133a7ce14"
+  }
+ ],
+ "snapshots": [
+  {
+   "base": "",
+   "branch": "main",
+   "chain": 0,
+   "created_at_ms": 1800000000000,
+   "id": "ac25cca365169658d5e6e04c197dead03e429e30d4fcc8733a568ba8ef4c166e",
+   "in_trash": false,
+   "merge_parent": "",
+   "message": "initial",
+   "meta": [],
+   "name": "s1",
+   "parent": "",
+   "storage": "keyframe",
+   "tree": [
+    [
+     "README.txt",
+     "b21109abb358cd9c8008e29f3681832e98bf48749f98ce585c66a47ae3d003ab",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "docs/notes.txt",
+     "cefe475939d15788b8bb79685fee49f6d216b824c4028b55994b527fbb98f320",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+     0
+    ],
+    [
+     "src/b.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "ac25cca365169658d5e6e04c197dead03e429e30d4fcc8733a568ba8ef4c166e",
+   "branch": "main",
+   "chain": 1,
+   "created_at_ms": 1800000001000,
+   "id": "825b13cc26607a221527d6809527443c968763c072e75f945a3483a598d2b0e2",
+   "in_trash": false,
+   "merge_parent": "",
+   "message": "edit readme",
+   "meta": [
+    [
+     "velo",
+     "author.name",
+     "Spec Author"
+    ],
+    [
+     "velo",
+     "author.email",
+     "spec@example.com"
+    ]
+   ],
+   "name": "s2",
+   "parent": "ac25cca365169658d5e6e04c197dead03e429e30d4fcc8733a568ba8ef4c166e",
+   "storage": "delta",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "docs/notes.txt",
+     "cefe475939d15788b8bb79685fee49f6d216b824c4028b55994b527fbb98f320",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+     0
+    ],
+    [
+     "src/b.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "825b13cc26607a221527d6809527443c968763c072e75f945a3483a598d2b0e2",
+   "branch": "main",
+   "chain": 2,
+   "created_at_ms": 1800000002000,
+   "id": "532d41d1d9325c7c68c724dd8c7c4137f117c5a7add72edf215ca61ca259544a",
+   "in_trash": false,
+   "merge_parent": "",
+   "message": "rename b",
+   "meta": [],
+   "name": "s3",
+   "parent": "825b13cc26607a221527d6809527443c968763c072e75f945a3483a598d2b0e2",
+   "storage": "delta",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "docs/notes.txt",
+     "cefe475939d15788b8bb79685fee49f6d216b824c4028b55994b527fbb98f320",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+     0
+    ],
+    [
+     "src/renamed.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "532d41d1d9325c7c68c724dd8c7c4137f117c5a7add72edf215ca61ca259544a",
+   "branch": "feature",
+   "chain": 3,
+   "created_at_ms": 1800000003000,
+   "id": "f9535dc699a67dc3eebdf0365a9daf0e26ed27fe301805d8db1381d8c31009e9",
+   "in_trash": false,
+   "merge_parent": "",
+   "message": "feature start",
+   "meta": [],
+   "name": "f1",
+   "parent": "532d41d1d9325c7c68c724dd8c7c4137f117c5a7add72edf215ca61ca259544a",
+   "storage": "delta",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "docs/notes.txt",
+     "cefe475939d15788b8bb79685fee49f6d216b824c4028b55994b527fbb98f320",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+     0
+    ],
+    [
+     "src/feature.txt",
+     "c62314977f9c86fdaae7239d90a0d8ca8758ba4990166122507bb9be6bc2e27f",
+     0
+    ],
+    [
+     "src/renamed.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "532d41d1d9325c7c68c724dd8c7c4137f117c5a7add72edf215ca61ca259544a",
+   "branch": "main",
+   "chain": 3,
+   "created_at_ms": 1800000004000,
+   "id": "a2d4b208b1cbf8547f7703968bc603e80cc2c68be989e90a0afe2078f84a7cda",
+   "in_trash": false,
+   "merge_parent": "",
+   "message": "drop notes",
+   "meta": [],
+   "name": "s4",
+   "parent": "532d41d1d9325c7c68c724dd8c7c4137f117c5a7add72edf215ca61ca259544a",
+   "storage": "delta",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+     0
+    ],
+    [
+     "src/renamed.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "",
+   "branch": "feature",
+   "chain": 0,
+   "created_at_ms": 1800000005000,
+   "id": "de6fd48bd850b0401348465c1aa737243a767e3bc4b90b8aed683cd48156000e",
+   "in_trash": false,
+   "merge_parent": "",
+   "message": "feature done",
+   "meta": [],
+   "name": "f2",
+   "parent": "f9535dc699a67dc3eebdf0365a9daf0e26ed27fe301805d8db1381d8c31009e9",
+   "storage": "keyframe",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "docs/notes.txt",
+     "cefe475939d15788b8bb79685fee49f6d216b824c4028b55994b527fbb98f320",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+     0
+    ],
+    [
+     "src/feature.txt",
+     "7a7506ca076389ecc6b65fec403ce2942b287e2a22bb5bedd396eb36104f7bd3",
+     0
+    ],
+    [
+     "src/renamed.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "",
+   "branch": "main",
+   "chain": 0,
+   "created_at_ms": 1800000006000,
+   "id": "70f8e2c43dbb517ba33ba2ec23ffea5389940a264ffffbc514ba3592234309d6",
+   "in_trash": false,
+   "merge_parent": "",
+   "message": "add epsilon",
+   "meta": [],
+   "name": "s5",
+   "parent": "a2d4b208b1cbf8547f7703968bc603e80cc2c68be989e90a0afe2078f84a7cda",
+   "storage": "keyframe",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+     0
+    ],
+    [
+     "src/e.txt",
+     "14482ebc242e30d305b222aa3f35821fdca329e117b8e8eec21af9146bc3a74b",
+     0
+    ],
+    [
+     "src/renamed.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "70f8e2c43dbb517ba33ba2ec23ffea5389940a264ffffbc514ba3592234309d6",
+   "branch": "main",
+   "chain": 1,
+   "created_at_ms": 1800000007000,
+   "id": "0d509744f2f7ce174e1c415d8236829729d7b606f1fd9a49afec3ae133a7ce14",
+   "in_trash": false,
+   "merge_parent": "de6fd48bd850b0401348465c1aa737243a767e3bc4b90b8aed683cd48156000e",
+   "message": "merge feature",
+   "meta": [],
+   "name": "m",
+   "parent": "70f8e2c43dbb517ba33ba2ec23ffea5389940a264ffffbc514ba3592234309d6",
+   "storage": "delta",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "ac678d92b3d739773d18cd952cfcea443fa4a5a98ffc9554b66795bb22d5532d",
+     0
+    ],
+    [
+     "src/e.txt",
+     "14482ebc242e30d305b222aa3f35821fdca329e117b8e8eec21af9146bc3a74b",
+     0
+    ],
+    [
+     "src/feature.txt",
+     "7a7506ca076389ecc6b65fec403ce2942b287e2a22bb5bedd396eb36104f7bd3",
+     0
+    ],
+    [
+     "src/renamed.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "0d509744f2f7ce174e1c415d8236829729d7b606f1fd9a49afec3ae133a7ce14",
+   "branch": "main",
+   "chain": 2,
+   "created_at_ms": 1800000008000,
+   "id": "d7bd5b6a47083dfddaabd6cd557a9504b039f1dc965f2f2804f94d38cb49c266",
+   "in_trash": true,
+   "merge_parent": "",
+   "message": "oops one",
+   "meta": [],
+   "name": "t1",
+   "parent": "0d509744f2f7ce174e1c415d8236829729d7b606f1fd9a49afec3ae133a7ce14",
+   "storage": "delta",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "5e5068dc312efa6e0effbcdc02b01b028ab5e9976a6c3f4a249d5dd38791e51a",
+     0
+    ],
+    [
+     "src/e.txt",
+     "14482ebc242e30d305b222aa3f35821fdca329e117b8e8eec21af9146bc3a74b",
+     0
+    ],
+    [
+     "src/feature.txt",
+     "7a7506ca076389ecc6b65fec403ce2942b287e2a22bb5bedd396eb36104f7bd3",
+     0
+    ],
+    [
+     "src/renamed.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ]
+   ]
+  },
+  {
+   "base": "d7bd5b6a47083dfddaabd6cd557a9504b039f1dc965f2f2804f94d38cb49c266",
+   "branch": "main",
+   "chain": 3,
+   "created_at_ms": 1800000009000,
+   "id": "cb3e59766aad1db61194d6f18cd358bb44e00c45a54773f014eae3336d94b2ba",
+   "in_trash": true,
+   "merge_parent": "",
+   "message": "oops two",
+   "meta": [],
+   "name": "t2",
+   "parent": "d7bd5b6a47083dfddaabd6cd557a9504b039f1dc965f2f2804f94d38cb49c266",
+   "storage": "delta",
+   "tree": [
+    [
+     "README.txt",
+     "349e9f8b476c75375856faf3fc26fdc4635fe2b788b455ee9426bf75b20bcfc4",
+     0
+    ],
+    [
+     "bin/blob.bin",
+     "dd951fdfbd691ebdc82172fa6fc0ddf6d8dd3bd56499b549baf9c3335123af8c",
+     0
+    ],
+    [
+     "crlf.txt",
+     "a7060348ff33e624ef297731178733effce49cfa3d1f937ea9f3ef367f37cb26",
+     0
+    ],
+    [
+     "run.sh",
+     "4b694fa6468140836e2f43625aca1150ec72032dc23a12e13416ca026c647ef3",
+     1
+    ],
+    [
+     "src/a.txt",
+     "5e5068dc312efa6e0effbcdc02b01b028ab5e9976a6c3f4a249d5dd38791e51a",
+     0
+    ],
+    [
+     "src/e.txt",
+     "14482ebc242e30d305b222aa3f35821fdca329e117b8e8eec21af9146bc3a74b",
+     0
+    ],
+    [
+     "src/feature.txt",
+     "7a7506ca076389ecc6b65fec403ce2942b287e2a22bb5bedd396eb36104f7bd3",
+     0
+    ],
+    [
+     "src/renamed.txt",
+     "2001794aa22d2ae9bbe5fa5d095bce9ac553636b1ea69b4f038962b010339fe7",
+     0
+    ],
+    [
+     "src/t2.txt",
+     "ef40086ad8a395c7a05b5f70cf2575ad187f637ad813136292cb39610694db73",
+     0
+    ]
+   ]
+  }
+ ],
+ "tags": {
+  "v1": "825b13cc26607a221527d6809527443c968763c072e75f945a3483a598d2b0e2"
+ },
+ "user_version": 4
+}
