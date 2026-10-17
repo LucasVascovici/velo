@@ -1,0 +1,1 @@
+Using only the README and the document-editor cookbook, write a Rust program that keeps an essay one sentence per line, saves drafts on branches, renames the document with a recorded rename edge, merges a draft, and uses blame to name who wrote the first sentence.

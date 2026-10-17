@@ -1,0 +1,1 @@
+Using only the README and the agent-checkpointing cookbook, write a Python script that edits a few files through an agent loop and saves one velo snapshot per tool call (with the run, call id and model recorded and an author naming the run), then show its history and the blame of one file.

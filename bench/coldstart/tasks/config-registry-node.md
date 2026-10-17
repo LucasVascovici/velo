@@ -1,0 +1,1 @@
+Using only the README and the config-registry cookbook, write a Node script that publishes three versions of `configs/service.yaml` to a `registry` branch with the version and approver recorded, rolls back to the first, and answers who approved the current version.
