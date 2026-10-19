@@ -8,7 +8,7 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ## Unreleased
 
-Phase 20: the v4 storage groundwork (fixture, differential harness, the tree accessor and the normative spec). No on-disk format change yet.
+Phase 20: format v4 (delta snapshots): the fixture, differential harness, tree accessor, schema, delta write path, fsck and fold primitive.
 
 ### Added
 
@@ -25,6 +25,28 @@ Phase 20: the v4 storage groundwork (fixture, differential harness, the tree acc
 - **20.2-c tree_store: every tree write, delete and re-key, and bundle export/import.** Added write_tree, delete_trees, rekey_tree, tree_rows_for_export and a first_parent helper to tree_store. Migrated save, tree, squash, stash, rebase, compact and bundle so none of them names file_map in SQL.
 
 - **20.2-d Lint: no SQL outside tree_store names a tree table; audit the tables that hold trees.** Added a source-scan lint that fails when a string literal outside tree_store.rs, db.rs and the tests names file_map. The audit table is in the tree_store docs and FORMAT.md, and the gc text now says "tree rows".
+
+- **20.0-a Open 6.0.0: versions, lockfiles, README tag line, semver baseline.** Workspace and internal deps are now 6.0.0, with the root and three binding lockfiles refreshed. STABILITY.md names 6.0 as the format-v4 release, and ci.yml has a comment saying the baseline moves to v5.3.0 once it is tagged.
+
+- **20.3-b Schema v4, O(1) migration, and delta-aware single-snapshot reads.** The format is now v4: the schema has both delta tables and indexes, and FORMAT_VERSION is 4. The six single-snapshot readers in tree_store.rs reconstruct delta snapshots, and a bad chain gives Error::Corrupt instead of hanging. Migration is O(1), and the spec-written format-v4 fixture reads back through a new corpus test.
+
+- **20.3-c Delta-aware scans and probes: fsck stream, gc references, history and blame paths.** tree_store scans and probes are now delta-aware: referenced_objects includes delta-row objects (gc keeps them), for_each_tree_in_order streams in chain order and returns unreached deltas, delete_orphan_trees never removes a base a remaining delta needs, and PathVersions, changed_under and changes_of resolve through chains. Seven tests are in storage_v4.rs and one fixture test is in corpus.rs; the full velo-cli and velo-core gate is green.
+
+- **20.4-a Delta write path for every local producer, K knob, and the never-orphan delete guard.** save, save_tree, save_changes, amend, stash and squash now write canonical deltas against the first parent, with a keyframe at depth K, and the K knob and the never-orphan delete guard are in. Compaction materializes dependants first, bundle export reconstructs delta trees, and the differential smoke test compares K=1 against K=2, 3 and 128.
+
+- **20.4-b Import writes deltas: bundle apply, clone, fetch, pull; adopt or replace, never duplicate.** No code change was needed. The velo-core suite passes on origin/phase-20 once the workspace builds the sibling velo binary.
+
+- **20.4-c Regenerate the v4 fixture with the real writer and compare it with the independent one.** Added `the_real_writer_reproduces_the_spec_written_v4_fixture`. It replays the fixture's ops through the real engine at K=4 and compares every table the ops control against the fixture. The real writer and the spec-written fixture agree on all of them, so there was no spec bug and no implementation bug.
+
+- **20.3-d CI: an old release refuses v4, and the bundle way back to 5.x works.** Replaced the raw 0xB7 byte in the ci.yml job name on line 363 with UTF-8 C2 B7. The whole file now decodes as UTF-8, and only that one line changed.
+
+- **20.5-a fsck verifies delta snapshots by reconstruction; new checks and repairs.** Repair now removes the IdMismatch, DeltaCycle, DeltaBaseMissing and DeltaBaseNotFirstParent findings for each snapshot where it drops the delta. It also counts that snapshot in ids_verified. The test now asserts the repair report itself is healthy.
+
+- **20.5-b Measure fsck on v4 against 5.3 at growing history sizes.** Added the ignored fsck_v4_scale harness (real save_tree history, K via set_keyframe_interval, healthy assert, JSON output) plus a small non-ignored smoke test. Measured six runs, committed the raw lines, and added a PERF.md subsection: K=128 fsck was faster than K=1 at every size, so there is no regression.
+
+- **20.6-a The fold primitive, its property test, and gc/trash using it.** The undo/save/gc/redo test now asserts that undo succeeds and that redo restores the trashed id with its recorded tree. Unchecked tree reads now return Corrupt for a base that is unknown and has no rows. gc leaves such an orphan alone, and a new test covers it.
+
+- **20.6-b Compaction, retention, squash and amend fold through the primitive; harness with removals.** compaction.rs (16 tests) and retention_scale.rs (the non-ignored test) now run at K=3 through `setup_k` and an `at_k3!` wrapper per test. compaction_in_place also gets `a_dry_run_writes_nothing_at_k3`. `cargo test -p velo-core` and `cargo test -p velo-cli` were both run on the final tree and pass.
 
 ## 5.3.0
 
