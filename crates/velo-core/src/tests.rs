@@ -12319,3 +12319,6 @@ mod storage_v4;
 
 #[cfg(test)]
 mod import_v4;
+
+#[cfg(test)]
+mod fsck_v4;

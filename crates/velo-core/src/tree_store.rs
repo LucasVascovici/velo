@@ -105,7 +105,7 @@ fn chain(conn: &Connection, snapshot: &str) -> Result<Vec<String>> {
     Ok(links)
 }
 
-fn keyframe_rows(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
+pub(crate) fn keyframe_rows(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
     let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let rows = stmt.query_map([snapshot], |r| {
         Ok((
@@ -765,14 +765,27 @@ pub(crate) fn referenced_objects(conn: &Connection) -> Result<HashSet<String>> {
 /// left (orphan deltas with dependants, or on a cycle) is for the fold of 20.6,
 /// and [`orphan_delta_snapshots`] counts it so `fsck` can report it.
 pub(crate) fn delete_orphan_trees(conn: &Connection) -> Result<usize> {
+    delete_orphans(conn, true)
+}
+
+/// [`delete_orphan_trees`] limited to delta storage: delta rows with no
+/// record, and delta snapshots in neither `snapshots` nor `trash` that nothing
+/// is based on. Orphan `file_map` rows are left alone, which is what `fsck
+/// --repair` has always done with them.
+pub(crate) fn delete_orphan_delta_trees(conn: &Connection) -> Result<usize> {
+    delete_orphans(conn, false)
+}
+
+fn delete_orphans(conn: &Connection, keyframes_too: bool) -> Result<usize> {
     let mut total = conn.execute(
         "DELETE FROM tree_delta_rows
           WHERE snapshot_hash NOT IN (SELECT snapshot_hash FROM tree_deltas)",
         [],
     )?;
     loop {
-        let keyframes = conn.execute(
-            "DELETE FROM file_map WHERE snapshot_hash IN (
+        let keyframes = if keyframes_too {
+            conn.execute(
+                "DELETE FROM file_map WHERE snapshot_hash IN (
                  WITH RECURSIVE s(h) AS (
                      SELECT MIN(snapshot_hash) FROM file_map
                      UNION ALL
@@ -783,8 +796,11 @@ pub(crate) fn delete_orphan_trees(conn: &Connection) -> Result<usize> {
                    AND h NOT IN (SELECT hash FROM snapshots)
                    AND h NOT IN (SELECT hash FROM trash)
                    AND h NOT IN (SELECT base_hash FROM tree_deltas))",
-            [],
-        )?;
+                [],
+            )?
+        } else {
+            0
+        };
         let mut stmt = conn.prepare(
             "SELECT snapshot_hash FROM tree_deltas
               WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
@@ -809,7 +825,6 @@ pub(crate) fn delete_orphan_trees(conn: &Connection) -> Result<usize> {
 /// How many delta snapshots are in neither `snapshots` nor `trash`. After
 /// [`delete_orphan_trees`] these are the ones it had to keep because another
 /// delta is based on them (or they sit on a cycle).
-#[allow(dead_code)]
 pub(crate) fn orphan_delta_snapshots(conn: &Connection) -> Result<usize> {
     let n: i64 = conn.query_row(
         "SELECT COUNT(*) FROM tree_deltas
@@ -819,6 +834,103 @@ pub(crate) fn orphan_delta_snapshots(conn: &Connection) -> Result<usize> {
         |r| r.get(0),
     )?;
     Ok(n.max(0) as usize)
+}
+
+/// How many `tree_delta_rows` belong to a snapshot with no `tree_deltas`
+/// record. They are part of no tree, so nothing reads them.
+pub(crate) fn orphan_delta_rows(conn: &Connection) -> Result<usize> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM tree_delta_rows
+          WHERE snapshot_hash NOT IN (SELECT snapshot_hash FROM tree_deltas)",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n.max(0) as usize)
+}
+
+/// Every delta record as `(snapshot, base)`, sorted by snapshot.
+pub(crate) fn delta_links(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut stmt =
+        conn.prepare("SELECT snapshot_hash, base_hash FROM tree_deltas ORDER BY snapshot_hash")?;
+    let rows = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(rows)
+}
+
+/// Delta snapshots that also have `file_map` rows, sorted. A reader takes the
+/// delta and ignores the rows, so the two storages disagree about which is
+/// the tree.
+pub(crate) fn delta_snapshots_with_keyframe_rows(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT snapshot_hash FROM tree_deltas
+          WHERE EXISTS (SELECT 1 FROM file_map WHERE file_map.snapshot_hash = tree_deltas.snapshot_hash)
+          ORDER BY snapshot_hash",
+    )?;
+    let rows = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<std::result::Result<_, _>>()?;
+    Ok(rows)
+}
+
+/// Whether some delta is based on `snapshot`.
+pub(crate) fn has_dependants(conn: &Connection, snapshot: &str) -> Result<bool> {
+    has_children(conn, snapshot)
+}
+
+/// Drops the `file_map` rows of `snapshot`, leaving a delta as its only tree.
+pub(crate) fn drop_keyframe_rows(conn: &Connection, snapshot: &str) -> Result<()> {
+    conn.execute("DELETE FROM file_map WHERE snapshot_hash = ?", [snapshot])?;
+    Ok(())
+}
+
+/// Drops the delta record and rows of `snapshot`, leaving its `file_map` rows
+/// as its only tree. Only right when nothing is based on it.
+pub(crate) fn drop_delta(conn: &Connection, snapshot: &str) -> Result<()> {
+    conn.execute(
+        "DELETE FROM tree_delta_rows WHERE snapshot_hash = ?",
+        [snapshot],
+    )?;
+    conn.execute(
+        "DELETE FROM tree_deltas WHERE snapshot_hash = ?",
+        [snapshot],
+    )?;
+    Ok(())
+}
+
+/// How many delta snapshots sit deeper than `max_depth` links from their
+/// keyframe. A snapshot on a cycle has no depth and is not counted (it is
+/// reported as damage elsewhere).
+pub(crate) fn overlong_chains(conn: &Connection, max_depth: u32) -> Result<usize> {
+    let links: HashMap<String, String> = delta_links(conn)?.into_iter().collect();
+    let mut depth: HashMap<&str, Option<u32>> = HashMap::new();
+    for start in links.keys() {
+        let mut path: Vec<&str> = Vec::new();
+        let mut cur = start.as_str();
+        // The depth of the first node already settled, 0 at a keyframe, or
+        // `None` when the walk loops.
+        let settled: Option<u32> = loop {
+            if let Some(d) = depth.get(cur) {
+                break *d;
+            }
+            if path.contains(&cur) {
+                break None;
+            }
+            match links.get(cur) {
+                Some(b) => {
+                    path.push(cur);
+                    cur = b.as_str();
+                }
+                None => break Some(0),
+            }
+        };
+        let mut d = settled;
+        for node in path.into_iter().rev() {
+            d = d.map(|d| d + 1);
+            depth.insert(node, d);
+        }
+    }
+    Ok(depth.values().flatten().filter(|d| **d > max_depth).count())
 }
 
 /// Remove `index_cache` rows for paths that no live snapshot's tree holds,
