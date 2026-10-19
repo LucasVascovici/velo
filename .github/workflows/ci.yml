@@ -398,3 +398,6 @@ jobs:
 
       - name: Old release refuses v4, and the bundle way back works
         run: python3 tests/corpus/old_release_check.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velo
+
+      - name: Mixed versions, HTTP and path remotes in both directions
+        run: python3 tests/compat/mixed_versions.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velo

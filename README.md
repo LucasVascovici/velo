@@ -697,6 +697,14 @@ shell history and in `velo remote`'s output. Tokens are never stored in the
 repository database either, since it travels in backups. A refused request
 shows as "refused access".
 
+A path remote is opened by the client itself, not by a server, so mixed
+versions behave differently there than over HTTP or ssh. A 5.x client is
+refused by design when the remote is a format v4 repository (made by 6.0),
+and the remote is left unchanged. A 6.0 client opens a v3 remote and migrates
+it in place to v4, after which 5.x can no longer open it. To serve clients you
+cannot upgrade, use `velo serve-http` or ssh, whose wire protocol is
+unchanged between 5.x and 6.0.
+
 `velo status` tells you where you stand relative to the last-fetched remote state
 (no network access needed):
 
