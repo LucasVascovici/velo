@@ -14,7 +14,9 @@
 //! seed and the shortest op list that still fails, as a `Vec<Op>` literal.
 //!
 //! Knobs, read here and nowhere in the library: `VELO_DIFF_SEED`,
-//! `VELO_DIFF_OPS` (default 40) and `VELO_DIFF_SECS` (the `#[ignore]`d long run).
+//! `VELO_DIFF_OPS` (default 40), `VELO_DIFF_SECS` (the `#[ignore]`d long run) and
+//! `VELO_DIFF_FAILURE_OUT` (a path the long run writes the failing seed, start,
+//! subject K and shrunk ops to, so CI can attach it).
 //!
 //! Symlink entries are not generated: they could only enter through `save_tree`
 //! and only on Unix, which would make the two platforms' op lists differ.
@@ -38,6 +40,34 @@ use crate::{BranchName, Error, Repo, SnapshotId, TagName};
 #[derive(Clone, Debug, Default)]
 struct Config {
     keyframe_interval: Option<u32>,
+    start: Start,
+}
+
+/// What side `a` starts from: a freshly initialised repository, or a copy of a
+/// checked-in corpus golden (`tests/corpus/repos/<tag>`) that is migrated on
+/// open. The golden itself is only ever a copy source, never opened in place.
+#[derive(Clone, Copy, Debug, Default)]
+enum Start {
+    #[default]
+    Empty,
+    Golden(&'static str),
+}
+
+/// Every released format the corpus holds, in the order the long run walks them.
+const GOLDENS: [&str; 5] = ["v4.0.0", "v5.0.0", "v5.1.0", "v5.1.2", "format-v4"];
+
+/// Recursive copy, std only; `std::fs::copy` keeps file modes.
+fn copy_dir(from: &Path, to: &Path) {
+    std::fs::create_dir_all(to).unwrap();
+    for entry in std::fs::read_dir(from).unwrap() {
+        let entry = entry.unwrap();
+        let dest = to.join(entry.file_name());
+        if entry.file_type().unwrap().is_dir() {
+            copy_dir(&entry.path(), &dest);
+        } else {
+            std::fs::copy(entry.path(), &dest).unwrap();
+        }
+    }
 }
 
 /// Which operations the generator may draw. `removals` gates the ones that
@@ -64,8 +94,18 @@ fn side(cfg: &Config) -> Side {
     let mut repos = Vec::new();
     for name in ["a", "b"] {
         let root = dirs.path().join(name);
-        std::fs::create_dir(&root).unwrap();
-        crate::commands::init::run(&root).unwrap();
+        match (name, cfg.start) {
+            ("a", Start::Golden(tag)) => {
+                let src = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../tests/corpus/repos")
+                    .join(tag);
+                copy_dir(&src, &root);
+            }
+            _ => {
+                std::fs::create_dir(&root).unwrap();
+                crate::commands::init::run(&root).unwrap();
+            }
+        }
         let mut repo = Repo::open_and_migrate(&root).unwrap();
         if let Some(k) = cfg.keyframe_interval {
             repo.set_keyframe_interval(k);
@@ -538,16 +578,30 @@ fn shrink(reference: &Config, subject: &Config, ops: &[Op]) -> Vec<Op> {
     best
 }
 
-fn check_seed(reference: &Config, subject: &Config, seed: u64, count: usize, mix: Mix) {
+/// Run one seed; on a mismatch return the report, with the shrunk op list.
+fn try_seed(
+    reference: &Config,
+    subject: &Config,
+    seed: u64,
+    count: usize,
+    mix: Mix,
+) -> Result<(), String> {
     let ops = gen_ops(seed, count, mix);
     if let Err(f) = run_ops(reference, subject, &ops) {
         let minimal = shrink(reference, subject, &ops);
-        panic!(
+        return Err(format!(
             "differential failure, seed {seed} ({count} ops), at step {}: {}\n\
              replay with VELO_DIFF_SEED={seed} VELO_DIFF_OPS={count}\n\
              shortest failing ops:\n{minimal:#?}",
             f.step, f.why
-        );
+        ));
+    }
+    Ok(())
+}
+
+fn check_seed(reference: &Config, subject: &Config, seed: u64, count: usize, mix: Mix) {
+    if let Err(report) = try_seed(reference, subject, seed, count, mix) {
+        panic!("{report}");
     }
 }
 
@@ -576,10 +630,12 @@ fn differential_smoke() {
     };
     let reference = Config {
         keyframe_interval: Some(1),
+        ..Default::default()
     };
     for k in [2, 3, 128] {
         let subject = Config {
             keyframe_interval: Some(k),
+            ..Default::default()
         };
         for &seed in &seeds {
             check_seed(&reference, &subject, seed, op_count(), mix);
@@ -623,26 +679,63 @@ fn differential_long() {
             .map_or(1, |d| d.as_secs())
     });
     let deadline = Instant::now() + Duration::from_secs(secs);
-    let reference = Config {
-        keyframe_interval: Some(1),
+    let starts: Vec<Start> = std::iter::once(Start::Empty)
+        .chain(GOLDENS.iter().map(|t| Start::Golden(t)))
+        .collect();
+    let mix = Mix {
+        removals: false,
+        network: false,
     };
-    let subject = Config {
-        keyframe_interval: Some(3),
-    };
-    let mut i = 0;
+    let mut i = 0usize;
     while Instant::now() < deadline {
-        let seed = first.wrapping_add(i);
-        eprintln!("differential_long: seed {seed}");
-        check_seed(
-            &reference,
-            &subject,
-            seed,
-            op_count(),
-            Mix {
-                removals: false,
-                network: false,
-            },
-        );
+        let seed = first.wrapping_add(i as u64);
+        for (n, &start) in starts.iter().enumerate() {
+            // The subject K rotates with the iteration and the start, so every
+            // start meets every K over a few laps.
+            let k = [2, 3, 128][(i + n) % 3];
+            eprintln!("differential_long: seed {seed} start {start:?} K {k}");
+            let reference = Config {
+                keyframe_interval: Some(1),
+                start,
+            };
+            let subject = Config {
+                keyframe_interval: Some(k),
+                start,
+            };
+            let count = op_count();
+            if let Err(report) = try_seed(&reference, &subject, seed, count, mix) {
+                if let Ok(out) = std::env::var("VELO_DIFF_FAILURE_OUT") {
+                    let text = format!(
+                        "seed: {seed}\nstart: {start:?}\nsubject K: {k}\nops: {count}\n\n{report}\n"
+                    );
+                    std::fs::write(out, text).unwrap();
+                }
+                panic!("start {start:?}, subject K {k}: {report}");
+            }
+        }
         i += 1;
+    }
+}
+
+/// Every released format, migrated and then driven by the simulation; the
+/// reference is the same start at K=1, so only the storage differs.
+#[test]
+fn differential_from_goldens() {
+    let mix = Mix {
+        removals: false,
+        network: false,
+    };
+    for tag in GOLDENS {
+        let reference = Config {
+            keyframe_interval: Some(1),
+            start: Start::Golden(tag),
+        };
+        for k in [2, 3, 128] {
+            let subject = Config {
+                keyframe_interval: Some(k),
+                start: Start::Golden(tag),
+            };
+            check_seed(&reference, &subject, 11, 30, mix);
+        }
     }
 }
