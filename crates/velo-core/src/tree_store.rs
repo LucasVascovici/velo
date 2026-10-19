@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use rusqlite::Connection;
 
-use crate::error::Result;
+use crate::error::{Error, Result};
 
 /// One file in a stored tree: its object id and its mode.
 pub(crate) type Entry = (String, i64);
@@ -45,8 +45,66 @@ pub(crate) type StoredTree = BTreeMap<String, Entry>;
 /// the snapshot, so the statement stays at SQLite's customary 500.
 const CHUNK: usize = 499;
 
-/// The full tree of `snapshot`; empty when it has no rows.
-pub(crate) fn tree_of(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
+/// Most links a delta chain may have before a reader calls it corrupt
+/// (docs/FORMAT.md, section 11.6). A writer keeps chains far shorter; the bound
+/// exists so a cyclic or runaway chain is an error and never a hang.
+pub(crate) const MAX_CHAIN_LINKS: usize = 4096;
+
+fn corrupt(snapshot: &str, why: &str) -> Error {
+    Error::Corrupt {
+        detail: format!("tree of snapshot {snapshot}: {why}"),
+    }
+}
+
+/// The snapshots whose rows make up the tree of `snapshot`, keyframe first and
+/// `snapshot` last; a keyframe is a chain of one. Costs one `tree_deltas`
+/// primary-key probe for a keyframe.
+///
+/// A cycle, a base that is in neither `snapshots` nor `trash`, or more than
+/// [`MAX_CHAIN_LINKS`] links is `Error::Corrupt`. A snapshot with no rows at
+/// all is an empty keyframe and fine.
+fn chain(conn: &Connection, snapshot: &str) -> Result<Vec<String>> {
+    let mut probe =
+        conn.prepare_cached("SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?")?;
+    let mut links = vec![snapshot.to_string()];
+    let mut seen: HashSet<String> = HashSet::new();
+    seen.insert(snapshot.to_string());
+    loop {
+        let cur = links.last().expect("chain is never empty");
+        let base: Option<String> = match probe.query_row([cur], |r| r.get(0)) {
+            Ok(b) => Some(b),
+            Err(rusqlite::Error::QueryReturnedNoRows) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let Some(base) = base else { break };
+        if links.len() > MAX_CHAIN_LINKS {
+            return Err(corrupt(
+                snapshot,
+                &format!("delta chain longer than {MAX_CHAIN_LINKS} links"),
+            ));
+        }
+        if !seen.insert(base.clone()) {
+            return Err(corrupt(snapshot, &format!("delta chain cycles at {base}")));
+        }
+        let known: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM snapshots WHERE hash = ?1)
+                 OR EXISTS(SELECT 1 FROM trash WHERE hash = ?1)",
+            [&base],
+            |r| r.get(0),
+        )?;
+        if !known {
+            return Err(corrupt(
+                snapshot,
+                &format!("delta base {base} does not exist"),
+            ));
+        }
+        links.push(base);
+    }
+    links.reverse();
+    Ok(links)
+}
+
+fn keyframe_rows(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
     let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let rows = stmt.query_map([snapshot], |r| {
         Ok((
@@ -62,15 +120,64 @@ pub(crate) fn tree_of(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
     Ok(tree)
 }
 
-/// The entry of one `path` in `snapshot`, or `None` when it is not there.
-pub(crate) fn file_at(conn: &Connection, snapshot: &str, path: &str) -> Result<Option<Entry>> {
+/// The full tree of `snapshot`; empty when it has no rows.
+pub(crate) fn tree_of(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
+    let links = chain(conn, snapshot)?;
+    let mut tree = keyframe_rows(conn, &links[0])?;
+    let mut stmt = conn
+        .prepare_cached("SELECT path, hash, mode FROM tree_delta_rows WHERE snapshot_hash = ?")?;
+    for link in &links[1..] {
+        let rows = stmt.query_map([link], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })?;
+        for row in rows {
+            match row? {
+                (path, Some(hash), mode) => {
+                    tree.insert(path, (hash, mode.unwrap_or(0)));
+                }
+                (path, None, _) => {
+                    tree.remove(&path);
+                }
+            }
+        }
+    }
+    Ok(tree)
+}
+
+/// One path through an already walked chain: the newest delta row for it wins,
+/// else the keyframe's row; a NULL-hash delta row means absent.
+fn file_in_chain(conn: &Connection, links: &[String], path: &str) -> Result<Option<Entry>> {
+    if links.len() > 1 {
+        let mut stmt = conn.prepare_cached(
+            "SELECT hash, mode FROM tree_delta_rows WHERE snapshot_hash = ? AND path = ?",
+        )?;
+        for link in links[1..].iter().rev() {
+            let mut rows = stmt.query(rusqlite::params![link, path])?;
+            if let Some(r) = rows.next()? {
+                return Ok(match r.get::<_, Option<String>>(0)? {
+                    Some(hash) => Some((hash, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
+                    None => None,
+                });
+            }
+        }
+    }
     let mut stmt = conn
         .prepare_cached("SELECT hash, mode FROM file_map WHERE snapshot_hash = ? AND path = ?")?;
-    let mut rows = stmt.query(rusqlite::params![snapshot, path])?;
+    let mut rows = stmt.query(rusqlite::params![links[0], path])?;
     match rows.next()? {
         Some(r) => Ok(Some((r.get(0)?, r.get(1)?))),
         None => Ok(None),
     }
+}
+
+/// The entry of one `path` in `snapshot`, or `None` when it is not there.
+pub(crate) fn file_at(conn: &Connection, snapshot: &str, path: &str) -> Result<Option<Entry>> {
+    let links = chain(conn, snapshot)?;
+    file_in_chain(conn, &links, path)
 }
 
 /// The entries of every `paths` member that is in `snapshot`, keyed by path.
@@ -80,7 +187,16 @@ pub(crate) fn files_at(
     snapshot: &str,
     paths: &[&str],
 ) -> Result<HashMap<String, Entry>> {
+    let links = chain(conn, snapshot)?;
     let mut found: HashMap<String, Entry> = HashMap::with_capacity(paths.len());
+    if links.len() > 1 {
+        for p in paths {
+            if let Some(entry) = file_in_chain(conn, &links, p)? {
+                found.insert((*p).to_string(), entry);
+            }
+        }
+        return Ok(found);
+    }
     for chunk in paths.chunks(CHUNK) {
         let marks = (2..chunk.len() + 2)
             .map(|i| format!("?{i}"))
@@ -109,23 +225,38 @@ pub(crate) fn files_at(
     Ok(found)
 }
 
-/// Whether `snapshot` has a stored tree at all (an empty tree has none).
+/// Whether `snapshot` has a stored tree at all: `file_map` rows or a delta
+/// record (an empty keyframe has none).
 ///
 /// Nothing outside the tests asks this yet; the whole-table work in 20.2-b is
 /// its first caller.
 #[allow(dead_code)]
 pub(crate) fn has_tree(conn: &Connection, snapshot: &str) -> Result<bool> {
     Ok(conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?)",
+        "SELECT EXISTS(SELECT 1 FROM tree_deltas WHERE snapshot_hash = ?1)
+             OR EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?1)",
         [snapshot],
         |r| r.get(0),
     )?)
+}
+
+/// Whether `snapshot` is stored as a delta rather than a keyframe.
+fn is_delta(conn: &Connection, snapshot: &str) -> Result<bool> {
+    Ok(conn
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM tree_deltas WHERE snapshot_hash = ?)")?
+        .query_row([snapshot], |r| r.get(0))?)
 }
 
 /// Whether `path` is in `snapshot`, either as a file or as a directory with
 /// at least one file beneath it. `path` must be normalised and carry no
 /// trailing slash.
 pub(crate) fn has_path_or_under(conn: &Connection, snapshot: &str, path: &str) -> Result<bool> {
+    if is_delta(conn, snapshot)? {
+        let under = format!("{path}/");
+        return Ok(tree_of(conn, snapshot)?
+            .keys()
+            .any(|p| p == path || p.starts_with(&under)));
+    }
     Ok(conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM file_map
           WHERE snapshot_hash = ? AND (path = ? OR path LIKE ? || '/%'))",
@@ -144,11 +275,35 @@ pub(crate) type JoinedRow = (Option<String>, Option<CacheRow>);
 /// Every path in the tree of `snapshot` or in `index_cache`, with its object
 /// id (when tracked) and its cache row (when cached).
 ///
-/// It is one query, a full outer join, because it is status's hot path.
+/// A keyframe is one query, a full outer join, because it is status's hot
+/// path. A delta snapshot is reconstructed first and joined in memory, to the
+/// same shape.
 pub(crate) fn tree_with_index_cache(
     conn: &Connection,
     snapshot: &str,
 ) -> Result<HashMap<String, JoinedRow>> {
+    if is_delta(conn, snapshot)? {
+        let mut out: HashMap<String, JoinedRow> = tree_of(conn, snapshot)?
+            .into_iter()
+            .map(|(p, (h, _))| (p, (Some(h), None)))
+            .collect();
+        let mut stmt = conn.prepare("SELECT path, mtime_ns, size, hash FROM index_cache")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                (
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?,
+                    r.get::<_, String>(3)?,
+                ),
+            ))
+        })?;
+        for row in rows {
+            let (path, cache) = row?;
+            out.entry(path).or_insert((None, None)).1 = Some(cache);
+        }
+        return Ok(out);
+    }
     let mut stmt = conn.prepare(
         "SELECT COALESCE(f.path, c.path), f.hash, c.mtime_ns, c.size, c.hash
          FROM (SELECT path, hash FROM file_map WHERE snapshot_hash = ?1) f

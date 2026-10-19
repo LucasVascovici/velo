@@ -336,7 +336,7 @@ tie-break on a stable secondary key (`rowid`) when timestamps collide.
 | **v1** | **No version marker.** Migrations sniff `pragma_table_info(...)` and add missing columns. There is no way to detect a repository written by a *newer* implementation. |
 | **v2** | `PRAGMA user_version` holds the repository format version, stamped when the database is created. |
 | **v3** | Same marker, stamped `3`. Adds the `.velo/chunks/` directory and the additive `settings` and `objects` tables (§7.2); a v3 repository may keep its objects in files or in the database. |
-| **v4** | *Being implemented for 6.0.* Adds the `tree_deltas` and `tree_delta_rows` tables; a snapshot with no `tree_deltas` row is a keyframe, so existing `file_map` rows stay keyframes (§11.6, normative); `user_version = 4` makes older builds refuse the repository. |
+| **v4** | Adds the `tree_deltas` and `tree_delta_rows` tables; a snapshot with no `tree_deltas` row is a keyframe, so existing `file_map` rows stay keyframes (§11.6, normative); `user_version = 4` makes older builds refuse the repository. |
 
 The v1 `ALTER TABLE` sniffing migrations are gone. They existed only to bring a v1
 repository forward, and v2 refuses to open one, so keeping them would have meant
@@ -346,7 +346,7 @@ an earlier build of v2.
 
 **v2 rules — normative:**
 
-- `user_version = 3` for this specification.
+- `user_version = 4` for this specification.
 - An implementation **must refuse to open** a repository whose `user_version`
   exceeds the highest version it understands, with a distinct, catchable error
   (`SchemaTooNew { found, supported }`). Silently proceeding risks half-migration

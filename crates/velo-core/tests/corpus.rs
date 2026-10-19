@@ -65,7 +65,7 @@ fn tags() -> Vec<String> {
             let stem = name.strip_suffix(".json")?;
             // `<tag>.blame.json` sits beside `<tag>.json`.
             // `bundles.v4.json` describes the signed bundles, not a repository.
-            // `format-*` is the spec-written v4 fixture, which this build cannot open yet.
+            // `format-*` is the spec-written v4 fixture, read by `the_spec_written_v4_fixture_reads_back`, not by this loop.
             (!stem.ends_with(".blame") && stem != "bundles.v4" && !stem.starts_with("format-"))
                 .then(|| stem.to_string())
         })
@@ -193,7 +193,7 @@ fn every_golden_repository_opens_migrates_and_reads_back() {
                     Repo::open(&root),
                     Err(Error::MigrationRequired {
                         found: 2,
-                        supported: 3
+                        supported: 4
                     })
                 ),
                 "{ctx}: the format-2 golden must need migration"
@@ -701,4 +701,155 @@ fn write_the_v4_goldens() {
     let mut text = serde_json::to_string_pretty(&exp).unwrap();
     text.push('\n');
     fs::write(corpus().join("expected/bundles.v4.json"), text).unwrap();
+}
+
+/// The fixture written by `tests/corpus/write_format_v4.py` straight from
+/// docs/FORMAT.md: a repository this build never wrote. It is already v4, so
+/// it opens without migration. No fsck or gc here: those scans become
+/// delta-aware in 20.3-c.
+#[test]
+fn the_spec_written_v4_fixture_reads_back() {
+    let exp = expected("format-v4");
+    let (_dir, root) = golden_copy("format-v4");
+    let repo = Repo::open(&root).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(repo.format_version().unwrap(), FORMAT_VERSION);
+    assert_eq!(exp["user_version"].as_u64().unwrap(), 4);
+
+    let snapshots = exp["snapshots"].as_array().unwrap();
+    assert!(!snapshots.is_empty());
+    for snap in snapshots {
+        let hash = s(&snap["hash"]);
+        let sid = id(hash);
+        let mut want: Vec<(String, String)> = exp["file_map"][hash]
+            .as_array()
+            .unwrap_or_else(|| panic!("{hash}: no file_map"))
+            .iter()
+            .map(|r| (s(&r["path"]).to_string(), s(&r["hash"]).to_string()))
+            .collect();
+        want.sort();
+        let mut got = repo.tree_at(&sid).unwrap();
+        got.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(
+            got.iter()
+                .map(|f| (f.path.clone(), f.object.to_string()))
+                .collect::<Vec<_>>(),
+            want,
+            "tree of {hash}"
+        );
+        for f in &got {
+            let bytes = repo.read_file_at(&sid, &f.path).unwrap();
+            assert_eq!(
+                blake3::hash(&bytes).to_hex().to_string(),
+                f.object.to_string(),
+                "content of {} in {hash}",
+                f.path
+            );
+        }
+        let e = repo.snapshot(&sid).unwrap();
+        assert_eq!(e.message, s(&snap["message"]));
+        assert_eq!(
+            e.parent.as_ref().map(|p| p.to_string()).unwrap_or_default(),
+            s(&snap["parent_hash"])
+        );
+    }
+
+    // Bytes: every entry the writer recorded reads back as it was written.
+    let mut checked = 0;
+    for op in exp["ops"].as_array().unwrap() {
+        let Some(entries) = op["entries"].as_array() else {
+            continue;
+        };
+        for entry in entries {
+            let Some(b64) = entry["content_base64"].as_str() else {
+                continue;
+            };
+            let got = repo
+                .read_file_at(&id(s(&op["id"])), s(&entry["path"]))
+                .unwrap();
+            // velo stores text with LF line endings (the fixture's `hash` is of the
+            // stored form), so the written CRLF input reads back as LF.
+            let raw = base64_decode(b64);
+            let mut want = Vec::with_capacity(raw.len());
+            for (i, &b) in raw.iter().enumerate() {
+                if !(b == 13 && raw.get(i + 1) == Some(&10)) {
+                    want.push(b);
+                }
+            }
+            assert_eq!(got, want, "{} in {}", entry["path"], op["id"]);
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+
+    let mut meta: BTreeSet<(String, String, String, String)> = BTreeSet::new();
+    for r in exp["snapshot_meta"].as_array().unwrap() {
+        meta.insert((
+            s(&r[0]).to_string(),
+            s(&r[1]).to_string(),
+            s(&r[2]).to_string(),
+            s(&r[3]).to_string(),
+        ));
+    }
+    let mut got_meta: BTreeSet<(String, String, String, String)> = BTreeSet::new();
+    for snap in snapshots {
+        let h = s(&snap["hash"]);
+        for (n, k, v) in repo.snapshot_meta(&id(h)).unwrap().iter() {
+            got_meta.insert((h.to_string(), n.to_string(), k.to_string(), v.to_string()));
+        }
+    }
+    // Snapshots `undo` moved to the trash keep their rows but are not listed.
+    meta.retain(|(h, ..)| snapshots.iter().any(|x| s(&x["hash"]) == h));
+    assert_eq!(got_meta, meta, "metadata");
+
+    for branch in branches(&exp) {
+        let t = tip(&repo, &branch);
+        let h = history::run(
+            &repo,
+            history::Options {
+                from: Some(&t),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let got: BTreeSet<String> = h.entries.iter().map(|e| e.hash.to_string()).collect();
+        assert_eq!(
+            got,
+            expected_ancestry(snapshots, t.as_str()),
+            "history of {branch}"
+        );
+    }
+    let got_tags: BTreeSet<(String, String)> = tag::list(&repo)
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.name.to_string(), t.snapshot.to_string()))
+        .collect();
+    let want_tags: BTreeSet<(String, String)> = exp["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (s(&t[0]).to_string(), s(&t[1]).to_string()))
+        .collect();
+    assert_eq!(got_tags, want_tags, "tags");
+}
+
+/// Standard base64 without a dependency: the fixture's few sample payloads.
+fn base64_decode(text: &str) -> Vec<u8> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        _ => 63,
+    };
+    let mut out = Vec::new();
+    let data: Vec<u8> = text.bytes().filter(|&c| c != b'=').collect();
+    for chunk in data.chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= (val(c) as u32) << (18 - 6 * i);
+        }
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&bytes[..chunk.len() - 1]);
+    }
+    out
 }

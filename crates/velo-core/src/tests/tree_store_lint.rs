@@ -8,8 +8,8 @@
 
 use std::path::{Path, PathBuf};
 
-/// Tables whose rows are a snapshot's tree. 20.3-b adds the v4 names.
-const TREE_TABLES: &[&str] = &["file_map"];
+/// Tables whose rows are a snapshot's tree. The v4 delta tables are tree tables too.
+const TREE_TABLES: &[&str] = &["file_map", "tree_deltas", "tree_delta_rows"];
 
 /// Files allowed to name a tree table, each with the reason.
 const EXEMPT: &[(&str, &str)] = &[

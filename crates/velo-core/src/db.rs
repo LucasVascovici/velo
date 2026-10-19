@@ -25,6 +25,20 @@ const SCHEMA: &str = "
         hash          TEXT NOT NULL,
         mode          INTEGER NOT NULL DEFAULT 0
     );
+    -- v4: a snapshot stored as a delta against its first parent. No row here
+    -- means keyframe, so every pre-v4 `file_map` snapshot is already one and
+    -- migration rewrites nothing (docs/FORMAT.md, section 11.6).
+    CREATE TABLE IF NOT EXISTS tree_deltas (
+        snapshot_hash TEXT PRIMARY KEY,
+        base_hash     TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS tree_delta_rows (
+        snapshot_hash TEXT NOT NULL,
+        path          TEXT NOT NULL,
+        hash          TEXT,
+        mode          INTEGER,
+        PRIMARY KEY (snapshot_hash, path)
+    ) WITHOUT ROWID;
     -- App-namespaced snapshot metadata. Part of snapshot identity, so rows are
     -- immutable: changing one would change the id it belongs to.
     CREATE TABLE IF NOT EXISTS snapshot_meta (
@@ -169,6 +183,8 @@ const SCHEMA: &str = "
 
     CREATE INDEX IF NOT EXISTS idx_filemap_snap  ON file_map (snapshot_hash);
     CREATE INDEX IF NOT EXISTS idx_filemap_path  ON file_map (path);
+    CREATE INDEX IF NOT EXISTS idx_tree_deltas_base ON tree_deltas (base_hash);
+    CREATE INDEX IF NOT EXISTS idx_delta_rows_path  ON tree_delta_rows (path);
     CREATE INDEX IF NOT EXISTS idx_snap_branch   ON snapshots (branch, created_at_ms);
     CREATE INDEX IF NOT EXISTS idx_trash_branch  ON trash (branch, deleted_at_ms);
     CREATE INDEX IF NOT EXISTS idx_stash_name    ON stash (name);
