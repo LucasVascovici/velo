@@ -15,8 +15,8 @@ use std::process::Command;
 
 use tempfile::TempDir;
 use velo_core::commands::{
-    bundle, compact, fsck, gc, history, merge, rebase, redo, restore, retention, save, status,
-    switch, sync, undo,
+    bundle, compact, fsck, gc, history, merge, rebase, redo, repack, restore, retention, save,
+    status, switch, sync, undo,
 };
 use velo_core::{Error, Repo, SnapshotId};
 
@@ -399,6 +399,12 @@ const SCENARIOS: &[Scenario] = &[
         name: "retention",
         build: build_chain,
         op: op_retention,
+        kind: Kind::Plain,
+    },
+    Scenario {
+        name: "repack",
+        build: build_repack,
+        op: op_repack,
         kind: Kind::Plain,
     },
     Scenario {
@@ -1271,6 +1277,7 @@ fn required_points(name: &str) -> &'static [&'static str] {
             "compact.before_parent",
         ],
         "migrate_v3" => &["migrate.before_stamp"],
+        "repack" => &["repack.after_chunk"],
         "bundle" => &[
             "bundle.after_objects",
             "bundle.before_commit",
@@ -1614,4 +1621,39 @@ fn clone_survives_or_is_a_listed_window() {
         let repo = Repo::open(&dest).unwrap();
         assert!(fsck::check(&repo).unwrap().problems.is_empty());
     }
+}
+
+/// Seven snapshots written as whole trees (K = 1), the shape `repack` rewrites.
+fn build_repack(repo: &Repo) {
+    let mut whole = Repo::open(repo.root()).unwrap();
+    whole.set_keyframe_interval(1);
+    let root = whole.root().to_path_buf();
+    for i in 1..=7 {
+        write(
+            &root,
+            "a.txt",
+            &format!(
+                "a {i}
+"
+            ),
+        );
+        write(
+            &root,
+            &format!("f{i}.txt"),
+            &format!(
+                "f{i}
+"
+            ),
+        );
+        save_all(&whole, &format!("s{i}"));
+    }
+}
+
+/// Repacks at K = 4 in chunks of two, so a kill can land between chunks.
+fn op_repack(r: &Repo) {
+    let mut packed = Repo::open(r.root()).unwrap();
+    packed.set_keyframe_interval(4);
+    let mut options = repack::Options::default();
+    options.chunk = 2;
+    repack::run(&packed, options).unwrap();
 }

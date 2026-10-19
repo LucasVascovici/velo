@@ -1620,3 +1620,112 @@ pub(crate) fn fuzz_set_row(
     )?;
     Ok(())
 }
+
+/// Rewrites the keyframe of `snapshot` as a delta against `first_parent`, the
+/// storage-only half of `velo repack`. Returns whether it did.
+///
+/// It applies the same rule [`write_tree`] does, so a repacked repository holds
+/// what a fresh save would have written: `snapshot` must be a keyframe with a
+/// first parent whose tree is stored, and the parent must sit shallow enough
+/// that the new delta stays within `k - 1` links of its keyframe. A root, a
+/// repository at `k == 1`, a parent without rows and a parent already at depth
+/// `k - 2` are left alone and give `false`.
+///
+/// The delta is the exact symmetric difference between the parent's tree and
+/// the snapshot's own, so [`tree_of`] returns the identical tree afterwards.
+/// Deltas already based on `snapshot` stay valid for the same reason; they may
+/// now sit deeper, which [`promote_overlong`] repairs. Everything happens on
+/// `tx`, so the caller's commit makes the conversion atomic.
+pub(crate) fn convert_to_delta(
+    tx: &Connection,
+    snapshot: &str,
+    first_parent: Option<&str>,
+    k: u32,
+) -> Result<bool> {
+    let Some(parent) = first_parent else {
+        return Ok(false);
+    };
+    if k < 2 || parent == snapshot || is_delta(tx, snapshot)? {
+        return Ok(false);
+    }
+    let own: bool = tx
+        .prepare_cached("SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?)")?
+        .query_row([snapshot], |r| r.get(0))?;
+    if !own || !has_tree(tx, parent)? || depth_upto(tx, parent, k)? + 1 >= k {
+        return Ok(false);
+    }
+    let tree = tree_of(tx, snapshot)?;
+    let base = tree_of(tx, parent)?;
+    let rows: Vec<(&str, &str, i64)> = tree
+        .iter()
+        .map(|(p, (h, m))| (p.as_str(), h.as_str(), *m))
+        .collect();
+    insert_delta_rows(tx, snapshot, &base, &rows)?;
+    tx.execute(
+        "INSERT INTO tree_deltas (snapshot_hash, base_hash) VALUES (?, ?)",
+        rusqlite::params![snapshot, parent],
+    )?;
+    drop_keyframe_rows(tx, snapshot)?;
+    Ok(true)
+}
+
+/// Turns the delta `snapshot` back into a keyframe when it sits more than
+/// `k - 1` links from its keyframe, returning whether it did.
+///
+/// Walking snapshots parents first and calling this on each leaves every chain
+/// at most `k - 1` deep: a node whose parent is already at the limit becomes a
+/// keyframe, and its own dependants start counting from it. The tree is
+/// unchanged, so deltas based on `snapshot` stay valid.
+pub(crate) fn promote_overlong(tx: &Connection, snapshot: &str, k: u32) -> Result<bool> {
+    if !is_delta(tx, snapshot)? || depth_upto(tx, snapshot, k)? < k {
+        return Ok(false);
+    }
+    let tree = tree_of(tx, snapshot)?;
+    drop_delta(tx, snapshot)?;
+    drop_keyframe_rows(tx, snapshot)?;
+    let mut ins = tx.prepare_cached(
+        "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+    )?;
+    for (path, (hash, mode)) in &tree {
+        ins.execute(rusqlite::params![snapshot, path, hash, mode])?;
+    }
+    Ok(true)
+}
+
+/// Every snapshot with a stored tree, keyframe or delta.
+pub(crate) fn stored_snapshots(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare(
+        "SELECT snapshot_hash FROM file_map UNION SELECT snapshot_hash FROM tree_deltas",
+    )?;
+    let rows = stmt.query_map([], |r| r.get(0))?;
+    Ok(rows.collect::<std::result::Result<_, _>>()?)
+}
+
+/// Whether `snapshot` is stored as a keyframe: it has `file_map` rows and no
+/// delta record.
+pub(crate) fn is_keyframe(conn: &Connection, snapshot: &str) -> Result<bool> {
+    Ok(conn
+        .prepare_cached(
+            "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?1)
+                AND NOT EXISTS(SELECT 1 FROM tree_deltas WHERE snapshot_hash = ?1)",
+        )?
+        .query_row([snapshot], |r| r.get(0))?)
+}
+
+/// The number of stored tree rows (keyframe rows plus delta rows) and their
+/// estimated size in bytes: the length of each row's path and hash plus 8 for
+/// its mode and row overhead. An estimate for planning, not a measurement.
+pub(crate) fn row_stats(conn: &Connection) -> Result<(u64, u64)> {
+    let mut rows = 0u64;
+    let mut cost = 0u64;
+    for sql in [
+        "SELECT COUNT(*), COALESCE(SUM(length(path) + length(hash) + 8), 0) FROM file_map",
+        "SELECT COUNT(*), COALESCE(SUM(length(path) + COALESCE(length(hash), 0) + 8), 0)
+           FROM tree_delta_rows",
+    ] {
+        let (n, c): (i64, i64) = conn.query_row(sql, [], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        rows += n.max(0) as u64;
+        cost += c.max(0) as u64;
+    }
+    Ok((rows, cost))
+}

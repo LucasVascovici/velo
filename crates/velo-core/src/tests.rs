@@ -12331,3 +12331,6 @@ mod fold;
 
 #[cfg(test)]
 mod hostile_deltas;
+
+#[cfg(test)]
+mod repack;

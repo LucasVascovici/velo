@@ -19,6 +19,7 @@ pub mod paths;
 pub mod rebase;
 pub mod redo;
 pub mod remote;
+pub mod repack;
 pub mod report;
 pub mod resolve;
 pub mod restore;
