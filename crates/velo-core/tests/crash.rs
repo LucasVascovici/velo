@@ -930,18 +930,46 @@ fn trashed_ids(repo: &Repo) -> Vec<String> {
 }
 
 /// The files of a trashed snapshot, read back object by object. A trashed
-/// snapshot is not a live row, so `tree_at` refuses it; its `file_map` rows
-/// and the objects they name are what `redo` needs, and what is checked.
+/// snapshot is not a live row, so `tree_at` refuses it; its stored tree (a
+/// keyframe in `file_map`, or a delta chain down to one) and the objects it
+/// names are what `redo` needs, and what is checked.
 fn trashed_tree(repo: &Repo, id: &str) -> Tree {
     let db = open_db(repo);
+    // The chain from `id` down to its keyframe, newest first.
+    let mut chain = vec![id.to_string()];
+    while let Ok(base) = db.query_row(
+        "SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?",
+        [chain.last().unwrap()],
+        |r| r.get::<_, String>(0),
+    ) {
+        chain.push(base);
+    }
+    chain.reverse();
     let mut stmt = db
         .prepare("SELECT path, hash FROM file_map WHERE snapshot_hash = ?")
         .unwrap();
-    let rows: Vec<(String, velo_core::ObjectHash)> = stmt
-        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+    let mut map: BTreeMap<String, velo_core::ObjectHash> = stmt
+        .query_map([&chain[0]], |r| Ok((r.get(0)?, r.get(1)?)))
         .unwrap()
         .map(|r| r.unwrap())
         .collect();
+    let mut delta = db
+        .prepare("SELECT path, hash FROM tree_delta_rows WHERE snapshot_hash = ?")
+        .unwrap();
+    for link in &chain[1..] {
+        let rows: Vec<(String, Option<velo_core::ObjectHash>)> = delta
+            .query_map([link], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect();
+        for (path, hash) in rows {
+            match hash {
+                Some(h) => map.insert(path, h),
+                None => map.remove(&path),
+            };
+        }
+    }
+    let rows: Vec<(String, velo_core::ObjectHash)> = map.into_iter().collect();
     assert!(!rows.is_empty(), "trashed snapshot {id} lost its file_map");
     rows.into_iter()
         .map(|(path, hash)| {
