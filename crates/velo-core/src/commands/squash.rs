@@ -185,7 +185,11 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
     // (Objects are left in the store; gc will clean them up)
     // The trees go as one set: members are deltas on each other, and the
     // never-orphan guard only lets a set leave together.
-    crate::tree_store::delete_trees(&tx, &squashed_hashes)?;
+    crate::tree_store::remove_trees_by_parent(
+        &tx,
+        &squashed_hashes,
+        guard.repo().keyframe_interval(),
+    )?;
     for h in &squashed_hashes {
         tx.execute("DELETE FROM snapshots WHERE hash = ?", [h])?;
     }

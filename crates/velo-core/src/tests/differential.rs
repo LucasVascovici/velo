@@ -565,13 +565,13 @@ fn differential_smoke() {
     // removing and the append-only operation sets are covered.
     // The reference stores every tree whole; the subject runs at several K so
     // short chains, keyframes mid-history and the default are all compared with
-    // it. Removals stay off until 20.6-b.
+    // it. Removals are on: squash, compact, retention and gc fold delta chains.
     let seeds: Vec<u64> = match env_u64("VELO_DIFF_SEED") {
         Some(s) => vec![s],
         None => vec![1, 2, 3],
     };
     let mix = Mix {
-        removals: false,
+        removals: true,
         network: true,
     };
     let reference = Config {

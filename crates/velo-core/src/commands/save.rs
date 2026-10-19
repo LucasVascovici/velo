@@ -387,7 +387,11 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
 
     // If amending, delete the old snapshot and its file_map first
     if let Some((old_hash, _)) = &amend_hash {
-        crate::tree_store::delete_trees(&tx, &[old_hash.as_str()])?;
+        crate::tree_store::remove_trees_by_parent(
+            &tx,
+            &[old_hash.as_str()],
+            guard.repo().keyframe_interval(),
+        )?;
         tx.execute("DELETE FROM snapshots   WHERE hash = ?", [old_hash])?;
         // Also remove from trash (shouldn't be there, but be safe)
         tx.execute("DELETE FROM trash WHERE hash = ?", [old_hash])?;

@@ -340,7 +340,11 @@ fn discard_replayed(guard: &WriteGuard, start: &str, onto: &str, orig_head: &str
         }
     }
     for h in &doomed {
-        let _ = crate::tree_store::delete_trees(conn, &[h.as_str()]);
+        let _ = crate::tree_store::remove_trees_by_parent(
+            conn,
+            &[h.as_str()],
+            guard.repo().keyframe_interval(),
+        );
         let _ = conn.execute("DELETE FROM snapshots WHERE hash = ?", [h]);
     }
     doomed.len()

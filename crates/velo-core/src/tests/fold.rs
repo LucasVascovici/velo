@@ -412,3 +412,83 @@ fn h_tree(t: &StoredTree) -> Vec<(String, String, i64)> {
         .map(|(p, (h, m))| (p.clone(), h.clone(), *m))
         .collect()
 }
+
+// ---------------------------------------------------------------------------
+// Compaction folds through the primitive.
+// ---------------------------------------------------------------------------
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(24))]
+
+    #[test]
+    fn compaction_keeps_every_tree_and_bounds_chains(
+        k in 2u32..=3,
+        n in 7usize..14,
+        spans in prop::collection::vec((0usize..14, 1usize..4), 1..3),
+    ) {
+        let (_tmp, repo, ids) = build(k, n);
+        let before: HashMap<String, StoredTree> = ids
+            .iter()
+            .map(|i| (i.clone(), tree_store::tree_of(repo.conn(), i).unwrap()))
+            .collect();
+        // Disjoint ranges of at least two snapshots, oldest first.
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut floor = 0;
+        let mut sorted = spans.clone();
+        sorted.sort();
+        for (lo, len) in sorted {
+            let lo = lo.max(floor) % (n - 1);
+            let hi = (lo + len).min(n - 1);
+            if lo < floor || hi <= lo {
+                continue;
+            }
+            ranges.push((lo, hi));
+            floor = hi + 1;
+        }
+        prop_assume!(!ranges.is_empty());
+        let sids: Vec<crate::SnapshotId> = ids
+            .iter()
+            .map(|i| crate::SnapshotId::from_stored(i.clone()))
+            .collect();
+        let rs: Vec<commands::compact::Range> = ranges
+            .iter()
+            .map(|(lo, hi)| commands::compact::Range { oldest: &sids[*lo], newest: &sids[*hi] })
+            .collect();
+        let branch: crate::BranchName = "main".parse().unwrap();
+        let done = {
+            let guard = repo.write().unwrap();
+            commands::compact::run(&guard, &branch, &rs, commands::compact::Options::default())
+                .unwrap()
+        };
+        let conn = repo.conn();
+        // Every snapshot that was neither squashed away nor re-minted is where
+        // it was; every new id carries the tree of the one it replaces.
+        let mut replaced: HashSet<String> = HashSet::new();
+        for s in &done.squashed {
+            let newest = s.removed.last().unwrap().as_str().to_string();
+            for r in &s.removed {
+                replaced.insert(r.as_str().to_string());
+            }
+            prop_assert_eq!(
+                &tree_store::tree_of(conn, s.into.as_str()).unwrap(),
+                &before[&newest]
+            );
+        }
+        for (old, new) in &done.rewritten {
+            replaced.insert(old.as_str().to_string());
+            prop_assert_eq!(
+                &tree_store::tree_of(conn, new.as_str()).unwrap(),
+                &before[old.as_str()]
+            );
+        }
+        for (i, tree) in &before {
+            if !replaced.contains(i) {
+                prop_assert_eq!(&tree_store::tree_of(conn, i).unwrap(), tree);
+            }
+        }
+        for (s, d) in depths(conn) {
+            prop_assert!(d < k, "{s} is {d} deep at K={k}");
+        }
+        assert_no_dangling(conn);
+    }
+}

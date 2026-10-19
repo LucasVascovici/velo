@@ -589,17 +589,72 @@ pub fn run(
     // pages they free are reused by the index entries the updates write, which
     // is what keeps the file from growing. A source row is never in this set.
     let sources: HashSet<&str> = minted.iter().map(|m| m.tree_from.as_str()).collect();
-    let gone: Vec<&str> = mapping
+    let mut gone: Vec<&str> = mapping
         .keys()
         .map(String::as_str)
         .filter(|id| !sources.contains(id))
         .collect();
+    // Deltas inside the set go before the trees they are based on, so a batch
+    // never has a dependant waiting in a later one: the fold would rewrite it
+    // only for the next batch to delete it.
+    let gone_set: HashSet<&str> = gone.iter().copied().collect();
+    let mut base_in_gone: HashMap<&str, &str> = HashMap::new();
+    for id in &gone {
+        let base = crate::tree_store::base_of(&tx, id)?;
+        if let Some(b) = base.and_then(|b| gone_set.get(b.as_str()).copied()) {
+            base_in_gone.insert(id, b);
+        }
+    }
+    let depth_in_gone = |id: &str| -> usize {
+        let mut cur = id;
+        let mut n = 0;
+        while let Some(b) = base_in_gone.get(cur) {
+            n += 1;
+            cur = b;
+            if n > gone_set.len() {
+                break;
+            }
+        }
+        n
+    };
+    gone.sort_by_cached_key(|id| (std::cmp::Reverse(depth_in_gone(id)), *id));
+    // A dependant's base after the compaction: its first parent as the plan
+    // gives it. A re-minted snapshot is still keyed by its `tree_from` id here
+    // and so is every re-minted parent; the re-key below carries the base
+    // record across.
+    let by_source: HashMap<&str, &Minted> =
+        minted.iter().map(|m| (m.tree_from.as_str(), m)).collect();
+    let key_of_new: HashMap<&str, &str> = minted
+        .iter()
+        .map(|m| (m.hash.as_str(), m.tree_from.as_str()))
+        .collect();
+    let new_first_parent = |d: &str| -> Option<String> {
+        let parent = match by_source.get(d) {
+            Some(m) => m.parent.clone(),
+            None => {
+                let old: String = tx
+                    .query_row(
+                        "SELECT parent_hash FROM snapshots WHERE hash = ?",
+                        [d],
+                        |r| r.get(0),
+                    )
+                    .ok()?;
+                mapping.get(&old).cloned().unwrap_or(old)
+            }
+        };
+        if parent.is_empty() {
+            return None;
+        }
+        Some(
+            key_of_new
+                .get(parent.as_str())
+                .map_or(parent.clone(), |k| (*k).to_string()),
+        )
+    };
+    let k = guard.repo().keyframe_interval();
     for batch in gone.chunks(DELETE_BATCH) {
         let marks = vec!["?"; batch.len()].join(", ");
-        // Compaction cannot fold a delta chain yet (20.6-b): whatever outside
-        // the batch is a delta on a member is stored whole first.
-        crate::tree_store::materialize_dependants(&tx, batch)?;
-        crate::tree_store::delete_trees(&tx, batch)?;
+        crate::tree_store::remove_trees(&tx, batch, &new_first_parent, k)?;
         for (table, column) in [
             ("snapshots", "hash"),
             ("snapshot_meta", "snapshot_id"),

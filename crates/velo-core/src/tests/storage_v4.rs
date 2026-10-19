@@ -868,7 +868,7 @@ fn amend_deltas_against_the_replaced_snapshots_parent() {
 }
 
 #[test]
-fn amend_is_refused_while_a_stash_is_based_on_the_snapshot() {
+fn amend_folds_a_stash_that_is_based_on_the_snapshot() {
     let (tmp, repo) = setup_k(8);
     write_wt(tmp.path(), "f.txt", "one");
     save_wt(&repo, "one", false).unwrap();
@@ -889,12 +889,13 @@ fn amend_is_refused_while_a_stash_is_based_on_the_snapshot() {
         )
         .unwrap();
     assert_eq!(base, tip.as_str());
+    let before = tree_store::tree_of(repo.conn(), &shelf).unwrap();
     write_wt(tmp.path(), "f.txt", "amended");
-    let err = save_wt(&repo, "one", true).unwrap_err();
-    assert!(matches!(err, Error::Corrupt { .. }), "{err:?}");
-    // Nothing moved.
-    assert_eq!(head(&repo), tip);
-    assert!(tree_store::has_tree(repo.conn(), tip.as_str()).unwrap());
+    // The amended snapshot's tree goes; the stash keeps its own, now stored
+    // whole (the fold of 20.6 rewrites a dependant rather than refusing).
+    save_wt(&repo, "one", true).unwrap();
+    assert!(!tree_store::has_tree(repo.conn(), tip.as_str()).unwrap());
+    assert_eq!(tree_store::tree_of(repo.conn(), &shelf).unwrap(), before);
 }
 
 #[test]

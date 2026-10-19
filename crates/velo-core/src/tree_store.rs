@@ -620,6 +620,35 @@ pub(crate) fn remove_trees(
     delete_trees(tx, removed)
 }
 
+/// [`remove_trees`] for a plain removal: each dependant's new base is its
+/// first parent that survives, found by walking `parent_hash` past the removed
+/// ids. Any stored tree is a correct base, so a snapshot with no such parent,
+/// or one whose chain is not shallower, simply becomes a keyframe.
+pub(crate) fn remove_trees_by_parent(tx: &Connection, removed: &[&str], k: u32) -> Result<()> {
+    let gone: HashSet<&str> = removed.iter().copied().collect();
+    let parent_of = |id: &str| -> Option<String> {
+        tx.query_row(
+            "SELECT parent_hash FROM snapshots WHERE hash = ?",
+            [id],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+    };
+    let next = |d: &str| -> Option<String> {
+        let mut cur = parent_of(d)?;
+        let mut steps = 0;
+        while gone.contains(cur.as_str()) {
+            steps += 1;
+            if steps > MAX_CHAIN_LINKS {
+                return None;
+            }
+            cur = parent_of(&cur)?;
+        }
+        (!cur.is_empty()).then_some(cur)
+    };
+    remove_trees(tx, removed, &next, k)
+}
+
 /// Rewrites every delta outside `snapshots` that is based on a member as a
 /// keyframe, so [`delete_trees`] may then remove the set. A removal that is
 /// not yet able to fold a delta chain (compaction, retention) calls this first;
@@ -915,7 +944,7 @@ pub(crate) fn delete_orphan_trees(conn: &Connection, k: u32) -> Result<usize> {
 }
 
 /// The base `snapshot`'s delta is written against, if it is a delta.
-fn base_of(conn: &Connection, snapshot: &str) -> Result<Option<String>> {
+pub(crate) fn base_of(conn: &Connection, snapshot: &str) -> Result<Option<String>> {
     match conn.query_row(
         "SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?",
         [snapshot],

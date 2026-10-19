@@ -101,8 +101,11 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let parent_hash = parent_hash.trim().to_string();
 
-    let shelf_name =
-        name.unwrap_or_else(|| format!("stash-{}", Utc::now().format("%Y%m%d-%H%M%S")));
+    let shelf_name = name.unwrap_or_else(|| {
+        // The repository's clock, so a pinned clock gives a stable name.
+        let at = super::timestamp_from_ms(guard.repo().now_ms());
+        format!("stash-{}", at.format("%Y%m%d-%H%M%S"))
+    });
 
     let taken: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM stash WHERE name = ?)",
@@ -292,7 +295,7 @@ pub fn pop(guard: &WriteGuard, name: Option<String>) -> Result<Popped> {
     let (restored, removed) = apply_tree(guard, &shelf)?;
 
     let tx = guard.transaction()?;
-    forget(&tx, &shelf)?;
+    forget(&tx, &shelf, guard.repo().keyframe_interval())?;
     tx.commit()?;
 
     Ok(Popped {
@@ -309,7 +312,7 @@ pub fn drop_shelf(guard: &WriteGuard, name: Option<String>) -> Result<String> {
     let conn = guard.conn();
     let shelf = find_shelf(conn, name)?;
     let tx = guard.transaction()?;
-    forget(&tx, &shelf)?;
+    forget(&tx, &shelf, guard.repo().keyframe_interval())?;
     tx.commit()?;
     Ok(shelf.name)
 }
@@ -411,9 +414,9 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
 }
 
 /// Delete a shelf's registration and the hidden snapshot behind it.
-fn forget(tx: &rusqlite::Transaction, shelf: &ShelfRow) -> Result<()> {
+fn forget(tx: &rusqlite::Transaction, shelf: &ShelfRow, k: u32) -> Result<()> {
     tx.execute("DELETE FROM stash WHERE name = ?", [&shelf.name])?;
-    crate::tree_store::delete_trees(tx, &[shelf.snapshot.as_str()])?;
+    crate::tree_store::remove_trees_by_parent(tx, &[shelf.snapshot.as_str()], k)?;
     tx.execute("DELETE FROM snapshots WHERE hash = ?", [&shelf.snapshot])?;
     Ok(())
 }

@@ -9,8 +9,9 @@ use crate::commands::{fsck, retention, tag};
 use crate::tree::{SaveTree, TreeEntry};
 use crate::{BranchName, Repo, SnapshotId, SnapshotMeta, TagName};
 
-fn setup() -> (TempDir, Repo) {
-    crate::repo::keyframes_only();
+/// A repository at keyframe interval `k`; 1 stores every tree whole.
+fn setup_k(k: u32) -> (TempDir, Repo) {
+    crate::repo::set_test_keyframe_interval(k);
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
@@ -76,7 +77,11 @@ fn lines(repo: &Repo, sql: &str) -> Vec<String> {
 /// a tagged snapshot 4, a second range 5..=6, and a tail 7..=9 whose last is
 /// tagged and checked out.
 fn scenario() -> (TempDir, Repo, Vec<SnapshotId>) {
-    let (t, repo) = setup();
+    scenario_k(1)
+}
+
+fn scenario_k(k: u32) -> (TempDir, Repo, Vec<SnapshotId>) {
+    let (t, repo) = setup_k(k);
     let mut ids: Vec<SnapshotId> = Vec::new();
     for i in 0..10i64 {
         let body = format!("body {i}\n");
@@ -190,7 +195,16 @@ fn a_dry_run_writes_nothing() {
 
 #[test]
 fn retention_does_not_grow_the_database() {
-    let (_t, repo) = setup();
+    retention_does_not_grow(1);
+}
+
+#[test]
+fn retention_does_not_grow_the_database_at_k3() {
+    retention_does_not_grow(3);
+}
+
+fn retention_does_not_grow(k: u32) {
+    let (_t, repo) = setup_k(k);
     let branch = main_branch();
     let day = 86_400_000i64;
     let base = 1_700_000_000_000i64;
@@ -239,6 +253,70 @@ fn retention_does_not_grow_the_database() {
     )
     .unwrap();
     assert!(report.removed > 0);
-    assert!(pages(&repo) <= before, "{} > {before}", pages(&repo));
+    if k == 1 {
+        assert!(pages(&repo) <= before, "{} > {before}", pages(&repo));
+    } else {
+        // A survivor whose delta chain was removed may have to become a
+        // keyframe, so the file can grow a little, but never past twice.
+        assert!(
+            pages(&repo) <= 2 * before,
+            "{} > 2 * {before}",
+            pages(&repo)
+        );
+    }
     healthy(&repo);
+}
+
+/// Every snapshot's tree, by id, read through the delta-aware reader.
+fn trees(repo: &Repo) -> std::collections::BTreeMap<String, crate::tree_store::StoredTree> {
+    lines(repo, "SELECT hash FROM snapshots")
+        .into_iter()
+        .map(|h| {
+            let t = crate::tree_store::tree_of(repo.conn(), &h).unwrap();
+            (h, t)
+        })
+        .collect()
+}
+
+/// The longest delta chain in the repository.
+fn deepest(repo: &Repo) -> usize {
+    let links: std::collections::HashMap<String, String> =
+        crate::tree_store::delta_links(repo.conn())
+            .unwrap()
+            .into_iter()
+            .collect();
+    links
+        .keys()
+        .map(|s| {
+            let (mut cur, mut d) = (s, 0);
+            while let Some(b) = links.get(cur) {
+                cur = b;
+                d += 1;
+            }
+            d
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[test]
+fn compaction_at_k3_keeps_ids_and_trees_and_bounds_chains() {
+    let (_t, reference, ref_ids) = scenario_k(1);
+    run_scenario(&reference, &ref_ids, false);
+    for k in [2u32, 3] {
+        let (_t, repo, ids) = scenario_k(k);
+        run_scenario(&repo, &ids, false);
+        // Ids, tags, renames and refs do not depend on how trees are stored.
+        for sql in [
+            "SELECT hash, parent_hash, message, created_at_ms FROM snapshots ORDER BY created_at_ms",
+            "SELECT old_hash, new_hash FROM compactions ORDER BY old_hash",
+            "SELECT name, snapshot_hash FROM tags ORDER BY name",
+            "SELECT snapshot_hash, from_path, to_path FROM renames ORDER BY snapshot_hash, to_path",
+        ] {
+            assert_eq!(lines(&repo, sql), lines(&reference, sql), "{sql} at K={k}");
+        }
+        assert_eq!(trees(&repo), trees(&reference), "trees at K={k}");
+        assert!(deepest(&repo) < k as usize, "chain too long at K={k}");
+        healthy(&repo);
+    }
 }
