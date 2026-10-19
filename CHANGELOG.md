@@ -6,6 +6,26 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## Unreleased
+
+Phase 20: the v4 storage groundwork (fixture, differential harness, the tree accessor and the normative spec). No on-disk format change yet.
+
+### Added
+
+- **20.3-a Fix the v4 storage schema normatively in FORMAT.md.** Added FORMAT.md section 11.6, the normative v4 storage spec, and updated the v4 row in section 7.1 and the table and index lists in section 7.2.
+
+- **20.1-a Independent v4 fixture written from the spec by a stdlib Python script.** Trash deleted_at_ms now rises in undo order: 13 gets ...100000 and 12 gets ...100001, so redo picks 12 first. The undo ops carry the same values. Regenerated velo.db and expected/format-v4.json.
+
+- **20.1-b Seeded differential harness: reference repo vs subject repo, asserted after every operation.** Added a per-handle cfg(test) clock (Repo::now_ms) used by every core snapshot and trash stamp site, and a seeded differential harness in tests/differential.rs. It compares ids, trees, history, blame, status and fsck after every op, with shrinking on failure. It passes against itself.
+
+- **20.2-a tree_store module and the single-snapshot readers.** Added tree_store.rs with tree_of, file_at, files_at, has_tree and tree_with_index_cache. Moved every listed single-snapshot file_map read behind it, with timing lap names unchanged. Added 6 direct tests, including the 499/500 batch boundary.
+
+- **20.2-b tree_store: whole-table scans and path-keyed probes (fsck, gc, history, blame).** tree_store now holds the scans and path probes (for_each_tree_in_order, referenced_objects, delete_orphan_trees, prune_stale_index_cache, duplicate_rows, remove_duplicate_rows, changed_under, PathVersions, changes_of). fsck, gc, history and blame build no SQL naming file_map. The SQL was moved, not rewritten.
+
+- **20.2-c tree_store: every tree write, delete and re-key, and bundle export/import.** Added write_tree, delete_trees, rekey_tree, tree_rows_for_export and a first_parent helper to tree_store. Migrated save, tree, squash, stash, rebase, compact and bundle so none of them names file_map in SQL.
+
+- **20.2-d Lint: no SQL outside tree_store names a tree table; audit the tables that hold trees.** Added a source-scan lint that fails when a string literal outside tree_store.rs, db.rs and the tests names file_map. The audit table is in the tree_store docs and FORMAT.md, and the gc text now says "tree rows".
+
 ## 5.3.0
 
 Phase 19: profiling, `save_changes`, batch reads and `materialize`, shrinking retention and `velo retention`, the snapshot-storage decision (FORMAT.md 11.5), Windows first-run cost, `velo report`, and release-artifact packaging.
