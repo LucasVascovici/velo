@@ -29,7 +29,7 @@ use std::collections::HashSet;
 use rusqlite::params;
 
 use crate::commands::compact::{self, Protected};
-use crate::commands::{branch_tip, snapshot_timestamp_ms, MAX_ANCESTRY_DEPTH};
+use crate::commands::{branch_tip, MAX_ANCESTRY_DEPTH};
 use crate::error::{Error, Result};
 use crate::progress::{Cancel, Observer};
 use crate::{BranchName, SnapshotId, WriteGuard};
@@ -170,7 +170,7 @@ pub fn apply(
         observer,
         cancel,
     } = options;
-    let now = now_ms.unwrap_or_else(snapshot_timestamp_ms);
+    let now = now_ms.unwrap_or_else(|| guard.repo().now_ms());
     let conn = guard.conn();
 
     // The first-parent chain on this branch, newest first.

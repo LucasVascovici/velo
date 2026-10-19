@@ -46,6 +46,10 @@ pub struct Repo {
     /// Where bearer tokens for HTTP remotes come from, given a remote's URL.
     /// `None` sends no credentials. Set via [`Repo::credentials`].
     credentials: Option<Credentials>,
+    /// Tests only: a fixed clock for this handle, so two repositories driven in
+    /// lockstep mint the same snapshot ids. Per handle, never global.
+    #[cfg(test)]
+    pub(crate) test_now_ms: std::cell::Cell<Option<i64>>,
 }
 
 /// A callback mapping a remote URL to the bearer token to present to it.
@@ -123,6 +127,16 @@ impl std::fmt::Debug for Repo {
 }
 
 impl Repo {
+    /// The wall clock for snapshot and trash stamps made through this handle.
+    /// Release builds read the real clock; tests may pin it per handle.
+    pub(crate) fn now_ms(&self) -> i64 {
+        #[cfg(test)]
+        if let Some(ms) = self.test_now_ms.get() {
+            return ms;
+        }
+        crate::commands::snapshot_timestamp_ms()
+    }
+
     /// Create a repository at `root`.
     ///
     /// Fails with [`Error::AlreadyInitialized`] if one exists there, or
@@ -171,6 +185,8 @@ impl Repo {
             object_location,
             lock_label: None,
             limits: crate::Limits::default(),
+            #[cfg(test)]
+            test_now_ms: std::cell::Cell::new(None),
         })
     }
 
@@ -222,6 +238,8 @@ impl Repo {
             object_location,
             lock_label: None,
             limits: crate::Limits::default(),
+            #[cfg(test)]
+            test_now_ms: std::cell::Cell::new(None),
         })
     }
 
@@ -319,6 +337,8 @@ impl Repo {
             object_location,
             lock_label: None,
             limits: crate::Limits::default(),
+            #[cfg(test)]
+            test_now_ms: std::cell::Cell::new(None),
         })
     }
 

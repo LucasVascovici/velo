@@ -110,7 +110,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
     // The cutoff is computed here and bound as an integer: `deleted_at_ms` is an
     // INTEGER column, and comparing it with SQLite's TEXT `datetime()` always
     // holds (an integer sorts below any text), which expired every row.
-    let cutoff_ms = crate::commands::snapshot_timestamp_ms() - i64::from(keep_days) * 86_400_000;
+    let cutoff_ms = guard.repo().now_ms() - i64::from(keep_days) * 86_400_000;
     // Rows a live snapshot still builds on are kept: they are the only copy of
     // a parent that an older `undo` removed, and `velo redo` restores it.
     // A signed snapshot's trash entry is kept too: expiring it would make an

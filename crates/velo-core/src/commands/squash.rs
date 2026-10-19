@@ -153,7 +153,7 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
             .collect();
         collected
     };
-    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let timestamp_ms = guard.repo().now_ms();
     let new_hash = crate::commands::snapshot_id(SnapshotIdentity {
         tree: &tree,
         parent: new_parent,

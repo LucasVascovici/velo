@@ -146,7 +146,7 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     tree.extend(hashed.iter().cloned());
 
     let message = format!("stash: {}", shelf_name);
-    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let timestamp_ms = guard.repo().now_ms();
     let snapshot = crate::commands::snapshot_id(SnapshotIdentity {
         tree: &tree,
         parent: &parent_hash,

@@ -375,7 +375,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         snapshot_meta.set_author(author);
     }
 
-    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let timestamp_ms = guard.repo().now_ms();
     let snapshot_hash = crate::commands::snapshot_id(SnapshotIdentity {
         tree: &tree,
         parent: effective_parent.trim(),

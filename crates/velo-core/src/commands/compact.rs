@@ -578,7 +578,7 @@ pub fn run(
     }
 
     // ── Apply, in one transaction ────────────────────────────────────────────
-    let now = crate::commands::snapshot_timestamp_ms();
+    let now = guard.repo().now_ms();
     let old_tip = chain.last().map(|m| m.hash.clone()).unwrap_or_default();
     let new_tip = mapping.get(&old_tip).cloned().unwrap_or_default();
 

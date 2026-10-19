@@ -756,9 +756,7 @@ impl WriteGuard<'_> {
         let merge_parent = id.merge_parent.map_or("", |p| p.as_str());
         // The caller's clock when they supplied one, ours otherwise. This is the
         // only place the wall clock is read.
-        let timestamp_ms = id
-            .timestamp_ms
-            .unwrap_or_else(crate::commands::snapshot_timestamp_ms);
+        let timestamp_ms = id.timestamp_ms.unwrap_or_else(|| self.repo().now_ms());
         let snapshot = SnapshotId::from_stored(crate::commands::snapshot_id(SnapshotIdentity {
             tree: &tree,
             parent,
