@@ -351,3 +351,8 @@ jobs:
 
       - name: Corpus tests
         run: cargo test -p velo-core --test corpus --locked
+
+      # The real writer replays the spec-written v4 fixture; the keyframe
+      # interval setter it needs is behind the failpoints feature.
+      - name: Corpus tests (real writer against the spec-written fixture)
+        run: cargo test -p velo-core --features failpoints --test corpus --locked

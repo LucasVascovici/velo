@@ -833,6 +833,261 @@ fn the_spec_written_v4_fixture_reads_back() {
     assert_eq!(got_tags, want_tags, "tags");
 }
 
+/// Replay the spec-written fixture's `ops` with the real engine at its `k`
+/// and compare every table the ops control, row for row. The fixture is
+/// written by `write_format_v4.py` straight from docs/FORMAT.md and the real
+/// build is a second, independent writer: a difference is a spec bug or an
+/// implementation bug, and either is a fix, never a loosened comparison.
+///
+/// Columns not compared, and why: `trash.deleted_at_ms` (the wall clock at
+/// the moment of the undo, which no op can set; the trash ids, parents,
+/// messages and creation times are compared). `file_map` rows of delta
+/// snapshots do not exist, which is checked rather than skipped. Nothing else
+/// is left out.
+#[cfg(feature = "failpoints")]
+#[test]
+fn the_real_writer_reproduces_the_spec_written_v4_fixture() {
+    use velo_core::commands::{restore, undo};
+    use velo_core::tree::Content;
+    use velo_core::Author;
+
+    let exp = expected("format-v4");
+    let k = exp["k"].as_u64().unwrap() as u32;
+    let key = test_key();
+    assert_eq!(key.public_key().to_string(), s(&exp["signer_public_key"]));
+
+    let (_dir, mut repo) = fresh_repo();
+    repo.set_keyframe_interval(k);
+
+    // The whole tree of every saved snapshot, by the fixture's `n`: the ops
+    // record only what changed against the first parent.
+    type Tree = BTreeMap<String, (Vec<u8>, FileKind)>;
+    let mut trees: BTreeMap<u64, Tree> = BTreeMap::new();
+    let mut ids: BTreeMap<u64, SnapshotId> = BTreeMap::new();
+    let mut tip_n: u64 = 0;
+
+    for op in exp["ops"].as_array().unwrap() {
+        let g = repo.write().unwrap();
+        match s(&op["op"]) {
+            "branch" => {}
+            "undo" => {
+                let want = id(s(&op["id"]));
+                if tip_n == op["n"].as_u64().unwrap() {
+                    restore::run(
+                        &g,
+                        &want,
+                        restore::Options {
+                            force: true,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                    // `init` wrote an ignore file the fixture's history does
+                    // not track; undo refuses a tree that differs from it.
+                    let _ = fs::remove_file(g.root().join(".veloignore"));
+                }
+                undo::run(&g).unwrap();
+                tip_n = op["n"].as_u64().unwrap() - 1;
+            }
+            kind @ ("save" | "merge") => {
+                let n = op["n"].as_u64().unwrap();
+                let mut tree: Tree = op["parent"]
+                    .as_u64()
+                    .map(|p| trees[&p].clone())
+                    .unwrap_or_default();
+                for e in op["entries"].as_array().unwrap() {
+                    let path = s(&e["path"]).to_string();
+                    if e["remove"].as_bool() == Some(true) {
+                        tree.remove(&path);
+                        continue;
+                    }
+                    let kind = match e["mode"].as_i64().unwrap() {
+                        0 => FileKind::Regular,
+                        1 => FileKind::Executable,
+                        m => panic!("mode {m}"),
+                    };
+                    tree.insert(path, (base64_decode(s(&e["content_base64"])), kind));
+                }
+                let mut meta = SnapshotMeta::new();
+                let (mut name, mut email) = (None, None);
+                for m in op["meta"].as_array().unwrap() {
+                    match (s(&m[0]), s(&m[1])) {
+                        ("velo", "author.name") => name = Some(s(&m[2]).to_string()),
+                        ("velo", "author.email") => email = Some(s(&m[2]).to_string()),
+                        (ns, key) => meta.set(ns, key, s(&m[2])).unwrap(),
+                    }
+                }
+                let author = match (name, email) {
+                    (Some(name), Some(email)) => Some(Author::with_email(name, email).unwrap()),
+                    _ => None,
+                };
+                let renames: Vec<(PathBuf, PathBuf)> = op["renames"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| (PathBuf::from(s(&r[0])), PathBuf::from(s(&r[1]))))
+                    .collect();
+                let branch: BranchName = s(&op["branch"]).parse().unwrap();
+                let parent = op["parent"].as_u64().map(|p| &ids[&p]);
+                let merge_parent = op["merge_parent"].as_u64().map(|p| &ids[&p]);
+                assert_eq!(kind == "merge", merge_parent.is_some());
+                let entries: Vec<TreeEntry> = tree
+                    .iter()
+                    .map(|(path, (bytes, kind))| TreeEntry {
+                        path: path.clone(),
+                        content: Content::Bytes(bytes.clone()),
+                        kind: *kind,
+                    })
+                    .collect();
+                let new = g
+                    .save_tree(SaveTree {
+                        branch: &branch,
+                        parent,
+                        merge_parent,
+                        message: s(&op["message"]),
+                        entries,
+                        meta,
+                        author: author.as_ref(),
+                        timestamp_ms: Some(op["timestamp_ms"].as_i64().unwrap()),
+                        renames: &renames,
+                    })
+                    .unwrap();
+                assert_eq!(new.as_str(), s(&op["id"]), "id of snapshot {n}");
+                if op["sign"].as_bool() == Some(true) {
+                    sign::sign(&g, &new, &key).unwrap();
+                }
+                if let Some(name) = op["tag"].as_str() {
+                    tag::create(&g, &name.parse().unwrap(), Some(&new), false).unwrap();
+                }
+                trees.insert(n, tree);
+                ids.insert(n, new);
+                tip_n = n;
+            }
+            other => panic!("unknown op {other}"),
+        }
+    }
+
+    let db = rusqlite::Connection::open(repo.root().join(".velo/velo.db")).unwrap();
+    let rows = |sql: &str, cols: usize| -> BTreeSet<String> {
+        let mut stmt = db.prepare(sql).unwrap();
+        stmt.query_map([], |r| {
+            let mut row = Vec::new();
+            for i in 0..cols {
+                row.push(match r.get_ref(i).unwrap() {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(n) => json!(n),
+                    rusqlite::types::ValueRef::Text(t) => {
+                        json!(String::from_utf8(t.to_vec()).unwrap())
+                    }
+                    other => panic!("{other:?}"),
+                });
+            }
+            Ok(Value::Array(row).to_string())
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    let want = |v: &Value| -> BTreeSet<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.to_string())
+            .collect()
+    };
+    let objects = |v: &Value, keys: &[&str]| -> BTreeSet<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|o| Value::Array(keys.iter().map(|k| o[*k].clone()).collect()).to_string())
+            .collect()
+    };
+
+    let cols = [
+        "hash",
+        "parent_hash",
+        "merge_parent",
+        "message",
+        "created_at_ms",
+        "branch",
+    ];
+    assert_eq!(
+        rows(
+            "SELECT hash, parent_hash, COALESCE(merge_parent, ''), message, created_at_ms, branch FROM snapshots",
+            6
+        ),
+        objects(&exp["snapshots"], &cols),
+        "snapshots"
+    );
+    assert_eq!(
+        rows("SELECT snapshot_hash, base_hash FROM tree_deltas", 2),
+        want(&exp["tree_deltas"]),
+        "tree_deltas"
+    );
+    assert_eq!(
+        rows(
+            "SELECT snapshot_hash, path, hash, mode FROM tree_delta_rows",
+            4
+        ),
+        want(&exp["tree_delta_rows"]),
+        "tree_delta_rows"
+    );
+    // Keyframes alone have `file_map` rows; a delta snapshot has none.
+    let mut want_map = BTreeSet::new();
+    for h in exp["keyframes"].as_array().unwrap() {
+        for r in exp["file_map"][s(h)].as_array().unwrap() {
+            want_map.insert(json!([h, r["path"], r["hash"], r["mode"]]).to_string());
+        }
+    }
+    assert_eq!(
+        rows("SELECT snapshot_hash, path, hash, mode FROM file_map", 4),
+        want_map,
+        "file_map of keyframes"
+    );
+    assert_eq!(
+        rows(
+            "SELECT snapshot_id, namespace, key, value FROM snapshot_meta",
+            4
+        ),
+        want(&exp["snapshot_meta"]),
+        "snapshot_meta"
+    );
+    assert_eq!(
+        rows("SELECT snapshot_hash, from_path, to_path FROM renames", 3),
+        want(&exp["renames"]),
+        "renames"
+    );
+    assert_eq!(
+        rows("SELECT name, snapshot_hash FROM tags", 2),
+        want(&exp["tags"]),
+        "tags"
+    );
+    assert_eq!(
+        rows(
+            "SELECT snapshot_hash, algorithm, public_key, signature FROM signatures",
+            4
+        ),
+        want(&exp["signatures"]),
+        "signatures"
+    );
+    let trash_ids: BTreeSet<String> = exp["trash_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| json!([h]).to_string())
+        .collect();
+    assert_eq!(rows("SELECT hash FROM trash", 1), trash_ids, "trash ids");
+    // The rest of each trash row, without the wall-clock deletion time.
+    assert_eq!(
+        rows(
+            "SELECT hash, parent_hash, merge_parent, message, created_at_ms, branch FROM trash",
+            6
+        ),
+        objects(&exp["trash"], &cols),
+        "trash rows"
+    );
+}
+
 /// What `fsck`, `gc --dry-run` and `blame` say about the spec-written v4
 /// fixture, which holds real delta snapshots.
 #[test]
