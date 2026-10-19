@@ -335,3 +335,352 @@ fn a_five_thousand_link_chain_is_corrupt() {
     // A chain within the bound still reads.
     assert!(tree_store::tree_of(c, "s4000").unwrap().is_empty());
 }
+
+// ─── 20.3-c: scans and probes over deltas ────────────────────────────────────
+
+use std::collections::{BTreeMap, HashSet};
+use std::path::Path;
+
+use crate::commands::{blame, gc, history};
+
+/// Everything `for_each_tree_in_order` hands out, keyed by snapshot, plus the
+/// order it came in.
+fn streamed(conn: &Connection) -> (BTreeMap<String, tree_store::StoredTree>, Vec<String>) {
+    let mut out: BTreeMap<String, tree_store::StoredTree> = BTreeMap::new();
+    let mut order = Vec::new();
+    let unreached = tree_store::for_each_tree_in_order(conn, |snap, rows| {
+        order.push(snap.clone());
+        out.insert(
+            snap,
+            rows.into_iter().map(|(p, h, m)| (p, (h, m))).collect(),
+        );
+        Ok(())
+    })
+    .unwrap();
+    assert!(unreached.is_empty(), "{unreached:?}");
+    (out, order)
+}
+
+#[test]
+fn referenced_objects_and_gc_see_an_object_only_a_delta_names() {
+    let (_t, repo) = setup();
+    let k = save(&repo, None, &[("a", "1")], 1);
+    let d = save(&repo, Some(&k), &[("a", "1"), ("b", "only-in-delta")], 2);
+    let conn = repo.conn();
+    let (k, d) = (k.to_string(), d.to_string());
+    let obj: String = conn
+        .query_row(
+            "SELECT hash FROM file_map WHERE snapshot_hash = ? AND path = 'b'",
+            [&d],
+            |r| r.get(0),
+        )
+        .unwrap();
+    make_delta(conn, &d, &k, &[("b", Some(obj.as_str()))]);
+    let in_file_map: i64 = conn
+        .query_row(
+            "SELECT count(*) FROM file_map WHERE hash = ?",
+            [&obj],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(in_file_map, 0);
+    assert!(tree_store::referenced_objects(conn).unwrap().contains(&obj));
+
+    let guard = repo.write().unwrap();
+    let got = gc::run(
+        &guard,
+        gc::Options {
+            keep_days: 0,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(got.objects, 0);
+    drop(guard);
+    assert!(
+        repo.objects().get(&obj).is_ok(),
+        "gc deleted a delta's object"
+    );
+    assert_eq!(tree_store::tree_of(repo.conn(), &d).unwrap()["b"].0, obj);
+}
+
+/// keyframe `k`, deltas `d` (on k) and `e` (on d), a sibling delta `g` on k,
+/// and a second keyframe `z`.
+fn forest(repo: &Repo) -> [String; 5] {
+    let (k, d) = keyframe_and_delta(repo);
+    let e = save(repo, None, &[("q", "q")], 3).to_string();
+    make_delta(repo.conn(), &e, &d, &[("a", None), ("dir/b", Some("h-b2"))]);
+    let g = save(repo, None, &[("q", "g")], 4).to_string();
+    make_delta(repo.conn(), &g, &k, &[("dir/c", None)]);
+    let z = save(repo, None, &[("z", "z")], 5).to_string();
+    [k, d, e, g, z]
+}
+
+#[test]
+fn for_each_tree_streams_every_tree_once_equal_to_tree_of_even_with_a_trashed_base() {
+    let (_t, repo) = setup();
+    let ids = forest(&repo);
+    let conn = repo.conn();
+    // Trash the keyframe everything hangs on.
+    conn.execute(
+        "INSERT INTO trash (hash, message, branch)
+         SELECT hash, message, branch FROM snapshots WHERE hash = ?",
+        [&ids[0]],
+    )
+    .unwrap();
+    conn.execute("DELETE FROM snapshots WHERE hash = ?", [&ids[0]])
+        .unwrap();
+
+    let (trees, order) = streamed(conn);
+    assert_eq!(order.len(), 5, "{order:?}");
+    assert_eq!(order.iter().collect::<HashSet<_>>().len(), 5);
+    for id in &ids {
+        assert_eq!(&trees[id], &tree_store::tree_of(conn, id).unwrap(), "{id}");
+    }
+    // Chain order: a base comes before the deltas on it.
+    let pos = |s: &String| order.iter().position(|o| o == s).unwrap();
+    assert!(pos(&ids[0]) < pos(&ids[1]) && pos(&ids[1]) < pos(&ids[2]));
+    assert!(pos(&ids[0]) < pos(&ids[3]));
+}
+
+#[test]
+fn for_each_tree_reports_unreachable_deltas_and_descends_from_an_empty_base() {
+    let (_t, repo) = setup();
+    let c = repo.conn();
+    c.execute(
+        "INSERT INTO snapshots (hash, message, branch) VALUES ('empty', 'm', 'main')",
+        [],
+    )
+    .unwrap();
+    c.execute_batch(
+        "INSERT INTO tree_deltas VALUES ('onempty', 'empty');
+         INSERT INTO tree_delta_rows VALUES ('onempty', 'x', 'hx', 0);
+         INSERT INTO tree_deltas VALUES ('c1', 'c2');
+         INSERT INTO tree_deltas VALUES ('c2', 'c1');
+         INSERT INTO tree_deltas VALUES ('lost', 'nowhere');",
+    )
+    .unwrap();
+    let mut seen = Vec::new();
+    let unreached = tree_store::for_each_tree_in_order(c, |s, rows| {
+        seen.push((s, rows.len()));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(seen, [("onempty".to_string(), 1)]);
+    assert_eq!(unreached, ["c1", "c2", "lost"]);
+}
+
+#[test]
+fn delete_orphan_trees_keeps_what_a_remaining_delta_is_based_on() {
+    let (_t, repo) = setup();
+    let [k, d, e, _g, _z] = forest(&repo);
+    let c = repo.conn();
+    // Strays: delta rows with no record, and a whole orphan chain.
+    c.execute(
+        "INSERT INTO tree_delta_rows VALUES ('ghost', 'p', 'h', 0)",
+        [],
+    )
+    .unwrap();
+    c.execute_batch(
+        "INSERT INTO tree_deltas VALUES ('o2', 'o1');
+         INSERT INTO tree_delta_rows VALUES ('o2', 'p', 'h', 0);
+         INSERT INTO tree_deltas VALUES ('o1', 'o0');
+         INSERT INTO tree_delta_rows VALUES ('o1', 'p', 'h', 0);
+         INSERT INTO file_map VALUES ('o0', 'p', 'h', 0);",
+    )
+    .unwrap();
+    // `k` and `d` leave the live set, but `e` (on `d`) and `g` (on `k`) stay.
+    c.execute("DELETE FROM snapshots WHERE hash IN (?, ?)", [&k, &d])
+        .unwrap();
+    let n = tree_store::delete_orphan_trees(c).unwrap();
+    assert!(n >= 5, "{n}");
+    let count = |sql: &str, h: &str| -> i64 { c.query_row(sql, [h], |r| r.get(0)).unwrap() };
+    for h in ["o0", "o1", "o2", "ghost"] {
+        for table in ["file_map", "tree_deltas", "tree_delta_rows"] {
+            let sql = format!("SELECT count(*) FROM {table} WHERE snapshot_hash = ?");
+            assert_eq!(count(&sql, h), 0, "{table} {h}");
+        }
+    }
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM tree_deltas WHERE snapshot_hash = ?",
+            &d
+        ),
+        1
+    );
+    assert!(count("SELECT count(*) FROM file_map WHERE snapshot_hash = ?", &k) > 0);
+    // The live delta keeps its rows (its base is an orphan, which is for the
+    // fold to resolve, not for gc to break).
+    assert_eq!(
+        count(
+            "SELECT count(*) FROM tree_delta_rows WHERE snapshot_hash = ?",
+            &e
+        ),
+        2
+    );
+    // Only `d` is an orphan delta that had to stay.
+    assert_eq!(tree_store::orphan_delta_snapshots(c).unwrap(), 1);
+}
+
+#[test]
+fn prune_stale_index_cache_keeps_a_path_a_delta_names() {
+    let (_t, repo) = setup();
+    let (_k, _d) = keyframe_and_delta(&repo);
+    let c = repo.conn();
+    c.execute_batch(
+        "INSERT INTO index_cache VALUES ('new/d', 1, 1, 'h-d');
+         INSERT INTO index_cache VALUES ('stale', 1, 1, 'x');",
+    )
+    .unwrap();
+    assert_eq!(tree_store::prune_stale_index_cache(c).unwrap(), 1);
+    let left: i64 = c
+        .query_row(
+            "SELECT count(*) FROM index_cache WHERE path = 'new/d'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 1);
+}
+
+#[test]
+fn path_versions_and_probes_resolve_through_deltas() {
+    let (_t, repo) = setup();
+    let [k, d, e, g, _z] = forest(&repo);
+    let c = repo.conn();
+    let v = tree_store::PathVersions::load(c, "a").unwrap();
+    assert_eq!(
+        v.at(&k).unwrap().0,
+        tree_store::tree_of(c, &k).unwrap()["a"].0
+    );
+    assert_eq!(v.at(&d).unwrap().0, "h-a2");
+    assert_eq!(v.at(&e), None);
+    assert_eq!(v.at(&g), v.at(&k));
+    let v = tree_store::PathVersions::load(c, "dir/b").unwrap();
+    assert!(v.at(&k).is_some());
+    assert_eq!(v.at(&d), None);
+    assert_eq!(v.at(&e).unwrap().0, "h-b2");
+    // Only a delta holds this path.
+    let v = tree_store::PathVersions::load(c, "new/d").unwrap();
+    assert!(!v.is_empty());
+    assert_eq!(v.at(&e).unwrap().0, "h-d");
+    assert!(tree_store::PathVersions::is_directory(c, "new").unwrap());
+    assert!(!tree_store::PathVersions::is_directory(c, "ne").unwrap());
+
+    // changed_under on a delta against its base reads the delta rows.
+    assert!(tree_store::changed_under(c, &d, &k, "a").unwrap());
+    assert!(tree_store::changed_under(c, &d, &k, "dir").unwrap());
+    assert!(tree_store::changed_under(c, &d, &k, "new").unwrap());
+    assert!(!tree_store::changed_under(c, &g, &k, "a").unwrap());
+    assert!(tree_store::changed_under(c, &g, &k, "dir/c").unwrap());
+    // A pairing that is not delta-on-base falls back to the trees.
+    assert!(tree_store::changed_under(c, &e, &k, "a").unwrap());
+    assert!(!tree_store::changed_under(c, &e, &d, "dir/c").unwrap());
+    assert!(tree_store::changed_under(c, &d, "", "new").unwrap());
+
+    let changes = tree_store::changes_of(c, &d).unwrap();
+    assert_eq!(changes.len(), 3);
+    assert_eq!(changes[0].path, "a");
+    assert_eq!(changes[1].path, "dir/b");
+    assert!(changes[1].after.is_none() && changes[1].before.is_some());
+    assert!(changes[2].before.is_none());
+}
+
+/// Rewrite every snapshot of `repo` after the first as a delta against its
+/// first parent, using the trees `repo` had as keyframes.
+fn deltaize(repo: &Repo, ids: &[SnapshotId]) {
+    let trees: Vec<_> = ids
+        .iter()
+        .map(|i| tree_store::tree_of(repo.conn(), i.as_str()).unwrap())
+        .collect();
+    for i in 1..ids.len() {
+        let (before, after) = (&trees[i - 1], &trees[i]);
+        let mut rows: Vec<(&str, Option<&str>)> = Vec::new();
+        for (p, (h, _)) in after {
+            if before.get(p) != after.get(p) {
+                rows.push((p, Some(h)));
+            }
+        }
+        for p in before.keys() {
+            if !after.contains_key(p) {
+                rows.push((p, None));
+            }
+        }
+        make_delta(repo.conn(), ids[i].as_str(), ids[i - 1].as_str(), &rows);
+    }
+}
+
+#[test]
+fn history_file_and_blame_match_an_all_keyframe_repository() {
+    let steps: &[&[(&str, &str)]] = &[
+        &[("a.txt", "one\ntwo\n"), ("other", "x")],
+        &[("a.txt", "one\ntwo\nthree\n"), ("other", "x")],
+        &[("a.txt", "one\ntwo\nthree\n"), ("other", "y")],
+        &[("a.txt", "ONE\ntwo\nthree\n"), ("other", "y")],
+        &[("other", "y"), ("b.txt", "b")],
+        &[("a.txt", "ONE\ntwo\nthree\nfour\n"), ("other", "y")],
+    ];
+    let build = || {
+        let (t, repo) = setup();
+        let mut ids: Vec<SnapshotId> = Vec::new();
+        for (i, files) in steps.iter().enumerate() {
+            let id = save(&repo, ids.last(), files, i as i64 + 1);
+            ids.push(id);
+        }
+        (t, repo, ids)
+    };
+    let (_ta, plain, ids_a) = build();
+    let (_tb, delta, ids_b) = build();
+    assert_eq!(ids_a, ids_b);
+    deltaize(&delta, &ids_b);
+    let n: i64 = delta
+        .conn()
+        .query_row("SELECT count(*) FROM tree_deltas", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, steps.len() as i64 - 1);
+
+    for file in ["a.txt", "other", "b.txt", "nope"] {
+        let paths = [Path::new(file)];
+        let list = |repo: &Repo| -> Vec<String> {
+            history::run(
+                repo,
+                history::Options {
+                    paths: &paths,
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| e.hash.to_string())
+            .collect()
+        };
+        assert_eq!(list(&plain), list(&delta), "history of {file}");
+    }
+    let blame_of = |repo: &Repo, tip: &SnapshotId| -> Vec<(usize, String, Option<String>)> {
+        blame::run(
+            repo,
+            Path::new("a.txt"),
+            blame::Options {
+                at: Some(tip),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .lines
+        .iter()
+        .map(|l| {
+            (
+                l.line_no,
+                l.text.clone(),
+                l.origin.as_ref().map(|o| o.hash.to_string()),
+            )
+        })
+        .collect()
+    };
+    for tip in [&ids_a[3], &ids_a[5]] {
+        let want = blame_of(&plain, tip);
+        assert!(!want.is_empty());
+        assert_eq!(blame_of(&delta, tip), want);
+    }
+}

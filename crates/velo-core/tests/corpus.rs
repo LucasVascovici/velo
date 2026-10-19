@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use velo_core::commands::{blame, bundle, fsck, history, tag};
+use velo_core::commands::{blame, bundle, fsck, gc, history, tag};
 use velo_core::sign::{self, SigningKey, TrustedKeys};
 use velo_core::tree::FileKind;
 use velo_core::tree::{SaveTree, TreeEntry};
@@ -705,8 +705,9 @@ fn write_the_v4_goldens() {
 
 /// The fixture written by `tests/corpus/write_format_v4.py` straight from
 /// docs/FORMAT.md: a repository this build never wrote. It is already v4, so
-/// it opens without migration. No fsck or gc here: those scans become
-/// delta-aware in 20.3-c.
+/// it opens without migration. The delta-aware scans are exercised too: fsck
+/// recomputes every id over the delta stream, a gc dry run finds nothing, and
+/// blame agrees with an all-keyframe copy of the same history.
 #[test]
 fn the_spec_written_v4_fixture_reads_back() {
     let exp = expected("format-v4");
@@ -830,6 +831,63 @@ fn the_spec_written_v4_fixture_reads_back() {
         .map(|t| (s(&t[0]).to_string(), s(&t[1]).to_string()))
         .collect();
     assert_eq!(got_tags, want_tags, "tags");
+}
+
+/// What `fsck`, `gc --dry-run` and `blame` say about the spec-written v4
+/// fixture, which holds real delta snapshots.
+#[test]
+fn the_v4_fixture_passes_fsck_gc_and_blame_over_its_deltas() {
+    let exp = expected("format-v4");
+    let (_dir, root) = golden_copy("format-v4");
+    let repo = Repo::open(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join(".velo/velo.db")).unwrap();
+    let deltas: i64 = db
+        .query_row("SELECT count(*) FROM tree_deltas", [], |r| r.get(0))
+        .unwrap();
+    drop(db);
+    assert!(deltas > 0, "the fixture must hold delta snapshots");
+
+    let report = fsck::check(&repo).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+
+    let guard = repo.write().unwrap();
+    let got = gc::run(
+        &guard,
+        gc::Options {
+            keep_days: 36500,
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    drop(guard);
+    assert_eq!(got.orphan_file_map, 0);
+    assert_eq!(got.objects, 0);
+    assert_eq!(got.chunks, 0);
+    assert_eq!(got.expired_trash, 0);
+
+    // The same history with every tree stored as a keyframe: blame must agree.
+    let (_dir2, root2) = golden_copy("format-v4");
+    let plain = Repo::open(&root2).unwrap();
+    let conn = rusqlite::Connection::open(root2.join(".velo/velo.db")).unwrap();
+    conn.execute_batch(
+        "DELETE FROM tree_deltas; DELETE FROM tree_delta_rows; DELETE FROM file_map;",
+    )
+    .unwrap();
+    for snap in exp["snapshots"].as_array().unwrap() {
+        let h = s(&snap["hash"]);
+        for r in exp["file_map"][h].as_array().unwrap() {
+            conn.execute(
+                "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+                rusqlite::params![h, s(&r["path"]), s(&r["hash"]), r["mode"].as_i64().unwrap()],
+            )
+            .unwrap();
+        }
+    }
+    drop(conn);
+    let blamed = blame_all(&repo, &exp);
+    assert!(!blamed.as_object().unwrap().is_empty());
+    assert_eq!(blamed, blame_all(&plain, &exp), "blame over deltas");
 }
 
 /// Standard base64 without a dependency: the fixture's few sample payloads.
