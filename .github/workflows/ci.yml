@@ -360,7 +360,7 @@ jobs:
   # An old release refuses a v4 repository, and the bundle way back works
   # (tests/corpus/old_release_check.py).
   old-release:
-    name: Old release · ubuntu-latest
+    name: Old release Â· ubuntu-latest
     runs-on: ubuntu-latest
 
     steps:
