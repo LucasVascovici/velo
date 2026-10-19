@@ -7,7 +7,7 @@
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
 
-use rusqlite::{params, params_from_iter, types::Value};
+use rusqlite::{params_from_iter, types::Value};
 
 use crate::db;
 use crate::error::Result;
@@ -491,102 +491,25 @@ fn meta_clauses(meta: &[MetaFilter<'_>], args: &mut Vec<Value>) -> String {
     sql
 }
 
-/// Whether `snapshot` **changed** anything at or under `path`, against `parent`.
-///
-/// The obvious query — does this snapshot's tree contain the path — is wrong. A
-/// velo tree is the *complete* file set, so presence is true for every snapshot
-/// since the file was created, and `velo history --file README.md` listed the
-/// whole history of any repository where README existed.
-///
-/// Change means the `(path, hash, mode)` rows under the filter differ from the
-/// parent's, in either direction: added, deleted, edited, or a mode flip such as
-/// gaining the executable bit. The comparison runs both ways because a deletion
-/// only appears in the parent.
-///
-/// `path` matches a file exactly, or a directory by prefix — the CLI has always
-/// advertised "file or directory", and a directory previously matched nothing at
-/// all.
-fn changed_under(conn: &rusqlite::Connection, snapshot: &str, parent: &str, path: &str) -> bool {
-    // `_` and `%` are LIKE wildcards and are legal in filenames.
-    let prefix = format!(
-        "{}/%",
-        path.replace('\\', "\\\\")
-            .replace('%', "\\%")
-            .replace('_', "\\_")
-    );
-
-    // A root snapshot has no parent to differ from, so anything present in it is
-    // newly added.
-    if parent.is_empty() {
-        return conn
-            .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM file_map
-                      WHERE snapshot_hash = ?1
-                        AND (path = ?2 OR path LIKE ?3 ESCAPE '\\')
-                 )",
-                params![snapshot, path, prefix],
-                |r| r.get::<_, bool>(0),
-            )
-            .unwrap_or(false);
-    }
-
-    conn.query_row(
-        "SELECT EXISTS(
-             SELECT path, hash, mode FROM file_map
-              WHERE snapshot_hash = ?1 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
-             EXCEPT
-             SELECT path, hash, mode FROM file_map
-              WHERE snapshot_hash = ?2 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
-         ) OR EXISTS(
-             SELECT path, hash, mode FROM file_map
-              WHERE snapshot_hash = ?2 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
-             EXCEPT
-             SELECT path, hash, mode FROM file_map
-              WHERE snapshot_hash = ?1 AND (path = ?3 OR path LIKE ?4 ESCAPE '\\')
-         )",
-        params![snapshot, parent, path, prefix],
-        |r| r.get::<_, bool>(0),
-    )
-    .unwrap_or(false)
-}
-
 /// How one requested path answers "did this snapshot change it".
 ///
-/// A file is answered from a single `path = ?` lookup on `idx_filemap_path`,
-/// which returns one row per snapshot that holds it (a few hundred). The
-/// per-snapshot `snapshot_hash = ?` probes of `changed_under` each walk every
-/// row of the snapshot (the whole tree), four times over, and the planner can
-/// only drive them from `idx_filemap_snap`. A directory, or a path no snapshot
-/// ever tracked, keeps the prefix query.
+/// A file is answered from the path-keyed versions, one lookup for every
+/// snapshot that holds it. A directory, or a path no snapshot ever tracked,
+/// keeps the prefix query.
 enum PathLookup {
-    File(HashMap<String, (String, i64)>),
+    File(crate::tree_store::PathVersions),
     Prefix(String),
 }
 
 impl PathLookup {
     fn load(conn: &rusqlite::Connection, path: &str) -> Self {
-        // '0' is the character after '/', so this range is exactly the paths
-        // below `path/`, and it is served by `idx_filemap_path`.
-        let is_directory = conn
-            .query_row(
-                "SELECT 1 FROM file_map WHERE path >= ?1 || '/' AND path < ?1 || '0' LIMIT 1",
-                [path],
-                |_| Ok(()),
-            )
-            .is_ok();
-        if !is_directory {
-            let rows: Option<HashMap<String, (String, i64)>> = (|| {
-                let mut stmt = conn
-                    .prepare("SELECT snapshot_hash, hash, mode FROM file_map WHERE path = ?")
-                    .ok()?;
-                let mapped = stmt
-                    .query_map([path], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))
-                    .ok()?;
-                mapped.collect::<rusqlite::Result<_>>().ok()
-            })();
-            if let Some(rows) = rows.filter(|r| !r.is_empty()) {
-                return PathLookup::File(rows);
+        use crate::tree_store::PathVersions;
+        if !PathVersions::is_directory(conn, path).unwrap_or(false) {
+            if let Some(versions) = PathVersions::load(conn, path)
+                .ok()
+                .filter(|v| !v.is_empty())
+            {
+                return PathLookup::File(versions);
             }
         }
         PathLookup::Prefix(path.to_string())
@@ -594,16 +517,18 @@ impl PathLookup {
 
     fn changed(&self, conn: &rusqlite::Connection, snapshot: &str, parent: &str) -> bool {
         match self {
-            PathLookup::File(rows) => {
+            PathLookup::File(versions) => {
                 // A root snapshot has no parent, so the parent side is empty.
                 let before = if parent.is_empty() {
                     None
                 } else {
-                    rows.get(parent)
+                    versions.at(parent)
                 };
-                rows.get(snapshot) != before
+                versions.at(snapshot) != before
             }
-            PathLookup::Prefix(path) => changed_under(conn, snapshot, parent, path),
+            PathLookup::Prefix(path) => {
+                crate::tree_store::changed_under(conn, snapshot, parent, path).unwrap_or(false)
+            }
         }
     }
 }

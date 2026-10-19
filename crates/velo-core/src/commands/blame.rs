@@ -442,7 +442,7 @@ fn default_start(repo: &Repo) -> Result<String> {
 /// (and statement preparation) for each of them.
 #[derive(Default)]
 struct TrackedHashes {
-    by_path: HashMap<String, HashMap<String, String>>,
+    by_path: HashMap<String, crate::tree_store::PathVersions>,
 }
 
 impl TrackedHashes {
@@ -455,20 +455,11 @@ impl TrackedHashes {
         path: &str,
     ) -> Result<String> {
         if !self.by_path.contains_key(path) {
-            let mut rows = HashMap::new();
-            if let Ok(mut stmt) =
-                conn.prepare_cached("SELECT snapshot_hash, hash FROM file_map WHERE path = ?")
-            {
-                if let Ok(mapped) = stmt.query_map([path], |r| {
-                    Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
-                }) {
-                    rows.extend(mapped.flatten());
-                }
-            }
-            self.by_path.insert(path.to_string(), rows);
+            let versions = crate::tree_store::PathVersions::load(conn, path)?;
+            self.by_path.insert(path.to_string(), versions);
         }
-        match self.by_path[path].get(snapshot) {
-            Some(h) => read_text(objects, h),
+        match self.by_path[path].at(snapshot) {
+            Some((h, _)) => read_text(objects, &h),
             None => Ok(String::new()),
         }
     }

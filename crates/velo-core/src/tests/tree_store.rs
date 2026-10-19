@@ -152,3 +152,128 @@ fn write_rekey_and_delete_round_trip() {
     assert!(!tree_store::has_tree(conn, "snapZ").unwrap());
     tree_store::delete_trees(conn, &[]).unwrap();
 }
+
+fn child_of(repo: &Repo, parent: &SnapshotId, files: &[(&str, &str)]) -> SnapshotId {
+    let branch: BranchName = "main".parse().unwrap();
+    let entries = files
+        .iter()
+        .map(|(p, b)| TreeEntry::file(p.to_string(), b.as_bytes().to_vec()))
+        .collect();
+    repo.write()
+        .unwrap()
+        .save_tree(SaveTree {
+            branch: &branch,
+            parent: Some(parent),
+            merge_parent: None,
+            message: "child",
+            entries,
+            meta: SnapshotMeta::default(),
+            author: None,
+            timestamp_ms: Some(2),
+            renames: &[],
+        })
+        .unwrap()
+}
+
+#[test]
+fn changes_of_reports_add_modify_delete_against_the_first_parent() {
+    let (_t, repo) = setup();
+    let root = small(&repo);
+    // a.txt modified, dir/b.txt deleted, c.txt added.
+    let next = child_of(&repo, &root, &[("a.txt", "ONE"), ("c.txt", "three")]);
+    let conn = repo.conn();
+
+    let first = tree_store::changes_of(conn, &root).unwrap();
+    let paths: Vec<&str> = first.iter().map(|c| c.path.as_str()).collect();
+    assert_eq!(paths, ["a.txt", "dir/b.txt"]);
+    assert!(first
+        .iter()
+        .all(|c| c.before.is_none() && c.after.is_some()));
+
+    let before = tree_store::tree_of(conn, &root).unwrap();
+    let after = tree_store::tree_of(conn, &next).unwrap();
+    let got = tree_store::changes_of(conn, &next).unwrap();
+    assert_eq!(got.len(), 3);
+    assert_eq!(got[0].path, "a.txt");
+    assert_eq!(got[0].before.as_ref(), before.get("a.txt"));
+    assert_eq!(got[0].after.as_ref(), after.get("a.txt"));
+    assert_eq!(got[1].path, "c.txt");
+    assert!(got[1].before.is_none() && got[1].after.is_some());
+    assert_eq!(got[2].path, "dir/b.txt");
+    assert!(got[2].before.is_some() && got[2].after.is_none());
+
+    assert!(tree_store::changes_of(conn, "unknown").unwrap().is_empty());
+}
+
+#[test]
+fn path_versions_distinguish_a_file_from_a_directory_prefix() {
+    let (_t, repo) = setup();
+    let root = small(&repo);
+    let next = child_of(&repo, &root, &[("a.txt", "ONE"), ("dir/b.txt", "two")]);
+    let conn = repo.conn();
+
+    let versions = tree_store::PathVersions::load(conn, "a.txt").unwrap();
+    assert!(!versions.is_empty());
+    assert_eq!(
+        versions.at(&root),
+        tree_store::file_at(conn, &root, "a.txt").unwrap()
+    );
+    assert_ne!(versions.at(&root), versions.at(&next));
+    assert_eq!(versions.at("nope"), None);
+    assert!(!tree_store::PathVersions::is_directory(conn, "a.txt").unwrap());
+
+    assert!(tree_store::PathVersions::is_directory(conn, "dir").unwrap());
+    assert!(tree_store::PathVersions::load(conn, "dir")
+        .unwrap()
+        .is_empty());
+    assert!(!tree_store::PathVersions::is_directory(conn, "di").unwrap());
+
+    assert!(tree_store::changed_under(conn, &next, &root, "a.txt").unwrap());
+    assert!(!tree_store::changed_under(conn, &next, &root, "dir").unwrap());
+}
+
+#[test]
+fn referenced_objects_is_every_object_of_every_tree() {
+    let (_t, repo) = setup();
+    let root = small(&repo);
+    let next = child_of(&repo, &root, &[("a.txt", "ONE"), ("dir/b.txt", "two")]);
+    let conn = repo.conn();
+    let got = tree_store::referenced_objects(conn).unwrap();
+    let mut want = std::collections::HashSet::new();
+    for snap in [&root, &next] {
+        for (obj, _) in tree_store::tree_of(conn, snap).unwrap().values() {
+            want.insert(obj.clone());
+        }
+    }
+    assert_eq!(got, want);
+    assert_eq!(got.len(), 3);
+}
+
+#[test]
+fn for_each_tree_visits_every_tree_once_and_duplicates_are_counted() {
+    let (_t, repo) = setup();
+    let root = small(&repo);
+    let next = child_of(&repo, &root, &[("a.txt", "ONE")]);
+    let conn = repo.conn();
+    let mut seen = Vec::new();
+    tree_store::for_each_tree_in_order(conn, |snap, rows| {
+        seen.push((snap, rows.len()));
+        Ok(())
+    })
+    .unwrap();
+    seen.sort();
+    let mut want = vec![(root.to_string(), 2), (next.to_string(), 1)];
+    want.sort();
+    assert_eq!(seen, want);
+
+    assert_eq!(tree_store::duplicate_rows(conn).unwrap(), 0);
+    conn.execute(
+        "INSERT INTO file_map (snapshot_hash, path, hash, mode)
+         SELECT snapshot_hash, path, hash, mode FROM file_map WHERE path = 'a.txt'",
+        [],
+    )
+    .unwrap();
+    assert_eq!(tree_store::duplicate_rows(conn).unwrap(), 2);
+    assert_eq!(tree_store::remove_duplicate_rows(conn).unwrap(), 2);
+    assert_eq!(tree_store::duplicate_rows(conn).unwrap(), 0);
+}

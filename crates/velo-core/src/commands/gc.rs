@@ -130,23 +130,7 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         [cutoff_ms],
     )?;
 
-    collected.orphan_file_map = conn.execute(
-        // The orphans are found among the distinct snapshot hashes, walked by
-        // skipping from one to the next through `idx_filemap_snap` (one seek per
-        // snapshot), and only then deleted. Testing every one of the table's
-        // rows against both lists was the slow part.
-        "DELETE FROM file_map WHERE snapshot_hash IN (
-             WITH RECURSIVE s(h) AS (
-                 SELECT MIN(snapshot_hash) FROM file_map
-                 UNION ALL
-                 SELECT (SELECT MIN(snapshot_hash) FROM file_map WHERE snapshot_hash > s.h)
-                 FROM s WHERE h IS NOT NULL)
-             SELECT h FROM s
-             WHERE h IS NOT NULL
-               AND h NOT IN (SELECT hash FROM snapshots)
-               AND h NOT IN (SELECT hash FROM trash))",
-        [],
-    )?;
+    collected.orphan_file_map = crate::tree_store::delete_orphan_trees(&conn)?;
 
     collected.orphan_decisions = conn.execute(
         "DELETE FROM hunk_decisions WHERE file_path NOT IN (SELECT path FROM conflict_files)",
@@ -160,35 +144,12 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         [],
     )?;
 
-    collected.stale_cache = conn.execute(
-        // One `idx_filemap_path` probe per cached path, stopping at the first
-        // live row, instead of building the set of every path in `file_map`.
-        "DELETE FROM index_cache
-         WHERE NOT EXISTS (
-             SELECT 1 FROM file_map
-             WHERE file_map.path = index_cache.path
-               AND file_map.snapshot_hash IN (SELECT hash FROM snapshots)
-         )",
-        [],
-    )?;
+    collected.stale_cache = crate::tree_store::prune_stale_index_cache(&conn)?;
 
-    // Anything the database still points at has to survive. `file_map` is the
-    // only thing that references objects, and orphaned rows were pruned above.
-    let referenced: HashSet<String> = {
-        // Deduplicated here, on the borrowed text, so a hash shared by every
-        // snapshot of a file is allocated once rather than once per row.
-        let mut stmt = conn.prepare("SELECT hash FROM file_map")?;
-        let mut rows = stmt.query([])?;
-        let mut set = HashSet::new();
-        while let Some(row) = rows.next()? {
-            if let Some(hash) = row.get_ref(0).ok().and_then(|v| v.as_str().ok()) {
-                if !set.contains(hash) {
-                    set.insert(hash.to_string());
-                }
-            }
-        }
-        set
-    };
+    // Anything the database still points at has to survive. Stored trees are
+    // the only thing that references objects, and orphaned ones were pruned
+    // above.
+    let referenced: HashSet<String> = crate::tree_store::referenced_objects(&conn)?;
 
     // The last database access. A real run makes the prunes durable before any
     // file is touched, so an I/O error later leaves trash and file_map rows
