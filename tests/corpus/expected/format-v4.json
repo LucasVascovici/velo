@@ -994,13 +994,13 @@
    "timestamp_ms": 1800000012000
   },
   {
-   "deleted_at_ms": 1800000100013,
+   "deleted_at_ms": 1800000100000,
    "id": "dd0b83bfc48171a795e4f6bd60272d1309f174960cb6d2e241dd6e9ef14a50ac",
    "n": 13,
    "op": "undo"
   },
   {
-   "deleted_at_ms": 1800000100012,
+   "deleted_at_ms": 1800000100001,
    "id": "5e191e0229f6e4cdf5575bcdcc3f8d9abf7552a277aff50c74e6a111fbfa2845",
    "n": 12,
    "op": "undo"
@@ -1286,7 +1286,7 @@
   {
    "branch": "main",
    "created_at_ms": 1800000011000,
-   "deleted_at_ms": 1800000100012,
+   "deleted_at_ms": 1800000100001,
    "hash": "5e191e0229f6e4cdf5575bcdcc3f8d9abf7552a277aff50c74e6a111fbfa2845",
    "merge_parent": "",
    "message": "to be undone one",
@@ -1295,7 +1295,7 @@
   {
    "branch": "main",
    "created_at_ms": 1800000012000,
-   "deleted_at_ms": 1800000100013,
+   "deleted_at_ms": 1800000100000,
    "hash": "dd0b83bfc48171a795e4f6bd60272d1309f174960cb6d2e241dd6e9ef14a50ac",
    "merge_parent": "",
    "message": "to be undone two",

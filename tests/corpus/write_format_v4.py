@@ -589,10 +589,14 @@ def main():
     order = [snaps[n] for n in sorted(snaps)]
     undone = [r for r in order if r["st"].get("undone")]
     live = [r for r in order if not r["st"].get("undone")]
+    # Undo removes the newest snapshot first, so deleted_at rises in undo
+    # order: the parent (undone last) has the latest deleted_at_ms, which is
+    # what redo's ORDER BY deleted_at_ms DESC picks first.
+    for i, rec in enumerate(reversed(undone)):
+        rec["deleted_at"] = T0 + 100_000 + i
     for rec in order:
         st, sid = rec["st"], rec["id"]
         if st.get("undone"):
-            rec["deleted_at"] = T0 + 100_000 + st["n"]
             conn.execute("INSERT INTO trash VALUES (?,?,?,?,?,?,?)",
                          (sid, st["message"], st["branch"], rec["parent_id"], rec["merge_id"],
                           rec["ts"], rec["deleted_at"]))
