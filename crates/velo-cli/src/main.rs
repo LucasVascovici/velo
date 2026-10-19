@@ -1088,7 +1088,7 @@ NOTES
         after_help = "\
 WHAT GC CLEANS UP
     · Orphaned objects (no snapshot references them)
-    · Stale file_map rows (snapshot was deleted)
+    · Stale tree rows (snapshot was deleted)
     · Stale index_cache rows (path no longer tracked)
     · Trash entries older than --keep-days days
 

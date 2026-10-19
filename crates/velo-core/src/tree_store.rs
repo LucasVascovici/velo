@@ -1,11 +1,29 @@
 //! How stored trees are read.
 //!
-//! This is the only module allowed to name the `file_map` table (a lint
-//! enforcing that lands with 20.2-d). Every function here is stated in tree
+//! This is the only module allowed to name the `file_map` table; the
+//! `tree_store_lint` test fails the build on any other SQL string that does
+//! (`db.rs`, the schema, and the tests are exempt, with reasons written next
+//! to the exemption). Every function here is stated in tree
 //! terms (a snapshot id in, paths and entries out) and never in rows, so the
 //! storage underneath can change shape without any caller noticing. They are
 //! plain functions over a connection on purpose: there is exactly one storage
 //! layout at a time, so a trait would only be indirection.
+//!
+//! # Which tables hold a tree
+//!
+//! | Table | What it is | Through the accessor? |
+//! |---|---|---|
+//! | `file_map` | a snapshot's tree | yes |
+//! | `stash` | a pointer to a snapshot on `_stash`; that snapshot's tree is a tree | pointer: no; its tree: yes |
+//! | `trash` | snapshot rows `undo` moved aside; their trees stay in storage, can be delta bases and are restored by `redo` | their trees: yes |
+//! | `MERGE_ORIG` (a `settings` key) | working-copy bytes saved during a merge, not a snapshot's tree | no |
+//! | `renames` | rename edges between snapshots | no |
+//! | `pending_renames` | working state of renames not yet saved | no |
+//! | `conflict_files`, `hunk_decisions` | the merge in progress | no |
+//! | `index_cache` | the stat cache of the working copy | no |
+//!
+//! No other table in `db.rs` holds a tree (`objects` holds content, the rest
+//! hold refs and metadata).
 //!
 //! This part covers the single-snapshot reads. A snapshot that has no stored
 //! tree reads as an empty tree; whether the snapshot exists is for the caller

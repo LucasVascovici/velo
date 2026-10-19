@@ -12310,3 +12310,6 @@ mod delta_prototype;
 mod differential;
 #[cfg(test)]
 mod tree_store;
+
+#[cfg(test)]
+mod tree_store_lint;

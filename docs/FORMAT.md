@@ -1158,6 +1158,19 @@ row) and no orphaned `tree_deltas` (snapshot in neither `snapshots` nor
 `trash`). A chain deeper than K - 1 is cruft, which `repack` repairs, not
 corruption.
 
+**Tables that hold trees.** Only a snapshot's tree goes through the tree
+accessor. A snapshot's tree is stored in `file_map` (and, from v4, in
+`tree_deltas` / `tree_delta_rows`); that includes the snapshots on the `_stash`
+branch (the `stash` table is only a pointer to them) and the snapshots in
+`trash`, which `undo` moves aside and whose tree rows stay in place so `redo`
+can restore them (a trashed snapshot may still be a delta base). Everything
+else that looks tree-shaped is its own state and does not go through the
+accessor: the transient `MERGE_ORIG` setting (working-copy bytes saved during a
+merge), `renames` and `pending_renames` (rename edges and working state),
+`conflict_files`, `hunk_decisions` and `index_cache`. `objects`, `snapshots`,
+`snapshot_meta`, `tags`, `trash_tags`, `branches`, `remotes`, `remote_refs`,
+`compactions`, `signatures` and `settings` hold no tree.
+
 **Migration (v3 to v4).** Runs the schema script and stamps `user_version = 4`.
 It rewrites no row, so every existing snapshot is a keyframe. A 5.x build then
 refuses the repository with `SchemaTooNew`. The way back is `bundle create` on
