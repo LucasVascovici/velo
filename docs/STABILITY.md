@@ -67,6 +67,10 @@ Raising it is allowed in a minor release and is announced in the changelog.
 The `corpus` job fails when a golden's expected output changes, so a format
 change cannot land unannounced.
 
+6.0.0 is the format-v4 release. A repository-format change is not a Rust API
+break, but any Rust API break in 6.0 is listed here as an exemption, as
+`Bundle.signatures` was.
+
 ## Appendix: the `#[non_exhaustive]` audit
 
 Public enums and option or result structs should be `#[non_exhaustive]` so a

@@ -206,6 +206,7 @@ jobs:
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: velo-core,velo-merge
+          # Moves to v5.3.0 once the owner tags it; v5.3.0 is not tagged yet.
           baseline-rev: v5.2.0
           feature-group: all-features
 
