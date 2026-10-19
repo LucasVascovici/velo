@@ -22,6 +22,40 @@ use velo_core::{Error, Repo, SnapshotId};
 
 type Tree = BTreeMap<String, Vec<u8>>;
 
+thread_local! {
+    /// The keyframe interval every repository this thread opens for a scenario
+    /// is given; `None` keeps the production default. The child process gets it
+    /// through `VELO_CRASH_K`, so parent and child store trees the same way.
+    static KEYFRAME_K: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+}
+
+fn open(path: &Path) -> Repo {
+    let mut repo = Repo::open(path).unwrap();
+    if let Some(k) = KEYFRAME_K.get() {
+        repo.set_keyframe_interval(k);
+    }
+    repo
+}
+
+fn open_migrate(path: &Path) -> Repo {
+    let mut repo = Repo::open_and_migrate(path).unwrap();
+    if let Some(k) = KEYFRAME_K.get() {
+        repo.set_keyframe_interval(k);
+    }
+    repo
+}
+
+/// Runs a scenario's operation on the repository at `path`. A migration
+/// scenario opens a v3 repository, which only `open_and_migrate` accepts, and
+/// the opening is the operation.
+fn run_op(s: &Scenario, path: &Path) {
+    if s.kind == Kind::Migrate {
+        let _ = open_migrate(path);
+    } else {
+        (s.op)(&open(path));
+    }
+}
+
 /// Points that leave a state that is neither the old tree nor the new one, as
 /// (point, exact state left). A point listed here is asserted to leave exactly
 /// this: `.velo/PARENT` still names the pre-operation snapshot, `status`
@@ -66,6 +100,9 @@ enum Kind {
     /// pre-operation tree and `--continue` must finish or refuse with a typed
     /// error.
     Rebase,
+    /// A v3-shaped repository opened with `open_and_migrate`: the kill leaves
+    /// a valid v3 or a valid v4, never a mix.
+    Migrate,
 }
 
 fn write(root: &Path, rel: &str, body: &str) {
@@ -370,6 +407,18 @@ const SCENARIOS: &[Scenario] = &[
         op: op_bundle,
         kind: Kind::Plain,
     },
+    Scenario {
+        name: "compact_fold",
+        build: build_fold_chain,
+        op: op_compact_fold,
+        kind: Kind::Plain,
+    },
+    Scenario {
+        name: "migrate_v3",
+        build: build_v3,
+        op: op_nothing,
+        kind: Kind::Migrate,
+    },
 ];
 
 // ── Child ──────────────────────────────────────────────────────────────────
@@ -406,6 +455,9 @@ fn crash_child() {
     };
     let repo_dir = PathBuf::from(std::env::var("VELO_CRASH_REPO").unwrap());
     velo_core::failpoint::set_handler(handler);
+    if let Ok(k) = std::env::var("VELO_CRASH_K") {
+        KEYFRAME_K.set(Some(k.parse().unwrap()));
+    }
     if op == "clone" {
         // The repository is the source; the clone goes to VELO_CRASH_DEST.
         let dest = PathBuf::from(std::env::var("VELO_CRASH_DEST").unwrap());
@@ -413,8 +465,7 @@ fn crash_child() {
         return;
     }
     let scenario = SCENARIOS.iter().find(|s| s.name == op).expect("scenario");
-    let repo = Repo::open(&repo_dir).unwrap();
-    (scenario.op)(&repo);
+    run_op(scenario, &repo_dir);
 }
 
 // ── Parent helpers ─────────────────────────────────────────────────────────
@@ -476,7 +527,11 @@ fn spawn_child(op: &str, repo: &Path, log: &Path, at: Option<&str>) -> std::proc
         .env("VELO_CRASH_OP", op)
         .env("VELO_CRASH_REPO", repo)
         .env("VELO_CRASH_LOG", log)
-        .env_remove("VELO_CRASH_AT");
+        .env_remove("VELO_CRASH_AT")
+        .env_remove("VELO_CRASH_K");
+    if let Some(k) = KEYFRAME_K.get() {
+        cmd.env("VELO_CRASH_K", k.to_string());
+    }
     if let Some(at) = at {
         cmd.env("VELO_CRASH_AT", at);
     }
@@ -512,7 +567,7 @@ fn check_point(
     post: &(Tree, String),
     scratch: &Path,
 ) {
-    let ctx = format!("{} @ {}", s.name, point);
+    let ctx = format!("{} (K={:?}) @ {}", s.name, KEYFRAME_K.get(), point);
     let work = scratch.join(format!("run-{point}"));
     copy_dir(template, &work);
     let pre_position = position(&work);
@@ -523,7 +578,11 @@ fn check_point(
         "{ctx}: child exited 0, so the point was never hit"
     );
 
-    let repo = Repo::open(&work).unwrap();
+    let repo = if s.kind == Kind::Migrate {
+        after_migration_kill(&ctx, point, &work)
+    } else {
+        open(&work)
+    };
 
     // 1. fsck has no problems; repair; then clean.
     let report = fsck::check(&repo).unwrap();
@@ -656,7 +715,7 @@ fn check_point(
         let aborted = scratch.join(format!("abort-{point}"));
         copy_dir(&work, &aborted);
         {
-            let r = Repo::open(&aborted).unwrap();
+            let r = open(&aborted);
             let g = r.write().unwrap();
             rebase::run(&g, rebase::Mode::Abort, None)
                 .unwrap_or_else(|e| panic!("{ctx}: rebase --abort failed: {e}"));
@@ -673,7 +732,7 @@ fn check_point(
         );
         assert!(!aborted.join(".velo/REBASE_STATE").exists());
         assert!(!aborted.join(".velo/MERGE_HEAD").exists());
-        let r = Repo::open(&aborted).unwrap();
+        let r = open(&aborted);
         let rep = fsck::check(&r).unwrap();
         assert!(
             rep.problems.is_empty(),
@@ -784,13 +843,24 @@ fn every_point_leaves_old_or_new() {
     if std::env::var("VELO_CRASH_OP").is_ok() {
         return;
     }
-    for s in SCENARIOS {
+    // The production interval (deltas, rare keyframes) and a tiny one, so keyframes
+    // and folds are reached by fixtures of a few snapshots. A migration is
+    // built from whole trees, so it runs once, at K = 1.
+    for (s, k) in SCENARIOS.iter().flat_map(|s| {
+        let ks: &[Option<u32>] = if s.kind == Kind::Migrate {
+            &[Some(1)]
+        } else {
+            &[None, Some(3)]
+        };
+        ks.iter().map(move |k| (s, *k))
+    }) {
+        KEYFRAME_K.set(k);
         let scratch = TempDir::new().unwrap();
         let template = scratch.path().join("template");
         fs::create_dir_all(&template).unwrap();
         velo_core::commands::init::run(&template).unwrap();
         {
-            let repo = Repo::open_and_migrate(&template).unwrap();
+            let repo = open_migrate(&template);
             (s.build)(&repo);
         }
         let pre = read_tree(&template);
@@ -798,10 +868,7 @@ fn every_point_leaves_old_or_new() {
         // The new state, from the same operation run without a handler.
         let twin = scratch.path().join("twin");
         copy_dir(&template, &twin);
-        {
-            let repo = Repo::open(&twin).unwrap();
-            (s.op)(&repo);
-        }
+        run_op(s, &twin);
         let post = (read_tree(&twin), position(&twin));
 
         let points = discover(s, &template, scratch.path());
@@ -809,7 +876,7 @@ fn every_point_leaves_old_or_new() {
         for need in required_points(s.name) {
             assert!(
                 points.iter().any(|p| p == need),
-                "{}: never hit {need}",
+                "{} (K={k:?}): never hit {need}; hit {points:?}",
                 s.name
             );
         }
@@ -1003,6 +1070,111 @@ fn build_chain(repo: &Repo) {
     }
 }
 
+/// Six snapshots, so that at K = 3 the removed range (`s2`..`s4`) has a delta
+/// dependant (`s5` is based on `s4`) and compaction must fold it.
+fn build_fold_chain(repo: &Repo) {
+    let root = repo.root().to_path_buf();
+    for i in 1..=6 {
+        write(
+            &root,
+            "a.txt",
+            &format!(
+                "a {i}
+"
+            ),
+        );
+        write(
+            &root,
+            &format!("f{i}.txt"),
+            &format!(
+                "f{i}
+"
+            ),
+        );
+        save_all(repo, &format!("s{i}"));
+    }
+}
+
+fn op_compact_fold(r: &Repo) {
+    let oldest = snapshot_by_message(r, "s2");
+    let newest = snapshot_by_message(r, "s3");
+    let g = r.write().unwrap();
+    let branch = "main".parse().unwrap();
+    compact::run(
+        &g,
+        &branch,
+        &[compact::Range {
+            oldest: &oldest,
+            newest: &newest,
+        }],
+        Default::default(),
+    )
+    .unwrap();
+}
+
+/// A v3-shaped repository: snapshots stored as whole trees, no delta tables,
+/// `user_version` 3. Built as 20.3-b's migration test builds one.
+fn build_v3(repo: &Repo) {
+    let root = repo.root().to_path_buf();
+    for i in 1..=4 {
+        write(
+            &root, "keep.txt", "same
+",
+        );
+        write(
+            &root,
+            &format!("f{i}.txt"),
+            &format!(
+                "f{i}
+"
+            ),
+        );
+        save_all(repo, &format!("s{i}"));
+    }
+    open_db(repo)
+        .execute_batch(
+            "DROP TABLE tree_deltas; DROP TABLE tree_delta_rows; PRAGMA user_version = 3;",
+        )
+        .unwrap();
+}
+
+fn op_nothing(_: &Repo) {}
+
+/// The repository after a migration was killed: still a complete v3 when the
+/// kill came before the stamp, and a complete v4 once the transaction
+/// committed. A half-migrated repository (tables present, version 3, or the
+/// reverse) is neither, and fails here.
+fn after_migration_kill(ctx: &str, point: &str, work: &Path) -> Repo {
+    match Repo::open(work) {
+        Ok(repo) => {
+            assert_ne!(
+                point, "migrate.before_stamp",
+                "{ctx}: the migration committed although it was killed before the stamp"
+            );
+            repo
+        }
+        Err(Error::MigrationRequired { found: 3, .. }) => {
+            let db = rusqlite::Connection::open(work.join(".velo/velo.db")).unwrap();
+            let tables: i64 = db
+                .query_row(
+                    "SELECT count(*) FROM sqlite_master WHERE name IN ('tree_deltas', 'tree_delta_rows')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(tables, 0, "{ctx}: a v3 repository has v4 tables");
+            let ok: String = db
+                .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(ok, "ok", "{ctx}: the v3 database is damaged");
+            drop(db);
+            // It still migrates, and the result is a v4 repository.
+            open_migrate(work)
+        }
+        Err(e) => panic!("{ctx}: reopening after a migration kill: {e}"),
+    }
+}
+
 fn op_compact(r: &Repo) {
     let oldest = snapshot_by_message(r, "s2");
     let newest = snapshot_by_message(r, "s3");
@@ -1058,7 +1230,7 @@ fn build_bundle(repo: &Repo) {
     let src = repo.root().parent().unwrap().join("bundle-src");
     fs::create_dir_all(&src).unwrap();
     velo_core::commands::init::run(&src).unwrap();
-    let source = Repo::open_and_migrate(&src).unwrap();
+    let source = open_migrate(&src);
     build_bundle_source(&source);
     bundle::create(&source, &bundle_file(repo), None).unwrap();
 }
@@ -1087,11 +1259,18 @@ fn op_bundle(r: &Repo) {
 fn required_points(name: &str) -> &'static [&'static str] {
     match name {
         "gc" => &["gc.after_prune", "gc.after_object", "gc.after_chunk"],
+        "compact_fold" => &[
+            "compact.before_commit",
+            "compact.after_commit",
+            "compact.before_parent",
+            "tree_store.fold.after_rewrite",
+        ],
         "compact" | "retention" => &[
             "compact.before_commit",
             "compact.after_commit",
             "compact.before_parent",
         ],
+        "migrate_v3" => &["migrate.before_stamp"],
         "bundle" => &[
             "bundle.after_objects",
             "bundle.before_commit",
@@ -1134,7 +1313,7 @@ fn extra_checks(ctx: &str, s: &Scenario, point: &str, repo: &Repo, work: &Path, 
             let copy = work.parent().unwrap().join(format!("redo-{point}"));
             copy_dir(work, &copy);
             {
-                let r = Repo::open(&copy).unwrap();
+                let r = open(&copy);
                 let g = r.write().unwrap();
                 let out = redo::run(&g)
                     .unwrap_or_else(|e| panic!("{ctx}: redo of the trashed snapshot: {e}"));
@@ -1164,8 +1343,8 @@ fn extra_checks(ctx: &str, s: &Scenario, point: &str, repo: &Repo, work: &Path, 
                 rep.cruft
             );
         }
-        "compact" | "retention" => {
-            let old = live_ids(&Repo::open(template).unwrap());
+        "compact" | "retention" | "compact_fold" => {
+            let old = live_ids(&open(template));
             let live = live_ids(repo);
             let committed = matches!(point, "compact.after_commit" | "compact.before_parent");
             let mut gone = 0;
@@ -1199,7 +1378,7 @@ fn extra_checks(ctx: &str, s: &Scenario, point: &str, repo: &Repo, work: &Path, 
         }
         "bundle" => {
             // Re-applying completes the import, whatever the crash left.
-            let src = Repo::open(&work.parent().unwrap().join("bundle-src")).unwrap();
+            let src = open(&work.parent().unwrap().join("bundle-src"));
             let want = live_ids(&src);
             {
                 let g = repo.write().unwrap();
@@ -1253,6 +1432,16 @@ const CLONE_WINDOWS: &[(&str, bool, &str)] = &[
         "clone.after_init",
         false,
         "an empty repository: no snapshots, no files, no origin remote",
+    ),
+    (
+        "tree_store.after_keyframe_rows",
+        false,
+        "inside the import transaction, which was never committed: same as bundle.before_commit",
+    ),
+    (
+        "tree_store.after_delta_rows",
+        false,
+        "inside the import transaction, which was never committed: same as bundle.before_commit",
     ),
     (
         "bundle.after_objects",

@@ -286,8 +286,14 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     if schema_is_current(conn)? {
         return Ok(());
     }
-    conn.execute_batch(SCHEMA)?;
-    set_format_version(conn, crate::FORMAT_VERSION)?;
+    // One transaction, so a kill between the schema script and the version
+    // stamp rolls both back and leaves the repository as it was (v3 stays v3).
+    // `user_version` lives in the database header and is transactional.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute_batch(SCHEMA)?;
+    crate::failpoint::hit("migrate.before_stamp");
+    set_format_version(&tx, crate::FORMAT_VERSION)?;
+    tx.commit()?;
     Ok(())
 }
 

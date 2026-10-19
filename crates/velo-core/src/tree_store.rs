@@ -514,6 +514,7 @@ pub(crate) fn write_tree(
                 }
             };
             insert_delta_rows(tx, snapshot, base, tree)?;
+            crate::failpoint::hit("tree_store.after_delta_rows");
             tx.execute(
                 "INSERT INTO tree_deltas (snapshot_hash, base_hash) VALUES (?, ?)",
                 rusqlite::params![snapshot, parent],
@@ -527,6 +528,7 @@ pub(crate) fn write_tree(
     for (path, object, mode) in tree {
         ins.execute(rusqlite::params![snapshot, path, object, mode])?;
     }
+    crate::failpoint::hit("tree_store.after_keyframe_rows");
     Ok(())
 }
 
@@ -657,6 +659,7 @@ pub(crate) fn remove_trees(
                 }
             }
         }
+        crate::failpoint::hit("tree_store.fold.after_rewrite");
     }
     delete_trees(tx, removed)
 }
