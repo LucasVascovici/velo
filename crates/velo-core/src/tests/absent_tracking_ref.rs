@@ -11,6 +11,10 @@ use crate::error::{RefKind, VeloError};
 use crate::transport::Spawn;
 use crate::Repo;
 
+/// The receiving repository's keyframe interval: the default, and a short chain
+/// so imported snapshots really are deltas.
+const RECEIVER_KS: [u32; 2] = [128, 2];
+
 fn with_write<T>(root: &Path, f: impl FnOnce(&crate::WriteGuard) -> T) -> T {
     let repo = Repo::open_and_migrate(root).expect("open repository");
     let guard = repo.write().expect("take write lock");
@@ -86,6 +90,13 @@ fn absent(e: &VeloError, tip: &str) -> bool {
 
 #[test]
 fn both_spellings_are_a_typed_error() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        both_spellings_are_a_typed_error_at_k();
+    }
+}
+
+fn both_spellings_are_a_typed_error_at_k() {
     let (_h, copy, tip) = clone_with_undone_pushed_tip();
     let repo = Repo::open_and_migrate(&copy).unwrap();
     for spec in ["origin/main", "remotes/origin/main"] {
@@ -96,6 +107,13 @@ fn both_spellings_are_a_typed_error() {
 
 #[test]
 fn merge_of_an_absent_ref_refuses_then_works_after_fetch() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        merge_of_an_absent_ref_refuses_then_works_after_fetch_at_k();
+    }
+}
+
+fn merge_of_an_absent_ref_refuses_then_works_after_fetch_at_k() {
     let (_h, copy, tip) = clone_with_undone_pushed_tip();
     save(&copy, "other.txt", "other\n", "something else");
     assert!(matches!(push(&copy), Err(VeloError::NotFastForward { .. })));
@@ -137,6 +155,13 @@ fn merge_of_an_absent_ref_refuses_then_works_after_fetch() {
 
 #[test]
 fn merge_of_remotes_spelling_refuses_too() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        merge_of_remotes_spelling_refuses_too_at_k();
+    }
+}
+
+fn merge_of_remotes_spelling_refuses_too_at_k() {
     let (_h, copy, tip) = clone_with_undone_pushed_tip();
     save(&copy, "other.txt", "other\n", "something else");
     let err = with_write(&copy, |g| {
@@ -154,6 +179,13 @@ fn merge_of_remotes_spelling_refuses_too() {
 
 #[test]
 fn save_finishing_a_merge_refuses_an_absent_source() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        save_finishing_a_merge_refuses_an_absent_source_at_k();
+    }
+}
+
+fn save_finishing_a_merge_refuses_an_absent_source_at_k() {
     let (_h, copy, tip) = clone_with_undone_pushed_tip();
     let pre = fs::read_to_string(copy.join(".velo/PARENT")).unwrap();
     fs::write(
@@ -174,6 +206,13 @@ fn save_finishing_a_merge_refuses_an_absent_source() {
 
 #[test]
 fn plan_refuses_an_id_that_is_not_live() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        plan_refuses_an_id_that_is_not_live_at_k();
+    }
+}
+
+fn plan_refuses_an_id_that_is_not_live_at_k() {
     let (_h, copy, tip) = clone_with_undone_pushed_tip();
     let repo = Repo::open_and_migrate(&copy).unwrap();
     let ours = commands::resolve_snapshot_id(&repo, "main").unwrap();
@@ -195,6 +234,13 @@ fn plan_refuses_an_id_that_is_not_live() {
 
 #[test]
 fn tracking_refs_at_names_the_ref_after_undo() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        tracking_refs_at_names_the_ref_after_undo_at_k();
+    }
+}
+
+fn tracking_refs_at_names_the_ref_after_undo_at_k() {
     let (_h, copy, tip) = clone_with_undone_pushed_tip();
     let repo = Repo::open_and_migrate(&copy).unwrap();
     let id: crate::SnapshotId = tip.parse().unwrap();

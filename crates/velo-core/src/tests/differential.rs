@@ -46,8 +46,7 @@ struct Config {
 #[derive(Clone, Copy, Debug)]
 struct Mix {
     removals: bool,
-    /// Fetch, push and remote commits; off until 20.4-b makes import write
-    /// deltas.
+    /// Fetch, push and remote commits; import writes deltas at the receiver's K.
     network: bool,
 }
 
@@ -566,14 +565,14 @@ fn differential_smoke() {
     // removing and the append-only operation sets are covered.
     // The reference stores every tree whole; the subject runs at several K so
     // short chains, keyframes mid-history and the default are all compared with
-    // it. Removals and the network stay off until 20.6-b and 20.4-b.
+    // it. Removals stay off until 20.6-b.
     let seeds: Vec<u64> = match env_u64("VELO_DIFF_SEED") {
         Some(s) => vec![s],
         None => vec![1, 2, 3],
     };
     let mix = Mix {
         removals: false,
-        network: false,
+        network: true,
     };
     let reference = Config {
         keyframe_interval: Some(1),

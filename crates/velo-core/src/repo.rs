@@ -69,6 +69,13 @@ pub(crate) fn keyframes_only() {
     TEST_KEYFRAME_INTERVAL.with(|k| k.set(1));
 }
 
+/// Tests only: every repository opened by this test's thread from now on starts
+/// at K = `k`, so one body can run against several storage shapes.
+#[cfg(test)]
+pub(crate) fn set_test_keyframe_interval(k: u32) {
+    TEST_KEYFRAME_INTERVAL.with(|c| c.set(k));
+}
+
 fn initial_keyframe_interval() -> u32 {
     #[cfg(test)]
     {

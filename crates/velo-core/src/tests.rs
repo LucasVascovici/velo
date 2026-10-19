@@ -12316,3 +12316,6 @@ mod tree_store_lint;
 
 #[cfg(test)]
 mod storage_v4;
+
+#[cfg(test)]
+mod import_v4;
