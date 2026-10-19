@@ -65,6 +65,12 @@ fn corrupt(snapshot: &str, why: &str) -> Error {
 /// [`MAX_CHAIN_LINKS`] links is `Error::Corrupt`. A snapshot with no rows at
 /// all is an empty keyframe and fine.
 fn chain(conn: &Connection, snapshot: &str) -> Result<Vec<String>> {
+    chain_with(conn, snapshot, true)
+}
+
+/// [`chain`], optionally without the check that every base is a snapshot or
+/// trash row. A fold reads trees whose base may be an orphan about to go.
+fn chain_with(conn: &Connection, snapshot: &str, require_known: bool) -> Result<Vec<String>> {
     let mut probe =
         conn.prepare_cached("SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?")?;
     let mut links = vec![snapshot.to_string()];
@@ -93,7 +99,7 @@ fn chain(conn: &Connection, snapshot: &str) -> Result<Vec<String>> {
             [&base],
             |r| r.get(0),
         )?;
-        if !known {
+        if require_known && !known {
             return Err(corrupt(
                 snapshot,
                 &format!("delta base {base} does not exist"),
@@ -123,7 +129,17 @@ pub(crate) fn keyframe_rows(conn: &Connection, snapshot: &str) -> Result<StoredT
 
 /// The full tree of `snapshot`; empty when it has no rows.
 pub(crate) fn tree_of(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
-    let links = chain(conn, snapshot)?;
+    tree_of_with(conn, snapshot, true)
+}
+
+/// [`tree_of`] for a fold: a base that is neither snapshot nor trash is read
+/// anyway, since the tree is about to be rewritten away from it.
+pub(crate) fn tree_of_unchecked(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
+    tree_of_with(conn, snapshot, false)
+}
+
+fn tree_of_with(conn: &Connection, snapshot: &str, require_known: bool) -> Result<StoredTree> {
+    let links = chain_with(conn, snapshot, require_known)?;
     let mut tree = keyframe_rows(conn, &links[0])?;
     let mut stmt = conn
         .prepare_cached("SELECT path, hash, mode FROM tree_delta_rows WHERE snapshot_hash = ?")?;
@@ -362,6 +378,65 @@ fn depth_upto(conn: &Connection, snapshot: &str, limit: u32) -> Result<u32> {
     Ok(depth)
 }
 
+/// Calls `f` once per row of the exact symmetric difference between `base` and
+/// `tree`: `Some((hash, mode))` for an added or modified path, `None` for one
+/// `base` has and `tree` lacks. The one rule every delta writer shares, so a
+/// fold writes the same canonical delta a save would.
+fn for_each_delta_row(
+    base: &StoredTree,
+    tree: &[(&str, &str, i64)],
+    mut f: impl FnMut(&str, Option<(&str, i64)>),
+) {
+    let mut seen: HashSet<&str> = HashSet::with_capacity(tree.len());
+    for (path, object, mode) in tree {
+        seen.insert(path);
+        if base
+            .get(*path)
+            .is_some_and(|(h, m)| h == object && m == mode)
+        {
+            continue;
+        }
+        f(path, Some((object, *mode)));
+    }
+    for path in base.keys() {
+        if !seen.contains(path.as_str()) {
+            f(path, None);
+        }
+    }
+}
+
+/// Inserts the `tree_delta_rows` of `snapshot` against `base`. One prepared
+/// statement serves every row, since saves write hundreds of thousands.
+fn insert_delta_rows(
+    tx: &Connection,
+    snapshot: &str,
+    base: &StoredTree,
+    tree: &[(&str, &str, i64)],
+) -> Result<()> {
+    let mut ins = tx.prepare_cached(
+        "INSERT INTO tree_delta_rows (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+    )?;
+    let mut failed = None;
+    for_each_delta_row(base, tree, |path, entry| {
+        if failed.is_some() {
+            return;
+        }
+        let r = match entry {
+            Some((h, m)) => ins.execute(rusqlite::params![snapshot, path, h, m]),
+            None => ins.execute(rusqlite::params![
+                snapshot,
+                path,
+                None::<String>,
+                None::<i64>
+            ]),
+        };
+        if let Err(e) = r {
+            failed = Some(e);
+        }
+    });
+    failed.map_or(Ok(()), |e| Err(e.into()))
+}
+
 /// Stores the tree of `snapshot`, as a delta against `first_parent` when that
 /// keeps the chain shorter than `k`, else as a keyframe.
 ///
@@ -394,31 +469,7 @@ pub(crate) fn write_tree(
                     &loaded
                 }
             };
-            let mut ins = tx.prepare_cached(
-                "INSERT INTO tree_delta_rows (snapshot_hash, path, hash, mode)
-                 VALUES (?, ?, ?, ?)",
-            )?;
-            let mut seen: HashSet<&str> = HashSet::with_capacity(tree.len());
-            for (path, object, mode) in tree {
-                seen.insert(path);
-                if base
-                    .get(*path)
-                    .is_some_and(|(h, m)| h == object && m == mode)
-                {
-                    continue;
-                }
-                ins.execute(rusqlite::params![snapshot, path, object, mode])?;
-            }
-            for path in base.keys() {
-                if !seen.contains(path.as_str()) {
-                    ins.execute(rusqlite::params![
-                        snapshot,
-                        path,
-                        None::<String>,
-                        None::<i64>
-                    ])?;
-                }
-            }
+            insert_delta_rows(tx, snapshot, base, tree)?;
             tx.execute(
                 "INSERT INTO tree_deltas (snapshot_hash, base_hash) VALUES (?, ?)",
                 rusqlite::params![snapshot, parent],
@@ -474,6 +525,96 @@ pub(crate) fn delete_trees(tx: &Connection, snapshots: &[&str]) -> Result<()> {
         )?;
     }
     Ok(())
+}
+
+/// Removes the stored trees of `removed` without changing any surviving tree:
+/// the one fold primitive of FORMAT.md "Removal (fold)".
+///
+/// Every snapshot outside `removed` whose delta is based on a member is
+/// rewritten first. Its new base is `new_first_parent(it)` (the first surviving
+/// ancestor, as the caller's parent remapping sees it): the snapshot becomes
+/// the canonical delta against that tree when the base has a stored tree, is
+/// not itself being removed, sits strictly shallower than the snapshot did
+/// (so nothing grows), stays under `k`, and the delta has fewer rows than the
+/// tree has entries. Otherwise it becomes a keyframe. Dependants go shallowest
+/// first and a rewrite never lengthens a chain, so a base rewritten later can
+/// never be based on its dependant. [`delete_trees`] then removes the set; its
+/// guard passes because no dependant is left. All of it runs in the caller's
+/// transaction.
+pub(crate) fn remove_trees(
+    tx: &Connection,
+    removed: &[&str],
+    new_first_parent: &dyn Fn(&str) -> Option<String>,
+    k: u32,
+) -> Result<()> {
+    if removed.is_empty() {
+        return Ok(());
+    }
+    let gone: HashSet<&str> = removed.iter().copied().collect();
+    let marks = vec!["?"; removed.len()].join(", ");
+    let mut stmt = tx.prepare(&format!(
+        "SELECT snapshot_hash FROM tree_deltas
+          WHERE base_hash IN ({marks}) AND snapshot_hash NOT IN ({marks})"
+    ))?;
+    let dependants: Vec<String> = stmt
+        .query_map(
+            rusqlite::params_from_iter(removed.iter().chain(removed.iter())),
+            |r| r.get(0),
+        )?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(stmt);
+    let limit = MAX_CHAIN_LINKS as u32;
+    let mut work: Vec<(u32, String, StoredTree)> = Vec::with_capacity(dependants.len());
+    for d in dependants {
+        let depth = depth_upto(tx, &d, limit)?;
+        let tree = tree_of_unchecked(tx, &d)?;
+        work.push((depth, d, tree));
+    }
+    work.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
+    for (old_depth, d, tree) in work {
+        let entries: Vec<(&str, &str, i64)> = tree
+            .iter()
+            .map(|(p, (h, m))| (p.as_str(), h.as_str(), *m))
+            .collect();
+        let mut new_base: Option<(String, StoredTree)> = None;
+        if let Some(p) = new_first_parent(&d) {
+            if k >= 2 && p != d && !gone.contains(p.as_str()) && has_tree(tx, &p)? {
+                let depth = depth_upto(tx, &p, limit)?;
+                if depth < old_depth && depth + 1 < k {
+                    let base = tree_of_unchecked(tx, &p)?;
+                    let mut rows = 0usize;
+                    for_each_delta_row(&base, &entries, |_, _| rows += 1);
+                    if rows < entries.len() {
+                        new_base = Some((p, base));
+                    }
+                }
+            }
+        }
+        for table in ["tree_deltas", "tree_delta_rows"] {
+            tx.execute(
+                &format!("DELETE FROM {table} WHERE snapshot_hash = ?"),
+                [&d],
+            )?;
+        }
+        match new_base {
+            Some((p, base)) => {
+                insert_delta_rows(tx, &d, &base, &entries)?;
+                tx.execute(
+                    "INSERT INTO tree_deltas (snapshot_hash, base_hash) VALUES (?, ?)",
+                    rusqlite::params![d, p],
+                )?;
+            }
+            None => {
+                let mut ins = tx.prepare_cached(
+                    "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+                )?;
+                for (path, object, mode) in &entries {
+                    ins.execute(rusqlite::params![d, path, object, mode])?;
+                }
+            }
+        }
+    }
+    delete_trees(tx, removed)
 }
 
 /// Rewrites every delta outside `snapshots` that is based on a member as a
@@ -764,8 +905,97 @@ pub(crate) fn referenced_objects(conn: &Connection) -> Result<HashSet<String>> {
 /// rows with no `tree_deltas` record belong to no tree and always go. What is
 /// left (orphan deltas with dependants, or on a cycle) is for the fold of 20.6,
 /// and [`orphan_delta_snapshots`] counts it so `fsck` can report it.
-pub(crate) fn delete_orphan_trees(conn: &Connection) -> Result<usize> {
-    delete_orphans(conn, true)
+pub(crate) fn delete_orphan_trees(conn: &Connection, k: u32) -> Result<usize> {
+    let mut total = delete_orphans(conn, true)?;
+    total += fold_orphans(conn, k)?;
+    Ok(total)
+}
+
+/// The base `snapshot`'s delta is written against, if it is a delta.
+fn base_of(conn: &Connection, snapshot: &str) -> Result<Option<String>> {
+    match conn.query_row(
+        "SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?",
+        [snapshot],
+        |r| r.get::<_, String>(0),
+    ) {
+        Ok(b) => Ok(Some(b)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Folds away the orphan trees [`delete_orphans`] had to keep because a
+/// remaining delta is based on them, and returns the rows removed plus one per
+/// dependant rewritten. An orphan whose base chain loops is left alone. Each
+/// dependant's new base is its nearest base that is not itself an orphan being
+/// removed, so a run of orphans folds in one pass.
+fn fold_orphans(conn: &Connection, k: u32) -> Result<usize> {
+    let mut stmt = conn.prepare(
+        "SELECT snapshot_hash FROM tree_deltas
+          WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
+            AND snapshot_hash NOT IN (SELECT hash FROM trash)
+          UNION
+         SELECT DISTINCT snapshot_hash FROM file_map
+          WHERE snapshot_hash NOT IN (SELECT hash FROM snapshots)
+            AND snapshot_hash NOT IN (SELECT hash FROM trash)",
+    )?;
+    let orphans: Vec<String> = stmt
+        .query_map([], |r| r.get(0))?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(stmt);
+    let mut safe: Vec<String> = Vec::new();
+    for o in &orphans {
+        let mut cur = o.clone();
+        let mut steps = 0;
+        let mut acyclic = true;
+        while let Some(b) = base_of(conn, &cur)? {
+            steps += 1;
+            if b == *o || steps > MAX_CHAIN_LINKS {
+                acyclic = false;
+                break;
+            }
+            cur = b;
+        }
+        if acyclic {
+            safe.push(o.clone());
+        }
+    }
+    if safe.is_empty() {
+        return Ok(0);
+    }
+    let gone: HashSet<&str> = safe.iter().map(String::as_str).collect();
+    let mut total = 0usize;
+    let mut folds = 0usize;
+    for h in &safe {
+        for table in ["file_map", "tree_deltas", "tree_delta_rows"] {
+            let n: i64 = conn.query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE snapshot_hash = ?"),
+                [h],
+                |r| r.get(0),
+            )?;
+            total += n as usize;
+        }
+        let mut stmt = conn.prepare("SELECT snapshot_hash FROM tree_deltas WHERE base_hash = ?")?;
+        let kids: Vec<String> = stmt
+            .query_map([h], |r| r.get(0))?
+            .collect::<std::result::Result<_, _>>()?;
+        folds += kids.iter().filter(|c| !gone.contains(c.as_str())).count();
+    }
+    let next_base = |d: &str| -> Option<String> {
+        let mut cur = base_of(conn, d).ok().flatten()?;
+        let mut steps = 0;
+        while gone.contains(cur.as_str()) {
+            steps += 1;
+            if steps > MAX_CHAIN_LINKS {
+                return None;
+            }
+            cur = base_of(conn, &cur).ok().flatten()?;
+        }
+        Some(cur)
+    };
+    let refs: Vec<&str> = safe.iter().map(String::as_str).collect();
+    remove_trees(conn, &refs, &next_base, k)?;
+    Ok(total + folds)
 }
 
 /// [`delete_orphan_trees`] limited to delta storage: delta rows with no

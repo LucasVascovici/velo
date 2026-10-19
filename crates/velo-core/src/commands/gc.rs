@@ -130,7 +130,8 @@ pub fn run(guard: &WriteGuard, options: Options<'_>) -> Result<Collected> {
         [cutoff_ms],
     )?;
 
-    collected.orphan_file_map = crate::tree_store::delete_orphan_trees(&conn)?;
+    collected.orphan_file_map =
+        crate::tree_store::delete_orphan_trees(&conn, guard.repo().keyframe_interval())?;
 
     collected.orphan_decisions = conn.execute(
         "DELETE FROM hunk_decisions WHERE file_path NOT IN (SELECT path FROM conflict_files)",

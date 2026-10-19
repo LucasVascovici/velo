@@ -472,9 +472,9 @@ fn for_each_tree_reports_unreachable_deltas_and_descends_from_an_empty_base() {
 }
 
 #[test]
-fn delete_orphan_trees_keeps_what_a_remaining_delta_is_based_on() {
+fn delete_orphan_trees_folds_what_a_remaining_delta_is_based_on() {
     let (_t, repo) = setup();
-    let [k, d, e, _g, _z] = forest(&repo);
+    let [k, d, e, g, _z] = forest(&repo);
     let c = repo.conn();
     // Strays: delta rows with no record, and a whole orphan chain.
     c.execute(
@@ -493,7 +493,7 @@ fn delete_orphan_trees_keeps_what_a_remaining_delta_is_based_on() {
     // `k` and `d` leave the live set, but `e` (on `d`) and `g` (on `k`) stay.
     c.execute("DELETE FROM snapshots WHERE hash IN (?, ?)", [&k, &d])
         .unwrap();
-    let n = tree_store::delete_orphan_trees(c).unwrap();
+    let n = tree_store::delete_orphan_trees(c, 128).unwrap();
     assert!(n >= 5, "{n}");
     let count = |sql: &str, h: &str| -> i64 { c.query_row(sql, [h], |r| r.get(0)).unwrap() };
     for h in ["o0", "o1", "o2", "ghost"] {
@@ -502,25 +502,19 @@ fn delete_orphan_trees_keeps_what_a_remaining_delta_is_based_on() {
             assert_eq!(count(&sql, h), 0, "{table} {h}");
         }
     }
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM tree_deltas WHERE snapshot_hash = ?",
-            &d
-        ),
-        1
-    );
-    assert!(count("SELECT count(*) FROM file_map WHERE snapshot_hash = ?", &k) > 0);
-    // The live delta keeps its rows (its base is an orphan, which is for the
-    // fold to resolve, not for gc to break).
-    assert_eq!(
-        count(
-            "SELECT count(*) FROM tree_delta_rows WHERE snapshot_hash = ?",
-            &e
-        ),
-        2
-    );
-    // Only `d` is an orphan delta that had to stay.
-    assert_eq!(tree_store::orphan_delta_snapshots(c).unwrap(), 1);
+    // `e` and `g` were based on the orphans `d` and `k`: gc folds those away, so
+    // the two live snapshots are keyframes now and no orphan is left.
+    for h in [&e, &g] {
+        let sql = "SELECT count(*) FROM tree_deltas WHERE snapshot_hash = ?";
+        assert_eq!(count(sql, h), 0);
+        let sql = "SELECT count(*) FROM file_map WHERE snapshot_hash = ?";
+        assert!(count(sql, h) > 0);
+    }
+    for h in [&k, &d] {
+        let sql = "SELECT count(*) FROM file_map WHERE snapshot_hash = ?";
+        assert_eq!(count(sql, h), 0);
+    }
+    assert_eq!(tree_store::orphan_delta_snapshots(c).unwrap(), 0);
 }
 
 #[test]
