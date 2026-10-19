@@ -99,7 +99,10 @@ fn chain_with(conn: &Connection, snapshot: &str, require_known: bool) -> Result<
             [&base],
             |r| r.get(0),
         )?;
-        if require_known && !known {
+        // Unchecked mode still refuses a base that is unknown AND has no
+        // stored rows: only an orphan that still has rows is readable, so a
+        // fold never rewrites a tree whose base is simply missing.
+        if !known && (require_known || !has_tree(conn, &base)?) {
             return Err(corrupt(
                 snapshot,
                 &format!("delta base {base} does not exist"),
@@ -955,6 +958,11 @@ fn fold_orphans(conn: &Connection, k: u32) -> Result<usize> {
                 break;
             }
             cur = b;
+        }
+        // A chain ending at a base that is unknown and has no rows is damage
+        // for fsck to report; folding it would overwrite it with a wrong tree.
+        if acyclic && tree_of_unchecked(conn, o).is_err() {
+            acyclic = false;
         }
         if acyclic {
             safe.push(o.clone());

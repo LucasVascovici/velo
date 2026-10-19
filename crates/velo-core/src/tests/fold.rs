@@ -246,6 +246,43 @@ fn gc_folds_an_orphan_base_instead_of_skipping_it() {
 }
 
 #[test]
+fn gc_leaves_an_orphan_whose_own_base_is_missing_untouched() {
+    let (_t, repo, ids) = build(3, 3);
+    let c = repo.conn();
+    // s0's rows vanish and s0 and s1 stop being snapshots: s1 is an orphan
+    // delta whose base has nothing stored, and s2 is based on s1.
+    c.execute("DELETE FROM file_map WHERE snapshot_hash = ?", [&ids[0]])
+        .unwrap();
+    for i in [0, 1] {
+        c.execute("DELETE FROM snapshots WHERE hash = ?", [&ids[i]])
+            .unwrap();
+    }
+    let dump = |c: &rusqlite::Connection| -> Vec<(String, String, Option<String>)> {
+        let mut s = c
+            .prepare(
+                "SELECT d.snapshot_hash, d.base_hash, r.path || '=' || COALESCE(r.hash, '')
+                   FROM tree_deltas d LEFT JOIN tree_delta_rows r
+                     ON r.snapshot_hash = d.snapshot_hash
+                  ORDER BY 1, 3",
+            )
+            .unwrap();
+        s.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .map(|r| r.unwrap())
+            .collect()
+    };
+    let before = dump(c);
+    let _ = commands::gc::run(
+        &repo.write().unwrap(),
+        commands::gc::Options {
+            keep_days: 0,
+            ..Default::default()
+        },
+    );
+    assert_eq!(dump(c), before, "gc rewrote a tree it could not read");
+}
+
+#[test]
 fn a_signed_snapshot_keeps_its_tree_and_signature_through_a_fold() {
     let (_t, repo, ids) = build(4, 4);
     let c = repo.conn();
@@ -304,17 +341,28 @@ fn undo_save_gc_redo_in_every_order_keeps_ids_and_trees() {
     assert_eq!(orders.len(), 24);
     for order in orders {
         // s0 keyframe, s1 a delta on it, s2 a keyframe again at K = 2.
-        let (tmp, repo, ids) = build(2, 3);
+        let (tmp, repo, _ids) = build(2, 3);
         let known = all_trees(repo.conn());
         let mut next = 3;
-        let mut redone = None;
+        // The hash undo trashed, its tree beforehand, and whether a keep_days=0
+        // gc has run since (that expires the trash row by design).
+        let mut trashed: Option<(String, StoredTree)> = None;
+        let mut gc_since_undo = false;
         for step in &order {
             match step {
                 0 => {
-                    let _ = commands::undo::run(&repo.write().unwrap());
+                    let o = commands::undo::run(&repo.write().unwrap())
+                        .unwrap_or_else(|e| panic!("{order:?}: undo failed: {e}"));
+                    let t = tree_store::tree_of(repo.conn(), &o.snapshot).unwrap();
+                    trashed = Some((o.snapshot, t));
+                    gc_since_undo = false;
                 }
                 1 => {
-                    let _ = save_one(&repo, tmp.path(), next);
+                    // A save on the branch starts new history and clears its
+                    // trash, so a later redo has nothing to restore.
+                    let saved = save_one(&repo, tmp.path(), next);
+                    assert!(saved.is_some(), "{order:?}: save failed");
+                    trashed = None;
                     next += 1;
                 }
                 2 => {
@@ -326,10 +374,21 @@ fn undo_save_gc_redo_in_every_order_keeps_ids_and_trees() {
                         },
                     )
                     .unwrap();
+                    gc_since_undo = true;
                 }
                 _ => {
-                    if let Ok(o) = commands::redo::run(&repo.write().unwrap()) {
-                        redone = Some(o.snapshot);
+                    let res = commands::redo::run(&repo.write().unwrap());
+                    match trashed.take() {
+                        Some((hash, tree)) if !gc_since_undo => {
+                            let o = res.unwrap_or_else(|e| panic!("{order:?}: redo failed: {e}"));
+                            assert_eq!(o.snapshot, hash, "{order:?}: redo restored another id");
+                            assert_eq!(
+                                tree_store::tree_of(repo.conn(), &o.snapshot).unwrap(),
+                                tree,
+                                "{order:?}: redone tree differs"
+                            );
+                        }
+                        _ => assert!(res.is_err(), "{order:?}: redo should have failed"),
                     }
                 }
             }
@@ -343,19 +402,6 @@ fn undo_save_gc_redo_in_every_order_keeps_ids_and_trees() {
                 if let Some(old) = known.get(&h) {
                     assert_eq!(&h_tree(&t), &h_tree(old), "{order:?}: {h} changed");
                 }
-            }
-        }
-        if let Some(r) = redone {
-            assert!(
-                ids.contains(&r) || tree_store::has_tree(repo.conn(), &r).unwrap(),
-                "{order:?}: redone {r} has no tree"
-            );
-            if let Some(old) = known.get(&r) {
-                assert_eq!(
-                    &tree_store::tree_of(repo.conn(), &r).unwrap(),
-                    old,
-                    "{order:?}"
-                );
             }
         }
     }
