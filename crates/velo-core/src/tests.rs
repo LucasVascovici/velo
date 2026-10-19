@@ -12328,3 +12328,6 @@ mod fsck_v4;
 
 #[cfg(test)]
 mod fold;
+
+#[cfg(test)]
+mod hostile_deltas;

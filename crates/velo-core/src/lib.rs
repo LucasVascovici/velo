@@ -98,7 +98,7 @@ pub mod error;
 pub mod events;
 #[doc(hidden)]
 pub mod failpoint;
-#[cfg(feature = "fuzzing")]
+#[cfg(any(feature = "fuzzing", test))]
 #[doc(hidden)]
 pub mod fuzzing;
 pub mod ids;

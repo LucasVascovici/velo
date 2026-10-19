@@ -294,12 +294,21 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
             .iter()
             .map(|path| PathLookup::load(conn, path))
             .collect();
-        entries.retain(|e| {
+        let mut kept = Vec::with_capacity(entries.len());
+        for e in entries {
             let parent = e.parent.as_deref().unwrap_or("");
-            lookups
-                .iter()
-                .any(|lookup| lookup.changed(conn, e.hash.as_str(), parent))
-        });
+            let mut any = false;
+            for lookup in &lookups {
+                if lookup.changed(conn, e.hash.as_str(), parent)? {
+                    any = true;
+                    break;
+                }
+            }
+            if any {
+                kept.push(e);
+            }
+        }
+        entries = kept;
         if limit >= 0 {
             entries.truncate(limit as usize);
         }
@@ -515,19 +524,19 @@ impl PathLookup {
         PathLookup::Prefix(path.to_string())
     }
 
-    fn changed(&self, conn: &rusqlite::Connection, snapshot: &str, parent: &str) -> bool {
+    fn changed(&self, conn: &rusqlite::Connection, snapshot: &str, parent: &str) -> Result<bool> {
         match self {
             PathLookup::File(versions) => {
                 // A root snapshot has no parent, so the parent side is empty.
                 let before = if parent.is_empty() {
                     None
                 } else {
-                    versions.at(parent)
+                    versions.at(parent)?
                 };
-                versions.at(snapshot) != before
+                Ok(versions.at(snapshot)? != before)
             }
             PathLookup::Prefix(path) => {
-                crate::tree_store::changed_under(conn, snapshot, parent, path).unwrap_or(false)
+                crate::tree_store::changed_under(conn, snapshot, parent, path)
             }
         }
     }

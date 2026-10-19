@@ -216,11 +216,11 @@ fn path_versions_distinguish_a_file_from_a_directory_prefix() {
     let versions = tree_store::PathVersions::load(conn, "a.txt").unwrap();
     assert!(!versions.is_empty());
     assert_eq!(
-        versions.at(&root),
+        versions.at(&root).unwrap(),
         tree_store::file_at(conn, &root, "a.txt").unwrap()
     );
-    assert_ne!(versions.at(&root), versions.at(&next));
-    assert_eq!(versions.at("nope"), None);
+    assert_ne!(versions.at(&root).unwrap(), versions.at(&next).unwrap());
+    assert_eq!(versions.at("nope").unwrap(), None);
     assert!(!tree_store::PathVersions::is_directory(conn, "a.txt").unwrap());
 
     assert!(tree_store::PathVersions::is_directory(conn, "dir").unwrap());

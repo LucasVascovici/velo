@@ -545,20 +545,20 @@ fn path_versions_and_probes_resolve_through_deltas() {
     let c = repo.conn();
     let v = tree_store::PathVersions::load(c, "a").unwrap();
     assert_eq!(
-        v.at(&k).unwrap().0,
+        v.at(&k).unwrap().unwrap().0,
         tree_store::tree_of(c, &k).unwrap()["a"].0
     );
-    assert_eq!(v.at(&d).unwrap().0, "h-a2");
-    assert_eq!(v.at(&e), None);
-    assert_eq!(v.at(&g), v.at(&k));
+    assert_eq!(v.at(&d).unwrap().unwrap().0, "h-a2");
+    assert_eq!(v.at(&e).unwrap(), None);
+    assert_eq!(v.at(&g).unwrap(), v.at(&k).unwrap());
     let v = tree_store::PathVersions::load(c, "dir/b").unwrap();
-    assert!(v.at(&k).is_some());
-    assert_eq!(v.at(&d), None);
-    assert_eq!(v.at(&e).unwrap().0, "h-b2");
+    assert!(v.at(&k).unwrap().is_some());
+    assert_eq!(v.at(&d).unwrap(), None);
+    assert_eq!(v.at(&e).unwrap().unwrap().0, "h-b2");
     // Only a delta holds this path.
     let v = tree_store::PathVersions::load(c, "new/d").unwrap();
     assert!(!v.is_empty());
-    assert_eq!(v.at(&e).unwrap().0, "h-d");
+    assert_eq!(v.at(&e).unwrap().unwrap().0, "h-d");
     assert!(tree_store::PathVersions::is_directory(c, "new").unwrap());
     assert!(!tree_store::PathVersions::is_directory(c, "ne").unwrap());
 

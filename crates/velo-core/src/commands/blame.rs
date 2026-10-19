@@ -458,7 +458,7 @@ impl TrackedHashes {
             let versions = crate::tree_store::PathVersions::load(conn, path)?;
             self.by_path.insert(path.to_string(), versions);
         }
-        match self.by_path[path].at(snapshot) {
+        match self.by_path[path].at(snapshot)? {
             Some((h, _)) => read_text(objects, &h),
             None => Ok(String::new()),
         }

@@ -76,8 +76,8 @@ fn chain_with(conn: &Connection, snapshot: &str, require_known: bool) -> Result<
     let mut links = vec![snapshot.to_string()];
     let mut seen: HashSet<String> = HashSet::new();
     seen.insert(snapshot.to_string());
-    loop {
-        let cur = links.last().expect("chain is never empty");
+    // `links` starts with `snapshot` and only grows, so it is never empty.
+    while let Some(cur) = links.last() {
         let base: Option<String> = match probe.query_row([cur], |r| r.get(0)) {
             Ok(b) => Some(b),
             Err(rusqlite::Error::QueryReturnedNoRows) => None,
@@ -114,6 +114,43 @@ fn chain_with(conn: &Connection, snapshot: &str, require_known: bool) -> Result<
     Ok(links)
 }
 
+/// Decode one `tree_delta_rows` row into what it says about its path: the new
+/// entry, or `None` for a removal. A row is a removal when both `hash` and
+/// `mode` are NULL and an entry when both are set; one without the other is a
+/// corrupt table, never read as a guess.
+fn decode_delta_row(
+    snapshot: &str,
+    path: &str,
+    hash: Option<String>,
+    mode: Option<i64>,
+) -> Result<Option<Entry>> {
+    match (hash, mode) {
+        (Some(h), Some(m)) => Ok(Some((h, m))),
+        (None, None) => Ok(None),
+        _ => Err(corrupt(
+            snapshot,
+            &format!(
+                "delta row for {path:?} has a hash and mode that are not both set or both NULL"
+            ),
+        )),
+    }
+}
+
+/// Refuse a tree holding a path longer than `max_string_bytes`: a tree a delta
+/// reconstructs counts against the same ceiling as a received one (18.1).
+pub(crate) fn check_path_limits(tree: &StoredTree, max_string_bytes: u32) -> Result<()> {
+    for path in tree.keys() {
+        if path.len() as u64 > u64::from(max_string_bytes) {
+            return Err(Error::LimitExceeded {
+                limit: crate::limits::Limit::StringBytes,
+                max: u64::from(max_string_bytes),
+                found: Some(path.len() as u64),
+            });
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn keyframe_rows(conn: &Connection, snapshot: &str) -> Result<StoredTree> {
     let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let rows = stmt.query_map([snapshot], |r| {
@@ -143,6 +180,7 @@ pub(crate) fn tree_of_unchecked(conn: &Connection, snapshot: &str) -> Result<Sto
 
 fn tree_of_with(conn: &Connection, snapshot: &str, require_known: bool) -> Result<StoredTree> {
     let links = chain_with(conn, snapshot, require_known)?;
+    // `links` always holds at least `snapshot` itself, so `links[0]` exists.
     let mut tree = keyframe_rows(conn, &links[0])?;
     let mut stmt = conn
         .prepare_cached("SELECT path, hash, mode FROM tree_delta_rows WHERE snapshot_hash = ?")?;
@@ -155,11 +193,12 @@ fn tree_of_with(conn: &Connection, snapshot: &str, require_known: bool) -> Resul
             ))
         })?;
         for row in rows {
-            match row? {
-                (path, Some(hash), mode) => {
-                    tree.insert(path, (hash, mode.unwrap_or(0)));
+            let (path, hash, mode) = row?;
+            match decode_delta_row(link, &path, hash, mode)? {
+                Some(entry) => {
+                    tree.insert(path, entry);
                 }
-                (path, None, _) => {
+                None => {
                     tree.remove(&path);
                 }
             }
@@ -178,10 +217,12 @@ fn file_in_chain(conn: &Connection, links: &[String], path: &str) -> Result<Opti
         for link in links[1..].iter().rev() {
             let mut rows = stmt.query(rusqlite::params![link, path])?;
             if let Some(r) = rows.next()? {
-                return Ok(match r.get::<_, Option<String>>(0)? {
-                    Some(hash) => Some((hash, r.get::<_, Option<i64>>(1)?.unwrap_or(0))),
-                    None => None,
-                });
+                return decode_delta_row(
+                    link,
+                    path,
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<i64>>(1)?,
+                );
             }
         }
     }
@@ -880,12 +921,13 @@ fn descend(
                 r.get::<_, Option<i64>>(2)?,
             ))
         })?;
-        for row in rows.flatten() {
-            match row {
-                (path, Some(hash), mode) => {
-                    tree.insert(path, (hash, mode.unwrap_or(0)));
+        for row in rows {
+            let (path, hash, mode) = row?;
+            match decode_delta_row(&snap, &path, hash, mode)? {
+                Some(entry) => {
+                    tree.insert(path, entry);
                 }
-                (path, None, _) => {
+                None => {
                     tree.remove(&path);
                 }
             }
@@ -1338,7 +1380,7 @@ fn changed_under_delta(
             if !inside(&p) {
                 continue;
             }
-            let after = hash.map(|h| (h, mode.unwrap_or(0)));
+            let after = decode_delta_row(snapshot, &p, hash, mode)?;
             if file_at(conn, parent, &p)? != after {
                 return Ok(true);
             }
@@ -1402,7 +1444,8 @@ impl PathVersions {
             })?;
             for row in rows {
                 let (snapshot, hash, mode) = row?;
-                delta.insert(snapshot, hash.map(|h| (h, mode.unwrap_or(0))));
+                let entry = decode_delta_row(&snapshot, path, hash, mode)?;
+                delta.insert(snapshot, entry);
             }
             let mut stmt =
                 conn.prepare_cached("SELECT snapshot_hash, base_hash FROM tree_deltas")?;
@@ -1436,19 +1479,22 @@ impl PathVersions {
     }
 
     /// The version of the path in `snapshot`, or `None` when it is not there.
-    /// A chain longer than [`MAX_CHAIN_LINKS`] (a cycle) reads as absent.
-    pub(crate) fn at(&self, snapshot: &str) -> Option<Entry> {
+    /// A chain longer than [`MAX_CHAIN_LINKS`] (a cycle) is `Error::Corrupt`.
+    pub(crate) fn at(&self, snapshot: &str) -> Result<Option<Entry>> {
         let mut cur = snapshot;
         for _ in 0..=MAX_CHAIN_LINKS {
             if let Some(entry) = self.delta.get(cur) {
-                return entry.clone();
+                return Ok(entry.clone());
             }
             match self.base.get(cur) {
                 Some(b) => cur = b,
-                None => return self.by_snapshot.get(cur).cloned(),
+                None => return Ok(self.by_snapshot.get(cur).cloned()),
             }
         }
-        None
+        Err(corrupt(
+            snapshot,
+            &format!("delta chain longer than {MAX_CHAIN_LINKS} links"),
+        ))
     }
 
     /// Whether no snapshot has the path.
@@ -1496,7 +1542,7 @@ pub(crate) fn changes_of(conn: &Connection, snapshot: &str) -> Result<Vec<TreeCh
             .collect::<std::result::Result<_, _>>()?;
         let mut changes = Vec::new();
         for (path, hash, mode) in rows {
-            let after = hash.map(|h| (h, mode.unwrap_or(0)));
+            let after = decode_delta_row(snapshot, &path, hash, mode)?;
             let before = file_at(conn, &parent, &path)?;
             if before != after {
                 changes.push(TreeChange {
@@ -1535,4 +1581,39 @@ pub(crate) fn changes_of(conn: &Connection, snapshot: &str) -> Result<Vec<TreeCh
     }
     changes.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(changes)
+}
+
+/// Fuzzing only: drop every stored delta and delta row.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn fuzz_clear(conn: &Connection) -> Result<()> {
+    conn.execute_batch("DELETE FROM tree_deltas; DELETE FROM tree_delta_rows;")?;
+    Ok(())
+}
+
+/// Fuzzing only: store a `tree_deltas` row as given, replacing any for `snapshot`.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn fuzz_set_base(conn: &Connection, snapshot: &str, base: &str) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO tree_deltas (snapshot_hash, base_hash) VALUES (?, ?)",
+        [snapshot, base],
+    )?;
+    Ok(())
+}
+
+/// Fuzzing only: store a `tree_delta_rows` row as given, hash and mode
+/// unchecked, replacing any for the same snapshot and path.
+#[cfg(any(test, feature = "fuzzing"))]
+pub(crate) fn fuzz_set_row(
+    conn: &Connection,
+    snapshot: &str,
+    path: &str,
+    hash: Option<&str>,
+    mode: Option<i64>,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO tree_delta_rows (snapshot_hash, path, hash, mode)
+         VALUES (?, ?, ?, ?)",
+        rusqlite::params![snapshot, path, hash, mode],
+    )?;
+    Ok(())
 }

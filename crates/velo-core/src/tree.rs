@@ -895,7 +895,9 @@ impl Repo {
             return Err(self.missing_snapshot(snapshot));
         }
 
-        let files: Vec<TreeFile> = crate::tree_store::tree_of(self.conn(), snapshot)?
+        let tree = crate::tree_store::tree_of(self.conn(), snapshot)?;
+        crate::tree_store::check_path_limits(&tree, self.limits().max_string_bytes)?;
+        let files: Vec<TreeFile> = tree
             .into_iter()
             .map(|(path, (object, mode))| TreeFile {
                 path,
@@ -926,9 +928,7 @@ impl Repo {
     pub fn read_file_at(&self, snapshot: &SnapshotId, path: impl AsRef<Path>) -> Result<Vec<u8>> {
         let rel = db::normalise(&path.as_ref().to_string_lossy());
         let object: Option<ObjectHash> =
-            crate::tree_store::file_at(self.conn(), snapshot.as_ref(), &rel)
-                .ok()
-                .flatten()
+            crate::tree_store::file_at(self.conn(), snapshot.as_ref(), &rel)?
                 .map(|(hash, _)| ObjectHash::from_stored(hash));
         match object {
             Some(object) => self.read_object(&object),

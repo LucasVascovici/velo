@@ -59,3 +59,10 @@ test = false
 doc = false
 bench = false
 
+[[bin]]
+name = "delta_table"
+path = "fuzz_targets/delta_table.rs"
+test = false
+doc = false
+bench = false
+
