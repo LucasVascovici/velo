@@ -105,3 +105,15 @@ golden-change rule as everything above. Re-running the script
 checked-in bytes. The v3 corpus test skips `format-*` expectations because this
 build would refuse the repository with `SchemaTooNew`.
 
+## Old-release check
+
+`old_release_check.py --old <velo 5.x> --new <velo 6.x>` (CI job `old-release`,
+which builds `v5.3.0`, or `v5.2.0` if that tag does not exist yet) asserts that
+
+1. the old binary refuses a copy of `repos/format-v4` with a non-zero exit and a
+   message naming format v4 and the version it supports (it prints a finding
+   when the message gives no upgrade advice; a released binary cannot be changed);
+2. a repository built by the new binary (delta chains, a merge, tags, a
+   signature) bundled with `bundle create` and applied by the old binary into a
+   fresh repository has the same snapshot ids, branches, and file contents at
+   every branch tip and tag.

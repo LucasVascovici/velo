@@ -71,6 +71,25 @@ change cannot land unannounced.
 break, but any Rust API break in 6.0 is listed here as an exemption, as
 `Bundle.signatures` was.
 
+## Going back from 6.0
+
+6.0 writes repository format v4. A 5.x build opening a v4 repository refuses
+with `repository format v4 is newer than this Velo supports (v3)`. **There is
+no in-place downgrade**: the repository is never rewritten back to v3.
+
+The way back is a bundle, which 5.x reads. In the 6.0 repository, then in a
+fresh directory with a 5.x `velo`:
+
+    velo bundle create ../project.bundle        # with 6.0
+    mkdir project-5x && cd project-5x
+    velo init                                   # with 5.x
+    velo bundle apply ../project.bundle         # with 5.x
+    velo restore main --force
+
+Snapshot ids, branches, tags and file contents are identical. The `old-release`
+CI job builds a 5.x release and checks this on every change
+(`tests/corpus/old_release_check.py`).
+
 ## Appendix: the `#[non_exhaustive]` audit
 
 Public enums and option or result structs should be `#[non_exhaustive]` so a

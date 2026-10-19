@@ -356,3 +356,45 @@ jobs:
       # interval setter it needs is behind the failpoints feature.
       - name: Corpus tests (real writer against the spec-written fixture)
         run: cargo test -p velo-core --features failpoints --test corpus --locked
+
+  # An old release refuses a v4 repository, and the bundle way back works
+  # (tests/corpus/old_release_check.py).
+  old-release:
+    name: Old release · ubuntu-latest
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build the old release (v5.3.0 if tagged, else v5.2.0)
+        run: |
+          if git rev-parse -q --verify refs/tags/v5.3.0 >/dev/null; then
+            tag=v5.3.0
+          else
+            tag=v5.2.0
+          fi
+          echo "old release: $tag"
+          git worktree add "$RUNNER_TEMP/old-velo" "$tag"
+          cargo build --release -p velo-cli --manifest-path "$RUNNER_TEMP/old-velo/Cargo.toml" --target-dir "$RUNNER_TEMP/old-target"
+
+      - name: Build the current release binary
+        run: cargo build --release -p velo-cli --locked
+
+      - name: Old release refuses v4, and the bundle way back works
+        run: python3 tests/corpus/old_release_check.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velo
