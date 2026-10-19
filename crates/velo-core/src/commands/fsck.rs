@@ -489,7 +489,7 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     let all_snaps = all_snapshots(conn)?;
     let before = problems.len();
     let SnapshotScan {
-        verified: ids_verified,
+        verified: mut ids_verified,
         legacy: ids_legacy,
         duplicate_rows,
         storage_fixes,
@@ -509,8 +509,22 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
             Problem::StorageMismatch { snapshot } => !storage_fixes.iter().any(|f| match f {
                 StorageFix::DropKeyframeRows(s) | StorageFix::DropDelta(s) => s == snapshot,
             }),
+            // A dropped delta is what failed to reproduce the id (or could not
+            // be rebuilt at all); with it gone the finding no longer holds.
+            Problem::IdMismatch { snapshot, .. }
+            | Problem::DeltaCycle { snapshot }
+            | Problem::DeltaBaseMissing { snapshot, .. }
+            | Problem::DeltaBaseNotFirstParent { snapshot, .. } => !storage_fixes
+                .iter()
+                .any(|f| matches!(f, StorageFix::DropDelta(s) if s == snapshot)),
             _ => true,
         });
+        // Their keyframe rows were proven to reproduce the id, so they count
+        // as verified, as a fresh check would.
+        ids_verified += storage_fixes
+            .iter()
+            .filter(|f| matches!(f, StorageFix::DropDelta(_)))
+            .count();
     }
     check_signatures(conn, &mut problems)?;
     sections.push(Section::Snapshots {

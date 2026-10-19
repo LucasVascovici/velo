@@ -220,7 +220,8 @@ fn repair_keeps_the_keyframe_when_only_it_reproduces_the_id() {
     );
     let report = fsck::check(&repo).unwrap();
     assert_eq!(storage_mismatches(&report), 1);
-    fsck::repair(&repo.write().unwrap()).unwrap();
+    let report = fsck::repair(&repo.write().unwrap()).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
     assert!(!is_delta(&repo, last));
     assert_clean(&repo);
 }
