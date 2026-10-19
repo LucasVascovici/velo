@@ -152,3 +152,72 @@ pub(crate) fn tree_with_index_cache(
     })?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
+
+/// `parent` as the optional first parent [`write_tree`] takes: the empty
+/// string every caller holds for "no parent" becomes `None`.
+pub(crate) fn first_parent(parent: &str) -> Option<&str> {
+    let parent = parent.trim();
+    (!parent.is_empty()).then_some(parent)
+}
+
+/// Stores the full tree of `snapshot`.
+///
+/// `first_parent` is unused while every tree is stored whole, but each caller
+/// passes the real one (for a merge, `parent_hash` and not `merge_parent`)
+/// because the delta layout deltas a tree against it. One prepared statement
+/// serves every row, since saves write hundreds of thousands of them.
+pub(crate) fn write_tree(
+    tx: &Connection,
+    snapshot: &str,
+    first_parent: Option<&str>,
+    tree: &[(&str, &str, i64)],
+) -> Result<()> {
+    let _ = first_parent;
+    let mut ins = tx.prepare_cached(
+        "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+    )?;
+    for (path, object, mode) in tree {
+        ins.execute(rusqlite::params![snapshot, path, object, mode])?;
+    }
+    Ok(())
+}
+
+/// Removes the stored trees of `snapshots`; a snapshot without one is skipped.
+///
+/// Contract for the delta layout: it must refuse when a stored tree outside
+/// the set depends on a member, because deleting that member would leave the
+/// dependant unreadable. Callers delete whole ranges together for this reason.
+pub(crate) fn delete_trees(tx: &Connection, snapshots: &[&str]) -> Result<()> {
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+    let marks = vec!["?"; snapshots.len()].join(", ");
+    tx.execute(
+        &format!("DELETE FROM file_map WHERE snapshot_hash IN ({marks})"),
+        rusqlite::params_from_iter(snapshots.iter()),
+    )?;
+    Ok(())
+}
+
+/// Moves the stored tree of `old` to `new` in place, which is compaction's
+/// re-mint: no row is copied and no index entry is written for one that did
+/// not move. `new` must not already have a tree.
+pub(crate) fn rekey_tree(tx: &Connection, old: &str, new: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE file_map SET snapshot_hash = ? WHERE snapshot_hash = ?",
+        rusqlite::params![new, old],
+    )?;
+    Ok(())
+}
+
+/// The rows of `snapshot`'s tree as a bundle sends them: path, object id and
+/// mode, in no particular order.
+pub(crate) fn tree_rows_for_export(
+    conn: &Connection,
+    snapshot: &str,
+) -> Result<Vec<(String, String, i64)>> {
+    let mut stmt =
+        conn.prepare_cached("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
+    let rows = stmt.query_map([snapshot], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+    Ok(rows.flatten().collect())
+}

@@ -162,12 +162,16 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
         params![snapshot, message, parent_hash, timestamp_ms],
     )?;
     {
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+        let rows: Vec<(&str, &str, i64)> = tree
+            .iter()
+            .map(|(p, h, m)| (p.as_str(), h.as_str(), *m))
+            .collect();
+        crate::tree_store::write_tree(
+            &tx,
+            &snapshot,
+            crate::tree_store::first_parent(&parent_hash),
+            &rows,
         )?;
-        for (p, h, m) in &tree {
-            ins.execute(params![snapshot, p, h, m])?;
-        }
     }
     tx.execute(
         "INSERT INTO stash (name, snapshot_hash, branch, parent_hash, created_at_ms)
@@ -406,10 +410,7 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
 /// Delete a shelf's registration and the hidden snapshot behind it.
 fn forget(tx: &rusqlite::Transaction, shelf: &ShelfRow) -> Result<()> {
     tx.execute("DELETE FROM stash WHERE name = ?", [&shelf.name])?;
-    tx.execute(
-        "DELETE FROM file_map WHERE snapshot_hash = ?",
-        [&shelf.snapshot],
-    )?;
+    crate::tree_store::delete_trees(tx, &[shelf.snapshot.as_str()])?;
     tx.execute("DELETE FROM snapshots WHERE hash = ?", [&shelf.snapshot])?;
     Ok(())
 }

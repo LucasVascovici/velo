@@ -805,12 +805,16 @@ impl WriteGuard<'_> {
                 }
             }
             {
-                let mut ins = tx.prepare(
-                    "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+                let rows: Vec<(&str, &str, i64)> = tree
+                    .iter()
+                    .map(|(p, o, m)| (p.as_str(), o.as_str(), *m))
+                    .collect();
+                crate::tree_store::write_tree(
+                    &tx,
+                    snapshot.as_str(),
+                    crate::tree_store::first_parent(parent),
+                    &rows,
                 )?;
-                for (path, object, mode) in &tree {
-                    ins.execute(params![snapshot, path, object, mode])?;
-                }
             }
             crate::timing::lap("save_tree.insert_file_map");
             // Inside `if !already`, with everything else the snapshot owns.

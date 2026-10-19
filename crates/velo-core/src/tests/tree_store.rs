@@ -125,3 +125,30 @@ fn tree_with_index_cache_joins_both_sides() {
     assert_eq!(got["dir/b.txt"].1, None);
     assert_eq!(got["only_cached"].0, None);
 }
+
+#[test]
+fn write_rekey_and_delete_round_trip() {
+    let (_t, repo) = setup();
+    let conn = repo.conn();
+    let rows = [("a.txt", "obj1", 0o100644), ("d/b.txt", "obj2", 0o100755)];
+    tree_store::write_tree(conn, "snapX", Some("p"), &rows).unwrap();
+    assert!(tree_store::has_tree(conn, "snapX").unwrap());
+    let tree = tree_store::tree_of(conn, "snapX").unwrap();
+    assert_eq!(tree["d/b.txt"], ("obj2".to_string(), 0o100755));
+
+    tree_store::rekey_tree(conn, "snapX", "snapY").unwrap();
+    assert!(!tree_store::has_tree(conn, "snapX").unwrap());
+    let mut exported = tree_store::tree_rows_for_export(conn, "snapY").unwrap();
+    exported.sort();
+    assert_eq!(exported.len(), 2);
+    assert_eq!(
+        exported[0],
+        ("a.txt".to_string(), "obj1".to_string(), 0o100644)
+    );
+
+    tree_store::write_tree(conn, "snapZ", None, &rows[..1]).unwrap();
+    tree_store::delete_trees(conn, &["snapY", "snapZ", "absent"]).unwrap();
+    assert!(!tree_store::has_tree(conn, "snapY").unwrap());
+    assert!(!tree_store::has_tree(conn, "snapZ").unwrap());
+    tree_store::delete_trees(conn, &[]).unwrap();
+}

@@ -288,30 +288,22 @@ pub(crate) fn build_pack_excluding(
     let mut object_hashes: HashSet<String> = HashSet::new();
     let mut peer_objects: HashSet<String> = HashSet::new();
     {
-        let mut stmt = conn.prepare(
-            "SELECT snapshot_hash, path, hash, mode FROM file_map WHERE snapshot_hash = ?",
-        )?;
         for snap in &snapshots {
-            let rows = stmt.query_map([&snap.hash], |r| {
-                Ok(FileMapRow {
-                    snapshot_hash: r.get(0)?,
-                    path: r.get(1)?,
-                    hash: r.get(2)?,
-                    mode: r.get(3)?,
-                })
-            })?;
-            for row in rows.flatten() {
-                object_hashes.insert(row.hash.clone());
-                file_map.push(row);
+            for (path, hash, mode) in crate::tree_store::tree_rows_for_export(conn, &snap.hash)? {
+                object_hashes.insert(hash.clone());
+                file_map.push(FileMapRow {
+                    snapshot_hash: snap.hash.clone(),
+                    path,
+                    hash,
+                    mode,
+                });
             }
         }
         // A snapshot named in `snap_set` but absent from `snapshots` has no rows
         // to send, so the loop above already covers everything in `snap_set`.
-        let mut peer_stmt = conn.prepare("SELECT hash FROM file_map WHERE snapshot_hash = ?")?;
         if !object_hashes.is_empty() {
             for p in peer_has.iter().filter(|p| !snap_set.contains(*p)) {
-                let rows = peer_stmt.query_map([p], |r| r.get::<_, String>(0))?;
-                for h in rows.flatten() {
+                for (_, h, _) in crate::tree_store::tree_rows_for_export(conn, p)? {
                     peer_objects.insert(h);
                 }
             }
@@ -599,22 +591,14 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
             "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
              VALUES (?, ?, ?, ?, ?, ?)",
         )?;
-        let mut ins_fm = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-        )?;
-
-        let mut has_fm =
-            tx.prepare("SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?)")?;
-        let mut del_fm = tx.prepare("DELETE FROM file_map WHERE snapshot_hash = ?")?;
-
         for s in &bundle.snapshots {
             if existing.contains(&s.hash) {
                 continue; // already have it — idempotent
             }
             // Leftover rows (undo keeps them, save orphans them) are replaced,
             // never added to. The trash row stays: `redo` still needs it.
-            if has_fm.query_row([&s.hash], |r| r.get::<_, bool>(0))? {
-                del_fm.execute([&s.hash])?;
+            if crate::tree_store::has_tree(&tx, &s.hash)? {
+                crate::tree_store::delete_trees(&tx, &[s.hash.as_str()])?;
             }
             // Its id was verified against its content before the transaction.
             ins_snap.execute(params![
@@ -626,9 +610,16 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
                 s.created_at_ms
             ])?;
             if let Some(rows) = fm_by_snap.get(s.hash.as_str()) {
-                for r in rows {
-                    ins_fm.execute(params![r.snapshot_hash, r.path, r.hash, r.mode])?;
-                }
+                let tree: Vec<(&str, &str, i64)> = rows
+                    .iter()
+                    .map(|r| (r.path.as_str(), r.hash.as_str(), r.mode))
+                    .collect();
+                crate::tree_store::write_tree(
+                    &tx,
+                    &s.hash,
+                    crate::tree_store::first_parent(&s.parent_hash),
+                    &tree,
+                )?;
             }
             new_snaps += 1;
         }
