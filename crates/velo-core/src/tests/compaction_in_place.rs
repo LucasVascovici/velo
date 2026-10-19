@@ -184,7 +184,16 @@ fn golden_ids_and_rows_match_the_copying_apply() {
 
 #[test]
 fn a_dry_run_writes_nothing() {
-    let (_t, repo, ids) = scenario();
+    dry_run_writes_nothing(1);
+}
+
+#[test]
+fn a_dry_run_writes_nothing_at_k3() {
+    dry_run_writes_nothing(3);
+}
+
+fn dry_run_writes_nothing(k: u32) {
+    let (_t, repo, ids) = scenario_k(k);
     let before = dump(&repo);
     let head = repo.head_token().unwrap();
     let done = run_scenario(&repo, &ids, true);

@@ -10,12 +10,35 @@ use crate::events::{Event, Ref};
 use crate::tree::{SaveTree, TreeEntry};
 use crate::{Author, BranchName, Error, Repo, SnapshotId, SnapshotMeta, TagName};
 
-fn setup() -> (TempDir, Repo) {
-    crate::repo::keyframes_only();
+thread_local! {
+    /// The keyframe interval `setup()` uses on this thread; 1 unless an `_at_k3`
+    /// wrapper raised it.
+    static K: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+}
+
+/// A repository at keyframe interval `k`; 1 stores every tree whole.
+fn setup_k(k: u32) -> (TempDir, Repo) {
+    crate::repo::set_test_keyframe_interval(k);
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
     (tmp, repo)
+}
+
+fn setup() -> (TempDir, Repo) {
+    setup_k(K.with(|k| k.get()))
+}
+
+/// Runs the named test body again with every `setup()` at K = 3, so deltas and
+/// the fold in `remove_trees` are exercised under the same assertions.
+macro_rules! at_k3 {
+    ($($name:ident => $wrapper:ident),* $(,)?) => {$(
+        #[test]
+        fn $wrapper() {
+            K.with(|k| k.set(3));
+            $name();
+        }
+    )*};
 }
 
 fn main_branch() -> BranchName {
@@ -537,7 +560,7 @@ fn dry_run_reports_the_same_result_and_writes_nothing() {
 
 #[test]
 fn the_branch_move_is_announced_as_ref_moved() {
-    crate::repo::keyframes_only();
+    crate::repo::set_test_keyframe_interval(K.with(|k| k.get()));
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let (tx, rx) = mpsc::channel();
@@ -581,4 +604,23 @@ fn parent_is_followed_when_it_names_a_reminted_snapshot() {
     let ids = chain(&repo, 4);
     std::fs::write(tmp.path().join(".velo/PARENT"), ids[1].as_str()).unwrap();
     refused(&repo, &ids[0], &ids[2], "checked-out");
+}
+
+at_k3! {
+    a_middle_range_collapses_and_later_snapshots_are_reminted => a_middle_range_collapses_and_later_snapshots_are_reminted_at_k3,
+    two_ranges_in_one_call => two_ranges_in_one_call_at_k3,
+    old_ids_report_where_they_went_across_two_compactions => old_ids_report_where_they_went_across_two_compactions_at_k3,
+    a_unique_prefix_of_a_compacted_id_is_compacted_too => a_unique_prefix_of_a_compacted_id_is_compacted_too_at_k3,
+    a_tagged_snapshot_in_the_range_is_refused => a_tagged_snapshot_in_the_range_is_refused_at_k3,
+    a_merge_snapshot_in_the_range_is_refused => a_merge_snapshot_in_the_range_is_refused_at_k3,
+    a_published_snapshot_is_refused => a_published_snapshot_is_refused_at_k3,
+    a_published_snapshot_blocks_a_rewrite_that_reaches_it => a_published_snapshot_blocks_a_rewrite_that_reaches_it_at_k3,
+    a_branch_forked_from_a_member_is_refused => a_branch_forked_from_a_member_is_refused_at_k3,
+    malformed_ranges_are_refused => malformed_ranges_are_refused_at_k3,
+    a_tag_on_a_reminted_descendant_follows_it => a_tag_on_a_reminted_descendant_follows_it_at_k3,
+    the_squashed_snapshot_keeps_the_newest_members_metadata_and_author => the_squashed_snapshot_keeps_the_newest_members_metadata_and_author_at_k3,
+    rename_edges_compose_across_the_range => rename_edges_compose_across_the_range_at_k3,
+    dry_run_reports_the_same_result_and_writes_nothing => dry_run_reports_the_same_result_and_writes_nothing_at_k3,
+    the_branch_move_is_announced_as_ref_moved => the_branch_move_is_announced_as_ref_moved_at_k3,
+    parent_is_followed_when_it_names_a_reminted_snapshot => parent_is_followed_when_it_names_a_reminted_snapshot_at_k3,
 }

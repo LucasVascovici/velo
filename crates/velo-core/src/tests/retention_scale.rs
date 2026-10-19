@@ -22,12 +22,35 @@ use crate::{BranchName, Repo, SnapshotId};
 const DAY_MS: i64 = 86_400_000;
 const BASE_MS: i64 = 1_700_000_000_000;
 
-fn setup() -> (TempDir, Repo) {
-    crate::repo::keyframes_only();
+thread_local! {
+    /// The keyframe interval `setup()` uses on this thread; 1 unless an `_at_k3`
+    /// wrapper raised it.
+    static K: std::cell::Cell<u32> = const { std::cell::Cell::new(1) };
+}
+
+/// A repository at keyframe interval `k`; 1 stores every tree whole.
+fn setup_k(k: u32) -> (TempDir, Repo) {
+    crate::repo::set_test_keyframe_interval(k);
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
     (tmp, repo)
+}
+
+fn setup() -> (TempDir, Repo) {
+    setup_k(K.with(|k| k.get()))
+}
+
+/// Runs the named test body again with every `setup()` at K = 3, so deltas and
+/// the fold in `remove_trees` are exercised under the same assertions.
+macro_rules! at_k3 {
+    ($($name:ident => $wrapper:ident),* $(,)?) => {$(
+        #[test]
+        fn $wrapper() {
+            K.with(|k| k.set(3));
+            $name();
+        }
+    )*};
 }
 
 /// What the repository holds at one moment.
@@ -206,10 +229,23 @@ fn default_policy_bounds_rows_at_small_scale() {
     let (before, after) = run(20, 100, 60);
     assert_eq!(before.snapshots, 100);
     assert!(after.snapshots < before.snapshots);
-    assert_eq!(after.rows, after.snapshots * 20);
+    if K.with(|k| k.get()) == 1 {
+        assert_eq!(after.rows, after.snapshots * 20);
+    } else {
+        // At K > 1 most trees are deltas holding only the changed files, so
+        // file_map holds at most one full row set per snapshot.
+        assert!(after.rows > 0 && after.rows <= after.snapshots * 20);
+    }
     // A new repository vacuums incrementally, so the file is no larger than it
     // was before retention ran (it once freed a single page).
-    assert!(after.file_bytes < before.file_bytes);
+    if K.with(|k| k.get()) == 1 {
+        assert!(after.file_bytes < before.file_bytes);
+    } else {
+        // A survivor whose delta chain was removed may have to become a
+        // keyframe, so the file can grow a little, but never past twice
+        // (the bound compaction_in_place uses for the same reason).
+        assert!(after.file_bytes <= before.file_bytes * 2);
+    }
 }
 
 /// The 18.10 shape at a fifth of the width and snapshot count, for comparing
@@ -219,4 +255,8 @@ fn default_policy_bounds_rows_at_small_scale() {
 fn default_policy_at_a_reduced_18_10_shape() {
     let (before, after) = run(2_000, 400, 60);
     assert!(after.snapshots < before.snapshots);
+}
+
+at_k3! {
+    default_policy_bounds_rows_at_small_scale => default_policy_bounds_rows_at_small_scale_at_k3,
 }
