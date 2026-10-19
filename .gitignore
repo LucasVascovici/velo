@@ -8,6 +8,7 @@
 !bench/scale/*.py
 !bench/agent/*.py
 !bench/coldstart/*.py
+!tests/compat/*.py
 !crates/velo-mcp/conformance/*.py
 /target-lane*
 
