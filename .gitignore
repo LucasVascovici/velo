@@ -3,6 +3,7 @@
 **/*.rs.bk
 *.py
 !tests/corpus/generate.py
+!tests/corpus/write_format_v4.py
 !bindings/parity/*.py
 !bench/scale/*.py
 !bench/agent/*.py
