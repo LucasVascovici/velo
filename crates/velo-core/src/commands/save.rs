@@ -328,22 +328,15 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     // an amend from dropping files the replaced snapshot introduced.
     let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _, _)| p.as_str()).collect();
     let mut tree: Vec<(String, String, i64)> = {
-        let mut stmt =
-            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-        let carried: Vec<(String, String, i64)> = stmt
-            .query_map([parent_hash.trim()], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .filter(|(p, _, _)| {
-                !modified_paths.contains(p.as_str())
-                    && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
-            })
-            .collect();
+        let carried: Vec<(String, String, i64)> =
+            crate::tree_store::tree_of(conn, parent_hash.trim())?
+                .into_iter()
+                .map(|(p, (h, m))| (p, h, m))
+                .filter(|(p, _, _)| {
+                    !modified_paths.contains(p.as_str())
+                        && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
+                })
+                .collect();
         carried
     };
 

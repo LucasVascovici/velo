@@ -450,10 +450,7 @@ pub(crate) fn load_tree(conn: &rusqlite::Connection, snapshot: &str) -> Result<T
     if snapshot.is_empty() {
         return Ok(Tree::new());
     }
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let tree: Tree = stmt
-        .query_map([snapshot], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
-        .filter_map(|r| r.ok())
-        .collect();
-    Ok(tree)
+    Ok(crate::tree_store::tree_of(conn, snapshot)?
+        .into_iter()
+        .collect())
 }

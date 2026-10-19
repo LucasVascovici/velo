@@ -271,9 +271,10 @@ struct Minted {
 const DELETE_BATCH: usize = 500;
 
 fn tree_of(conn: &rusqlite::Connection, id: &str) -> Result<Vec<(String, String, i64)>> {
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(crate::tree_store::tree_of(conn, id)?
+        .into_iter()
+        .map(|(p, (h, m))| (p, h, m))
+        .collect())
 }
 
 fn renames_of(conn: &rusqlite::Connection, id: &str) -> Result<Vec<(String, String)>> {

@@ -783,37 +783,21 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     // ── 1. Load snapshot file map and index cache in one query ───────────────
     // Degrade gracefully: a transient DB error (e.g. a momentary lock) yields an
     // empty map rather than panicking the whole command.
-    let mut joined: HashMap<String, Joined> = conn
-        .prepare(
-            "SELECT COALESCE(f.path, c.path), f.hash, c.mtime_ns, c.size, c.hash
-             FROM (SELECT path, hash FROM file_map WHERE snapshot_hash = ?1) f
-             FULL OUTER JOIN index_cache c ON c.path = f.path",
-        )
-        .and_then(|mut stmt| {
-            let rows = stmt.query_map([parent_hash.trim()], |r| {
-                let cache = match (
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                ) {
-                    (Some(mtime_ns), Some(size), Some(hash)) => Some(CacheEntry {
-                        mtime_ns,
-                        size,
-                        hash,
-                    }),
-                    _ => None,
-                };
-                Ok((
-                    r.get::<_, String>(0)?,
-                    Joined {
-                        snap: r.get::<_, Option<String>>(1)?,
-                        cache,
-                    },
-                ))
-            })?;
-            Ok(rows.filter_map(|r| r.ok()).collect::<HashMap<_, _>>())
-        })
-        .unwrap_or_default();
+    let mut joined: HashMap<String, Joined> =
+        crate::tree_store::tree_with_index_cache(conn, parent_hash.trim())
+            .map(|rows| {
+                rows.into_iter()
+                    .map(|(path, (snap, cache))| {
+                        let cache = cache.map(|(mtime_ns, size, hash)| CacheEntry {
+                            mtime_ns,
+                            size,
+                            hash,
+                        });
+                        (path, Joined { snap, cache })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
     // ── 3. Parallel walk ──────────────────────────────────────────────────────
     let entries = walk_with_meta(root, repo.scope());

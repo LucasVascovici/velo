@@ -131,17 +131,14 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     // hashed dirty ones. Deleted files are simply absent, which is what records
     // the deletion.
     let mut tree: Vec<(String, String, i64)> = {
-        let mut stmt =
-            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-        let carried: Vec<(String, String, i64)> = stmt
-            .query_map([&parent_hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .filter_map(|r| r.ok())
+        crate::tree_store::tree_of(conn, &parent_hash)?
+            .into_iter()
+            .map(|(p, (h, m))| (p, h, m))
             .filter(|(p, _, _): &(String, String, i64)| {
                 dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
                     && !hashed.iter().any(|(hp, _, _)| hp == p)
             })
-            .collect();
-        carried
+            .collect()
     };
     tree.extend(hashed.iter().cloned());
 
@@ -319,24 +316,18 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
 
     // The mode is read alongside the hash so exec bits and symlinks survive a
     // round trip: this used to `fs::write` the bytes and drop the mode entirely.
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let files: Vec<(String, String, i64)> = stmt
-        .query_map([&shelf.snapshot], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .filter_map(|r| r.ok())
+    let files: Vec<(String, String, i64)> = crate::tree_store::tree_of(conn, &shelf.snapshot)?
+        .into_iter()
+        .map(|(p, (h, m))| (p, h, m))
         .collect();
-    drop(stmt);
 
     // `pop` refused a dirty tree, so the working tree equals PARENT. Entries
     // identical to PARENT's are already on disk and are not rewritten.
     let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let on_disk: HashMap<String, (String, i64)> = stmt
-        .query_map([current_parent.trim()], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?)))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
+    let on_disk: HashMap<String, (String, i64)> =
+        crate::tree_store::tree_of(conn, current_parent.trim())?
+            .into_iter()
+            .collect();
     let to_write: Vec<(String, String, i64)> = files
         .iter()
         .filter(|(p, h, m)| on_disk.get(p).map(|(oh, om)| (oh, om)) != Some((h, m)))
@@ -389,12 +380,9 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
     // before shelving, so popping has to delete it again. Without this the
     // deletion was silently lost: pop only ever wrote files.
     let shelved: HashMap<&str, ()> = files.iter().map(|(p, _, _)| (p.as_str(), ())).collect();
-    let mut stmt = conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
-    let parent_paths: Vec<String> = stmt
-        .query_map([&shelf.parent], |r| r.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
+    let parent_paths: Vec<String> = crate::tree_store::tree_of(conn, &shelf.parent)?
+        .into_keys()
         .collect();
-    drop(stmt);
 
     let mut removed = 0usize;
     for path in parent_paths {

@@ -139,19 +139,10 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
     // message, and the oldest squashed snapshot's parent. Capture HEAD's tree
     // before touching the DB, then content-address the new snapshot.
     let tree: Vec<(String, String, i64)> = {
-        let mut stmt =
-            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-        let collected = stmt
-            .query_map([head_hash.as_str()], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        collected
+        crate::tree_store::tree_of(conn, head_hash.as_str())?
+            .into_iter()
+            .map(|(p, (h, m))| (p, h, m))
+            .collect()
     };
     let timestamp_ms = guard.repo().now_ms();
     let new_hash = crate::commands::snapshot_id(SnapshotIdentity {
