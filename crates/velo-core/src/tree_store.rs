@@ -339,19 +339,93 @@ pub(crate) fn first_parent(parent: &str) -> Option<&str> {
     (!parent.is_empty()).then_some(parent)
 }
 
-/// Stores the full tree of `snapshot`.
+/// Snapshots a keyframe may anchor along one chain: a writer stores a keyframe
+/// whenever a delta would sit `KEYFRAME_INTERVAL` links from its keyframe
+/// (docs/FORMAT.md, section 11.6).
+pub(crate) const KEYFRAME_INTERVAL: u32 = 128;
+
+/// Links between `snapshot` and its keyframe, walked at most `limit` steps; a
+/// keyframe is depth 0. A result of `limit` means "at least that deep".
+fn depth_upto(conn: &Connection, snapshot: &str, limit: u32) -> Result<u32> {
+    let mut probe =
+        conn.prepare_cached("SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?")?;
+    let mut cur = snapshot.to_string();
+    let mut depth = 0;
+    while depth < limit {
+        match probe.query_row([&cur], |r| r.get::<_, String>(0)) {
+            Ok(base) => cur = base,
+            Err(rusqlite::Error::QueryReturnedNoRows) => break,
+            Err(e) => return Err(e.into()),
+        }
+        depth += 1;
+    }
+    Ok(depth)
+}
+
+/// Stores the tree of `snapshot`, as a delta against `first_parent` when that
+/// keeps the chain shorter than `k`, else as a keyframe.
 ///
-/// `first_parent` is unused while every tree is stored whole, but each caller
-/// passes the real one (for a merge, `parent_hash` and not `merge_parent`)
-/// because the delta layout deltas a tree against it. One prepared statement
-/// serves every row, since saves write hundreds of thousands of them.
+/// `first_parent` is the first parent only (for a merge, `parent_hash` and
+/// never `merge_parent`). `parent_tree` is its exact tree when the caller
+/// already holds it; `None` makes this load it. A root, a parent with no stored
+/// rows, a parent already at depth `k - 2` and `k == 1` all give a keyframe.
+/// The delta is the exact symmetric difference: a row for an added or modified
+/// path, a NULL-hash row for a deleted one. One prepared statement serves every
+/// row, since saves write hundreds of thousands of them.
 pub(crate) fn write_tree(
     tx: &Connection,
     snapshot: &str,
     first_parent: Option<&str>,
+    parent_tree: Option<&StoredTree>,
     tree: &[(&str, &str, i64)],
+    k: u32,
 ) -> Result<()> {
-    let _ = first_parent;
+    if let Some(parent) = first_parent {
+        if k >= 2
+            && parent != snapshot
+            && has_tree(tx, parent)?
+            && depth_upto(tx, parent, k)? + 1 < k
+        {
+            let loaded;
+            let base = match parent_tree {
+                Some(t) => t,
+                None => {
+                    loaded = tree_of(tx, parent)?;
+                    &loaded
+                }
+            };
+            let mut ins = tx.prepare_cached(
+                "INSERT INTO tree_delta_rows (snapshot_hash, path, hash, mode)
+                 VALUES (?, ?, ?, ?)",
+            )?;
+            let mut seen: HashSet<&str> = HashSet::with_capacity(tree.len());
+            for (path, object, mode) in tree {
+                seen.insert(path);
+                if base
+                    .get(*path)
+                    .is_some_and(|(h, m)| h == object && m == mode)
+                {
+                    continue;
+                }
+                ins.execute(rusqlite::params![snapshot, path, object, mode])?;
+            }
+            for path in base.keys() {
+                if !seen.contains(path.as_str()) {
+                    ins.execute(rusqlite::params![
+                        snapshot,
+                        path,
+                        None::<String>,
+                        None::<i64>
+                    ])?;
+                }
+            }
+            tx.execute(
+                "INSERT INTO tree_deltas (snapshot_hash, base_hash) VALUES (?, ?)",
+                rusqlite::params![snapshot, parent],
+            )?;
+            return Ok(());
+        }
+    }
     let mut ins = tx.prepare_cached(
         "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
     )?;
@@ -363,38 +437,114 @@ pub(crate) fn write_tree(
 
 /// Removes the stored trees of `snapshots`; a snapshot without one is skipped.
 ///
-/// Contract for the delta layout: it must refuse when a stored tree outside
-/// the set depends on a member, because deleting that member would leave the
-/// dependant unreadable. Callers delete whole ranges together for this reason.
+/// Refuses with `Error::Corrupt` when a delta outside the set is based on a
+/// member, because deleting that member would leave the dependant unreadable
+/// (the never-orphan guard). Callers delete whole ranges together for this
+/// reason; the set's own deltas and keyframes are all removed.
 pub(crate) fn delete_trees(tx: &Connection, snapshots: &[&str]) -> Result<()> {
     if snapshots.is_empty() {
         return Ok(());
     }
     let marks = vec!["?"; snapshots.len()].join(", ");
-    tx.execute(
-        &format!("DELETE FROM file_map WHERE snapshot_hash IN ({marks})"),
-        rusqlite::params_from_iter(snapshots.iter()),
+    let n: i64 = tx.query_row(
+        &format!(
+            "SELECT COUNT(*) FROM tree_deltas
+              WHERE base_hash IN ({marks}) AND snapshot_hash NOT IN ({marks})"
+        ),
+        rusqlite::params_from_iter(snapshots.iter().chain(snapshots.iter())),
+        |r| r.get(0),
     )?;
+    if n > 0 {
+        let base: String = tx.query_row(
+            &format!(
+                "SELECT base_hash FROM tree_deltas
+                  WHERE base_hash IN ({marks}) AND snapshot_hash NOT IN ({marks}) LIMIT 1"
+            ),
+            rusqlite::params_from_iter(snapshots.iter().chain(snapshots.iter())),
+            |r| r.get(0),
+        )?;
+        return Err(Error::Corrupt {
+            detail: format!("{base} is the base of {n} delta snapshot(s) outside the removal"),
+        });
+    }
+    for table in ["file_map", "tree_deltas", "tree_delta_rows"] {
+        tx.execute(
+            &format!("DELETE FROM {table} WHERE snapshot_hash IN ({marks})"),
+            rusqlite::params_from_iter(snapshots.iter()),
+        )?;
+    }
+    Ok(())
+}
+
+/// Rewrites every delta outside `snapshots` that is based on a member as a
+/// keyframe, so [`delete_trees`] may then remove the set. A removal that is
+/// not yet able to fold a delta chain (compaction, retention) calls this first;
+/// it costs a full tree per dependant and changes no snapshot's tree.
+pub(crate) fn materialize_dependants(tx: &Connection, snapshots: &[&str]) -> Result<()> {
+    if snapshots.is_empty() {
+        return Ok(());
+    }
+    let marks = vec!["?"; snapshots.len()].join(", ");
+    let mut stmt = tx.prepare(&format!(
+        "SELECT snapshot_hash FROM tree_deltas
+          WHERE base_hash IN ({marks}) AND snapshot_hash NOT IN ({marks})"
+    ))?;
+    let dependants: Vec<String> = stmt
+        .query_map(
+            rusqlite::params_from_iter(snapshots.iter().chain(snapshots.iter())),
+            |r| r.get(0),
+        )?
+        .collect::<std::result::Result<_, _>>()?;
+    drop(stmt);
+    for dependant in dependants {
+        let tree = tree_of(tx, &dependant)?;
+        tx.execute(
+            "DELETE FROM tree_deltas WHERE snapshot_hash = ?",
+            [&dependant],
+        )?;
+        tx.execute(
+            "DELETE FROM tree_delta_rows WHERE snapshot_hash = ?",
+            [&dependant],
+        )?;
+        let mut ins = tx.prepare_cached(
+            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+        )?;
+        for (path, (hash, mode)) in &tree {
+            ins.execute(rusqlite::params![dependant, path, hash, mode])?;
+        }
+    }
     Ok(())
 }
 
 /// Moves the stored tree of `old` to `new` in place, which is compaction's
 /// re-mint: no row is copied and no index entry is written for one that did
-/// not move. `new` must not already have a tree.
+/// not move. `new` must not already have a tree. A delta's own rows and base
+/// record move too, and so does every child's `base_hash`.
 pub(crate) fn rekey_tree(tx: &Connection, old: &str, new: &str) -> Result<()> {
-    tx.execute(
-        "UPDATE file_map SET snapshot_hash = ? WHERE snapshot_hash = ?",
-        rusqlite::params![new, old],
-    )?;
+    for sql in [
+        "UPDATE file_map SET snapshot_hash = ?1 WHERE snapshot_hash = ?2",
+        "UPDATE tree_deltas SET snapshot_hash = ?1 WHERE snapshot_hash = ?2",
+        "UPDATE tree_delta_rows SET snapshot_hash = ?1 WHERE snapshot_hash = ?2",
+        "UPDATE tree_deltas SET base_hash = ?1 WHERE base_hash = ?2",
+    ] {
+        tx.execute(sql, rusqlite::params![new, old])?;
+    }
     Ok(())
 }
 
 /// The rows of `snapshot`'s tree as a bundle sends them: path, object id and
-/// mode, in no particular order.
+/// mode, in no particular order. A delta snapshot is reconstructed, since a
+/// bundle always carries whole trees.
 pub(crate) fn tree_rows_for_export(
     conn: &Connection,
     snapshot: &str,
 ) -> Result<Vec<(String, String, i64)>> {
+    if is_delta(conn, snapshot)? {
+        return Ok(tree_of(conn, snapshot)?
+            .into_iter()
+            .map(|(p, (h, m))| (p, h, m))
+            .collect());
+    }
     let mut stmt =
         conn.prepare_cached("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
     let rows = stmt.query_map([snapshot], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;

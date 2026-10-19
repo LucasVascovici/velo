@@ -596,6 +596,9 @@ pub fn run(
         .collect();
     for batch in gone.chunks(DELETE_BATCH) {
         let marks = vec!["?"; batch.len()].join(", ");
+        // Compaction cannot fold a delta chain yet (20.6-b): whatever outside
+        // the batch is a delta on a member is stored whole first.
+        crate::tree_store::materialize_dependants(&tx, batch)?;
         crate::tree_store::delete_trees(&tx, batch)?;
         for (table, column) in [
             ("snapshots", "hash"),

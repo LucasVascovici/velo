@@ -174,14 +174,19 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
             &tx,
             new_hash,
             crate::tree_store::first_parent(new_parent),
+            // `tree` is HEAD's; the first parent is the range base.
+            None,
             &rows,
+            guard.repo().keyframe_interval(),
         )?;
     }
 
     // Remove all squashed snapshots and their file maps
     // (Objects are left in the store; gc will clean them up)
+    // The trees go as one set: members are deltas on each other, and the
+    // never-orphan guard only lets a set leave together.
+    crate::tree_store::delete_trees(&tx, &squashed_hashes)?;
     for h in &squashed_hashes {
-        crate::tree_store::delete_trees(&tx, &[h])?;
         tx.execute("DELETE FROM snapshots WHERE hash = ?", [h])?;
     }
 

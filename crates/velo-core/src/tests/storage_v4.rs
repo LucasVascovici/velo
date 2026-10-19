@@ -11,6 +11,7 @@ use crate::tree_store;
 use crate::{BranchName, Error, Repo, SnapshotId, SnapshotMeta, FORMAT_VERSION};
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
@@ -683,4 +684,344 @@ fn history_file_and_blame_match_an_all_keyframe_repository() {
         assert!(!want.is_empty());
         assert_eq!(blame_of(&delta, tip), want);
     }
+}
+
+// ─── 20.4-a: the write path ──────────────────────────────────────────────────
+
+fn setup_k(k: u32) -> (TempDir, Repo) {
+    let (tmp, mut repo) = setup();
+    repo.set_keyframe_interval(k);
+    (tmp, repo)
+}
+
+fn base_of(repo: &Repo, snap: &SnapshotId) -> Option<String> {
+    repo.conn()
+        .query_row(
+            "SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?",
+            [snap.as_str()],
+            |r| r.get(0),
+        )
+        .ok()
+}
+
+fn delta_rows(repo: &Repo, snap: &SnapshotId) -> Vec<(String, Option<String>)> {
+    let mut stmt = repo
+        .conn()
+        .prepare("SELECT path, hash FROM tree_delta_rows WHERE snapshot_hash = ? ORDER BY path")
+        .unwrap();
+    let rows = stmt
+        .query_map([snap.as_str()], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    rows
+}
+
+fn keyframe_rows_of(repo: &Repo, snap: &SnapshotId) -> i64 {
+    repo.conn()
+        .query_row(
+            "SELECT count(*) FROM file_map WHERE snapshot_hash = ?",
+            [snap.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap()
+}
+
+fn write_wt(root: &std::path::Path, name: &str, body: &str) {
+    std::fs::write(root.join(name), body).unwrap();
+}
+
+fn save_wt(repo: &Repo, msg: &str, amend: bool) -> Result<(), Error> {
+    crate::commands::save::run(
+        &repo.write().unwrap(),
+        Some(msg),
+        crate::commands::save::Options {
+            amend,
+            ..Default::default()
+        },
+    )
+    .map(drop)
+}
+
+fn head(repo: &Repo) -> SnapshotId {
+    let h: String = repo
+        .conn()
+        .query_row(
+            "SELECT hash FROM snapshots WHERE branch = 'main' \
+             ORDER BY created_at_ms DESC, rowid DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    SnapshotId::from_stored(h)
+}
+
+#[test]
+fn k4_stores_keyframes_at_depth_zero_and_four_and_canonical_deltas() {
+    let (_t, repo) = setup_k(4);
+    let mut ids: Vec<SnapshotId> = Vec::new();
+    for i in 0..10usize {
+        let mut files: Vec<(String, String)> = vec![("keep".into(), "same".into())];
+        files.push(("mod".into(), format!("v{i}")));
+        // `gone` exists only at step 1, so step 2 deletes it.
+        if i == 1 {
+            files.push(("gone".into(), "x".into()));
+        }
+        files.push((format!("new{i}"), "n".into()));
+        let refs: Vec<(&str, &str)> = files
+            .iter()
+            .map(|(a, b)| (a.as_str(), b.as_str()))
+            .collect();
+        let id = save(&repo, ids.last(), &refs, i as i64 + 1);
+        ids.push(id);
+    }
+    for (i, id) in ids.iter().enumerate() {
+        let keyframe = i % 4 == 0;
+        assert_eq!(base_of(&repo, id).is_none(), keyframe, "step {i}");
+        assert_eq!(keyframe_rows_of(&repo, id) > 0, keyframe, "step {i}");
+    }
+    // Step 2 against step 1: modifies `mod`, adds `new2`, deletes `gone` and
+    // `new1` (neither is in step 2's tree).
+    assert_eq!(base_of(&repo, &ids[2]).as_deref(), Some(ids[1].as_str()));
+    let rows = delta_rows(&repo, &ids[2]);
+    let null: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.1.is_none())
+        .map(|r| r.0.as_str())
+        .collect();
+    let set: Vec<&str> = rows
+        .iter()
+        .filter(|r| r.1.is_some())
+        .map(|r| r.0.as_str())
+        .collect();
+    assert_eq!(null, ["gone", "new1"]);
+    assert_eq!(set, ["mod", "new2"]);
+    // Every tree reads back whole.
+    for (i, id) in ids.iter().enumerate() {
+        let t = tree_store::tree_of(repo.conn(), id.as_str()).unwrap();
+        assert!(
+            t.contains_key("keep") && t.contains_key(&format!("new{i}")),
+            "step {i}"
+        );
+        assert_eq!(t.len(), if i == 1 { 4 } else { 3 }, "step {i}");
+    }
+}
+
+#[test]
+fn k1_stores_every_tree_whole() {
+    let (_t, repo) = setup_k(1);
+    let a = save(&repo, None, &[("a", "1")], 1);
+    let b = save(&repo, Some(&a), &[("a", "2")], 2);
+    assert!(base_of(&repo, &b).is_none());
+    assert_eq!(keyframe_rows_of(&repo, &b), 1);
+}
+
+#[test]
+fn a_merge_snapshot_is_a_delta_on_its_first_parent() {
+    let (_t, repo) = setup_k(8);
+    let root = save(&repo, None, &[("a", "1")], 1);
+    let first = save(&repo, Some(&root), &[("a", "1"), ("b", "2")], 2);
+    let other = save(&repo, Some(&root), &[("a", "1"), ("c", "3")], 3);
+    let branch: BranchName = "main".parse().unwrap();
+    let merged = repo
+        .write()
+        .unwrap()
+        .save_tree(SaveTree {
+            branch: &branch,
+            parent: Some(&first),
+            merge_parent: Some(&other),
+            message: "merge",
+            entries: ["a", "b", "c"]
+                .iter()
+                .map(|p| TreeEntry::file(*p, p.as_bytes().to_vec()))
+                .collect(),
+            meta: SnapshotMeta::default(),
+            author: None,
+            timestamp_ms: Some(4),
+            renames: &[],
+        })
+        .unwrap();
+    assert_eq!(base_of(&repo, &merged).as_deref(), Some(first.as_str()));
+    assert_eq!(
+        tree_store::tree_of(repo.conn(), merged.as_str())
+            .unwrap()
+            .len(),
+        3
+    );
+}
+
+#[test]
+fn amend_deltas_against_the_replaced_snapshots_parent() {
+    let (tmp, repo) = setup_k(8);
+    write_wt(tmp.path(), "f.txt", "one");
+    save_wt(&repo, "one", false).unwrap();
+    let first = head(&repo);
+    write_wt(tmp.path(), "f.txt", "two");
+    write_wt(tmp.path(), "g.txt", "g");
+    save_wt(&repo, "two", false).unwrap();
+    let replaced = head(&repo);
+    write_wt(tmp.path(), "g.txt", "g2");
+    save_wt(&repo, "two again", true).unwrap();
+    let amended = head(&repo);
+    assert_ne!(amended, replaced);
+    assert_eq!(base_of(&repo, &amended).as_deref(), Some(first.as_str()));
+    let t = tree_store::tree_of(repo.conn(), amended.as_str()).unwrap();
+    assert!(
+        t.contains_key("g.txt") && t.contains_key("f.txt"),
+        "the file the replaced snapshot introduced is kept"
+    );
+    assert!(!tree_store::has_tree(repo.conn(), replaced.as_str()).unwrap());
+}
+
+#[test]
+fn amend_is_refused_while_a_stash_is_based_on_the_snapshot() {
+    let (tmp, repo) = setup_k(8);
+    write_wt(tmp.path(), "f.txt", "one");
+    save_wt(&repo, "one", false).unwrap();
+    let tip = head(&repo);
+    write_wt(tmp.path(), "f.txt", "dirty");
+    crate::commands::stash::push(&repo.write().unwrap(), None).unwrap();
+    // The stash is a delta on the tip.
+    let shelf: String = repo
+        .conn()
+        .query_row("SELECT snapshot_hash FROM stash", [], |r| r.get(0))
+        .unwrap();
+    let base: String = repo
+        .conn()
+        .query_row(
+            "SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?",
+            [&shelf],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(base, tip.as_str());
+    write_wt(tmp.path(), "f.txt", "amended");
+    let err = save_wt(&repo, "one", true).unwrap_err();
+    assert!(matches!(err, Error::Corrupt { .. }), "{err:?}");
+    // Nothing moved.
+    assert_eq!(head(&repo), tip);
+    assert!(tree_store::has_tree(repo.conn(), tip.as_str()).unwrap());
+}
+
+#[test]
+fn squashing_a_tip_range_leaves_a_delta_on_the_range_base() {
+    let (tmp, repo) = setup_k(8);
+    for (i, body) in ["a", "b", "c"].iter().enumerate() {
+        write_wt(tmp.path(), "f.txt", body);
+        write_wt(tmp.path(), &format!("n{i}.txt"), "n");
+        save_wt(&repo, "step", false).unwrap();
+    }
+    let all: Vec<String> = repo
+        .conn()
+        .prepare("SELECT hash FROM snapshots ORDER BY created_at_ms, rowid")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+    let want = tree_store::tree_of(repo.conn(), &all[2]).unwrap();
+    crate::commands::squash::run(&repo.write().unwrap(), 2, "squashed").unwrap();
+    let new = head(&repo);
+    assert_eq!(base_of(&repo, &new).as_deref(), Some(all[0].as_str()));
+    assert_eq!(
+        tree_store::tree_of(repo.conn(), new.as_str()).unwrap(),
+        want
+    );
+    for gone in &all[1..] {
+        assert!(!tree_store::has_tree(repo.conn(), gone).unwrap());
+    }
+}
+
+#[test]
+fn delete_trees_refuses_while_an_outside_delta_depends_on_a_member() {
+    let (_t, repo) = setup_k(8);
+    let a = save(&repo, None, &[("a", "1")], 1);
+    let b = save(&repo, Some(&a), &[("a", "2")], 2);
+    let c = save(&repo, Some(&b), &[("a", "3")], 3);
+    assert!(base_of(&repo, &c).is_some());
+    let err = tree_store::delete_trees(repo.conn(), &[a.as_str(), b.as_str()]).unwrap_err();
+    match err {
+        Error::Corrupt { detail } => {
+            assert!(
+                detail.contains("is the base of 1 delta snapshot(s)"),
+                "{detail}"
+            )
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(tree_store::has_tree(repo.conn(), a.as_str()).unwrap());
+    // The whole chain goes together, deltas and keyframe alike.
+    tree_store::delete_trees(repo.conn(), &[a.as_str(), b.as_str(), c.as_str()]).unwrap();
+    for s in [&a, &b, &c] {
+        assert!(!tree_store::has_tree(repo.conn(), s.as_str()).unwrap());
+    }
+    let left: i64 = repo
+        .conn()
+        .query_row(
+            "SELECT (SELECT count(*) FROM tree_deltas) + (SELECT count(*) FROM tree_delta_rows)",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(left, 0);
+}
+
+#[test]
+fn rekey_moves_a_delta_its_rows_and_its_children() {
+    let (_t, repo) = setup_k(8);
+    let a = save(&repo, None, &[("a", "1")], 1);
+    let b = save(&repo, Some(&a), &[("a", "2")], 2);
+    let c = save(&repo, Some(&b), &[("a", "3")], 3);
+    tree_store::rekey_tree(repo.conn(), b.as_str(), "renamed-b").unwrap();
+    let base: String = repo
+        .conn()
+        .query_row(
+            "SELECT base_hash FROM tree_deltas WHERE snapshot_hash = ?",
+            [c.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(base, "renamed-b");
+    assert_eq!(
+        tree_store::tree_of(repo.conn(), "renamed-b").unwrap().len(),
+        1
+    );
+    let rows: i64 = repo
+        .conn()
+        .query_row(
+            "SELECT count(*) FROM tree_delta_rows WHERE snapshot_hash = ?",
+            [b.as_str()],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(rows, 0);
+}
+
+#[test]
+fn saving_nothing_new_and_the_same_tree_twice_still_behave() {
+    let (tmp, repo) = setup_k(8);
+    write_wt(tmp.path(), "f.txt", "one");
+    save_wt(&repo, "one", false).unwrap();
+    let before = head(&repo);
+    // Nothing changed: no new snapshot.
+    let _ = save_wt(&repo, "again", false);
+    assert_eq!(head(&repo), before);
+    // The same tree reached twice is one snapshot, with one stored tree.
+    let a = save(&repo, None, &[("x", "1")], 10);
+    let b = save(&repo, None, &[("x", "1")], 10);
+    assert_eq!(a, b);
+    assert_eq!(keyframe_rows_of(&repo, &a), 1);
+}
+
+#[test]
+fn materializing_dependants_lets_a_prefix_be_deleted_without_changing_any_tree() {
+    let (_t, repo) = setup_k(8);
+    let a = save(&repo, None, &[("a", "1")], 1);
+    let b = save(&repo, Some(&a), &[("a", "2"), ("b", "x")], 2);
+    let c = save(&repo, Some(&b), &[("a", "3"), ("b", "x")], 3);
+    let want = tree_store::tree_of(repo.conn(), c.as_str()).unwrap();
+    tree_store::materialize_dependants(repo.conn(), &[a.as_str(), b.as_str()]).unwrap();
+    tree_store::delete_trees(repo.conn(), &[a.as_str(), b.as_str()]).unwrap();
+    assert!(base_of(&repo, &c).is_none());
+    assert_eq!(tree_store::tree_of(repo.conn(), c.as_str()).unwrap(), want);
 }

@@ -9,6 +9,7 @@ use crate::commands::{fsck, init, save};
 use crate::{Error, InitOptions, ObjectLocation, Repo};
 
 fn setup(location: ObjectLocation) -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     init::run_with(tmp.path(), InitOptions::new().objects(location)).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();

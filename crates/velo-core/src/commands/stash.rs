@@ -130,10 +130,11 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     // The shelf's tree: unchanged files carried from the parent, plus the freshly
     // hashed dirty ones. Deleted files are simply absent, which is what records
     // the deletion.
+    let parent_tree = crate::tree_store::tree_of(conn, &parent_hash)?;
     let mut tree: Vec<(String, String, i64)> = {
-        crate::tree_store::tree_of(conn, &parent_hash)?
-            .into_iter()
-            .map(|(p, (h, m))| (p, h, m))
+        parent_tree
+            .iter()
+            .map(|(p, (h, m))| (p.clone(), h.clone(), *m))
             .filter(|(p, _, _): &(String, String, i64)| {
                 dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
                     && !hashed.iter().any(|(hp, _, _)| hp == p)
@@ -170,7 +171,9 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
             &tx,
             &snapshot,
             crate::tree_store::first_parent(&parent_hash),
+            Some(&parent_tree),
             &rows,
+            guard.repo().keyframe_interval(),
         )?;
     }
     tx.execute(

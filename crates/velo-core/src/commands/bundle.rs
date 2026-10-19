@@ -618,7 +618,10 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
                     &tx,
                     &s.hash,
                     crate::tree_store::first_parent(&s.parent_hash),
+                    None,
                     &tree,
+                    // Import stays keyframes-only until 20.4-b.
+                    1,
                 )?;
             }
             new_snaps += 1;

@@ -11,6 +11,7 @@ const DAY: i64 = 24 * HOUR;
 const NOW: i64 = 100 * DAY;
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();

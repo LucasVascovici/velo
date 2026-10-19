@@ -10,6 +10,7 @@ use crate::tree::{SaveTree, TreeEntry};
 use crate::{BranchName, Repo, SnapshotId, SnapshotMeta, TagName};
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();

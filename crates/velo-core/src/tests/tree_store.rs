@@ -7,6 +7,7 @@ use crate::tree_store;
 use crate::{BranchName, Repo, SnapshotId, SnapshotMeta};
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
@@ -131,7 +132,7 @@ fn write_rekey_and_delete_round_trip() {
     let (_t, repo) = setup();
     let conn = repo.conn();
     let rows = [("a.txt", "obj1", 0o100644), ("d/b.txt", "obj2", 0o100755)];
-    tree_store::write_tree(conn, "snapX", Some("p"), &rows).unwrap();
+    tree_store::write_tree(conn, "snapX", Some("p"), None, &rows, 1).unwrap();
     assert!(tree_store::has_tree(conn, "snapX").unwrap());
     let tree = tree_store::tree_of(conn, "snapX").unwrap();
     assert_eq!(tree["d/b.txt"], ("obj2".to_string(), 0o100755));
@@ -146,7 +147,7 @@ fn write_rekey_and_delete_round_trip() {
         ("a.txt".to_string(), "obj1".to_string(), 0o100644)
     );
 
-    tree_store::write_tree(conn, "snapZ", None, &rows[..1]).unwrap();
+    tree_store::write_tree(conn, "snapZ", None, None, &rows[..1], 1).unwrap();
     tree_store::delete_trees(conn, &["snapY", "snapZ", "absent"]).unwrap();
     assert!(!tree_store::has_tree(conn, "snapY").unwrap());
     assert!(!tree_store::has_tree(conn, "snapZ").unwrap());

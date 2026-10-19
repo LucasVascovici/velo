@@ -327,16 +327,16 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     // files. Carrying from PARENT rather than the effective parent is what keeps
     // an amend from dropping files the replaced snapshot introduced.
     let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _, _)| p.as_str()).collect();
+    let parent_tree = crate::tree_store::tree_of(conn, parent_hash.trim())?;
     let mut tree: Vec<(String, String, i64)> = {
-        let carried: Vec<(String, String, i64)> =
-            crate::tree_store::tree_of(conn, parent_hash.trim())?
-                .into_iter()
-                .map(|(p, (h, m))| (p, h, m))
-                .filter(|(p, _, _)| {
-                    !modified_paths.contains(p.as_str())
-                        && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
-                })
-                .collect();
+        let carried: Vec<(String, String, i64)> = parent_tree
+            .iter()
+            .map(|(p, (h, m))| (p.clone(), h.clone(), *m))
+            .filter(|(p, _, _)| {
+                !modified_paths.contains(p.as_str())
+                    && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
+            })
+            .collect();
         carried
     };
 
@@ -416,7 +416,11 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
             &tx,
             snapshot_hash,
             crate::tree_store::first_parent(&effective_parent),
+            // `parent_tree` is PARENT's; for an amend the first parent is the
+            // replaced snapshot's own parent, so write_tree loads that one.
+            (effective_parent.trim() == parent_hash.trim()).then_some(&parent_tree),
             &rows,
+            guard.repo().keyframe_interval(),
         )?;
     }
     crate::timing::lap("save.insert_file_map");

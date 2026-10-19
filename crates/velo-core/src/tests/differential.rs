@@ -33,8 +33,8 @@ use crate::transport::Spawn;
 use crate::tree::{SaveChanges, SaveTree, TreeEntry};
 use crate::{BranchName, Error, Repo, SnapshotId, TagName};
 
-/// How one side is built. `keyframe_interval` is unused until 20.4-a wires it
-/// into storage; it exists now so the call sites below never change shape.
+/// How one side is built. `keyframe_interval` is the side's K (`None`: the
+/// default), set on every repository handle it opens.
 #[derive(Clone, Debug, Default)]
 struct Config {
     keyframe_interval: Option<u32>,
@@ -46,6 +46,9 @@ struct Config {
 #[derive(Clone, Copy, Debug)]
 struct Mix {
     removals: bool,
+    /// Fetch, push and remote commits; off until 20.4-b makes import write
+    /// deltas.
+    network: bool,
 }
 
 /// One side of the comparison. `a` is the repository under test; `b` is its
@@ -56,16 +59,19 @@ struct Side {
     _dirs: TempDir,
 }
 
-/// The single constructor for a side. 20.4-a reads `cfg.keyframe_interval` here.
+/// The single constructor for a side; `cfg.keyframe_interval` is applied here.
 fn side(cfg: &Config) -> Side {
-    let _ = cfg.keyframe_interval;
     let dirs = TempDir::new().unwrap();
     let mut repos = Vec::new();
     for name in ["a", "b"] {
         let root = dirs.path().join(name);
         std::fs::create_dir(&root).unwrap();
         crate::commands::init::run(&root).unwrap();
-        repos.push(Repo::open_and_migrate(&root).unwrap());
+        let mut repo = Repo::open_and_migrate(&root).unwrap();
+        if let Some(k) = cfg.keyframe_interval {
+            repo.set_keyframe_interval(k);
+        }
+        repos.push(repo);
     }
     let b = repos.pop().unwrap();
     let a = repos.pop().unwrap();
@@ -157,9 +163,9 @@ fn gen_ops(seed: u64, count: usize, mix: Mix) -> Vec<Op> {
             27 => Op::StashPush,
             28 => Op::StashPop,
             29 | 30 => Op::Tag { n },
-            31 => Op::Fetch,
-            32 => Op::Push,
-            33 => Op::RemoteCommit {
+            31 if mix.network => Op::Fetch,
+            32 if mix.network => Op::Push,
+            33 if mix.network => Op::RemoteCommit {
                 variant: rng.range(1, 9) as u8,
             },
             34 => Op::Abort,
@@ -558,27 +564,51 @@ fn op_count() -> usize {
 fn differential_smoke() {
     // Five runs keep the debug build near 20 s; the mix alternates so both the
     // removing and the append-only operation sets are covered.
-    let runs: Vec<(u64, bool)> = match env_u64("VELO_DIFF_SEED") {
-        Some(s) => vec![(s, true), (s, false)],
-        None => vec![(1, true), (2, true), (3, false), (4, true), (5, false)],
+    // The reference stores every tree whole; the subject runs at several K so
+    // short chains, keyframes mid-history and the default are all compared with
+    // it. Removals and the network stay off until 20.6-b and 20.4-b.
+    let seeds: Vec<u64> = match env_u64("VELO_DIFF_SEED") {
+        Some(s) => vec![s],
+        None => vec![1, 2, 3],
     };
-    let cfg = Config::default();
-    for (seed, removals) in runs {
-        check_seed(&cfg, &cfg, seed, op_count(), Mix { removals });
+    let mix = Mix {
+        removals: false,
+        network: false,
+    };
+    let reference = Config {
+        keyframe_interval: Some(1),
+    };
+    for k in [2, 3, 128] {
+        let subject = Config {
+            keyframe_interval: Some(k),
+        };
+        for &seed in &seeds {
+            check_seed(&reference, &subject, seed, op_count(), mix);
+        }
     }
 }
 
 #[test]
 fn differential_replays_a_seed() {
-    let mix = Mix { removals: true };
+    let mix = Mix {
+        removals: true,
+        network: true,
+    };
     assert_eq!(gen_ops(77, 40, mix), gen_ops(77, 40, mix));
     assert_ne!(gen_ops(77, 40, mix), gen_ops(78, 40, mix));
-    assert!(gen_ops(77, 200, Mix { removals: false })
-        .iter()
-        .all(|op| !matches!(
-            op,
-            Op::Squash { .. } | Op::Compact { .. } | Op::Retention | Op::Gc
-        )));
+    assert!(gen_ops(
+        77,
+        200,
+        Mix {
+            removals: false,
+            network: false,
+        },
+    )
+    .iter()
+    .all(|op| !matches!(
+        op,
+        Op::Squash { .. } | Op::Compact { .. } | Op::Retention | Op::Gc
+    )));
 }
 
 /// Runs until `VELO_DIFF_SECS` (default 60) expires, a fresh seed per
@@ -594,12 +624,26 @@ fn differential_long() {
             .map_or(1, |d| d.as_secs())
     });
     let deadline = Instant::now() + Duration::from_secs(secs);
-    let cfg = Config::default();
+    let reference = Config {
+        keyframe_interval: Some(1),
+    };
+    let subject = Config {
+        keyframe_interval: Some(3),
+    };
     let mut i = 0;
     while Instant::now() < deadline {
         let seed = first.wrapping_add(i);
         eprintln!("differential_long: seed {seed}");
-        check_seed(&cfg, &cfg, seed, op_count(), Mix { removals: true });
+        check_seed(
+            &reference,
+            &subject,
+            seed,
+            op_count(),
+            Mix {
+                removals: false,
+                network: false,
+            },
+        );
         i += 1;
     }
 }

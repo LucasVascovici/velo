@@ -11,6 +11,7 @@ use crate::tree::{SaveTree, TreeEntry};
 use crate::{Author, BranchName, Error, Repo, SnapshotId, SnapshotMeta, TagName};
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
@@ -536,6 +537,7 @@ fn dry_run_reports_the_same_result_and_writes_nothing() {
 
 #[test]
 fn the_branch_move_is_announced_as_ref_moved() {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let (tx, rx) = mpsc::channel();

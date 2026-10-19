@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn fresh() -> (TempDir, PathBuf) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_path_buf();
     Repo::init(&path).unwrap();

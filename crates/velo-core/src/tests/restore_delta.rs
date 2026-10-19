@@ -9,6 +9,7 @@ use crate::commands;
 use crate::Repo;
 
 fn setup() -> (TempDir, std::path::PathBuf) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     commands::init::run(tmp.path()).unwrap();
     let root = tmp.path().to_path_buf();

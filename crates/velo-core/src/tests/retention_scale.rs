@@ -23,6 +23,7 @@ const DAY_MS: i64 = 86_400_000;
 const BASE_MS: i64 = 1_700_000_000_000;
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();

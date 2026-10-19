@@ -11,6 +11,7 @@ use crate::tree::{SaveTree, TreeEntry};
 use crate::{BranchName, Repo, SnapshotMeta};
 
 fn setup() -> TempDir {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     tmp

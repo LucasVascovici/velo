@@ -813,7 +813,9 @@ impl WriteGuard<'_> {
                     &tx,
                     snapshot.as_str(),
                     crate::tree_store::first_parent(parent),
+                    None,
                     &rows,
+                    self.repo().keyframe_interval(),
                 )?;
             }
             crate::timing::lap("save_tree.insert_file_map");

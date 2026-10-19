@@ -11,6 +11,7 @@ use crate::tree::{SaveTree, TreeEntry};
 use crate::{BranchName, Error, Repo, SnapshotId, SnapshotMeta};
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
@@ -303,6 +304,7 @@ fn listing(dir: &Path) -> Vec<String> {
 /// A repository one level below `outer`, so the directory above the root can
 /// be listed without other tests' temporary files in it.
 fn nested() -> (TempDir, PathBuf, Repo) {
+    crate::repo::keyframes_only();
     let outer = TempDir::new().unwrap();
     let root = outer.path().join("root");
     std::fs::create_dir(&root).unwrap();
