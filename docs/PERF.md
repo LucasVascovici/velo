@@ -701,3 +701,36 @@ to 100 rows, but the layout decides it: the same agent paths at 100,000 files
 rewrite 5,002 rows, and a flat directory rewrites every row, no better than
 today. B's cost is a property of the project's directory shape, not of its file
 count.
+
+### fsck on v4 against the 5.3 shape
+
+`fsck_v4_scale` (`crates/velo-core/src/tests/fsck_v4_scale.rs`) builds F files by
+S snapshots with real `save_tree` calls (three files change per snapshot), sets
+the keyframe interval K, asserts the history is healthy, and times
+`commands::fsck::check`. K = 1 stores every tree whole, which is the 5.3 shape.
+Raw lines are in `bench/results/2026-10-19-fsck-v4-windows.json`. Windows,
+release build, one run each, so read differences under about 10% as noise.
+
+| files | snapshots | K | fsck ms | `file_map` rows | delta rows |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 100 | 1 | 331 | 100,000 | 0 |
+| 1,000 | 100 | 128 | 218 | 1,000 | 297 |
+| 4,000 | 100 | 1 | 1,235 | 400,000 | 0 |
+| 4,000 | 100 | 128 | 719 | 4,000 | 297 |
+| 1,000 | 500 | 1 | 2,465 | 500,000 | 0 |
+| 1,000 | 500 | 128 | 500 | 4,000 | 1,488 |
+
+K = 128 was not slower than K = 1 at any size measured, so there is no
+regression to attribute to reconstruction or hashing. It was 1.5x to 1.7x faster
+at 100 snapshots and 4.9x faster at 500, because fsck reads far fewer rows. The
+gap widens with history. This is a trend at up to 500,000 stored rows, not the
+envelope: the budget did not fit the briefed sizes (10,000 x 200 and 10,000 x
+500), because building the history with `save_tree` takes 4.5 to 8 minutes for
+1,000 x 500 alone. The result at 20 million rows is therefore not established.
+
+Full size, not run by the agent:
+
+```
+VELO_PROFILE_FILES=10000 VELO_PROFILE_SNAPSHOTS=2000 VELO_PROFILE_K=1 VELO_PROFILE_OUT=bench/results/fsck-v4-full.json cargo test --release -p velo-core fsck_v4_scale -- --ignored --nocapture
+VELO_PROFILE_FILES=10000 VELO_PROFILE_SNAPSHOTS=2000 VELO_PROFILE_K=128 VELO_PROFILE_OUT=bench/results/fsck-v4-full.json cargo test --release -p velo-core fsck_v4_scale -- --ignored --nocapture
+```

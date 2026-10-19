@@ -12282,6 +12282,9 @@ mod report_model;
 #[cfg(test)]
 mod perf_support;
 
+#[cfg(test)]
+mod fsck_v4_scale;
+
 #[cfg(all(test, feature = "timing"))]
 mod perf_profile;
 
