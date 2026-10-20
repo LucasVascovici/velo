@@ -17,8 +17,9 @@
 //!     -- --ignored --nocapture --test-threads=1
 //! ```
 //!
-//! Knobs: `VELO_PROFILE_FILES` (100000), `VELO_PROFILE_SAVES` (default `max(200, k + 16)`,
-//! so a second keyframe lands; an explicit value is used as given), `VELO_PROFILE_KS` (`8,32,128,512`),
+//! Knobs: `VELO_PROFILE_FILES` (100000), `VELO_PROFILE_SAVES` (default
+//! `k * keyframes + 16`; an explicit value is used as given), `VELO_PROFILE_KEYFRAMES` (4: how
+//! many keyframe saves the default count yields, so the spike has a distribution), `VELO_PROFILE_KS` (`8,32,128,512`),
 //! `VELO_PROFILE_OUT` (append JSON lines), `VELO_PROFILE_DIR` (where the
 //! repository lives; use ext4 under WSL).
 
@@ -185,9 +186,11 @@ fn run_k(files: usize, saves: Option<usize>, k: u32) -> Value {
         .map(|f| TreeEntry::stored(f.path, f.object, f.kind))
         .collect();
 
-    // An explicit save count is honoured; the default is raised so a second
-    // keyframe lands after the seed.
-    let saves = saves.unwrap_or((k as usize + 16).max(200));
+    // An explicit save count is honoured. The default runs long enough for
+    // `VELO_PROFILE_KEYFRAMES` keyframes after the seed, so the keyframe spike
+    // is a distribution and not a single sample.
+    let keyframes = env_usize("VELO_PROFILE_KEYFRAMES", 4);
+    let saves = saves.unwrap_or(k as usize * keyframes + 16);
     let before = db_bytes(&repo);
     let mut ids = vec![root];
     let (mut plain, mut keys) = (Vec::new(), Vec::new());

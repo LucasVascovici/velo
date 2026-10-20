@@ -746,73 +746,76 @@ over the non-keyframe saves.
 
 ### What was run, and what was not
 
-The measurement budget for this task was 60 minutes, and the real engine is far
-slower at 100,000 files than the prototype was: the first save of 100,000 files
-took 304 s on Windows, and a one-file save about 3.6 s. A K = 128 run needs 130
-saves, so about 14 minutes per K at 100,000 files. Two 100,000-file K = 128 runs
-(40 and 24 saves) hit the 590 s tool timeout and produced no data. What exists:
+The real engine is far slower at 100,000 files than the prototype was: the seed
+save of 100,000 files took 373 s on Windows and a one-file save about 5 s. The
+100,000-file K = 128 run was done detached (no tool timeout): 400 saves, three of
+them keyframes, 53 minutes. What exists:
 
 | run | files | K | saves | committed |
 | --- | ---: | ---: | ---: | --- |
-| Windows, release, `timing` | 10,000 | 128 | 140 | yes |
-| Windows, release, `timing` | 100,000 | 4 | 6 | console only (seed 304 s, plain median 3,588 ms, first plain save 10,028 ms, one keyframe save 3,956 ms) |
+| Windows, release, `timing` | 100,000 | 128 | 400 (3 keyframes) | yes, in the raw-lines file |
+| Windows, release, `timing` | 10,000 | 128 | 140 (1 keyframe) | earlier run, summarised below, not in the file |
 
-K = 8, 32 and 512, the 100,000-file K = 128 run and all of Linux are not run. The
-prototype was measured at 100,000 files only, so the 10,000-file cells below
-compare against the prototype's 100,000-file value divided by ten (both are
-O(files)); read that as an estimate, not a measurement. The acceptance run (K = 128
-at 100,000 files) is therefore **not** met and is listed for the owner below.
+K = 8, 32 and 512 and all of Linux are not run. The 10,000-file column is kept as
+a scaling check only; the comparison against the prototype is the 100,000-file
+column. The 100,000-file run shared the machine with other jobs, so its tail
+(p95 15.6 s, slowest plain save 22.2 s) is noisier than the median.
 
 ### Windows, K = 128
 
-| cell | prototype (100,000 files) | real, 10,000 files | real, 100,000 files (K = 4, 6 saves) |
+| cell | prototype (100,000 files) | real, 100,000 files | real, 10,000 files |
 | --- | ---: | ---: | ---: |
-| save median, one file (ms) | 110.2 | 426.2 (proto / 10: about 11) | 3,588 |
-| save p95 (ms) | 137.1 | 495.4 | n/a |
-| keyframe save (ms) | 571 (slowest) | 510.7 (n = 1) | 3,956 (n = 1) |
-| disk per snapshot (bytes) | 93,655 | 20,977 | not recorded |
-| `tree_at`, depth 0 / 64 / 127 (ms) | 78.4 / 82.4 / 83.4 | 11.3 / 9.8 / 12.9 | not run |
-| `read_file_at`, depth 0 / 64 / 127 (ms) | 0.021 / 0.816 / 1.43 | 0.099 / 1.62 / 2.80 | not run |
+| save median, one file (ms) | 110.2 | 5,279 (48x) | 426.2 |
+| save p95 (ms) | 137.1 | 15,598 | 495.4 |
+| keyframe save median (ms) | 571 (slowest) | 5,470 (n = 3) | 510.7 (n = 1) |
+| disk per snapshot (bytes) | 93,655 | 210,360 | 20,977 |
+| `tree_at`, depth 0 / 64 / 127 (ms) | 78.4 / 82.4 / 83.4 | 84.3 / 82.6 / 78.5 | 11.3 / 9.8 / 12.9 |
+| `read_file_at`, depth 0 / 64 / 127 (ms) | 0.021 / 0.816 / 1.43 | 0.181 / 1.75 / 3.13 | 0.099 / 1.62 / 2.80 |
 
-Keyframe spike distribution at K = 128 (140 saves, so one keyframe after the
-seed): median = p90 = p99 = max = 510.7 ms. One sample is not a distribution; the
-spike at K = 128 needs the 100,000-file run below. At K = 4 and 100,000 files the
-single keyframe save (3,956 ms) was within 10% of the plain median, so the spike
-is small next to the per-save cost.
+Keyframe spike distribution at K = 128, 100,000 files: n = 3 keyframe saves
+(5,470, 19,050 and 4,658 ms), so median 5,470, p90 = p99 = max = 19,050 ms. Three
+samples is still a thin distribution (p90 and p99 coincide with the max); it is
+what a 400-save run at about 5 s per save affords, and `VELO_PROFILE_KEYFRAMES`
+raises it. The 19 s sample is a noisy-machine outlier of the same size as the
+slowest plain saves (22.2 s), so the keyframe is not distinguishable from
+ordinary save noise here: its median is within 4% of the plain median.
 
-Stage medians of a one-file save at 10,000 files (ms): `save_tree.objects` 403.3,
-`insert_file_map` 11.3, `validate` 2.9, `snapshot_id` 2.8, `commit` 0.13,
-`insert_rest` 0.02. Keyframe save: `objects` 408.2, `insert_file_map` 23.4,
-`commit` 67.9.
+Stage medians of a one-file save at 100,000 files (ms): `save_tree.objects`
+5,019.5, `insert_file_map` 154.7, `snapshot_id` 40.9, `validate` 35.8, `commit`
+0.25, `insert_rest` 0.07. Keyframe save: `objects` 4,457.6, `commit` 680.3,
+`insert_file_map` 380.0.
 
 ### Cells more than 2x the prototype
 
-- **Save median: 426 ms against about 11 ms (39x) at 10,000 files, and 3,588 ms
-  against 110 ms (33x) at 100,000.** Stage: `save_tree.objects`, 95% of the
-  save. Every `TreeEntry::stored` entry is checked with `objects.contains` (one
-  filesystem existence check per file, about 40 microseconds on Windows) so that a
-  snapshot cannot name a missing object. The prototype used synthetic hashes and
-  never touched the object store. This is an O(files) cost the delta rows do not
-  remove; the id (`snapshot_id`, 2.8 ms here) and the row writes are as cheap as
-  the prototype said.
-- **Keyframe save: not above 2x its own plain save**, but `commit` rises from 0.13
-  to 67.9 ms and `insert_file_map` doubles. The prototype's keyframe figure
-  (571 ms at 100,000) is not comparable at this size.
-- **`read_file_at` at depth 127: 2.80 ms against 1.43 ms (1.96x, just under the
-  line); at depth 0: 0.099 against 0.021 ms (4.7x).** The depth 0 gap is
-  unexplained beyond the real path's extra snapshot lookups, and is under 0.1 ms.
-- `tree_at` and disk per snapshot are not above 2x the scaled prototype.
+- **Save median: 5,279 ms against 110 ms (48x).** Stage: `save_tree.objects`, 95%
+  of the save. Every `TreeEntry::stored` entry is checked with `objects.contains`
+  (one filesystem existence check per file, about 50 microseconds on Windows) so
+  that a snapshot cannot name a missing object. The prototype used synthetic
+  hashes and never touched the object store. This is an O(files) cost the delta
+  rows do not remove; the id (`snapshot_id`, 41 ms) and the row writes are as
+  cheap as the prototype said.
+- **Save p95: 15,598 ms against 137 ms**, same cause, inflated by other load on
+  the machine.
+- **Keyframe save: 5,470 ms median, not above 2x its own plain save**, but
+  `commit` rises from 0.25 to 680 ms and `insert_file_map` is 2.5x. The
+  prototype's keyframe figure (571 ms) is not comparable at this size.
+- **`read_file_at`: 0.181 against 0.021 ms at depth 0 (8.6x), 1.75 against 0.816
+  at depth 64 (2.1x), 3.13 against 1.43 at depth 127 (2.2x).** The real path adds
+  snapshot lookups per hop; absolute cost stays under 4 ms.
+- `tree_at` is within the prototype (78 to 84 ms against 78 to 83). Disk per
+  snapshot is 2.2x the prototype (210 KB against 94 KB): the real keyframe row
+  set is larger and this run held three keyframes in 400 saves.
 
 ### Commands for the owner
 
-Windows, 100,000 files (about 14 minutes per K; run one K at a time):
+Windows, 100,000 files (about 50 minutes for K = 128 with three keyframes; run one K at a time, and give VELO_PROFILE_OUT as an absolute path because the test runs from crates/velo-core):
 
 ```
-VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_OUT=bench/results/2026-10-20-storage-v4-windows.json cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1
+VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_KEYFRAMES=3 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-windows.json cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1
 ```
 
 Linux (ext4 path, as section 1 describes), 100,000 files:
 
 ```
-wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=8,32,128,512 VELO_PROFILE_OUT=bench/results/2026-10-20-storage-v4-linux.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
+wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=8,32,128,512 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-linux.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
 ```
