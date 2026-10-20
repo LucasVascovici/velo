@@ -1,0 +1,21 @@
+Who-wrote profile, Windows 11, release build, 1,000 files x 500 steps, seed 1
+(the agent benchmark's workload; the `velo` adapter; 20 blame queries as in the benchmark)
+
+Method: a throwaway script built the benchmark repo with the agent_bench adapter, then timed
+the pieces. The blame pieces come from temporary Instant counters around the calls inside
+commands/blame.rs run(), which were reverted afterwards and are not in the tree. The counters
+cost time themselves, so the instrumented total (9.5 s) is above the uninstrumented one (7.0 s
+in a separate run; 9.7 s in the first); shares are of the instrumented total.
+
+Uninstrumented, the 20 blame() calls:   7.0 to 9.7 s over three runs (median per call 336 to 461 ms)
+history(paths=[file]) x20:              0.72 s total, median 37 ms, median 5 versions of the file
+read_file_at on those 5 versions x20:   0.34 s total
+read_file_at, one file, all 501 snapshots: median 1.81 s (3.6 ms a read)
+
+Instrumented, summed over the 20 blame calls (cumulative counters, last line of the run):
+  PROF load_ms=12 at_ms=205 read_text_ms=7414 diff_ms=227 total_ms=9510
+    load      PathVersions::load, one query per path           12 ms    0.1%
+    at        PathVersions::at, a snapshot's object hash      205 ms    2.2%
+    read_text objects.get + decode, per visit, no cache    7,414 ms   78.0%
+    diff      introduced_lines + equal_line_map               227 ms    2.4%
+    other     visit_of, renamed_from, queue, meta           1,652 ms   17.4%

@@ -231,9 +231,12 @@ lost, each with its reason (full detail in [`PERF.md`](../PERF.md) section 6,
   the 3x target, though it is the 11 MB the target was derived from. What is
   stored is a keyframe every 128 snapshots plus the changed rows.
 - **"Who wrote this line": 3.1x shadow git** (9.30 s against 3.01 s; was 1.2x).
-  Not profiled in this run; reads walk delta chains (`read_file_at` 1.75 to
-  3.13 ms at depth 64 to 127 at 100,000 files, `PERF.md` section 9), which is a
-  candidate, not a measured cause.
+  Measured cause: the blame walk visits every ancestor snapshot (about 500)
+  although the file changed in about 5, and at each visit it reads the text of
+  the snapshot and its parent from the object store without a cache. Those
+  reads are 78% of the blame time; diffing is 2.4% and the history walk is
+  small (`PERF.md` section 6, Phase 20 re-run, and
+  `bench/results/2026-10-20-windows-who-wrote-profile.txt`).
 - **500 steps on Linux: 4.5x shadow git** when last measured (not re-run).
 - **A one-file save at 100,000 files:** about 2.5x the history-0 save (5.3 s
   median against a 2.1 s floor; target 1.5x) because each save checks the

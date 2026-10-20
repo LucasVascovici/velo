@@ -1,29 +1,3 @@
-   Compiling getrandom v0.3.4
-   Compiling num-traits v0.2.19
-   Compiling zerocopy v0.8.55
-   Compiling serde_core v1.0.229
-   Compiling fastrand v2.5.0
-   Compiling fnv v1.0.7
-   Compiling bit-vec v0.8.0
-   Compiling quick-error v1.2.3
-   Compiling wait-timeout v0.2.1
-   Compiling curve25519-dalek v4.1.3
-   Compiling ignore v0.4.31
-   Compiling velo-merge v6.0.0 (C:\Users\lvi\Documents\velo\.claude\worktrees\wf_33431674-115-9\crates\velo-merge)
-   Compiling unarray v0.1.4
-   Compiling bit-set v0.8.0
-   Compiling rand_core v0.9.5
-   Compiling tempfile v3.27.0
-   Compiling ed25519-dalek v2.2.0
-   Compiling rand v0.9.5
-   Compiling rand_xorshift v0.4.0
-   Compiling rusty-fork v0.3.1
-   Compiling chrono v0.4.45
-   Compiling serde_json v1.0.151
-   Compiling velo-core v6.0.0 (C:\Users\lvi\Documents\velo\.claude\worktrees\wf_33431674-115-9\crates\velo-core)
-   Compiling ppv-lite86 v0.2.21
-   Compiling rand_chacha v0.9.0
-   Compiling proptest v1.11.0
     Finished `release` profile [optimized] target(s) in 2m 50s
      Running unittests src\lib.rs (C:/Users/lvi/Documents/velo/target-lane2\release\deps\velo_core-9aa9dc6e2a421432.exe)
 

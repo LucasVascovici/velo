@@ -585,10 +585,22 @@ Reasons for the misses and the loss:
   save. The row writes the targets were about are now 155 ms
   (`insert_file_map`) and the commit 0.25 ms, so the growth with history is
   gone from them, but the O(files) object check is not.
-- **Who wrote, 3.1x git.** Not profiled in this run. Section 9 measured
-  `read_file_at` at 1.75 ms (depth 64) to 3.13 ms (depth 127) against 0.18 ms at
-  depth 0 at 100,000 files, so reads walk delta chains; whether that is where
-  the blame time goes was not measured.
+- **Who wrote, 3.1x git.** Profiled on the 1,000-file by 500-step repo
+  (`bench/results/2026-10-20-windows-who-wrote-profile.txt`, with temporary
+  timers inside `blame::run`, reverted afterwards). The 20 blame calls took
+  7.0 to 9.7 s; with the timers in, 78% of the time (7.4 of 9.5 s) is reading
+  file text from the object store (`objects.get` and decode), 17% is the rest
+  of the walk (snapshot rows, rename lookup, queue), and only 2.4% is diffing
+  and 2.2% is looking up the object hash in the file map. The cause is the
+  shape of the walk: blame visits every ancestor snapshot (about 500), not the
+  roughly 5 that changed the file (`history(paths=[file])` finds those in
+  37 ms), and at each visit it reads the text of the snapshot and of its
+  parent with no cache, although almost all of those reads hit the same few
+  objects. So the cost is repeated object reads, about 0.35 ms each, not the
+  history walk or the diffs. A read-through cache of decoded texts by object
+  hash, or skipping snapshots whose object hash equals the parent's, would
+  remove most of it; neither is done. Whether the 0.35 ms is delta-chain depth
+  or plain decode was not separated.
 - **Retention (not a numbered target, reduced run).** The ignored test
   `default_policy_at_a_reduced_18_10_shape` (400 snapshots of 2,000 files,
   800,000 rows, run at K = 1, so every tree is whole: the shape 19.4 measured,
