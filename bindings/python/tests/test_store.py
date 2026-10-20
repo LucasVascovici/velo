@@ -81,6 +81,29 @@ def test_vacuum_after_retention(tmp_path):
     assert full["auto_vacuum"] == "incremental"
 
 
+def test_repack_reports_every_field(tmp_path):
+    repo = make(tmp_path)
+    spread(repo)
+    fields = {
+        "snapshots_converted",
+        "keyframes_kept",
+        "chains_shortened",
+        "rows_before",
+        "rows_after",
+        "bytes_before",
+        "bytes_after",
+        "dry_run",
+    }
+    dry = repo.repack(dry_run=True)
+    assert set(dry) == fields and dry["dry_run"] is True
+    done = repo.repack()
+    assert set(done) == fields and done["dry_run"] is False
+    assert done["rows_after"] <= done["rows_before"]
+    # A second run has nothing left to do.
+    again = repo.repack()
+    assert again["snapshots_converted"] == 0 and again["chains_shortened"] == 0
+
+
 def test_compact_range(tmp_path):
     repo = make(tmp_path)
     ids = spread(repo, 6)

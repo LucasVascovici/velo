@@ -1,0 +1,37 @@
+name: Nightly
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # A fresh seed every night; a failure attaches the seed and the shrunk ops.
+  differential:
+    name: Differential run
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Differential long run
+        run: |
+          export VELO_DIFF_SEED=$RANDOM$RANDOM
+          echo "VELO_DIFF_SEED=$VELO_DIFF_SEED"
+          export VELO_DIFF_SECS=3600
+          export VELO_DIFF_FAILURE_OUT=diff-failure.txt
+          cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture
+
+      - name: Upload the failing seed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: diff-failure
+          path: diff-failure.txt

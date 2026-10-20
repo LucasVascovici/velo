@@ -577,6 +577,7 @@ can be used anywhere a ref is accepted (`merge`, `rebase`, `show`, `diff`).
 | `velo gc --dry-run` | Report what `gc` would collect and remove nothing |
 | `velo gc --keep-days <n>` | Retain undo history for `n` days before purging (default: 30) |
 | `velo gc --vacuum` | Also run a full vacuum, converting a repository created before 5.3.0 to incremental `auto_vacuum` (needs free disk about the size of `velo.db`) |
+| `velo repack [--dry-run]` | Convert a repository's stored full snapshots into deltas, a few at a time, to shrink it; no snapshot id changes. A dry run reports the estimated saving and writes nothing |
 | `velo retention [--keep <age>=<every>] [--dry-run]` | Thin old snapshots by age (default: all for a day, hourly for a month, daily after), keeping signed, tagged and checked-out ones, then run `gc` and return the freed space |
 | `velo fsck` | Verify repository integrity; exits non-zero if anything is wrong |
 | `velo fsck --repair` | Also clean up safely-fixable cruft (orphaned rows, stale tracking refs) |
@@ -696,6 +697,14 @@ the general `VELO_TOKEN`. `velo clone` uses the `origin` variable. A URL such as
 shell history and in `velo remote`'s output. Tokens are never stored in the
 repository database either, since it travels in backups. A refused request
 shows as "refused access".
+
+A path remote is opened by the client itself, not by a server, so mixed
+versions behave differently there than over HTTP or ssh. A 5.x client is
+refused by design when the remote is a format v4 repository (made by 6.0),
+and the remote is left unchanged. A 6.0 client opens a v3 remote and migrates
+it in place to v4, after which 5.x can no longer open it. To serve clients you
+cannot upgrade, use `velo serve-http` or ssh, whose wire protocol is
+unchanged between 5.x and 6.0.
 
 `velo status` tells you where you stand relative to the last-fetched remote state
 (no network access needed):

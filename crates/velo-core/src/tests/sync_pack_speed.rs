@@ -29,6 +29,7 @@ fn save(root: &Path, file: &str, content: &str, msg: &str) {
 }
 
 fn setup() -> (TempDir, PathBuf) {
+    crate::repo::keyframes_only();
     let holder = TempDir::new().unwrap();
     let origin = holder.path().join("origin");
     fs::create_dir_all(&origin).unwrap();

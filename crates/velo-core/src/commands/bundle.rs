@@ -288,30 +288,22 @@ pub(crate) fn build_pack_excluding(
     let mut object_hashes: HashSet<String> = HashSet::new();
     let mut peer_objects: HashSet<String> = HashSet::new();
     {
-        let mut stmt = conn.prepare(
-            "SELECT snapshot_hash, path, hash, mode FROM file_map WHERE snapshot_hash = ?",
-        )?;
         for snap in &snapshots {
-            let rows = stmt.query_map([&snap.hash], |r| {
-                Ok(FileMapRow {
-                    snapshot_hash: r.get(0)?,
-                    path: r.get(1)?,
-                    hash: r.get(2)?,
-                    mode: r.get(3)?,
-                })
-            })?;
-            for row in rows.flatten() {
-                object_hashes.insert(row.hash.clone());
-                file_map.push(row);
+            for (path, hash, mode) in crate::tree_store::tree_rows_for_export(conn, &snap.hash)? {
+                object_hashes.insert(hash.clone());
+                file_map.push(FileMapRow {
+                    snapshot_hash: snap.hash.clone(),
+                    path,
+                    hash,
+                    mode,
+                });
             }
         }
         // A snapshot named in `snap_set` but absent from `snapshots` has no rows
         // to send, so the loop above already covers everything in `snap_set`.
-        let mut peer_stmt = conn.prepare("SELECT hash FROM file_map WHERE snapshot_hash = ?")?;
         if !object_hashes.is_empty() {
             for p in peer_has.iter().filter(|p| !snap_set.contains(*p)) {
-                let rows = peer_stmt.query_map([p], |r| r.get::<_, String>(0))?;
-                for h in rows.flatten() {
+                for (_, h, _) in crate::tree_store::tree_rows_for_export(conn, p)? {
                     peer_objects.insert(h);
                 }
             }
@@ -599,24 +591,24 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
             "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
              VALUES (?, ?, ?, ?, ?, ?)",
         )?;
-        let mut ins_fm = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
-        )?;
-
-        let mut has_fm =
-            tx.prepare("SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ?)")?;
-        let mut del_fm = tx.prepare("DELETE FROM file_map WHERE snapshot_hash = ?")?;
-
-        for s in &bundle.snapshots {
-            if existing.contains(&s.hash) {
-                continue; // already have it — idempotent
-            }
-            // Leftover rows (undo keeps them, save orphans them) are replaced,
-            // never added to. The trash row stays: `redo` still needs it.
-            if has_fm.query_row([&s.hash], |r| r.get::<_, bool>(0))? {
-                del_fm.execute([&s.hash])?;
-            }
-            // Its id was verified against its content before the transaction.
+        // Parents first: a delta is written against its parent's stored rows,
+        // and export does not order snapshots, so a bundle may list a child
+        // before its parent. First parents outside the bundle are ignored.
+        let order = parent_first_order(bundle, &existing);
+        let wanted_as_parent: HashSet<&str> = order
+            .iter()
+            .filter_map(|&i| crate::tree_store::first_parent(&bundle.snapshots[i].parent_hash))
+            .collect();
+        let k = guard.repo().keyframe_interval();
+        // Trees written by this bundle that a later snapshot is based on, so a
+        // chain arriving whole does not re-read each parent from the database.
+        let mut written: HashMap<&str, crate::tree_store::StoredTree> = HashMap::new();
+        // Every snapshot row goes in first. A leftover delta may be based on a
+        // snapshot this repository holds no row for, and reading its tree (to
+        // make it a keyframe) is only allowed once its base is known. The ids
+        // were verified against their content before the transaction.
+        for &i in &order {
+            let s = &bundle.snapshots[i];
             ins_snap.execute(params![
                 s.hash,
                 s.message,
@@ -625,10 +617,43 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
                 s.merge_parent,
                 s.created_at_ms
             ])?;
-            if let Some(rows) = fm_by_snap.get(s.hash.as_str()) {
-                for r in rows {
-                    ins_fm.execute(params![r.snapshot_hash, r.path, r.hash, r.mode])?;
-                }
+        }
+        for i in order {
+            let s = &bundle.snapshots[i];
+            // Leftover rows (undo keeps them, save orphans them) are replaced,
+            // never added to. The trash row stays: `redo` still needs it. A
+            // delta based on the replaced tree is first made a keyframe, or the
+            // delete guard would refuse.
+            if crate::tree_store::has_tree(&tx, &s.hash)? {
+                crate::tree_store::materialize_dependants(&tx, &[s.hash.as_str()])?;
+                crate::tree_store::delete_trees(&tx, &[s.hash.as_str()])?;
+            }
+            // An empty tree still goes through write_tree: against a parent
+            // with rows it is a delta of deletions.
+            let tree: Vec<(&str, &str, i64)> = fm_by_snap
+                .get(s.hash.as_str())
+                .map(|rows| {
+                    rows.iter()
+                        .map(|r| (r.path.as_str(), r.hash.as_str(), r.mode))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let parent = crate::tree_store::first_parent(&s.parent_hash);
+            crate::tree_store::write_tree(
+                &tx,
+                &s.hash,
+                parent,
+                parent.and_then(|p| written.get(p)),
+                &tree,
+                k,
+            )?;
+            if wanted_as_parent.contains(s.hash.as_str()) {
+                written.insert(
+                    s.hash.as_str(),
+                    tree.iter()
+                        .map(|(p, h, m)| (p.to_string(), (h.to_string(), *m)))
+                        .collect(),
+                );
             }
             new_snaps += 1;
         }
@@ -993,4 +1018,44 @@ impl<'a> Reader<'a> {
 
 fn truncated() -> VeloError {
     VeloError::invalid("Bundle is truncated or corrupt.")
+}
+
+/// Indices into `bundle.snapshots` of the snapshots not yet held, parents
+/// before children (first parent, within the bundle), otherwise in listing
+/// order. Deterministic, and a cycle (which a verified id rules out) cannot
+/// loop because each snapshot is visited once.
+fn parent_first_order(bundle: &Bundle, existing: &HashSet<String>) -> Vec<usize> {
+    let pos: HashMap<&str, usize> = bundle
+        .snapshots
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| !existing.contains(&s.hash))
+        .map(|(i, s)| (s.hash.as_str(), i))
+        .collect();
+    let mut done = vec![false; bundle.snapshots.len()];
+    let mut out = Vec::with_capacity(pos.len());
+    for start in 0..bundle.snapshots.len() {
+        if done[start] || !pos.contains_key(bundle.snapshots[start].hash.as_str()) {
+            continue;
+        }
+        // Climb to the topmost unwritten ancestor, then emit back down.
+        let mut stack = vec![start];
+        done[start] = true;
+        while let Some(&top) = stack.last() {
+            let parent = crate::tree_store::first_parent(&bundle.snapshots[top].parent_hash)
+                .and_then(|p| pos.get(p).copied())
+                .filter(|&p| !done[p]);
+            match parent {
+                Some(p) => {
+                    done[p] = true;
+                    stack.push(p);
+                }
+                None => {
+                    out.push(top);
+                    stack.pop();
+                }
+            }
+        }
+    }
+    out
 }

@@ -16,6 +16,7 @@ use crate::{Error, Repo, SnapshotId, SnapshotMeta};
 const DAY: i64 = 24 * 3_600_000;
 
 fn setup() -> (TempDir, PathBuf) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_path_buf();
     crate::commands::init::run(&path).unwrap();

@@ -10,6 +10,7 @@ use crate::tree::{SaveTree, TreeEntry};
 use crate::{BranchName, Repo, SnapshotId, SnapshotMeta};
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
@@ -183,6 +184,7 @@ fn old_repository_is_a_noop_until_a_full_vacuum_converts_it() {
 
 #[test]
 fn single_file_repository_vacuums_after_compaction() {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     let repo = Repo::create_file(&tmp.path().join("a.velo")).unwrap();
     let ids = chain(&repo, 6);

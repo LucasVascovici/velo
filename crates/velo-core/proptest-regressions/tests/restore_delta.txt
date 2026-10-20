@@ -1,0 +1,2 @@
+# Seeds for failure cases proptest has generated in the past.
+cc bebdfbece81692bf8a6cf532dadbaf4c7583d2b0430b8924d127f0080314f137

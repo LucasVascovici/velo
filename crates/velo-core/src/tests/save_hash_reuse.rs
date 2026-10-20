@@ -10,6 +10,7 @@ use crate::commands;
 use crate::Repo;
 
 fn setup_files() -> (TempDir, PathBuf) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     commands::init::run(tmp.path()).unwrap();
     let root = tmp.path().to_path_buf();
@@ -17,6 +18,7 @@ fn setup_files() -> (TempDir, PathBuf) {
 }
 
 fn setup_db() -> (TempDir, PathBuf) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_path_buf();
     commands::init::run_with(

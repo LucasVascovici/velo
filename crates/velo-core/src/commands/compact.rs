@@ -271,9 +271,10 @@ struct Minted {
 const DELETE_BATCH: usize = 500;
 
 fn tree_of(conn: &rusqlite::Connection, id: &str) -> Result<Vec<(String, String, i64)>> {
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let rows = stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-    Ok(rows.collect::<rusqlite::Result<_>>()?)
+    Ok(crate::tree_store::tree_of(conn, id)?
+        .into_iter()
+        .map(|(p, (h, m))| (p, h, m))
+        .collect())
 }
 
 fn renames_of(conn: &rusqlite::Connection, id: &str) -> Result<Vec<(String, String)>> {
@@ -578,7 +579,7 @@ pub fn run(
     }
 
     // ── Apply, in one transaction ────────────────────────────────────────────
-    let now = crate::commands::snapshot_timestamp_ms();
+    let now = guard.repo().now_ms();
     let old_tip = chain.last().map(|m| m.hash.clone()).unwrap_or_default();
     let new_tip = mapping.get(&old_tip).cloned().unwrap_or_default();
 
@@ -588,16 +589,74 @@ pub fn run(
     // pages they free are reused by the index entries the updates write, which
     // is what keeps the file from growing. A source row is never in this set.
     let sources: HashSet<&str> = minted.iter().map(|m| m.tree_from.as_str()).collect();
-    let gone: Vec<&str> = mapping
+    let mut gone: Vec<&str> = mapping
         .keys()
         .map(String::as_str)
         .filter(|id| !sources.contains(id))
         .collect();
+    // Deltas inside the set go before the trees they are based on, so a batch
+    // never has a dependant waiting in a later one: the fold would rewrite it
+    // only for the next batch to delete it.
+    let gone_set: HashSet<&str> = gone.iter().copied().collect();
+    let mut base_in_gone: HashMap<&str, &str> = HashMap::new();
+    for id in &gone {
+        let base = crate::tree_store::base_of(&tx, id)?;
+        if let Some(b) = base.and_then(|b| gone_set.get(b.as_str()).copied()) {
+            base_in_gone.insert(id, b);
+        }
+    }
+    let depth_in_gone = |id: &str| -> usize {
+        let mut cur = id;
+        let mut n = 0;
+        while let Some(b) = base_in_gone.get(cur) {
+            n += 1;
+            cur = b;
+            if n > gone_set.len() {
+                break;
+            }
+        }
+        n
+    };
+    gone.sort_by_cached_key(|id| (std::cmp::Reverse(depth_in_gone(id)), *id));
+    // A dependant's base after the compaction: its first parent as the plan
+    // gives it. A re-minted snapshot is still keyed by its `tree_from` id here
+    // and so is every re-minted parent; the re-key below carries the base
+    // record across.
+    let by_source: HashMap<&str, &Minted> =
+        minted.iter().map(|m| (m.tree_from.as_str(), m)).collect();
+    let key_of_new: HashMap<&str, &str> = minted
+        .iter()
+        .map(|m| (m.hash.as_str(), m.tree_from.as_str()))
+        .collect();
+    let new_first_parent = |d: &str| -> Option<String> {
+        let parent = match by_source.get(d) {
+            Some(m) => m.parent.clone(),
+            None => {
+                let old: String = tx
+                    .query_row(
+                        "SELECT parent_hash FROM snapshots WHERE hash = ?",
+                        [d],
+                        |r| r.get(0),
+                    )
+                    .ok()?;
+                mapping.get(&old).cloned().unwrap_or(old)
+            }
+        };
+        if parent.is_empty() {
+            return None;
+        }
+        Some(
+            key_of_new
+                .get(parent.as_str())
+                .map_or(parent.clone(), |k| (*k).to_string()),
+        )
+    };
+    let k = guard.repo().keyframe_interval();
     for batch in gone.chunks(DELETE_BATCH) {
         let marks = vec!["?"; batch.len()].join(", ");
+        crate::tree_store::remove_trees(&tx, batch, &new_first_parent, k)?;
         for (table, column) in [
             ("snapshots", "hash"),
-            ("file_map", "snapshot_hash"),
             ("snapshot_meta", "snapshot_id"),
             ("renames", "snapshot_hash"),
         ] {
@@ -618,10 +677,7 @@ pub fn run(
             "UPDATE snapshots SET hash = ?, parent_hash = ?, merge_parent = ? WHERE hash = ?",
             params![m.hash, m.parent, m.merge_parent, m.tree_from],
         )?;
-        tx.execute(
-            "UPDATE file_map SET snapshot_hash = ? WHERE snapshot_hash = ?",
-            params![m.hash, m.tree_from],
-        )?;
+        crate::tree_store::rekey_tree(&tx, &m.tree_from, &m.hash)?;
         tx.execute(
             "UPDATE snapshot_meta SET snapshot_id = ? WHERE snapshot_id = ?",
             params![m.hash, m.tree_from],

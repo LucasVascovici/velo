@@ -48,6 +48,21 @@ left held, and `undo`/`redo` still work or refuse with a typed error.
   - `clone`: the exact leftover state is asserted per point, a second clone into
     it is refused, and deleting the directory and cloning again reproduces the
     source tree.
+  - delta storage (format 4): every scenario above runs twice, once at the
+    production keyframe interval and once with the fixture and the operation at
+    K = 3, so delta writes, keyframes and folds are crossed. The points
+    `tree_store.after_delta_rows` (delta rows written, base record not yet),
+    `tree_store.after_keyframe_rows` (a whole tree written) and
+    `tree_store.fold.after_rewrite` (a dependant rewritten, the removed rows not
+    yet deleted) all sit inside the operation's one transaction, so a kill at any
+    of them rolls the whole operation back and adds no window. `compact_fold`
+    is a compaction whose removed snapshot has a delta dependant;
+  - migration: `migrate_v3` builds a v3-shaped repository (whole trees, no delta
+    tables, `user_version` 3) and kills `open_and_migrate` at
+    `migrate.before_stamp`, between the schema script and the version stamp.
+    The schema script and the stamp run in one transaction, so the kill leaves a
+    complete v3 repository (no v4 table, `integrity_check` ok, `MigrationRequired`
+    on open) that migrates cleanly on the next open. There is no window.
 - The test also requires that each scenario actually hit the points listed for
   it, so a failpoint that is moved or stops being reachable fails the test
   instead of quietly shrinking the coverage.

@@ -1,0 +1,6 @@
+{"op":"fsck_v4","files":1000,"snapshots":500,"k":1,"fsck_ms":2464.5492,"build_ms":268394.38940000004,"file_map_rows":500000,"tree_deltas_rows":0,"tree_delta_rows_rows":0}
+{"op":"fsck_v4","files":1000,"snapshots":500,"k":128,"fsck_ms":499.85790000000003,"build_ms":467275.4327,"file_map_rows":4000,"tree_deltas_rows":496,"tree_delta_rows_rows":1488}
+{"op":"fsck_v4","files":1000,"snapshots":100,"k":1,"fsck_ms":331.2701,"build_ms":21225.5759,"file_map_rows":100000,"tree_deltas_rows":0,"tree_delta_rows_rows":0}
+{"op":"fsck_v4","files":1000,"snapshots":100,"k":128,"fsck_ms":218.474,"build_ms":11949.463399999999,"file_map_rows":1000,"tree_deltas_rows":99,"tree_delta_rows_rows":297}
+{"op":"fsck_v4","files":4000,"snapshots":100,"k":1,"fsck_ms":1234.8691999999999,"build_ms":101779.0505,"file_map_rows":400000,"tree_deltas_rows":0,"tree_delta_rows_rows":0}
+{"op":"fsck_v4","files":4000,"snapshots":100,"k":128,"fsck_ms":719.4327999999999,"build_ms":46929.532199999994,"file_map_rows":4000,"tree_deltas_rows":99,"tree_delta_rows_rows":297}

@@ -57,6 +57,29 @@ pub fn acquire(repo: &Repo) -> Result<WriteGuard<'_>> {
     }
 }
 
+/// Run `op`, which takes the write lock itself, again while it fails with
+/// `Locked`, for the configured budget. For an operation made of many short
+/// locked steps that is safe to resume, such as `repack`: the lock is not held
+/// across it, so a save by another process may take it between two steps.
+pub fn retry_locked<T>(mut op: impl FnMut() -> Result<T>) -> Result<T> {
+    let budget = wait_budget();
+    let start = Instant::now();
+    let mut attempt = 0u32;
+    loop {
+        match op() {
+            Err(velo_core::Error::Locked { .. }) => {
+                let left = budget.saturating_sub(start.elapsed());
+                if left.is_zero() {
+                    return op();
+                }
+                std::thread::sleep(backoff(attempt).min(left));
+                attempt += 1;
+            }
+            other => return other,
+        }
+    }
+}
+
 /// The command line recorded in the lock holder file: `velo ` plus the
 /// arguments, whitespace-containing ones single-quoted, cut to 200 chars.
 pub fn command_label() -> String {

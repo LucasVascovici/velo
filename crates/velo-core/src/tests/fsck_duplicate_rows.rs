@@ -7,6 +7,10 @@ use tempfile::TempDir;
 use crate::commands::{self, fsck};
 use crate::Repo;
 
+/// The receiving repository's keyframe interval: the default, and a short chain
+/// so imported snapshots really are deltas.
+const RECEIVER_KS: [u32; 2] = [128, 2];
+
 fn setup() -> (TempDir, Repo, String) {
     let tmp = TempDir::new().unwrap();
     commands::init::run(tmp.path()).unwrap();
@@ -53,6 +57,13 @@ fn duplicate_rows(repo: &Repo, id: &str) {
 
 #[test]
 fn exact_duplicates_are_cruft_not_an_id_mismatch() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        exact_duplicates_are_cruft_not_an_id_mismatch_at_k();
+    }
+}
+
+fn exact_duplicates_are_cruft_not_an_id_mismatch_at_k() {
     let (_t, repo, id) = setup();
     let clean = fsck::check(&repo).unwrap();
     let n = rows(&repo);
@@ -69,6 +80,13 @@ fn exact_duplicates_are_cruft_not_an_id_mismatch() {
 
 #[test]
 fn repair_removes_duplicates_and_recheck_is_clean() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        repair_removes_duplicates_and_recheck_is_clean_at_k();
+    }
+}
+
+fn repair_removes_duplicates_and_recheck_is_clean_at_k() {
     let (_t, repo, id) = setup();
     let before = ids_verified(&fsck::check(&repo).unwrap());
     let n = rows(&repo);
@@ -97,6 +115,13 @@ fn repair_removes_duplicates_and_recheck_is_clean() {
 
 #[test]
 fn duplicate_path_with_another_hash_is_still_corruption() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        duplicate_path_with_another_hash_is_still_corruption_at_k();
+    }
+}
+
+fn duplicate_path_with_another_hash_is_still_corruption_at_k() {
     let (_t, repo, id) = setup();
     repo.conn()
         .execute(
@@ -117,6 +142,13 @@ fn duplicate_path_with_another_hash_is_still_corruption() {
 
 #[test]
 fn remote_tracking_mismatch_is_named_as_such() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        remote_tracking_mismatch_is_named_as_such_at_k();
+    }
+}
+
+fn remote_tracking_mismatch_is_named_as_such_at_k() {
     let (_t, repo, id) = setup();
     repo.conn()
         .execute(

@@ -212,6 +212,48 @@ What to take from it:
   snapshots and costs a small fraction of that. Do not let 2,000 snapshots of a
   10,000-file tree pile up before the first pass.
 
+## Repacking an existing repository
+
+A repository written before deltas stores every snapshot's whole tree, and
+migrating it to the current layout does not shrink it, because migration
+rewrites nothing. `velo repack` does the rewrite: it converts those full
+snapshots into deltas a few at a time, each batch in its own short transaction,
+so another `velo save` waits only a moment. It changes no snapshot id and
+rewrites no history, and it can be interrupted and run again to finish.
+
+```
+velo repack --dry-run   # what it would convert, with an estimated saving
+velo repack
+```
+
+The dry run's byte figure is an estimate, a lower bound on the saving, because
+it ignores index pages and page slack. The space is returned to the operating
+system by a vacuum at the end of a real run. The same operation is available as
+`Store.repack(dry_run=False)` in Python, `repack(dryRun?)` in Node and the
+`velo_repack` MCP tool. 
+
+Measured on Windows (NTFS, Defender on) on a reduced envelope-style repository:
+10,000 files by 150 snapshots, one file changed per snapshot, written by 5.3.0
+(`scale.py --files 10000 --snapshots 150`), so every snapshot held its whole
+tree: 1,500,150 rows, 398.7 MiB of `velo.db`. A copy was made before 6.0.0
+touched it.
+
+| step | time | result |
+|---|---:|---|
+| migrate (first open by 6.0.0) | 165 ms | nothing rewritten, size unchanged |
+| `repack --dry-run` | 9.0 s | 148 snapshots to convert, estimated 398.7 MB to 270.3 MB (a lower bound) |
+| `repack` | 41.2 s | 1,500,150 rows to 20,150; 398.7 MB to 7.5 MB; `.velo` 419.8 MB to 9.6 MB |
+| `fsck` after | 1.0 s | healthy |
+
+The dry run's estimate (270 MB) is far below what the real run returned, as it
+says it is: the real figure includes the index pages and slack the vacuum
+reclaims. Ids and trees were verified against the pre-migration copy: all 150
+snapshot ids on `main` are identical, `tree_at` of every snapshot matches path
+by path (1,500,150 entries), and `velo fsck` is healthy on both
+([`2026-10-20-windows-repack.json`](../bench/results/2026-10-20-windows-repack.json)).
+This is a reduced shape; the 5.18 GiB envelope repository (10,000 by 2,000) was
+not repacked in this run.
+
 ## Method
 
 `bench/scale/scale.py` drives the release CLI and uses only the Python standard

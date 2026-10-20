@@ -12282,6 +12282,9 @@ mod report_model;
 #[cfg(test)]
 mod perf_support;
 
+#[cfg(test)]
+mod fsck_v4_scale;
+
 #[cfg(all(test, feature = "timing"))]
 mod perf_profile;
 
@@ -12305,3 +12308,36 @@ mod perf_guard;
 
 #[cfg(test)]
 mod delta_prototype;
+
+#[cfg(test)]
+mod differential;
+#[cfg(test)]
+mod tree_store;
+
+#[cfg(test)]
+mod tree_store_lint;
+
+#[cfg(test)]
+mod storage_v4;
+
+#[cfg(test)]
+mod import_v4;
+
+#[cfg(test)]
+mod fsck_v4;
+
+#[cfg(test)]
+mod fold;
+
+#[cfg(test)]
+mod hostile_deltas;
+
+#[cfg(test)]
+mod repack;
+
+#[cfg(test)]
+mod storage_v4_profile;
+
+#[cfg(test)]
+#[cfg(windows)]
+mod first_save_threads;

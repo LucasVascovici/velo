@@ -98,3 +98,36 @@ fixed at init; an existing repository cannot be switched.
 
 A detector that notices a slow filesystem and suggests these settings is not
 built.
+
+## First save: more reader threads than cores
+
+The first save of a large tree is one open per file under Defender. If that
+cost were per-open latency rather than throughput, a rayon pool with more
+threads than cores might overlap it. `first_save_threads` (an ignored,
+Windows-only test in `velo-core`) writes the files into a fresh temporary
+directory for each thread count, so Defender scans every file, then runs the
+real first save inside a local rayon pool of that size. The production pool is
+untouched.
+
+Measured at 10,000 files on a 20-logical-CPU machine, default (loose object)
+store, release build:
+
+| threads | first save |
+|--------:|-----------:|
+|      20 |     22.8 s |
+|      40 |     26.2 s |
+|      80 |     23.8 s |
+
+Measured, no gain: 40 and 80 threads were 15 percent and 4 percent slower
+than 20. The cost under Defender is throughput, not per-open latency that
+threads can overlap, so the pool size is unchanged. Raw results are in
+`bench/results/2026-10-20-windows-first-save-threads.json`. One run per thread
+count; 30,000 and 100,000 files were not measured.
+
+To repeat it at 100,000 files (the first save alone was 348 to 448 s):
+
+```text
+VELO_PROFILE_FILES=100000 VELO_PROFILE_THREADS=20,40,80 VELO_PROFILE_OUT=out.json \
+    cargo test -p velo-core --release first_save_threads \
+    -- --ignored --nocapture --test-threads=1
+```

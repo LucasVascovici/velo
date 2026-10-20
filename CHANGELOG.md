@@ -6,6 +6,64 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## Unreleased
+
+Phase 20: format v4 (delta snapshots): the fixture, differential harness, tree accessor, schema, delta write path, fsck and fold primitive.
+
+### Added
+
+- **20.3-a Fix the v4 storage schema normatively in FORMAT.md.** Added FORMAT.md section 11.6, the normative v4 storage spec, and updated the v4 row in section 7.1 and the table and index lists in section 7.2.
+
+- **20.1-a Independent v4 fixture written from the spec by a stdlib Python script.** Trash deleted_at_ms now rises in undo order: 13 gets ...100000 and 12 gets ...100001, so redo picks 12 first. The undo ops carry the same values. Regenerated velo.db and expected/format-v4.json.
+
+- **20.1-b Seeded differential harness: reference repo vs subject repo, asserted after every operation.** Added a per-handle cfg(test) clock (Repo::now_ms) used by every core snapshot and trash stamp site, and a seeded differential harness in tests/differential.rs. It compares ids, trees, history, blame, status and fsck after every op, with shrinking on failure. It passes against itself.
+
+- **20.2-a tree_store module and the single-snapshot readers.** Added tree_store.rs with tree_of, file_at, files_at, has_tree and tree_with_index_cache. Moved every listed single-snapshot file_map read behind it, with timing lap names unchanged. Added 6 direct tests, including the 499/500 batch boundary.
+
+- **20.2-b tree_store: whole-table scans and path-keyed probes (fsck, gc, history, blame).** tree_store now holds the scans and path probes (for_each_tree_in_order, referenced_objects, delete_orphan_trees, prune_stale_index_cache, duplicate_rows, remove_duplicate_rows, changed_under, PathVersions, changes_of). fsck, gc, history and blame build no SQL naming file_map. The SQL was moved, not rewritten.
+
+- **20.2-c tree_store: every tree write, delete and re-key, and bundle export/import.** Added write_tree, delete_trees, rekey_tree, tree_rows_for_export and a first_parent helper to tree_store. Migrated save, tree, squash, stash, rebase, compact and bundle so none of them names file_map in SQL.
+
+- **20.2-d Lint: no SQL outside tree_store names a tree table; audit the tables that hold trees.** Added a source-scan lint that fails when a string literal outside tree_store.rs, db.rs and the tests names file_map. The audit table is in the tree_store docs and FORMAT.md, and the gc text now says "tree rows".
+
+- **20.0-a Open 6.0.0: versions, lockfiles, README tag line, semver baseline.** Workspace and internal deps are now 6.0.0, with the root and three binding lockfiles refreshed. STABILITY.md names 6.0 as the format-v4 release, and ci.yml has a comment saying the baseline moves to v5.3.0 once it is tagged.
+
+- **20.3-b Schema v4, O(1) migration, and delta-aware single-snapshot reads.** The format is now v4: the schema has both delta tables and indexes, and FORMAT_VERSION is 4. The six single-snapshot readers in tree_store.rs reconstruct delta snapshots, and a bad chain gives Error::Corrupt instead of hanging. Migration is O(1), and the spec-written format-v4 fixture reads back through a new corpus test.
+
+- **20.3-c Delta-aware scans and probes: fsck stream, gc references, history and blame paths.** tree_store scans and probes are now delta-aware: referenced_objects includes delta-row objects (gc keeps them), for_each_tree_in_order streams in chain order and returns unreached deltas, delete_orphan_trees never removes a base a remaining delta needs, and PathVersions, changed_under and changes_of resolve through chains. Seven tests are in storage_v4.rs and one fixture test is in corpus.rs; the full velo-cli and velo-core gate is green.
+
+- **20.4-a Delta write path for every local producer, K knob, and the never-orphan delete guard.** save, save_tree, save_changes, amend, stash and squash now write canonical deltas against the first parent, with a keyframe at depth K, and the K knob and the never-orphan delete guard are in. Compaction materializes dependants first, bundle export reconstructs delta trees, and the differential smoke test compares K=1 against K=2, 3 and 128.
+
+- **20.4-b Import writes deltas: bundle apply, clone, fetch, pull; adopt or replace, never duplicate.** No code change was needed. The velo-core suite passes on origin/phase-20 once the workspace builds the sibling velo binary.
+
+- **20.4-c Regenerate the v4 fixture with the real writer and compare it with the independent one.** Added `the_real_writer_reproduces_the_spec_written_v4_fixture`. It replays the fixture's ops through the real engine at K=4 and compares every table the ops control against the fixture. The real writer and the spec-written fixture agree on all of them, so there was no spec bug and no implementation bug.
+
+- **20.3-d CI: an old release refuses v4, and the bundle way back to 5.x works.** Replaced the raw 0xB7 byte in the ci.yml job name on line 363 with UTF-8 C2 B7. The whole file now decodes as UTF-8, and only that one line changed.
+
+- **20.5-a fsck verifies delta snapshots by reconstruction; new checks and repairs.** Repair now removes the IdMismatch, DeltaCycle, DeltaBaseMissing and DeltaBaseNotFirstParent findings for each snapshot where it drops the delta. It also counts that snapshot in ids_verified. The test now asserts the repair report itself is healthy.
+
+- **20.5-b Measure fsck on v4 against 5.3 at growing history sizes.** Added the ignored fsck_v4_scale harness (real save_tree history, K via set_keyframe_interval, healthy assert, JSON output) plus a small non-ignored smoke test. Measured six runs, committed the raw lines, and added a PERF.md subsection: K=128 fsck was faster than K=1 at every size, so there is no regression.
+
+- **20.6-a The fold primitive, its property test, and gc/trash using it.** The undo/save/gc/redo test now asserts that undo succeeds and that redo restores the trashed id with its recorded tree. Unchecked tree reads now return Corrupt for a base that is unknown and has no rows. gc leaves such an orphan alone, and a new test covers it.
+
+- **20.6-b Compaction, retention, squash and amend fold through the primitive; harness with removals.** compaction.rs (16 tests) and retention_scale.rs (the non-ignored test) now run at K=3 through `setup_k` and an `at_k3!` wrapper per test. compaction_in_place also gets `a_dry_run_writes_nothing_at_k3`. `cargo test -p velo-core` and `cargo test -p velo-cli` were both run on the final tree and pass.
+
+- **20.7-a Failpoints for delta write, keyframe write, fold and migration; crash scenarios on v4.** Added the four failpoints, and db::migrate now runs the schema script and the version stamp in one transaction. crash.rs runs every scenario at the production K and at K=3, plus new compact_fold and migrate_v3 scenarios. All pass on Windows with no new known window.
+
+- **20.7-b Hostile delta tables are typed errors; a cargo-fuzz target for the stored table.** Delta rows now decode through one shared helper, and a hash/mode NULL mismatch is Corrupt in every reader of tree_delta_rows. descend no longer swallows row errors. PathVersions::at returns Result, and tree_at enforces max_string_bytes. The delta_table fuzz target is added with its seeds, README line and CI matrix entry, plus 9 tests in hostile_deltas.rs.
+
+- **20.8-a repack core: convert existing keyframes to deltas in short, resumable transactions.** Added commands::repack::run, which converts keyframes to canonical deltas in per-chunk write-locked transactions, re-chunks overlong chains, and finishes with an incremental vacuum. It has a dry run, cancellation between chunks and the repack.after_chunk failpoint. A repack crash scenario and 7 unit tests pass.
+
+- **20.8-b velo repack CLI, Python/Node bindings, MCP tool, parity.** Added the missing MCP test for velo_repack in recovery_tools.rs. It covers dry_run true, false, omitted and an invalid value, and checks that all eight result fields are present.
+
+- **20.11-a Cold-start test kit: protocol, task cards, independent checker, friction log.** Added bench/coldstart with the protocol README, four task cards, stdlib check.py and an empty friction log with an Adapter decision section. check.py ran against a repo made by the local velo: PASS for the real actor, FAIL for a wrong one.
+
+- **20.12-a Nightly differential run with fresh seeds, starting from every migrated golden.** Added Start::{Empty,Golden} to the differential Config, copying the golden into the TempDir before open_and_migrate. Added the non-ignored differential_from_goldens, made differential_long cover all starts and rotating Ks with a failure file, and added nightly.yml.
+
+- **20.12-b Mixed-version CI: 5.x client against 6.0 server and remote, and the reverse.** Added tests/compat/mixed_versions.py with four cells: HTTP in both directions, a new client against a v3 path remote, and an old client refused by a v4 path remote. Its README has the 2x2 table, and CI runs it as a new step in the old-release job. All four cells passed in one local run on Windows.
+
+- **20.10-b (Conditional) Opt-in group commit for agent loops: measured, not built.** Ran profile_agent_workload for 200 steps on Windows and on WSL2 ext4, and committed both raw JSON files with the exact commands. The Linux v4 commit stage is 0.090 ms of a 4.97 ms median step, so the batch bound is 1.6% to 1.8% and the "not built" verdict holds on both platforms.
+
 ## 5.3.0
 
 Phase 19: profiling, `save_changes`, batch reads and `materialize`, shrinking retention and `velo retention`, the snapshot-storage decision (FORMAT.md 11.5), Windows first-run cost, `velo report`, and release-artifact packaging.

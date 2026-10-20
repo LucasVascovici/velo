@@ -9,6 +9,10 @@ use crate::commands::{self, fsck, redo, switch, sync, undo};
 use crate::transport::Spawn;
 use crate::Repo;
 
+/// The receiving repository's keyframe interval: the default, and a short chain
+/// so imported snapshots really are deltas.
+const RECEIVER_KS: [u32; 2] = [128, 2];
+
 fn with_write<T>(root: &Path, f: impl FnOnce(&crate::WriteGuard) -> T) -> T {
     let repo = Repo::open_and_migrate(root).expect("open repository");
     let guard = repo.write().expect("take write lock");
@@ -81,6 +85,13 @@ fn pushed_branch() -> (TempDir, PathBuf, PathBuf, String) {
 
 #[test]
 fn fetch_after_undoing_a_pushed_snapshot_adds_no_duplicate_rows() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        fetch_after_undoing_a_pushed_snapshot_adds_no_duplicate_rows_at_k();
+    }
+}
+
+fn fetch_after_undoing_a_pushed_snapshot_adds_no_duplicate_rows_at_k() {
     let (_h, _origin, copy, _id) = pushed_branch();
     with_write(&copy, undo::run).unwrap();
     fetch(&copy);
@@ -90,6 +101,13 @@ fn fetch_after_undoing_a_pushed_snapshot_adds_no_duplicate_rows() {
 
 #[test]
 fn redo_after_that_fetch_restores_the_identical_snapshot() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        redo_after_that_fetch_restores_the_identical_snapshot_at_k();
+    }
+}
+
+fn redo_after_that_fetch_restores_the_identical_snapshot_at_k() {
     let (_h, _origin, copy, id) = pushed_branch();
     with_write(&copy, undo::run).unwrap();
     fetch(&copy);
@@ -107,6 +125,13 @@ fn redo_after_that_fetch_restores_the_identical_snapshot() {
 
 #[test]
 fn undo_then_a_different_save_then_fetch_adds_no_duplicate_rows() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        undo_then_a_different_save_then_fetch_adds_no_duplicate_rows_at_k();
+    }
+}
+
+fn undo_then_a_different_save_then_fetch_adds_no_duplicate_rows_at_k() {
     let (_h, _origin, copy, _id) = pushed_branch();
     with_write(&copy, undo::run).unwrap();
     fs::write(copy.join("c.txt"), "other\n").unwrap();
@@ -118,6 +143,13 @@ fn undo_then_a_different_save_then_fetch_adds_no_duplicate_rows() {
 
 #[test]
 fn bundle_apply_over_orphaned_rows_leaves_one_row_per_path() {
+    for k in RECEIVER_KS {
+        crate::repo::set_test_keyframe_interval(k);
+        bundle_apply_over_orphaned_rows_leaves_one_row_per_path_at_k();
+    }
+}
+
+fn bundle_apply_over_orphaned_rows_leaves_one_row_per_path_at_k() {
     let (_h, origin, _copy, _id) = pushed_branch();
     let file = origin.parent().unwrap().join("out.velobundle");
     let src = Repo::open_and_migrate(&origin).unwrap();

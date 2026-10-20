@@ -120,3 +120,102 @@ pub fn ids(data: &[u8]) {
     let _ = TagName::from_str(&text);
     let _ = sign::PublicKey::from_str(&text);
 }
+
+/// How many snapshots the delta-table fuzz repository holds.
+const DELTA_SNAPSHOTS: usize = 4;
+
+fn delta_repo() -> (TempDir, Repo, Vec<SnapshotId>) {
+    use crate::tree::{SaveTree, TreeEntry};
+    use crate::SnapshotMeta;
+
+    let tmp = TempDir::new().expect("temp dir");
+    let mut repo = init_repo(tmp.path()).limited(tight());
+    // K = 2 makes the saves alternate keyframe and delta.
+    repo.set_keyframe_interval(2);
+    let branch: BranchName = "main".parse().expect("branch name");
+    let mut ids: Vec<SnapshotId> = Vec::new();
+    for i in 0..DELTA_SNAPSHOTS {
+        let entries = vec![
+            TreeEntry::file("a.txt", format!("a{i}").into_bytes()),
+            TreeEntry::file("dir/b.txt", b"b".to_vec()),
+            TreeEntry::file(format!("n{i}.txt"), b"n".to_vec()),
+        ];
+        let id = repo
+            .write()
+            .expect("writer")
+            .save_tree(SaveTree {
+                branch: &branch,
+                parent: ids.last(),
+                merge_parent: None,
+                message: "fuzz",
+                entries,
+                meta: SnapshotMeta::default(),
+                author: None,
+                timestamp_ms: Some(1 + i as i64),
+                renames: &[],
+            })
+            .expect("save a fuzz snapshot");
+        ids.push(id);
+    }
+    (tmp, repo, ids)
+}
+
+/// Replace the stored delta tables with records decoded from the input, then
+/// read every snapshot every way a reader can.
+///
+/// A record is `op, a, b, len` followed by `len` path bytes. `op % 2` picks a
+/// `tree_deltas` row (snapshot `a`, base `b`; an index past the last snapshot
+/// names a base that does not exist) or a `tree_delta_rows` row (snapshot `a`,
+/// the path, and in `b` whether the hash and the mode are set). Cycles, missing
+/// bases, hash and mode set one without the other, hostile paths and
+/// million-link chains are all reachable.
+pub fn delta_table(data: &[u8]) {
+    static REPO: OnceLock<Mutex<(TempDir, Repo, Vec<SnapshotId>)>> = OnceLock::new();
+    let mut slot = REPO
+        .get_or_init(|| Mutex::new(delta_repo()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let (_, repo, ids) = &mut *slot;
+    let conn = repo.conn();
+    if crate::tree_store::fuzz_clear(conn).is_err() {
+        return;
+    }
+    let name = |i: u8| -> String {
+        ids.get(usize::from(i))
+            .map_or_else(|| "f".repeat(64), |id| id.to_string())
+    };
+    let mut rest = data;
+    while let [op, a, b, len, tail @ ..] = rest {
+        let take = usize::from(*len).min(tail.len());
+        let (path, after) = tail.split_at(take);
+        rest = after;
+        let snapshot = name(*a % DELTA_SNAPSHOTS as u8);
+        if op % 2 == 0 {
+            let _ = crate::tree_store::fuzz_set_base(
+                conn,
+                &snapshot,
+                &name(*b % (DELTA_SNAPSHOTS as u8 + 1)),
+            );
+        } else {
+            let path = String::from_utf8_lossy(path).into_owned();
+            let hash = (b & 1 != 0).then(|| format!("{:0>64}", format!("{b:x}")));
+            let mode = (b & 2 != 0).then_some(0o644_i64);
+            let _ = crate::tree_store::fuzz_set_row(conn, &snapshot, &path, hash.as_deref(), mode);
+        }
+    }
+    for id in ids.iter() {
+        let _ = repo.tree_at(id);
+        let _ = repo.read_file_at(id, "a.txt");
+        let _ = repo.read_file_at(id, "dir/b.txt");
+    }
+    for path in [&[][..], &[Path::new("a.txt")][..], &[Path::new("dir")][..]] {
+        let _ = commands::history::run(
+            repo,
+            commands::history::Options {
+                paths: path,
+                ..Default::default()
+            },
+        );
+    }
+    let _ = commands::fsck::check(repo);
+}

@@ -119,6 +119,12 @@ export declare class Repo {
    */
   vacuum(full?: boolean | undefined | null): Promise<VacuumInfo>
   /**
+   * Convert stored full snapshots into deltas, a few at a time, so an
+   * existing repository shrinks. With `dryRun` nothing is written and
+   * `bytesAfter` is an estimate.
+   */
+  repack(dryRun?: boolean | undefined | null): Promise<RepackInfo>
+  /**
    * Verify the repository. With `repair`, cruft is cleaned up; damage is
    * only ever reported.
    */
@@ -354,6 +360,19 @@ export interface PushReportInfo {
 export interface RangeInput {
   oldest: string
   newest: string
+}
+
+/** What `repack` did, or for a dry run would do. */
+export interface RepackInfo {
+  snapshotsConverted: number
+  keyframesKept: number
+  chainsShortened: number
+  rowsBefore: number
+  rowsAfter: number
+  bytesBefore: number
+  /** Estimated for a dry run: a lower bound on the saving. */
+  bytesAfter: number
+  dryRun: boolean
 }
 
 export interface RetentionOptions {

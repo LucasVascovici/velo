@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 fn fresh() -> (TempDir, PathBuf) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     let path = tmp.path().to_path_buf();
     Repo::init(&path).unwrap();
@@ -204,13 +205,13 @@ fn a_v2_repository_needs_migration_and_gains_the_chunks_directory() {
         Repo::open(&root),
         Err(Error::MigrationRequired {
             found: 2,
-            supported: 3
+            supported: 4
         })
     ));
     let repo = Repo::open_and_migrate(&root).unwrap();
     assert!(root.join(".velo/chunks").is_dir());
-    assert_eq!(repo.format_version().unwrap(), 3);
-    assert_eq!(crate::FORMAT_VERSION, 3);
+    assert_eq!(repo.format_version().unwrap(), 4);
+    assert_eq!(crate::FORMAT_VERSION, 4);
 }
 
 // ── gc and fsck over chunks (14.7-c) ─────────────────────────────────────

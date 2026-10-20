@@ -33,7 +33,7 @@ pub fn print(collected: &Collected) {
     line(
         collected.orphan_file_map,
         format!(
-            "{} {} orphaned file_map row(s).",
+            "{} {} orphaned tree row(s).",
             if dry { "Would clean" } else { "Cleaned" },
             collected.orphan_file_map
         ),

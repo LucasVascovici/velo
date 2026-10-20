@@ -45,6 +45,8 @@ pub enum Phase {
     Tracing,
     /// Writing snapshots out as a foreign history format.
     Exporting,
+    /// Converting stored snapshot trees into deltas.
+    Repacking,
 }
 
 impl Phase {
@@ -55,7 +57,7 @@ impl Phase {
             Phase::Replaying => "commits",
             Phase::Packing | Phase::Importing | Phase::Verifying | Phase::Collecting => "objects",
             Phase::Transferring => "bytes",
-            Phase::Tracing | Phase::Exporting => "snapshots",
+            Phase::Tracing | Phase::Exporting | Phase::Repacking => "snapshots",
         }
     }
 }
@@ -75,6 +77,7 @@ impl fmt::Display for Phase {
             Phase::Collecting => "Collecting",
             Phase::Tracing => "Tracing",
             Phase::Exporting => "Exporting",
+            Phase::Repacking => "Repacking",
         })
     }
 }

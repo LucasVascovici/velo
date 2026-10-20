@@ -34,3 +34,10 @@ VELO_PERF_UPDATE=1 cargo test -p velo-core --release perf_guard -- --ignored
 
 This rewrites the entry for the current OS only; run it on the other OS (or copy
 the numbers from the CI artifact) for the other entry.
+
+## v4 re-baseline
+
+The Windows entry was re-baselined for the v4 engine (agent_steps 53.17 -> 8.23,
+save_10k 0.2045 -> 0.0860). No metric got worse. The Linux entry is unchanged
+because it was not measured here; copy it from the CI artifact of the first
+green run on this branch.

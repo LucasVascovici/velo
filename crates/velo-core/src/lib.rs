@@ -98,7 +98,7 @@ pub mod error;
 pub mod events;
 #[doc(hidden)]
 pub mod failpoint;
-#[cfg(feature = "fuzzing")]
+#[cfg(any(feature = "fuzzing", test))]
 #[doc(hidden)]
 pub mod fuzzing;
 pub mod ids;
@@ -116,6 +116,7 @@ pub mod storage;
 pub mod timing;
 pub mod transport;
 pub mod tree;
+pub(crate) mod tree_store;
 
 #[cfg(test)]
 mod tests;
@@ -143,4 +144,4 @@ pub use velo_merge as merge;
 /// Recorded in SQLite's `PRAGMA user_version`. Opening a repository with a
 /// higher value fails with [`Error::SchemaTooNew`] rather than risking a
 /// half-migration — see `docs/FORMAT.md`.
-pub const FORMAT_VERSION: u32 = 3;
+pub const FORMAT_VERSION: u32 = 4;
