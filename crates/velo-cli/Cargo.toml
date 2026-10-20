@@ -31,4 +31,7 @@ tiny_http.workspace = true
 [dev-dependencies]
 proptest.workspace = true
 tempfile.workspace = true
+# `failpoints` exposes `Repo::set_keyframe_interval`, which the repack test
+# uses to write a repository whose snapshots are all stored whole.
+velo-core = { workspace = true, features = ["failpoints"] }
 velo-testkit.workspace = true

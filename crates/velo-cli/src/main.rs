@@ -1088,7 +1088,7 @@ NOTES
         after_help = "\
 WHAT GC CLEANS UP
     · Orphaned objects (no snapshot references them)
-    · Stale file_map rows (snapshot was deleted)
+    · Stale tree rows (snapshot was deleted)
     · Stale index_cache rows (path no longer tracked)
     · Trash entries older than --keep-days days
 
@@ -1113,6 +1113,31 @@ NOTES
         /// auto_vacuum.
         #[arg(long, help = "Run a full vacuum, converting an older repository")]
         vacuum: bool,
+    },
+
+    /// Convert stored full snapshots into deltas, to shrink an existing repository.
+    ///
+    /// A repository written before deltas keeps every snapshot's whole tree,
+    /// and migrating it does not shrink it. Repack rewrites that storage a few
+    /// snapshots at a time, each in its own short transaction, so a save made
+    /// meanwhile waits only a moment. No snapshot id changes and no history is
+    /// rewritten. Interrupting it is safe: run it again to finish.
+    ///
+    /// Examples
+    ///   velo repack --dry-run
+    ///   velo repack
+    #[command(
+        verbatim_doc_comment,
+        after_help = "\
+NOTES
+    · --dry-run reports what a repack would convert and save, and changes nothing. Its byte figure is an estimate and a lower bound on the saving.
+    · The space is returned to the operating system by a vacuum at the end of a real run.
+    · Running it twice is harmless: the second run finds nothing to do."
+    )]
+    Repack {
+        /// Report what would be converted and saved, and change nothing.
+        #[arg(long, help = "Report what would be converted, change nothing")]
+        dry_run: bool,
     },
 
     /// Thin old snapshots on a branch by age, then gc.
@@ -2356,11 +2381,14 @@ fn needs_write_guard(cmd: &Commands) -> bool {
     !is_read_only(cmd)
         && !matches!(
             cmd,
-            Commands::Resolve {
-                take: None,
-                mark: false,
-                ..
-            }
+            // Repack takes the write lock itself, one chunk at a time, so a
+            // guard held across the command would make it wait on itself.
+            Commands::Repack { .. }
+                | Commands::Resolve {
+                    take: None,
+                    mark: false,
+                    ..
+                }
         )
 }
 
@@ -3573,6 +3601,17 @@ fn run(cli: Cli) -> Result<Exit> {
                 };
                 render::gc::print_vacuum(&commands::gc::vacuum(write(), mode)?);
             }
+        }
+
+        Commands::Repack { dry_run } => {
+            let bar = render::progress::Bar::new();
+            let done = lockwait::retry_locked(|| {
+                let mut options = commands::repack::Options::default();
+                options.dry_run = dry_run;
+                options.observer = Some(&bar);
+                commands::repack::run(&repo, options)
+            })?;
+            render::repack::print(&done);
         }
 
         Commands::Retention {

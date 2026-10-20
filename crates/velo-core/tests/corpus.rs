@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{json, Value};
 use tempfile::TempDir;
-use velo_core::commands::{blame, bundle, fsck, history, tag};
+use velo_core::commands::{blame, bundle, fsck, gc, history, tag};
 use velo_core::sign::{self, SigningKey, TrustedKeys};
 use velo_core::tree::FileKind;
 use velo_core::tree::{SaveTree, TreeEntry};
@@ -65,7 +65,9 @@ fn tags() -> Vec<String> {
             let stem = name.strip_suffix(".json")?;
             // `<tag>.blame.json` sits beside `<tag>.json`.
             // `bundles.v4.json` describes the signed bundles, not a repository.
-            (!stem.ends_with(".blame") && stem != "bundles.v4").then(|| stem.to_string())
+            // `format-*` is the spec-written v4 fixture, read by `the_spec_written_v4_fixture_reads_back`, not by this loop.
+            (!stem.ends_with(".blame") && stem != "bundles.v4" && !stem.starts_with("format-"))
+                .then(|| stem.to_string())
         })
         .collect();
     tags.sort();
@@ -191,7 +193,7 @@ fn every_golden_repository_opens_migrates_and_reads_back() {
                     Repo::open(&root),
                     Err(Error::MigrationRequired {
                         found: 2,
-                        supported: 3
+                        supported: 4
                     })
                 ),
                 "{ctx}: the format-2 golden must need migration"
@@ -699,4 +701,468 @@ fn write_the_v4_goldens() {
     let mut text = serde_json::to_string_pretty(&exp).unwrap();
     text.push('\n');
     fs::write(corpus().join("expected/bundles.v4.json"), text).unwrap();
+}
+
+/// The fixture written by `tests/corpus/write_format_v4.py` straight from
+/// docs/FORMAT.md: a repository this build never wrote. It is already v4, so
+/// it opens without migration. The delta-aware scans are exercised too: fsck
+/// recomputes every id over the delta stream, a gc dry run finds nothing, and
+/// blame agrees with an all-keyframe copy of the same history.
+#[test]
+fn the_spec_written_v4_fixture_reads_back() {
+    let exp = expected("format-v4");
+    let (_dir, root) = golden_copy("format-v4");
+    let repo = Repo::open(&root).unwrap_or_else(|e| panic!("{e:?}"));
+    assert_eq!(repo.format_version().unwrap(), FORMAT_VERSION);
+    assert_eq!(exp["user_version"].as_u64().unwrap(), 4);
+
+    let snapshots = exp["snapshots"].as_array().unwrap();
+    assert!(!snapshots.is_empty());
+    for snap in snapshots {
+        let hash = s(&snap["hash"]);
+        let sid = id(hash);
+        let mut want: Vec<(String, String)> = exp["file_map"][hash]
+            .as_array()
+            .unwrap_or_else(|| panic!("{hash}: no file_map"))
+            .iter()
+            .map(|r| (s(&r["path"]).to_string(), s(&r["hash"]).to_string()))
+            .collect();
+        want.sort();
+        let mut got = repo.tree_at(&sid).unwrap();
+        got.sort_by(|a, b| a.path.cmp(&b.path));
+        assert_eq!(
+            got.iter()
+                .map(|f| (f.path.clone(), f.object.to_string()))
+                .collect::<Vec<_>>(),
+            want,
+            "tree of {hash}"
+        );
+        for f in &got {
+            let bytes = repo.read_file_at(&sid, &f.path).unwrap();
+            assert_eq!(
+                blake3::hash(&bytes).to_hex().to_string(),
+                f.object.to_string(),
+                "content of {} in {hash}",
+                f.path
+            );
+        }
+        let e = repo.snapshot(&sid).unwrap();
+        assert_eq!(e.message, s(&snap["message"]));
+        assert_eq!(
+            e.parent.as_ref().map(|p| p.to_string()).unwrap_or_default(),
+            s(&snap["parent_hash"])
+        );
+    }
+
+    // Bytes: every entry the writer recorded reads back as it was written.
+    let mut checked = 0;
+    for op in exp["ops"].as_array().unwrap() {
+        let Some(entries) = op["entries"].as_array() else {
+            continue;
+        };
+        for entry in entries {
+            let Some(b64) = entry["content_base64"].as_str() else {
+                continue;
+            };
+            let got = repo
+                .read_file_at(&id(s(&op["id"])), s(&entry["path"]))
+                .unwrap();
+            // velo stores text with LF line endings (the fixture's `hash` is of the
+            // stored form), so the written CRLF input reads back as LF.
+            let raw = base64_decode(b64);
+            let mut want = Vec::with_capacity(raw.len());
+            for (i, &b) in raw.iter().enumerate() {
+                if !(b == 13 && raw.get(i + 1) == Some(&10)) {
+                    want.push(b);
+                }
+            }
+            assert_eq!(got, want, "{} in {}", entry["path"], op["id"]);
+            checked += 1;
+        }
+    }
+    assert!(checked > 0);
+
+    let mut meta: BTreeSet<(String, String, String, String)> = BTreeSet::new();
+    for r in exp["snapshot_meta"].as_array().unwrap() {
+        meta.insert((
+            s(&r[0]).to_string(),
+            s(&r[1]).to_string(),
+            s(&r[2]).to_string(),
+            s(&r[3]).to_string(),
+        ));
+    }
+    let mut got_meta: BTreeSet<(String, String, String, String)> = BTreeSet::new();
+    for snap in snapshots {
+        let h = s(&snap["hash"]);
+        for (n, k, v) in repo.snapshot_meta(&id(h)).unwrap().iter() {
+            got_meta.insert((h.to_string(), n.to_string(), k.to_string(), v.to_string()));
+        }
+    }
+    // Snapshots `undo` moved to the trash keep their rows but are not listed.
+    meta.retain(|(h, ..)| snapshots.iter().any(|x| s(&x["hash"]) == h));
+    assert_eq!(got_meta, meta, "metadata");
+
+    for branch in branches(&exp) {
+        let t = tip(&repo, &branch);
+        let h = history::run(
+            &repo,
+            history::Options {
+                from: Some(&t),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let got: BTreeSet<String> = h.entries.iter().map(|e| e.hash.to_string()).collect();
+        assert_eq!(
+            got,
+            expected_ancestry(snapshots, t.as_str()),
+            "history of {branch}"
+        );
+    }
+    let got_tags: BTreeSet<(String, String)> = tag::list(&repo)
+        .unwrap()
+        .into_iter()
+        .map(|t| (t.name.to_string(), t.snapshot.to_string()))
+        .collect();
+    let want_tags: BTreeSet<(String, String)> = exp["tags"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (s(&t[0]).to_string(), s(&t[1]).to_string()))
+        .collect();
+    assert_eq!(got_tags, want_tags, "tags");
+}
+
+/// Replay the spec-written fixture's `ops` with the real engine at its `k`
+/// and compare every table the ops control, row for row. The fixture is
+/// written by `write_format_v4.py` straight from docs/FORMAT.md and the real
+/// build is a second, independent writer: a difference is a spec bug or an
+/// implementation bug, and either is a fix, never a loosened comparison.
+///
+/// Columns not compared, and why: `trash.deleted_at_ms` (the wall clock at
+/// the moment of the undo, which no op can set; the trash ids, parents,
+/// messages and creation times are compared). `file_map` rows of delta
+/// snapshots do not exist, which is checked rather than skipped. Nothing else
+/// is left out.
+#[cfg(feature = "failpoints")]
+#[test]
+fn the_real_writer_reproduces_the_spec_written_v4_fixture() {
+    use velo_core::commands::{restore, undo};
+    use velo_core::tree::Content;
+    use velo_core::Author;
+
+    let exp = expected("format-v4");
+    let k = exp["k"].as_u64().unwrap() as u32;
+    let key = test_key();
+    assert_eq!(key.public_key().to_string(), s(&exp["signer_public_key"]));
+
+    let (_dir, mut repo) = fresh_repo();
+    repo.set_keyframe_interval(k);
+
+    // The whole tree of every saved snapshot, by the fixture's `n`: the ops
+    // record only what changed against the first parent.
+    type Tree = BTreeMap<String, (Vec<u8>, FileKind)>;
+    let mut trees: BTreeMap<u64, Tree> = BTreeMap::new();
+    let mut ids: BTreeMap<u64, SnapshotId> = BTreeMap::new();
+    let mut tip_n: u64 = 0;
+
+    for op in exp["ops"].as_array().unwrap() {
+        let g = repo.write().unwrap();
+        match s(&op["op"]) {
+            "branch" => {}
+            "undo" => {
+                let want = id(s(&op["id"]));
+                if tip_n == op["n"].as_u64().unwrap() {
+                    restore::run(
+                        &g,
+                        &want,
+                        restore::Options {
+                            force: true,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                    // `init` wrote an ignore file the fixture's history does
+                    // not track; undo refuses a tree that differs from it.
+                    let _ = fs::remove_file(g.root().join(".veloignore"));
+                }
+                undo::run(&g).unwrap();
+                tip_n = op["n"].as_u64().unwrap() - 1;
+            }
+            kind @ ("save" | "merge") => {
+                let n = op["n"].as_u64().unwrap();
+                let mut tree: Tree = op["parent"]
+                    .as_u64()
+                    .map(|p| trees[&p].clone())
+                    .unwrap_or_default();
+                for e in op["entries"].as_array().unwrap() {
+                    let path = s(&e["path"]).to_string();
+                    if e["remove"].as_bool() == Some(true) {
+                        tree.remove(&path);
+                        continue;
+                    }
+                    let kind = match e["mode"].as_i64().unwrap() {
+                        0 => FileKind::Regular,
+                        1 => FileKind::Executable,
+                        m => panic!("mode {m}"),
+                    };
+                    tree.insert(path, (base64_decode(s(&e["content_base64"])), kind));
+                }
+                let mut meta = SnapshotMeta::new();
+                let (mut name, mut email) = (None, None);
+                for m in op["meta"].as_array().unwrap() {
+                    match (s(&m[0]), s(&m[1])) {
+                        ("velo", "author.name") => name = Some(s(&m[2]).to_string()),
+                        ("velo", "author.email") => email = Some(s(&m[2]).to_string()),
+                        (ns, key) => meta.set(ns, key, s(&m[2])).unwrap(),
+                    }
+                }
+                let author = match (name, email) {
+                    (Some(name), Some(email)) => Some(Author::with_email(name, email).unwrap()),
+                    _ => None,
+                };
+                let renames: Vec<(PathBuf, PathBuf)> = op["renames"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|r| (PathBuf::from(s(&r[0])), PathBuf::from(s(&r[1]))))
+                    .collect();
+                let branch: BranchName = s(&op["branch"]).parse().unwrap();
+                let parent = op["parent"].as_u64().map(|p| &ids[&p]);
+                let merge_parent = op["merge_parent"].as_u64().map(|p| &ids[&p]);
+                assert_eq!(kind == "merge", merge_parent.is_some());
+                let entries: Vec<TreeEntry> = tree
+                    .iter()
+                    .map(|(path, (bytes, kind))| TreeEntry {
+                        path: path.clone(),
+                        content: Content::Bytes(bytes.clone()),
+                        kind: *kind,
+                    })
+                    .collect();
+                let new = g
+                    .save_tree(SaveTree {
+                        branch: &branch,
+                        parent,
+                        merge_parent,
+                        message: s(&op["message"]),
+                        entries,
+                        meta,
+                        author: author.as_ref(),
+                        timestamp_ms: Some(op["timestamp_ms"].as_i64().unwrap()),
+                        renames: &renames,
+                    })
+                    .unwrap();
+                assert_eq!(new.as_str(), s(&op["id"]), "id of snapshot {n}");
+                if op["sign"].as_bool() == Some(true) {
+                    sign::sign(&g, &new, &key).unwrap();
+                }
+                if let Some(name) = op["tag"].as_str() {
+                    tag::create(&g, &name.parse().unwrap(), Some(&new), false).unwrap();
+                }
+                trees.insert(n, tree);
+                ids.insert(n, new);
+                tip_n = n;
+            }
+            other => panic!("unknown op {other}"),
+        }
+    }
+
+    let db = rusqlite::Connection::open(repo.root().join(".velo/velo.db")).unwrap();
+    let rows = |sql: &str, cols: usize| -> BTreeSet<String> {
+        let mut stmt = db.prepare(sql).unwrap();
+        stmt.query_map([], |r| {
+            let mut row = Vec::new();
+            for i in 0..cols {
+                row.push(match r.get_ref(i).unwrap() {
+                    rusqlite::types::ValueRef::Null => Value::Null,
+                    rusqlite::types::ValueRef::Integer(n) => json!(n),
+                    rusqlite::types::ValueRef::Text(t) => {
+                        json!(String::from_utf8(t.to_vec()).unwrap())
+                    }
+                    other => panic!("{other:?}"),
+                });
+            }
+            Ok(Value::Array(row).to_string())
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect()
+    };
+    let want = |v: &Value| -> BTreeSet<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r.to_string())
+            .collect()
+    };
+    let objects = |v: &Value, keys: &[&str]| -> BTreeSet<String> {
+        v.as_array()
+            .unwrap()
+            .iter()
+            .map(|o| Value::Array(keys.iter().map(|k| o[*k].clone()).collect()).to_string())
+            .collect()
+    };
+
+    let cols = [
+        "hash",
+        "parent_hash",
+        "merge_parent",
+        "message",
+        "created_at_ms",
+        "branch",
+    ];
+    assert_eq!(
+        rows(
+            "SELECT hash, parent_hash, COALESCE(merge_parent, ''), message, created_at_ms, branch FROM snapshots",
+            6
+        ),
+        objects(&exp["snapshots"], &cols),
+        "snapshots"
+    );
+    assert_eq!(
+        rows("SELECT snapshot_hash, base_hash FROM tree_deltas", 2),
+        want(&exp["tree_deltas"]),
+        "tree_deltas"
+    );
+    assert_eq!(
+        rows(
+            "SELECT snapshot_hash, path, hash, mode FROM tree_delta_rows",
+            4
+        ),
+        want(&exp["tree_delta_rows"]),
+        "tree_delta_rows"
+    );
+    // Keyframes alone have `file_map` rows; a delta snapshot has none.
+    let mut want_map = BTreeSet::new();
+    for h in exp["keyframes"].as_array().unwrap() {
+        for r in exp["file_map"][s(h)].as_array().unwrap() {
+            want_map.insert(json!([h, r["path"], r["hash"], r["mode"]]).to_string());
+        }
+    }
+    assert_eq!(
+        rows("SELECT snapshot_hash, path, hash, mode FROM file_map", 4),
+        want_map,
+        "file_map of keyframes"
+    );
+    assert_eq!(
+        rows(
+            "SELECT snapshot_id, namespace, key, value FROM snapshot_meta",
+            4
+        ),
+        want(&exp["snapshot_meta"]),
+        "snapshot_meta"
+    );
+    assert_eq!(
+        rows("SELECT snapshot_hash, from_path, to_path FROM renames", 3),
+        want(&exp["renames"]),
+        "renames"
+    );
+    assert_eq!(
+        rows("SELECT name, snapshot_hash FROM tags", 2),
+        want(&exp["tags"]),
+        "tags"
+    );
+    assert_eq!(
+        rows(
+            "SELECT snapshot_hash, algorithm, public_key, signature FROM signatures",
+            4
+        ),
+        want(&exp["signatures"]),
+        "signatures"
+    );
+    let trash_ids: BTreeSet<String> = exp["trash_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| json!([h]).to_string())
+        .collect();
+    assert_eq!(rows("SELECT hash FROM trash", 1), trash_ids, "trash ids");
+    // The rest of each trash row, without the wall-clock deletion time.
+    assert_eq!(
+        rows(
+            "SELECT hash, parent_hash, merge_parent, message, created_at_ms, branch FROM trash",
+            6
+        ),
+        objects(&exp["trash"], &cols),
+        "trash rows"
+    );
+}
+
+/// What `fsck`, `gc --dry-run` and `blame` say about the spec-written v4
+/// fixture, which holds real delta snapshots.
+#[test]
+fn the_v4_fixture_passes_fsck_gc_and_blame_over_its_deltas() {
+    let exp = expected("format-v4");
+    let (_dir, root) = golden_copy("format-v4");
+    let repo = Repo::open(&root).unwrap();
+    let db = rusqlite::Connection::open(root.join(".velo/velo.db")).unwrap();
+    let deltas: i64 = db
+        .query_row("SELECT count(*) FROM tree_deltas", [], |r| r.get(0))
+        .unwrap();
+    drop(db);
+    assert!(deltas > 0, "the fixture must hold delta snapshots");
+
+    let report = fsck::check(&repo).unwrap();
+    assert!(report.problems.is_empty(), "{:?}", report.problems);
+
+    let guard = repo.write().unwrap();
+    let got = gc::run(
+        &guard,
+        gc::Options {
+            keep_days: 36500,
+            dry_run: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    drop(guard);
+    assert_eq!(got.orphan_file_map, 0);
+    assert_eq!(got.objects, 0);
+    assert_eq!(got.chunks, 0);
+    assert_eq!(got.expired_trash, 0);
+
+    // The same history with every tree stored as a keyframe: blame must agree.
+    let (_dir2, root2) = golden_copy("format-v4");
+    let plain = Repo::open(&root2).unwrap();
+    let conn = rusqlite::Connection::open(root2.join(".velo/velo.db")).unwrap();
+    conn.execute_batch(
+        "DELETE FROM tree_deltas; DELETE FROM tree_delta_rows; DELETE FROM file_map;",
+    )
+    .unwrap();
+    for snap in exp["snapshots"].as_array().unwrap() {
+        let h = s(&snap["hash"]);
+        for r in exp["file_map"][h].as_array().unwrap() {
+            conn.execute(
+                "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+                rusqlite::params![h, s(&r["path"]), s(&r["hash"]), r["mode"].as_i64().unwrap()],
+            )
+            .unwrap();
+        }
+    }
+    drop(conn);
+    let blamed = blame_all(&repo, &exp);
+    assert!(!blamed.as_object().unwrap().is_empty());
+    assert_eq!(blamed, blame_all(&plain, &exp), "blame over deltas");
+}
+
+/// Standard base64 without a dependency: the fixture's few sample payloads.
+fn base64_decode(text: &str) -> Vec<u8> {
+    let val = |c: u8| match c {
+        b'A'..=b'Z' => c - b'A',
+        b'a'..=b'z' => c - b'a' + 26,
+        b'0'..=b'9' => c - b'0' + 52,
+        b'+' => 62,
+        _ => 63,
+    };
+    let mut out = Vec::new();
+    let data: Vec<u8> = text.bytes().filter(|&c| c != b'=').collect();
+    for chunk in data.chunks(4) {
+        let mut n = 0u32;
+        for (i, &c) in chunk.iter().enumerate() {
+            n |= (val(c) as u32) << (18 - 6 * i);
+        }
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&bytes[..chunk.len() - 1]);
+    }
+    out
 }

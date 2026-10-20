@@ -45,6 +45,7 @@ the `velo` or `mcp` namespaces themselves. The author is the client name, or
 | `velo_redo` | Bring back what the last `velo_undo` shelved. Needs a working tree. |
 | `velo_tag` | `list`, `create` (refuses a taken name) or `delete` tags. Works in store-only mode. |
 | `velo_conflicts` | The conflicts of a stopped merge as data: per path the ancestor, ours and theirs objects and each hunk with its decision. Needs a working tree. |
+| `velo_repack` | Convert stored full snapshots into deltas so the repository shrinks; rewrites no history and changes no id. `dry_run` (default false) reports the saving, with `bytes_after` an estimate, and writes nothing. Works in store-only mode. |
 | `velo_find` | Snapshots matching `[namespace, key, value]` metadata filters, optionally on one `branch`. Works in store-only mode. |
 
 There is deliberately no tool for squash, rebase, compact, retention, gc, force

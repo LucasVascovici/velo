@@ -110,3 +110,46 @@ The Windows Defender caveat above applies unchanged; say whether the work
 directory was excluded. The committed results are
 `bench/results/perf-<date>-windows.json` and `perf-<date>-linux.json` (JSON
 lines, one per op, as printed).
+
+## For the owner
+
+Runs the Phase 20 re-run (task 20.9-b) did not make, because they take hours.
+Build first: `cargo build --release -p velo-cli --locked`. Say whether Defender
+was excluded (`--defender-note`), and publish the JSON under `bench/results/`.
+
+1. Envelope A (10,000 files x 2,000 snapshots, hours), Windows and then Linux:
+
+   ```text
+   python bench/scale/scale.py --preset envelope-a --keep --workdir <dir outside the checkout> --out bench/results/<date>-windows-envelope-a.json
+   ```
+
+2. Envelope B (100,000 files x 200 snapshots, hours):
+
+   ```text
+   python bench/scale/scale.py --preset envelope-b --out bench/results/<date>-windows-envelope-b.json
+   ```
+
+3. Migrate and repack the real 5.18 GiB envelope repository (the 2026-10-16 retention
+   run's repository, written by 5.3.0 or earlier). Copy it first, then check
+   ids and trees against the copy:
+
+   ```text
+   cp -r <envelope repo> <envelope repo>-copy
+   cd <envelope repo>
+   time velo branches            # first open by the new engine: the migration
+   time velo repack --dry-run
+   time velo repack
+   velo fsck
+   cd <envelope repo>-copy && velo fsck
+   ```
+
+   For the tree comparison, open both with the Python binding and compare
+   `history(branch="main")` ids and `tree_at(id)` for each snapshot (the
+   script used for the reduced run is described in
+   `bench/results/2026-10-20-windows-repack.json`). Record migration time,
+   repack time, and the size of `.velo` before and after.
+
+4. Agent benchmark on Linux/WSL2 (500 steps, run from an ext4 path), and the
+   binding share of the Python step: `python bench/agent/agent_bench.py --only velo --out <file>`
+   and `--only "shadow git"` as two runs, since the full run with the 5.2-API
+   row takes over 10 minutes on Windows.

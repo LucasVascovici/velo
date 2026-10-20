@@ -543,6 +543,87 @@ Reasons for the misses, each from a measurement above or in the linked results:
 - **Retention (not a numbered target).** The 18.10 retention run was repeated in
   19.4-e on Windows (see [`SCALE.md`](SCALE.md)); it was not repeated on Linux.
 
+### Result of the Phase 20 re-run (2026-10-20)
+
+Windows only, one run per cell, built from the current tip (velo 6.0.0, format
+v4, default keyframe interval 128). No harness parameter was changed to improve
+a number. Agent figures:
+[`2026-10-20-windows-agent-velo.json`](../bench/results/2026-10-20-windows-agent-velo.json)
+and
+[`2026-10-20-windows-agent-git.json`](../bench/results/2026-10-20-windows-agent-git.json),
+run as two `--only` invocations because the combined run with the 5.2-API row
+did not fit the time budget (and one shadow git run failed on a restore with an
+empty git error, so shadow git was run again; the rerun is the one published).
+The Linux/WSL2 runs were not made in this task, so target 1 on Linux is not
+re-measured. The v4 numbers themselves are in sections 8 and 9 and are not
+repeated here.
+
+| target | measured | verdict |
+|---|---|---|
+| 1. 500 steps, at most 3x shadow git on Linux | Windows: 19.4 s against shadow git 210.5 s (0.09x; was 64.4 s, 0.34x). Linux: not run | Windows met (the Windows aim was "not worse than git"); **Linux not re-measured**, last 4.5x (missed) |
+| 3. disk after 500 steps, at most 3x git (about 11 MB) | 11.03 MB against git 3.27 MB: **3.37x** (final disk after restores and branches 11.84 MB against 4.5 MB: 2.6x); was 152 MB, 47x | **missed against git's measured disk by 12%**; in absolute terms it is the 11 MB the derivation expected |
+| 4. one-file save at 100,000 files, at most 1.5x history-0 | Section 9: median 5.28 s over 400 saves at K = 128, against the 2.1 s history-0 floor of section 6 (2.5x); the first plain saves of the run took 9.3 s, so the run's own start is not a clean floor | **missed** (about 2.5x, not a like-for-like pair: the floor is from the 5.3 build and the 100,000-file run shared the machine) |
+| 5. binding overhead, at most 10% | not re-measured: `save_changes` still has no Rust twin of the harness | **not measured**, 10.5% on Windows when last measured |
+
+The other rows of the same agent run (Windows, velo against shadow git of the
+same run): 8 attempts plus merge 4.29 s against 38.5 s (0.11x); restore step 250
+median 480 ms against 480 ms (1.0x); "who wrote" x20 9.30 s against 3.01 s
+(**3.1x slower**, was 2.95 s against 2.42 s, 1.2x). Restore sits at 480 ms for
+both systems, against 216 ms and 422 ms in the 2026-10-16 run, so that day's
+drift moved both, and the velo row is within what the machine adds; it is not
+claimed as a regression or a win.
+
+Reasons for the misses and the loss:
+
+- **Disk, 3.37x.** What is stored now is a keyframe every 128 snapshots plus the
+  changed rows (about 10.5 files per step), then the objects and the snapshot
+  rows. 11.03 MB is the "about 11 MB" of the derivation under target 3; the
+  miss is the ratio, because git on this run stored 3.27 MB and 3x that is 9.8
+  MB. The 1,000-file case was not broken down further in this run.
+- **One-file save at 100,000 files.** Section 9: `save_tree.objects` is 95% of
+  the save (5,019 ms of 5,279 ms), one `objects.contains` per file on every
+  save. The row writes the targets were about are now 155 ms
+  (`insert_file_map`) and the commit 0.25 ms, so the growth with history is
+  gone from them, but the O(files) object check is not.
+- **Who wrote, 3.1x git.** Profiled on the 1,000-file by 500-step repo
+  (`bench/results/2026-10-20-windows-who-wrote-profile.txt`, with temporary
+  timers inside `blame::run`, reverted afterwards). The 20 blame calls took
+  7.0 to 9.7 s; with the timers in, 78% of the time (7.4 of 9.5 s) is reading
+  file text from the object store (`objects.get` and decode), 17% is the rest
+  of the walk (snapshot rows, rename lookup, queue), and only 2.4% is diffing
+  and 2.2% is looking up the object hash in the file map. The cause is the
+  shape of the walk: blame visits every ancestor snapshot (about 500), not the
+  roughly 5 that changed the file (`history(paths=[file])` finds those in
+  37 ms), and at each visit it reads the text of the snapshot and of its
+  parent with no cache, although almost all of those reads hit the same few
+  objects. So the cost is repeated object reads, about 0.35 ms each, not the
+  history walk or the diffs. A read-through cache of decoded texts by object
+  hash, or skipping snapshots whose object hash equals the parent's, would
+  remove most of it; neither is done. Whether the 0.35 ms is delta-chain depth
+  or plain decode was not separated.
+- **Retention (not a numbered target, reduced run).** The ignored test
+  `default_policy_at_a_reduced_18_10_shape` (400 snapshots of 2,000 files,
+  800,000 rows, run at K = 1, so every tree is whole: the shape 19.4 measured,
+  not the K = 128 default of section 9; the `_at_k3` twin was not run). Stages
+  ([`2026-10-20-windows-retention-scale.txt`](../bench/results/2026-10-20-windows-retention-scale.txt)):
+  apply 11.8 s (examined 400, removed 170), gc 0.96 s, vacuum 4.85 s, with
+  `velo.db` 221.4 MB to 132.3 MB. The 19.4 run was 20,000,000 rows (416 s apply,
+  165 s gc, 193 s vacuum); per row that is apply 14.8 us against 20.8 us, gc
+  1.2 us against 8.3 us and vacuum 6.1 us against 9.6 us. Sizes differ by 25x,
+  so these are per-row ratios and not a replacement for the full run, which was
+  not repeated.
+- **Scale small (1,000 files by 50 snapshots, Windows).**
+  [`2026-10-20-windows-scale-small.json`](../bench/results/2026-10-20-windows-scale-small.json):
+  save median 121 ms first 10%, 137 ms last 10% (1.13x growth; the first-10% p95
+  of 6.9 s is the first save under Defender), 1,001 `file_map` rows, `.velo`
+  0.8 MiB, restore 108 ms, fsck 114 ms.
+- **Migrate and repack (reduced).** A 10,000-file by 150-snapshot repository
+  written by 5.3.0 (400 MB, 1,500,150 rows): first open by 6.0.0 took 165 ms,
+  `velo repack` 41 s, to 9.6 MB (1,500,150 rows to 20,150), ids and trees
+  identical to a pre-migration copy. See [`SCALE.md`](SCALE.md). The 5.18 GiB
+  envelope repository was not migrated here; the command is in
+  `bench/README.md`.
+
 ## 7. Not measured
 
 - **100,000 files x 2,000 snapshots (both platforms).** About 200 million
@@ -701,3 +782,208 @@ to 100 rows, but the layout decides it: the same agent paths at 100,000 files
 rewrite 5,002 rows, and a flat directory rewrites every row, no better than
 today. B's cost is a property of the project's directory shape, not of its file
 count.
+
+### fsck on v4 against the 5.3 shape
+
+`fsck_v4_scale` (`crates/velo-core/src/tests/fsck_v4_scale.rs`) builds F files by
+S snapshots with real `save_tree` calls (three files change per snapshot), sets
+the keyframe interval K, asserts the history is healthy, and times
+`commands::fsck::check`. K = 1 stores every tree whole, which is the 5.3 shape.
+Raw lines are in `bench/results/2026-10-19-fsck-v4-windows.json`. Windows,
+release build, one run each, so read differences under about 10% as noise.
+
+| files | snapshots | K | fsck ms | `file_map` rows | delta rows |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 100 | 1 | 331 | 100,000 | 0 |
+| 1,000 | 100 | 128 | 218 | 1,000 | 297 |
+| 4,000 | 100 | 1 | 1,235 | 400,000 | 0 |
+| 4,000 | 100 | 128 | 719 | 4,000 | 297 |
+| 1,000 | 500 | 1 | 2,465 | 500,000 | 0 |
+| 1,000 | 500 | 128 | 500 | 4,000 | 1,488 |
+
+K = 128 was not slower than K = 1 at any size measured, so there is no
+regression to attribute to reconstruction or hashing. It was 1.5x to 1.7x faster
+at 100 snapshots and 4.9x faster at 500, because fsck reads far fewer rows. The
+gap widens with history. This is a trend at up to 500,000 stored rows, not the
+envelope: the budget did not fit the briefed sizes (10,000 x 200 and 10,000 x
+500), because building the history with `save_tree` takes 4.5 to 8 minutes for
+1,000 x 500 alone. The result at 20 million rows is therefore not established.
+
+Full size, not run by the agent:
+
+```
+VELO_PROFILE_FILES=10000 VELO_PROFILE_SNAPSHOTS=2000 VELO_PROFILE_K=1 VELO_PROFILE_OUT=bench/results/fsck-v4-full.json cargo test --release -p velo-core fsck_v4_scale -- --ignored --nocapture
+VELO_PROFILE_FILES=10000 VELO_PROFILE_SNAPSHOTS=2000 VELO_PROFILE_K=128 VELO_PROFILE_OUT=bench/results/fsck-v4-full.json cargo test --release -p velo-core fsck_v4_scale -- --ignored --nocapture
+```
+
+## 9. Format v4 on the real engine
+
+Reproduces section 8's prototype table with the real `WriteGuard::save_tree` and
+`Repo::set_keyframe_interval(k)`, from the ignored test `storage_v4_profile`
+(`crates/velo-core/src/tests/storage_v4_profile.rs`). One file changes per save;
+only the `save_tree` call is timed (the caller's entry vector is built outside the
+timer). Raw lines: `bench/results/2026-10-20-storage-v4-windows.json`. Medians are
+over the non-keyframe saves.
+
+### What was run, and what was not
+
+The real engine is far slower at 100,000 files than the prototype was: the seed
+save of 100,000 files took 373 s on Windows and a one-file save about 5 s. The
+100,000-file K = 128 run was done detached (no tool timeout): 400 saves, three of
+them keyframes, 53 minutes. What exists:
+
+| run | files | K | saves | committed |
+| --- | ---: | ---: | ---: | --- |
+| Windows, release, `timing` | 100,000 | 128 | 400 (3 keyframes) | yes, in the raw-lines file |
+| Windows, release, `timing` | 10,000 | 128 | 140 (1 keyframe) | earlier run, summarised below, not in the file |
+
+K = 8, 32 and 512 and all of Linux are not run. The 10,000-file column is kept as
+a scaling check only; the comparison against the prototype is the 100,000-file
+column. The 100,000-file run shared the machine with other jobs, so its tail
+(p95 15.6 s, slowest plain save 22.2 s) is noisier than the median.
+
+### Windows, K = 128
+
+| cell | prototype (100,000 files) | real, 100,000 files | real, 10,000 files |
+| --- | ---: | ---: | ---: |
+| save median, one file (ms) | 110.2 | 5,279 (48x) | 426.2 |
+| save p95 (ms) | 137.1 | 15,598 | 495.4 |
+| keyframe save median (ms) | 571 (slowest) | 5,470 (n = 3) | 510.7 (n = 1) |
+| disk per snapshot (bytes) | 93,655 | 210,360 | 20,977 |
+| `tree_at`, depth 0 / 64 / 127 (ms) | 78.4 / 82.4 / 83.4 | 84.3 / 82.6 / 78.5 | 11.3 / 9.8 / 12.9 |
+| `read_file_at`, depth 0 / 64 / 127 (ms) | 0.021 / 0.816 / 1.43 | 0.181 / 1.75 / 3.13 | 0.099 / 1.62 / 2.80 |
+
+Keyframe spike distribution at K = 128, 100,000 files: n = 3 keyframe saves
+(5,470, 19,050 and 4,658 ms), so median 5,470, p90 = p99 = max = 19,050 ms. Three
+samples is still a thin distribution (p90 and p99 coincide with the max); it is
+what a 400-save run at about 5 s per save affords, and `VELO_PROFILE_KEYFRAMES`
+raises it. The 19 s sample is a noisy-machine outlier of the same size as the
+slowest plain saves (22.2 s), so the keyframe is not distinguishable from
+ordinary save noise here: its median is within 4% of the plain median.
+
+Stage medians of a one-file save at 100,000 files (ms): `save_tree.objects`
+5,019.5, `insert_file_map` 154.7, `snapshot_id` 40.9, `validate` 35.8, `commit`
+0.25, `insert_rest` 0.07. Keyframe save: `objects` 4,457.6, `commit` 680.3,
+`insert_file_map` 380.0.
+
+### Cells more than 2x the prototype
+
+- **Save median: 5,279 ms against 110 ms (48x).** Stage: `save_tree.objects`, 95%
+  of the save. Every `TreeEntry::stored` entry is checked with `objects.contains`
+  (one filesystem existence check per file, about 50 microseconds on Windows) so
+  that a snapshot cannot name a missing object. The prototype used synthetic
+  hashes and never touched the object store. This is an O(files) cost the delta
+  rows do not remove; the id (`snapshot_id`, 41 ms) and the row writes are as
+  cheap as the prototype said.
+- **Save p95: 15,598 ms against 137 ms**, same cause, inflated by other load on
+  the machine.
+- **Keyframe save: 5,470 ms median, not above 2x its own plain save**, but
+  `commit` rises from 0.25 to 680 ms and `insert_file_map` is 2.5x. The
+  prototype's keyframe figure (571 ms) is not comparable at this size.
+- **`read_file_at`: 0.181 against 0.021 ms at depth 0 (8.6x), 1.75 against 0.816
+  at depth 64 (2.1x), 3.13 against 1.43 at depth 127 (2.2x).** The real path adds
+  snapshot lookups per hop; absolute cost stays under 4 ms.
+- `tree_at` is within the prototype (78 to 84 ms against 78 to 83). Disk per
+  snapshot is 2.2x the prototype (210 KB against 94 KB): the real keyframe row
+  set is larger and this run held three keyframes in 400 saves.
+
+### Commands for the owner
+
+Windows, 100,000 files (about 50 minutes for K = 128 with three keyframes; run one K at a time, and give VELO_PROFILE_OUT as an absolute path because the test runs from crates/velo-core):
+
+```
+VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_KEYFRAMES=3 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-windows.json cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1
+```
+
+Linux (ext4 path, as section 1 describes), 100,000 files:
+
+```
+wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=8,32,128,512 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-linux.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
+```
+
+### Cache the last tree (20.10)
+
+Tried: a single-entry cache on a long-lived `Repo` holding the tree it last wrote,
+keyed by snapshot id plus the `head_token` taken after the commit, so the next
+save passes it to `write_tree` (and seeds `save_changes`) instead of reading the
+parent tree back. Measured with the section 9 harness (`storage_v4_profile`,
+release, `timing`, K = 128, one file changed per save, `save_tree` with stored
+entries), cache on against the same build with the cache cleared before every
+save. Only 10,000 files were run: the machine was shared with other jobs and a
+100,000-file seed alone took over six minutes, so the 100,000-file column was not
+repeated. Windows only; Linux not run.
+
+| run (10,000 files) | saves | cache | median (ms) | p95 (ms) | `insert_file_map` (ms) | `objects` (ms) |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | 60 | cleared | 1,631 | 8,966 | 21.4 | 1,571 |
+| 1 | 60 | on | 888 | 946 | 5.3 | 866 |
+| 2 | 40 | cleared | 1,031 | 2,151 | 21.9 | 981 |
+| 2 | 40 | on | 1,033 | 1,169 | 5.2 | 1,008 |
+
+The cache does what it was meant to: the parent-tree read inside `insert_file_map`
+drops about 16 ms (4x), and building the map to remember costs 1.0 to 1.6 ms
+(`save_tree.remember`). But 95% of a one-file save in this harness is
+`save_tree.objects` (the per-entry existence check), whose run-to-run swing
+(866 to 1,571 ms between runs 1) is 50 times the saving. Run 2, the quieter pair,
+shows the whole-save median unchanged (1,031 against 1,033 ms); run 1's 2x gap is
+the objects stage, not the cache. At 100,000 files the same saving is the 54 to
+74 ms parent read against a 5,279 ms save, about 1%.
+
+Verdict: **reverted.** The brief's rule was to keep the cache only if the median
+save drops measurably, and it does not: the whole-save median is within noise of
+the cache-cleared run. The code and tests were removed; nothing remains but these
+numbers. The gain would show where the objects check is not paid (a
+`save_changes` loop that puts bytes, or a caller that skips the check), which the
+section 9 harness does not exercise and this run did not measure. The p95 column
+is dominated by the same noise and is not evidence either way.
+
+### Group commit for an agent loop (20.10)
+
+Question: would an opt-in batch (`begin_batch` ... `commit`, N snapshots in one
+SQLite transaction) make agent steps measurably cheaper? Group commit can only
+remove the per-snapshot commit, so the commit stage bounds what it can win.
+
+Measured with `profile_agent_workload` (release, `--features timing`, 1,000
+files, 200 steps, 1 to 20 files rewritten per step; shortened from 500 steps
+because of the time budget). Median per step, in milliseconds, for the
+`as_harness` variant (the other two variants agree on the commit stage to within
+0.12 ms). Raw output:
+[Windows](../bench/results/2026-10-20-windows-group-commit-agent.json),
+[Linux](../bench/results/2026-10-20-linux-group-commit-agent.json). Commands:
+
+```
+VELO_PROFILE_STEPS=200 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-windows-group-commit-agent.json cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1
+wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_STEPS=200 VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-linux-group-commit-agent.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1'
+```
+
+The Linux run is WSL2 on ext4 (`$HOME/velo-prof`).
+
+| stage | Windows (ms) | Windows share | Linux (ms) | Linux share |
+|---|---:|---:|---:|---:|
+| `save_tree.objects` | 64.7 | 88.5% | 1.49 | 30.0% |
+| `save_tree.insert_file_map` | 2.11 | 2.9% | 1.33 | 26.8% |
+| `save_tree.commit` | 0.34 | 0.5% | 0.090 | 1.8% |
+| whole step (median) | 73.1 | | 4.97 | |
+
+Per-step cost at batch size N is the one-by-one cost minus `commit x (N-1)/N`.
+Windows: N = 1: 73.1 ms (unchanged by construction), N = 8: about 72.8 ms
+(-0.30 ms, 0.4%), N = 32: about 72.8 ms (-0.33 ms, 0.5%). Linux: N = 1: 4.97 ms,
+N = 8: about 4.89 ms (-0.079 ms, 1.6%), N = 32: about 4.88 ms (-0.087 ms, 1.8%).
+These are upper bounds derived from the measured commit stage, not runs of a
+batch API, because none was built. Windows step-to-step noise (p95 127 ms
+against a median of 73 ms) is more than 300 times the saving; Linux p95 is 12.7
+ms against a 4.97 ms median, about 90 times the saving.
+
+The earlier Linux figure (`perf-2026-10-16-linux.json`, `save_tree.commit` 82.8
+ms of a 93 ms step) predates storage v4. On v4 the Linux commit also collapsed,
+from 82.8 ms to 0.090 ms, as it did on Windows (134.8 ms to 0.39 ms), and the
+Linux step fell from 93 ms to 5.0 ms.
+
+Verdict: **group commit is not needed and was not built**, on both platforms.
+The commit is 0.5% of a Windows step and 1.8% of a Linux step, so a batch could
+not move either; no `begin_batch`, no `batch.before_commit` failpoint, no change
+to the crash window, and nothing to bind. On Linux the step is now spread over
+object checks (30%) and the file-map insert (27%), neither of which a batch
+touches. The 500-step totals in section 6 were not re-run for this section: the
+Windows figure is 19.4 s against shadow git's 210.5 s, and the Linux 200-step
+run above took 1.44 s of timed work.

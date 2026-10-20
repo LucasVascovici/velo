@@ -12,6 +12,7 @@ use crate::Repo;
 const SNAPSHOTS: usize = 150;
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();

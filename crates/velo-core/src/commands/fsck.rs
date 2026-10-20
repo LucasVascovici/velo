@@ -90,6 +90,21 @@ pub enum Problem {
         snapshot: String,
         public_key: String,
     },
+    /// A delta snapshot is based on a snapshot that is in neither history nor
+    /// the trash, so its tree cannot be rebuilt.
+    DeltaBaseMissing { snapshot: String, base: String },
+    /// A delta snapshot's base is not its first parent. A delta is always
+    /// against the first parent, so the stored chain does not match history.
+    DeltaBaseNotFirstParent {
+        snapshot: String,
+        base: String,
+        parent: String,
+    },
+    /// A delta snapshot is on a cycle of delta bases and has no keyframe.
+    DeltaCycle { snapshot: String },
+    /// A delta snapshot also has keyframe rows. Readers use the delta; the
+    /// rows are a second, possibly different, tree.
+    StorageMismatch { snapshot: String },
 }
 
 impl Problem {
@@ -224,6 +239,37 @@ impl fmt::Display for Problem {
                 &public_key[..16.min(public_key.len())],
                 &snapshot[..16.min(snapshot.len())]
             ),
+            Problem::DeltaBaseMissing { snapshot, base } => write!(
+                f,
+                "snapshot {} is stored as a delta on {}, which does not exist",
+                &snapshot[..16.min(snapshot.len())],
+                &base[..16.min(base.len())]
+            ),
+            Problem::DeltaBaseNotFirstParent {
+                snapshot,
+                base,
+                parent,
+            } => write!(
+                f,
+                "snapshot {} is stored as a delta on {}, but its first parent is {}",
+                &snapshot[..16.min(snapshot.len())],
+                &base[..16.min(base.len())],
+                if parent.is_empty() {
+                    "absent"
+                } else {
+                    &parent[..16.min(parent.len())]
+                }
+            ),
+            Problem::DeltaCycle { snapshot } => write!(
+                f,
+                "snapshot {} is on a cycle of delta bases and has no keyframe",
+                &snapshot[..16.min(snapshot.len())]
+            ),
+            Problem::StorageMismatch { snapshot } => write!(
+                f,
+                "snapshot {} is stored both as a delta and as a keyframe",
+                &snapshot[..16.min(snapshot.len())]
+            ),
         }
     }
 }
@@ -253,6 +299,15 @@ pub enum Cruft {
     /// Signature rows naming a snapshot that is in neither history nor the
     /// trash. Nothing can ever show them; `--repair` removes them.
     OrphanSignatures(usize),
+    /// Delta rows with no delta record, plus delta snapshots in neither
+    /// history nor the trash. `--repair` removes what nothing is based on;
+    /// an orphan delta that others are based on stays (the fold of a later
+    /// gc settles it), so this can remain after a repair.
+    OrphanDeltaRows(usize),
+    /// Delta snapshots deeper than a writer would ever leave them (more than
+    /// `KEYFRAME_INTERVAL - 1` links from their keyframe). Correct, only
+    /// slower to read; a repair never shortens chains.
+    OverlongChains(usize),
 }
 
 impl Cruft {
@@ -282,6 +337,15 @@ impl Cruft {
             Cruft::OrphanSignatures(n) => {
                 format!("{} signature(s) on snapshots that no longer exist", n)
             }
+            Cruft::OrphanDeltaRows(n) => format!(
+                "{} orphan delta row(s) or delta snapshot(s) (those others are based on stay after --repair)",
+                n
+            ),
+            Cruft::OverlongChains(n) => format!(
+                "{} delta snapshot(s) more than {} links from their keyframe (--repair does not shorten chains)",
+                n,
+                crate::tree_store::KEYFRAME_INTERVAL - 1
+            ),
         }
     }
 
@@ -300,6 +364,13 @@ impl Cruft {
             Cruft::UnreferencedChunks(n) => format!("removed {} unreferenced chunk file(s)", n),
             Cruft::DuplicateFileMapRows(n) => format!("removed {} duplicate tree row(s)", n),
             Cruft::OrphanSignatures(n) => format!("removed {} orphaned signature(s)", n),
+            Cruft::OrphanDeltaRows(n) => {
+                format!(
+                    "removed orphan delta storage (of {} item(s); any others are based on)",
+                    n
+                )
+            }
+            Cruft::OverlongChains(n) => format!("{} overlong delta chain(s) left as they are", n),
         }
     }
 }
@@ -417,8 +488,44 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     // ── 2. Snapshots: parents resolve; content-addressed ids recompute ────────
     let all_snaps = all_snapshots(conn)?;
     let before = problems.len();
-    let (ids_verified, ids_legacy, duplicate_rows) =
-        check_snapshots(conn, &all_snaps, &mut problems)?;
+    let SnapshotScan {
+        verified: mut ids_verified,
+        legacy: ids_legacy,
+        duplicate_rows,
+        storage_fixes,
+    } = check_snapshots(conn, &all_snaps, &mut problems)?;
+    if let Some(g) = guard {
+        // A snapshot stored both ways, where one way reproduces its id, is
+        // settled by keeping that one; the finding goes with the fix.
+        for fix in &storage_fixes {
+            match fix {
+                StorageFix::DropKeyframeRows(s) => {
+                    crate::tree_store::drop_keyframe_rows(g.conn(), s)?
+                }
+                StorageFix::DropDelta(s) => crate::tree_store::drop_delta(g.conn(), s)?,
+            }
+        }
+        problems.retain(|p| match p {
+            Problem::StorageMismatch { snapshot } => !storage_fixes.iter().any(|f| match f {
+                StorageFix::DropKeyframeRows(s) | StorageFix::DropDelta(s) => s == snapshot,
+            }),
+            // A dropped delta is what failed to reproduce the id (or could not
+            // be rebuilt at all); with it gone the finding no longer holds.
+            Problem::IdMismatch { snapshot, .. }
+            | Problem::DeltaCycle { snapshot }
+            | Problem::DeltaBaseMissing { snapshot, .. }
+            | Problem::DeltaBaseNotFirstParent { snapshot, .. } => !storage_fixes
+                .iter()
+                .any(|f| matches!(f, StorageFix::DropDelta(s) if s == snapshot)),
+            _ => true,
+        });
+        // Their keyframe rows were proven to reproduce the id, so they count
+        // as verified, as a fresh check would.
+        ids_verified += storage_fixes
+            .iter()
+            .filter(|f| matches!(f, StorageFix::DropDelta(_)))
+            .count();
+    }
     check_signatures(conn, &mut problems)?;
     sections.push(Section::Snapshots {
         checked: all_snaps.len(),
@@ -456,20 +563,40 @@ fn inspect(repo: &Repo, guard: Option<&WriteGuard>) -> Result<Report> {
     if !orphan_chunks.is_empty() {
         found.push(Cruft::UnreferencedChunks(orphan_chunks.len()));
     }
+    let orphan_deltas = crate::tree_store::orphan_delta_rows(conn)?
+        + crate::tree_store::orphan_delta_snapshots(conn)?;
+    if orphan_deltas > 0 {
+        found.push(Cruft::OrphanDeltaRows(orphan_deltas));
+    }
+    let overlong =
+        crate::tree_store::overlong_chains(conn, crate::tree_store::KEYFRAME_INTERVAL - 1)?;
+    if overlong > 0 {
+        found.push(Cruft::OverlongChains(overlong));
+    }
+    // Chains are never shortened by a repair, so that cruft always stays.
+    let (mut persistent, fixable): (Vec<Cruft>, Vec<Cruft>) = found
+        .iter()
+        .cloned()
+        .partition(|c| matches!(c, Cruft::OverlongChains(_)));
     let repaired = match guard {
-        Some(g) if !found.is_empty() => {
-            repair_cruft(g.conn(), &found)?;
+        Some(g) if !fixable.is_empty() => {
+            repair_cruft(g.conn(), &fixable)?;
             for chunk in &orphan_chunks {
                 objects.remove_chunk(chunk)?;
             }
-            found.clone()
+            fixable.clone()
         }
         _ => Vec::new(),
     };
-    let cruft = if repaired.is_empty() {
+    let cruft = if guard.is_none() {
         found
     } else {
-        Vec::new() // cleaned
+        // Orphan deltas something is based on survive the repair.
+        let left = crate::tree_store::orphan_delta_snapshots(conn)?;
+        if left > 0 {
+            persistent.push(Cruft::OrphanDeltaRows(left));
+        }
+        persistent
     };
     sections.push(Section::State {
         outstanding: cruft.len(),
@@ -569,15 +696,7 @@ fn check_objects(
 
 /// Every object hash the database points at, from file maps and conflict blobs.
 fn referenced_objects(conn: &rusqlite::Connection) -> Result<HashSet<String>> {
-    let mut referenced: HashSet<String> = {
-        let mut stmt = conn.prepare("SELECT DISTINCT hash FROM file_map")?;
-        let set: HashSet<String> = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
-            .filter_map(|r| r.ok())
-            .filter(|h| !h.is_empty())
-            .collect();
-        set
-    };
+    let mut referenced: HashSet<String> = crate::tree_store::referenced_objects(conn)?;
     // Conflict sidecars reference objects too.
     let mut stmt =
         conn.prepare("SELECT ancestor_hash, our_hash, their_hash FROM conflict_files")?;
@@ -637,7 +756,7 @@ fn check_snapshots(
     conn: &rusqlite::Connection,
     all_snaps: &HashSet<String>,
     problems: &mut Vec<Problem>,
-) -> Result<(usize, usize, usize)> {
+) -> Result<SnapshotScan> {
     use rayon::prelude::*;
 
     let mut stmt = conn.prepare(
@@ -744,54 +863,69 @@ fn check_snapshots(
     };
 
     let mut seen: HashSet<usize> = HashSet::new();
-    let mut stmt = conn
-        .prepare("SELECT snapshot_hash, path, hash, mode FROM file_map ORDER BY snapshot_hash")?;
-    let mut scan = stmt.query([])?;
     let mut batch: Vec<TreeRows> = Vec::with_capacity(ID_BATCH);
-    let mut current: Option<(String, Vec<TreeRow>)> = None;
-    while let Some(row) = scan.next()? {
-        let (Ok(snap), Ok(path), Ok(hash), Ok(mode)) = (
-            row.get::<_, String>(0),
-            row.get::<_, String>(1),
-            row.get::<_, String>(2),
-            row.get::<_, i64>(3),
-        ) else {
-            continue;
-        };
-        if current.as_ref().is_some_and(|(s, _)| *s != snap) {
-            if let Some((done, rows)) = current.take() {
-                let want = wanted.get(done.as_str()).copied();
-                seen.extend(want);
-                batch.push(TreeRows { wanted: want, rows });
-            }
+    // Delta trees come out of the same ordered scan, rebuilt from their
+    // keyframe; the ones it could not reach (a cycle, a missing base, or
+    // below either) have no tree to hash and are reported by `check_deltas`.
+    let unreached: HashSet<String> =
+        crate::tree_store::for_each_tree_in_order(conn, |done, rows| {
+            let want = wanted.get(done.as_str()).copied();
+            seen.extend(want);
+            batch.push(TreeRows { wanted: want, rows });
             if batch.len() >= ID_BATCH {
                 absorb(process(&mut batch));
             }
-        }
-        match &mut current {
-            Some((_, rows)) => rows.push((path, hash, mode)),
-            None => current = Some((snap, vec![(path, hash, mode)])),
-        }
-    }
-    if let Some((done, rows)) = current.take() {
-        let want = wanted.get(done.as_str()).copied();
-        seen.extend(want);
-        batch.push(TreeRows { wanted: want, rows });
-    }
+            Ok(())
+        })?
+        .into_iter()
+        .collect();
     absorb(process(&mut batch));
-    drop(scan);
-    drop(stmt);
 
     // A snapshot with no rows at all still has an id to check: the empty tree's.
     let mut empty: Vec<TreeRows> = wanted
-        .values()
-        .filter(|i| !seen.contains(i))
+        .iter()
+        .filter(|(h, i)| !seen.contains(i) && !unreached.contains(**h))
+        .map(|(_, i)| i)
         .map(|&i| TreeRows {
             wanted: Some(i),
             rows: Vec::new(),
         })
         .collect();
     absorb(process(&mut empty));
+
+    // Delta storage: a snapshot stored both ways is settled by whichever
+    // representation reproduces its id (never by guessing).
+    let mut storage_problems: Vec<Problem> = Vec::new();
+    let mut storage_fixes: Vec<StorageFix> = Vec::new();
+    for snap in crate::tree_store::delta_snapshots_with_keyframe_rows(conn)? {
+        storage_problems.push(Problem::StorageMismatch {
+            snapshot: snap.clone(),
+        });
+        let Some(&i) = wanted.get(snap.as_str()) else {
+            continue;
+        };
+        if !mismatch.contains_key(&i) && !unreached.contains(&snap) {
+            storage_fixes.push(StorageFix::DropKeyframeRows(snap));
+            continue;
+        }
+        if crate::tree_store::has_dependants(conn, &snap)? {
+            continue;
+        }
+        let kf = crate::tree_store::keyframe_rows(conn, &snap)?;
+        let tree: Vec<TreeRow> = kf.into_iter().map(|(p, (h, m))| (p, h, m)).collect();
+        let (hash, message, _, parent, merge_parent, created_at_ms) = &snaps[i];
+        let id = crate::commands::snapshot_id(crate::commands::SnapshotIdentity {
+            tree: &tree,
+            parent,
+            merge_parent,
+            message,
+            timestamp_ms: *created_at_ms,
+            meta: metas.get(hash).unwrap_or(&no_meta),
+        });
+        if &id == hash {
+            storage_fixes.push(StorageFix::DropDelta(snap));
+        }
+    }
 
     let mut verified = 0usize;
     let mut legacy = 0usize;
@@ -823,7 +957,9 @@ fn check_snapshots(
             });
         }
 
-        if wanted.contains_key(hash.as_str()) {
+        if unreached.contains(hash) {
+            // No tree could be built; the delta checks below say why.
+        } else if wanted.contains_key(hash.as_str()) {
             match mismatch.remove(&i) {
                 None => verified += 1,
                 Some(recomputed) => problems.push(Problem::IdMismatch {
@@ -837,7 +973,97 @@ fn check_snapshots(
             legacy += 1;
         }
     }
-    Ok((verified, legacy, duplicate_rows))
+    check_deltas(conn, all_snaps, &trash, &snaps, problems)?;
+    problems.extend(storage_problems);
+    Ok(SnapshotScan {
+        verified,
+        legacy,
+        duplicate_rows,
+        storage_fixes,
+    })
+}
+
+/// What [`check_snapshots`] found out beyond the problems it pushed.
+struct SnapshotScan {
+    /// Ids that recomputed correctly.
+    verified: usize,
+    /// Ids too old to verify.
+    legacy: usize,
+    /// Exact-duplicate `file_map` rows.
+    duplicate_rows: usize,
+    /// Settlements `--repair` may apply to snapshots stored both ways.
+    storage_fixes: Vec<StorageFix>,
+}
+
+/// How `--repair` settles a snapshot stored as a delta and a keyframe.
+enum StorageFix {
+    /// The delta reproduces the id: drop the stray keyframe rows.
+    DropKeyframeRows(String),
+    /// Only the keyframe rows do, and nothing is based on the delta.
+    DropDelta(String),
+}
+
+/// The shape of the delta chains: every base exists, is the first parent, and
+/// the chain reaches a keyframe. Sorted by snapshot, so the report is stable.
+fn check_deltas(
+    conn: &rusqlite::Connection,
+    all_snaps: &HashSet<String>,
+    trash: &HashMap<String, String>,
+    snaps: &[SnapRow],
+    problems: &mut Vec<Problem>,
+) -> Result<()> {
+    let links = crate::tree_store::delta_links(conn)?;
+    if links.is_empty() {
+        return Ok(());
+    }
+    // First parents of live and trashed snapshots.
+    let mut first_parents: HashMap<&str, &str> =
+        snaps.iter().map(|s| (s.0.as_str(), s.3.as_str())).collect();
+    let mut stmt = conn.prepare("SELECT hash, parent_hash FROM trash")?;
+    let trashed: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+        .filter_map(|r| r.ok())
+        .collect();
+    drop(stmt);
+    for (h, p) in &trashed {
+        first_parents.insert(h.as_str(), p.as_str());
+    }
+    let base_of: HashMap<&str, &str> = links
+        .iter()
+        .map(|(s, b)| (s.as_str(), b.as_str()))
+        .collect();
+    for (snap, base) in &links {
+        if !all_snaps.contains(base) && !trash.contains_key(base) {
+            problems.push(Problem::DeltaBaseMissing {
+                snapshot: snap.clone(),
+                base: base.clone(),
+            });
+        }
+        if let Some(parent) = first_parents.get(snap.as_str()) {
+            if crate::tree_store::first_parent(parent) != Some(base.as_str()) {
+                problems.push(Problem::DeltaBaseNotFirstParent {
+                    snapshot: snap.clone(),
+                    base: base.clone(),
+                    parent: parent.to_string(),
+                });
+            }
+        }
+        // On a cycle when walking the bases comes back to this snapshot.
+        let mut cur = base.as_str();
+        for _ in 0..crate::tree_store::MAX_CHAIN_LINKS {
+            if cur == snap {
+                problems.push(Problem::DeltaCycle {
+                    snapshot: snap.clone(),
+                });
+                break;
+            }
+            match base_of.get(cur) {
+                Some(next) => cur = next,
+                None => break,
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Verify every `snapshot_hash` in `table` points at a live snapshot.
@@ -922,12 +1148,9 @@ fn check_renames(conn: &rusqlite::Connection, problems: &mut Vec<Problem>) -> Re
 }
 
 fn tracks(conn: &rusqlite::Connection, snapshot: &str, path: &str) -> bool {
-    conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM file_map WHERE snapshot_hash = ? AND path = ?)",
-        rusqlite::params![snapshot, path],
-        |r| r.get(0),
-    )
-    .unwrap_or(false)
+    crate::tree_store::file_at(conn, snapshot, path)
+        .map(|e| e.is_some())
+        .unwrap_or(false)
 }
 
 /// Every stored signature must verify against the snapshot id it names. A bad
@@ -1093,12 +1316,7 @@ fn repair_cruft(conn: &rusqlite::Connection, cruft: &[Cruft]) -> Result<()> {
                 )?;
             }
             Cruft::DuplicateFileMapRows(_) => {
-                conn.execute(
-                    "DELETE FROM file_map WHERE rowid NOT IN
-                       (SELECT MIN(rowid) FROM file_map
-                        GROUP BY snapshot_hash, path, hash, mode)",
-                    [],
-                )?;
+                crate::tree_store::remove_duplicate_rows(conn)?;
             }
             Cruft::OrphanSignatures(_) => {
                 conn.execute(
@@ -1109,6 +1327,10 @@ fn repair_cruft(conn: &rusqlite::Connection, cruft: &[Cruft]) -> Result<()> {
                 )?;
             }
             // Files, not rows: removed by the caller, which holds the list.
+            Cruft::OrphanDeltaRows(_) => {
+                crate::tree_store::delete_orphan_delta_trees(conn)?;
+            }
+            Cruft::OverlongChains(_) => {}
             Cruft::UnreferencedChunks(_) => {}
         }
     }

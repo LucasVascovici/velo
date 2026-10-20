@@ -112,7 +112,36 @@ pub(crate) fn list() -> Vec<Value> {
                 "max_bytes": {"type": "integer", "minimum": 1, "default": READ_FILES_DEFAULT_MAX_BYTES, "description": "Most bytes to return in total across all files."}
             }), json!(["snapshot", "paths"]))
         }),
+        json!({
+            "name": "velo_repack",
+            "description": "Convert stored full snapshots into deltas so an existing repository shrinks. Rewrites no history and changes no snapshot id; it runs in short transactions and can be repeated. With dry_run=true nothing is written and bytes_after is an estimate (a lower bound on the saving). Returns snapshots_converted, keyframes_kept, chains_shortened, rows_before, rows_after, bytes_before, bytes_after and dry_run.",
+            "inputSchema": obj_schema(json!({
+                "dry_run": {"type": "boolean", "default": false, "description": "Report what would be converted and saved, and write nothing."}
+            }), json!([]))
+        }),
     ]
+}
+
+pub(crate) fn repack_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let dry_run = match args.get("dry_run") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        Some(_) => return Err(bad("'dry_run' must be a boolean")),
+    };
+    // Repack takes the write lock itself, a chunk at a time, so none is held here.
+    let mut options = velo_core::commands::repack::Options::default();
+    options.dry_run = dry_run;
+    let done = velo_core::commands::repack::run(ctx.repo, options)?;
+    Ok(json!({
+        "snapshots_converted": done.snapshots_converted,
+        "keyframes_kept": done.keyframes_kept,
+        "chains_shortened": done.chains_shortened,
+        "rows_before": done.rows_before,
+        "rows_after": done.rows_after,
+        "bytes_before": done.bytes_before,
+        "bytes_after": done.bytes_after,
+        "dry_run": done.dry_run,
+    }))
 }
 
 fn kind_name(k: FileKind) -> &'static str {

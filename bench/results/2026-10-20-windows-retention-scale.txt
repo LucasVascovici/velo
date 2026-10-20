@@ -1,0 +1,36 @@
+    Finished `release` profile [optimized] target(s) in 2m 50s
+     Running unittests src\lib.rs (C:/Users/lvi/Documents/velo/target-lane2\release\deps\velo_core-9aa9dc6e2a421432.exe)
+
+running 1 test
+test tests::retention_scale::default_policy_at_a_reduced_18_10_shape has been running for over 60 seconds
+--- retention at scale: 2000 files x 400 snapshots over 60 days ---
+build: 232.9378336s
+retention::apply (default policy): 11.8302589s, examined 400, removed 170
+gc: 962.7183ms
+gc::vacuum(Incremental): 4.8518167s, auto_vacuum Incremental, 221429760 -> 132268032 bytes
+before: 400 snapshots, 800000 file_map rows, velo.db 221429760 bytes on disk,              page_count*page_size 221429760 bytes (0 bytes on the freelist)
+after retention: 230 snapshots, 460000 file_map rows, velo.db 221429760 bytes on disk,              page_count*page_size 221429760 bytes (89055232 bytes on the freelist)
+after gc: 230 snapshots, 460000 file_map rows, velo.db 221429760 bytes on disk,              page_count*page_size 221429760 bytes (89055232 bytes on the freelist)
+after vacuum: 230 snapshots, 460000 file_map rows, velo.db 132268032 bytes on disk,              page_count*page_size 132268032 bytes (0 bytes on the freelist)
+--- stage laps: retention::apply ---
+lap retention.chain 10.5078ms
+lap retention.dependants 394µs
+lap retention.classify 18.3721ms
+lap compact.chain 12.0215ms
+lap compact.eligibility 9.9179ms
+lap compact.plan 1.1838294s
+lap compact.delete 2.2774086s
+lap compact.insert 3.3995402s
+lap compact.refs 15.7781ms
+lap compact.commit 4.8994055s
+--- stage laps: gc ---
+test tests::retention_scale::default_policy_at_a_reduced_18_10_shape ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 964 filtered out; finished in 252.61s
+
+     Running tests\corpus.rs (C:/Users/lvi/Documents/velo/target-lane2\release\deps\corpus-60752c39ac56cf8f.exe)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 10 filtered out; finished in 0.00s
+

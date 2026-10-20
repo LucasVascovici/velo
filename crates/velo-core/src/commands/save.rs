@@ -327,18 +327,11 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     // files. Carrying from PARENT rather than the effective parent is what keeps
     // an amend from dropping files the replaced snapshot introduced.
     let modified_paths: HashSet<&str> = hashed_files.iter().map(|(p, _, _)| p.as_str()).collect();
+    let parent_tree = crate::tree_store::tree_of(conn, parent_hash.trim())?;
     let mut tree: Vec<(String, String, i64)> = {
-        let mut stmt =
-            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-        let carried: Vec<(String, String, i64)> = stmt
-            .query_map([parent_hash.trim()], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
+        let carried: Vec<(String, String, i64)> = parent_tree
+            .iter()
+            .map(|(p, (h, m))| (p.clone(), h.clone(), *m))
             .filter(|(p, _, _)| {
                 !modified_paths.contains(p.as_str())
                     && dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
@@ -375,7 +368,7 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
         snapshot_meta.set_author(author);
     }
 
-    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let timestamp_ms = guard.repo().now_ms();
     let snapshot_hash = crate::commands::snapshot_id(SnapshotIdentity {
         tree: &tree,
         parent: effective_parent.trim(),
@@ -394,7 +387,11 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
 
     // If amending, delete the old snapshot and its file_map first
     if let Some((old_hash, _)) = &amend_hash {
-        tx.execute("DELETE FROM file_map WHERE snapshot_hash = ?", [old_hash])?;
+        crate::tree_store::remove_trees_by_parent(
+            &tx,
+            &[old_hash.as_str()],
+            guard.repo().keyframe_interval(),
+        )?;
         tx.execute("DELETE FROM snapshots   WHERE hash = ?", [old_hash])?;
         // Also remove from trash (shouldn't be there, but be safe)
         tx.execute("DELETE FROM trash WHERE hash = ?", [old_hash])?;
@@ -415,12 +412,20 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     crate::timing::lap("save.begin_tx");
 
     {
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+        let rows: Vec<(&str, &str, i64)> = tree
+            .iter()
+            .map(|(p, h, m)| (p.as_str(), h.as_str(), *m))
+            .collect();
+        crate::tree_store::write_tree(
+            &tx,
+            snapshot_hash,
+            crate::tree_store::first_parent(&effective_parent),
+            // `parent_tree` is PARENT's; for an amend the first parent is the
+            // replaced snapshot's own parent, so write_tree loads that one.
+            (effective_parent.trim() == parent_hash.trim()).then_some(&parent_tree),
+            &rows,
+            guard.repo().keyframe_interval(),
         )?;
-        for (p, h, m) in &tree {
-            ins.execute(params![snapshot_hash, p, h, m])?;
-        }
     }
     crate::timing::lap("save.insert_file_map");
     {

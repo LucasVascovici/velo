@@ -11,6 +11,12 @@ const DAY: i64 = 24 * HOUR;
 const NOW: i64 = 100 * DAY;
 
 fn setup() -> (TempDir, Repo) {
+    setup_k(1)
+}
+
+/// A repository at keyframe interval `k`; 1 stores every tree whole.
+fn setup_k(k: u32) -> (TempDir, Repo) {
+    crate::repo::set_test_keyframe_interval(k);
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
@@ -33,10 +39,17 @@ fn history(repo: &Repo, stamps: &[i64]) -> Vec<SnapshotId> {
                 parent: ids.last(),
                 merge_parent: None,
                 message: &format!("step {ts}"),
-                entries: vec![TreeEntry::file(
-                    "f.txt",
-                    format!("unique body {i} {ts}\n").into_bytes(),
-                )],
+                // Stable files beside the one that changes, so a delta against
+                // the previous snapshot is smaller than a keyframe.
+                entries: (0..6)
+                    .map(|n| {
+                        TreeEntry::file(format!("s{n}.txt"), format!("stable {n}\n").into_bytes())
+                    })
+                    .chain(std::iter::once(TreeEntry::file(
+                        "f.txt",
+                        format!("unique body {i} {ts}\n").into_bytes(),
+                    )))
+                    .collect(),
                 meta: SnapshotMeta::new(),
                 author: None,
                 timestamp_ms: Some(*ts),
@@ -254,4 +267,52 @@ fn gc_after_retention_reclaims_objects() {
     }
     assert!(objects() < before, "{} !< {before}", objects());
     healthy(&repo);
+}
+
+#[test]
+fn retention_at_k2_and_k3_keeps_trees_and_bounds_chains() {
+    let mut runs = Vec::new();
+    for k in [1u32, 2, 3] {
+        let (_t, repo) = setup_k(k);
+        let ids = history(&repo, &spaced(NOW - 3 * DAY, 5 * 60_000, 12));
+        let name: TagName = "v1".parse().unwrap();
+        tag::create(&repo.write().unwrap(), &name, Some(&ids[4]), false).unwrap();
+        apply(&repo, false).unwrap();
+        let rows: Vec<String> = {
+            let mut stmt = repo
+                .conn()
+                .prepare("SELECT hash FROM snapshots ORDER BY created_at_ms")
+                .unwrap();
+            stmt.query_map([], |r| r.get(0))
+                .unwrap()
+                .collect::<Result<_, _>>()
+                .unwrap()
+        };
+        let trees: Vec<_> = rows
+            .iter()
+            .map(|h| {
+                (
+                    h.clone(),
+                    crate::tree_store::tree_of(repo.conn(), h).unwrap(),
+                )
+            })
+            .collect();
+        let links: std::collections::HashMap<String, String> =
+            crate::tree_store::delta_links(repo.conn())
+                .unwrap()
+                .into_iter()
+                .collect();
+        for s in links.keys() {
+            let (mut cur, mut d) = (s, 0u32);
+            while let Some(b) = links.get(cur) {
+                cur = b;
+                d += 1;
+            }
+            assert!(d < k, "chain {d} at K={k}");
+        }
+        healthy(&repo);
+        runs.push(trees);
+    }
+    assert_eq!(runs[0], runs[1]);
+    assert_eq!(runs[0], runs[2]);
 }

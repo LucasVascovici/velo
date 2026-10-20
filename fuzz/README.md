@@ -13,6 +13,7 @@ panic, an abort, an out-of-memory or a timeout is a finding.
 | `git_import` | a `git fast-export` stream |
 | `tree_paths` | tree paths, one per line, through the path rule |
 | `snapshot_ids` | snapshot ids, object hashes, branch and tag names, public keys |
+| `delta_table` | records overwriting the stored delta tables of a small repository, then every tree read |
 
 Seeds live in `fuzz/seeds/<target>/`. The bundle seeds are the golden corpus in
 `tests/corpus/bundles`.

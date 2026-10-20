@@ -124,6 +124,13 @@ pub fn apply_file(dest: &Path, mode: i64, content: &[u8]) -> Result<()> {
         return Ok(());
     }
 
+    // `fs::write` follows a symlink already at `dest`, so a file that replaces
+    // a link would be written into the link's target instead: wherever it
+    // points, even outside the tree, and in a racing order when two links share
+    // a target. The link itself is what the restore replaces.
+    if fs::symlink_metadata(dest).is_ok_and(|m| m.file_type().is_symlink()) {
+        fs::remove_file(dest).map_err(VeloError::Io)?;
+    }
     fs::write(dest, content).map_err(VeloError::Io)?;
 
     #[cfg(unix)]

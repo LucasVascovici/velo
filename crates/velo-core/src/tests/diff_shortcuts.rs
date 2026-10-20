@@ -7,6 +7,7 @@ use crate::commands::{self, diff, save};
 use crate::{Repo, SnapshotId};
 
 fn setup() -> (TempDir, Repo) {
+    crate::repo::keyframes_only();
     let tmp = TempDir::new().unwrap();
     commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();

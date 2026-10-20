@@ -101,8 +101,11 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
     let parent_hash = parent_hash.trim().to_string();
 
-    let shelf_name =
-        name.unwrap_or_else(|| format!("stash-{}", Utc::now().format("%Y%m%d-%H%M%S")));
+    let shelf_name = name.unwrap_or_else(|| {
+        // The repository's clock, so a pinned clock gives a stable name.
+        let at = super::timestamp_from_ms(guard.repo().now_ms());
+        format!("stash-{}", at.format("%Y%m%d-%H%M%S"))
+    });
 
     let taken: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM stash WHERE name = ?)",
@@ -130,23 +133,21 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
     // The shelf's tree: unchanged files carried from the parent, plus the freshly
     // hashed dirty ones. Deleted files are simply absent, which is what records
     // the deletion.
+    let parent_tree = crate::tree_store::tree_of(conn, &parent_hash)?;
     let mut tree: Vec<(String, String, i64)> = {
-        let mut stmt =
-            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-        let carried: Vec<(String, String, i64)> = stmt
-            .query_map([&parent_hash], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-            .filter_map(|r| r.ok())
+        parent_tree
+            .iter()
+            .map(|(p, (h, m))| (p.clone(), h.clone(), *m))
             .filter(|(p, _, _): &(String, String, i64)| {
                 dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
                     && !hashed.iter().any(|(hp, _, _)| hp == p)
             })
-            .collect();
-        carried
+            .collect()
     };
     tree.extend(hashed.iter().cloned());
 
     let message = format!("stash: {}", shelf_name);
-    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let timestamp_ms = guard.repo().now_ms();
     let snapshot = crate::commands::snapshot_id(SnapshotIdentity {
         tree: &tree,
         parent: &parent_hash,
@@ -165,12 +166,18 @@ pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
         params![snapshot, message, parent_hash, timestamp_ms],
     )?;
     {
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+        let rows: Vec<(&str, &str, i64)> = tree
+            .iter()
+            .map(|(p, h, m)| (p.as_str(), h.as_str(), *m))
+            .collect();
+        crate::tree_store::write_tree(
+            &tx,
+            &snapshot,
+            crate::tree_store::first_parent(&parent_hash),
+            Some(&parent_tree),
+            &rows,
+            guard.repo().keyframe_interval(),
         )?;
-        for (p, h, m) in &tree {
-            ins.execute(params![snapshot, p, h, m])?;
-        }
     }
     tx.execute(
         "INSERT INTO stash (name, snapshot_hash, branch, parent_hash, created_at_ms)
@@ -288,7 +295,7 @@ pub fn pop(guard: &WriteGuard, name: Option<String>) -> Result<Popped> {
     let (restored, removed) = apply_tree(guard, &shelf)?;
 
     let tx = guard.transaction()?;
-    forget(&tx, &shelf)?;
+    forget(&tx, &shelf, guard.repo().keyframe_interval())?;
     tx.commit()?;
 
     Ok(Popped {
@@ -305,7 +312,7 @@ pub fn drop_shelf(guard: &WriteGuard, name: Option<String>) -> Result<String> {
     let conn = guard.conn();
     let shelf = find_shelf(conn, name)?;
     let tx = guard.transaction()?;
-    forget(&tx, &shelf)?;
+    forget(&tx, &shelf, guard.repo().keyframe_interval())?;
     tx.commit()?;
     Ok(shelf.name)
 }
@@ -319,24 +326,18 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
 
     // The mode is read alongside the hash so exec bits and symlinks survive a
     // round trip: this used to `fs::write` the bytes and drop the mode entirely.
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let files: Vec<(String, String, i64)> = stmt
-        .query_map([&shelf.snapshot], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
-        .filter_map(|r| r.ok())
+    let files: Vec<(String, String, i64)> = crate::tree_store::tree_of(conn, &shelf.snapshot)?
+        .into_iter()
+        .map(|(p, (h, m))| (p, h, m))
         .collect();
-    drop(stmt);
 
     // `pop` refused a dirty tree, so the working tree equals PARENT. Entries
     // identical to PARENT's are already on disk and are not rewritten.
     let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
-    let mut stmt = conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-    let on_disk: HashMap<String, (String, i64)> = stmt
-        .query_map([current_parent.trim()], |r| {
-            Ok((r.get::<_, String>(0)?, (r.get(1)?, r.get(2)?)))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
-    drop(stmt);
+    let on_disk: HashMap<String, (String, i64)> =
+        crate::tree_store::tree_of(conn, current_parent.trim())?
+            .into_iter()
+            .collect();
     let to_write: Vec<(String, String, i64)> = files
         .iter()
         .filter(|(p, h, m)| on_disk.get(p).map(|(oh, om)| (oh, om)) != Some((h, m)))
@@ -389,12 +390,9 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
     // before shelving, so popping has to delete it again. Without this the
     // deletion was silently lost: pop only ever wrote files.
     let shelved: HashMap<&str, ()> = files.iter().map(|(p, _, _)| (p.as_str(), ())).collect();
-    let mut stmt = conn.prepare("SELECT path FROM file_map WHERE snapshot_hash = ?")?;
-    let parent_paths: Vec<String> = stmt
-        .query_map([&shelf.parent], |r| r.get::<_, String>(0))?
-        .filter_map(|r| r.ok())
+    let parent_paths: Vec<String> = crate::tree_store::tree_of(conn, &shelf.parent)?
+        .into_keys()
         .collect();
-    drop(stmt);
 
     let mut removed = 0usize;
     for path in parent_paths {
@@ -416,12 +414,9 @@ fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
 }
 
 /// Delete a shelf's registration and the hidden snapshot behind it.
-fn forget(tx: &rusqlite::Transaction, shelf: &ShelfRow) -> Result<()> {
+fn forget(tx: &rusqlite::Transaction, shelf: &ShelfRow, k: u32) -> Result<()> {
     tx.execute("DELETE FROM stash WHERE name = ?", [&shelf.name])?;
-    tx.execute(
-        "DELETE FROM file_map WHERE snapshot_hash = ?",
-        [&shelf.snapshot],
-    )?;
+    crate::tree_store::remove_trees_by_parent(tx, &[shelf.snapshot.as_str()], k)?;
     tx.execute("DELETE FROM snapshots WHERE hash = ?", [&shelf.snapshot])?;
     Ok(())
 }

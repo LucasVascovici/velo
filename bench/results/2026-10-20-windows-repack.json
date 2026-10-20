@@ -1,0 +1,41 @@
+{
+  "date": "2026-10-20",
+  "platform": "Windows-11-10.0.22621-SP0 (NTFS, Defender assumed on)",
+  "task": "20.9-b reduced migrate + repack",
+  "build": {
+    "tool": "bench/scale/scale.py --files 10000 --snapshots 150 --keep, with velo 5.3.0 (pre-v4, every snapshot stores its whole tree)",
+    "result_file": "2026-10-20-windows-repack-build-5.3.0.json",
+    "file_map_rows": 1500150,
+    "velo_db_mib_before": 398.7,
+    "dot_velo_bytes_before": 419781344
+  },
+  "copy": "cp -r of the repository made before anything opened it with the new engine (kept as repo-copy)",
+  "migrate": {
+    "velo": "6.0.0",
+    "command": "velo branches (first open by the new engine)",
+    "wall_ms": 165
+  },
+  "repack_dry_run": {
+    "wall_s": 8.97,
+    "snapshots_to_convert": 148,
+    "keyframes_kept": 2,
+    "rows": "1500150 -> 20150",
+    "estimated": "398.7 MB -> 270.3 MB (a lower bound on the saving)"
+  },
+  "repack": {
+    "wall_s": 41.2,
+    "snapshots_converted": 148,
+    "keyframes_kept": 2,
+    "rows": "1500150 -> 20150",
+    "reported": "398.7 MB -> 7.5 MB, saved 410206208 bytes",
+    "dot_velo_bytes_after": 9595616,
+    "velo_db_bytes_after": 7864320
+  },
+  "verification": {
+    "fsck_repacked": "healthy (1.0 s)",
+    "fsck_copy": "healthy",
+    "ids": "150 snapshot ids on main identical between the copy and the repacked repository",
+    "trees": "tree_at of all 150 snapshots compared path by path against the copy through the Python binding: identical, 1,500,150 entries, 5.4 s",
+    "note": "the copy was opened by the new engine for the comparison, which migrates it (rewrites nothing); its ids and trees were taken from the unrepacked, full-tree rows"
+  }
+}

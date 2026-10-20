@@ -139,21 +139,12 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
     // message, and the oldest squashed snapshot's parent. Capture HEAD's tree
     // before touching the DB, then content-address the new snapshot.
     let tree: Vec<(String, String, i64)> = {
-        let mut stmt =
-            conn.prepare("SELECT path, hash, mode FROM file_map WHERE snapshot_hash = ?")?;
-        let collected = stmt
-            .query_map([head_hash.as_str()], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(2)?,
-                ))
-            })?
-            .filter_map(|r| r.ok())
-            .collect();
-        collected
+        crate::tree_store::tree_of(conn, head_hash.as_str())?
+            .into_iter()
+            .map(|(p, (h, m))| (p, h, m))
+            .collect()
     };
-    let timestamp_ms = crate::commands::snapshot_timestamp_ms();
+    let timestamp_ms = guard.repo().now_ms();
     let new_hash = crate::commands::snapshot_id(SnapshotIdentity {
         tree: &tree,
         parent: new_parent,
@@ -175,18 +166,31 @@ pub fn run(guard: &WriteGuard, count: usize, message: &str) -> Result<Outcome> {
 
     // Copy the captured tree into the new snapshot's file_map.
     {
-        let mut ins = tx.prepare(
-            "INSERT INTO file_map (snapshot_hash, path, hash, mode) VALUES (?, ?, ?, ?)",
+        let rows: Vec<(&str, &str, i64)> = tree
+            .iter()
+            .map(|(p, h, m)| (p.as_str(), h.as_str(), *m))
+            .collect();
+        crate::tree_store::write_tree(
+            &tx,
+            new_hash,
+            crate::tree_store::first_parent(new_parent),
+            // `tree` is HEAD's; the first parent is the range base.
+            None,
+            &rows,
+            guard.repo().keyframe_interval(),
         )?;
-        for (p, h, m) in &tree {
-            ins.execute(params![new_hash, p, h, m])?;
-        }
     }
 
     // Remove all squashed snapshots and their file maps
     // (Objects are left in the store; gc will clean them up)
+    // The trees go as one set: members are deltas on each other, and the
+    // never-orphan guard only lets a set leave together.
+    crate::tree_store::remove_trees_by_parent(
+        &tx,
+        &squashed_hashes,
+        guard.repo().keyframe_interval(),
+    )?;
     for h in &squashed_hashes {
-        tx.execute("DELETE FROM file_map  WHERE snapshot_hash = ?", [h])?;
         tx.execute("DELETE FROM snapshots WHERE hash = ?", [h])?;
     }
 

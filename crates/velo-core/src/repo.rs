@@ -43,9 +43,48 @@ pub struct Repo {
     /// Ceilings on what this handle will allocate for data received from
     /// elsewhere. Set via [`Repo::limited`].
     limits: crate::Limits,
+    /// How many links a stored delta chain may reach before a save writes a
+    /// keyframe; see [`crate::tree_store::KEYFRAME_INTERVAL`].
+    keyframe_interval: u32,
     /// Where bearer tokens for HTTP remotes come from, given a remote's URL.
     /// `None` sends no credentials. Set via [`Repo::credentials`].
     credentials: Option<Credentials>,
+    /// Tests only: a fixed clock for this handle, so two repositories driven in
+    /// lockstep mint the same snapshot ids. Per handle, never global.
+    #[cfg(test)]
+    pub(crate) test_now_ms: std::cell::Cell<Option<i64>>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static TEST_KEYFRAME_INTERVAL: std::cell::Cell<u32> =
+        const { std::cell::Cell::new(crate::tree_store::KEYFRAME_INTERVAL) };
+}
+
+/// Tests only: every repository opened by this test's thread from now on starts
+/// at K = 1, i.e. stores whole trees. For tests that inspect `file_map` or
+/// exercise operations that do not fold deltas yet.
+#[cfg(test)]
+pub(crate) fn keyframes_only() {
+    TEST_KEYFRAME_INTERVAL.with(|k| k.set(1));
+}
+
+/// Tests only: every repository opened by this test's thread from now on starts
+/// at K = `k`, so one body can run against several storage shapes.
+#[cfg(test)]
+pub(crate) fn set_test_keyframe_interval(k: u32) {
+    TEST_KEYFRAME_INTERVAL.with(|c| c.set(k));
+}
+
+fn initial_keyframe_interval() -> u32 {
+    #[cfg(test)]
+    {
+        TEST_KEYFRAME_INTERVAL.with(|k| k.get())
+    }
+    #[cfg(not(test))]
+    {
+        crate::tree_store::KEYFRAME_INTERVAL
+    }
 }
 
 /// A callback mapping a remote URL to the bearer token to present to it.
@@ -123,6 +162,16 @@ impl std::fmt::Debug for Repo {
 }
 
 impl Repo {
+    /// The wall clock for snapshot and trash stamps made through this handle.
+    /// Release builds read the real clock; tests may pin it per handle.
+    pub(crate) fn now_ms(&self) -> i64 {
+        #[cfg(test)]
+        if let Some(ms) = self.test_now_ms.get() {
+            return ms;
+        }
+        crate::commands::snapshot_timestamp_ms()
+    }
+
     /// Create a repository at `root`.
     ///
     /// Fails with [`Error::AlreadyInitialized`] if one exists there, or
@@ -171,6 +220,9 @@ impl Repo {
             object_location,
             lock_label: None,
             limits: crate::Limits::default(),
+            keyframe_interval: initial_keyframe_interval(),
+            #[cfg(test)]
+            test_now_ms: std::cell::Cell::new(None),
         })
     }
 
@@ -222,6 +274,9 @@ impl Repo {
             object_location,
             lock_label: None,
             limits: crate::Limits::default(),
+            keyframe_interval: initial_keyframe_interval(),
+            #[cfg(test)]
+            test_now_ms: std::cell::Cell::new(None),
         })
     }
 
@@ -319,6 +374,9 @@ impl Repo {
             object_location,
             lock_label: None,
             limits: crate::Limits::default(),
+            keyframe_interval: initial_keyframe_interval(),
+            #[cfg(test)]
+            test_now_ms: std::cell::Cell::new(None),
         })
     }
 
@@ -595,6 +653,19 @@ impl Repo {
     pub fn limited(mut self, limits: crate::Limits) -> Self {
         self.limits = limits;
         self
+    }
+
+    /// The handle's keyframe interval K, at least 1; 1 stores every tree whole.
+    pub(crate) fn keyframe_interval(&self) -> u32 {
+        self.keyframe_interval
+    }
+
+    /// Tests and fuzzing only: sets the keyframe interval K (at least 1).
+    #[doc(hidden)]
+    #[cfg(any(test, feature = "failpoints", feature = "fuzzing"))]
+    pub fn set_keyframe_interval(&mut self, k: u32) {
+        assert!(k >= 1, "keyframe interval must be at least 1");
+        self.keyframe_interval = k;
     }
 
     /// The handle's read limits.

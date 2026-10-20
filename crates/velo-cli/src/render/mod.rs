@@ -22,6 +22,7 @@ pub mod mv;
 pub mod progress;
 pub mod rebase;
 pub mod remote;
+pub mod repack;
 pub mod report;
 pub mod restore;
 pub mod retention;

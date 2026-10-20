@@ -169,7 +169,7 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
         "INSERT OR IGNORE INTO trash (hash, message, branch, parent_hash, merge_parent, created_at_ms, deleted_at_ms)
          SELECT hash, message, branch, parent_hash, merge_parent, created_at_ms, ?
          FROM snapshots WHERE hash = ?",
-        rusqlite::params![crate::commands::snapshot_timestamp_ms(), snapshot],
+        rusqlite::params![guard.repo().now_ms(), snapshot],
     )?;
     tx.execute(
         "INSERT OR REPLACE INTO trash_tags (name, snapshot_hash)
