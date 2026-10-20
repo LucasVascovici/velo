@@ -139,6 +139,11 @@ jobs:
       - name: Install Rust (stable)
         uses: dtolnay/rust-toolchain@stable
 
+      # target/ is deliberately not cached here. The verify builds compile the
+      # workspace crates as registry packages, whose fingerprint is name and
+      # version only, and every crate shares one version: a restored artefact
+      # from an earlier commit is reused as if it were current, so velo-cli was
+      # verified against a velo-core that predated what it calls.
       - name: Cache Cargo artefacts
         uses: actions/cache@v4
         with:
@@ -146,18 +151,8 @@ jobs:
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
-            target/
           key: package-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: package-cargo-
-
-      # The workspace crates all share one version, so a copy of one unpacked
-      # or cached by an earlier run is indistinguishable from the one just
-      # packaged, and the verify build of a dependant then compiles against
-      # that older source.
-      - name: Drop stale package output
-        run: |
-          rm -rf target/package
-          find ~/.cargo/registry -maxdepth 3 -name 'velo-*' -exec rm -rf {} +
 
       - name: Package every published crate
         run: cargo package --workspace --locked --exclude prompt-registry --exclude velo-ffi --exclude velo-mcp
