@@ -62,6 +62,8 @@ Phase 20: format v4 (delta snapshots): the fixture, differential harness, tree a
 
 - **20.12-b Mixed-version CI: 5.x client against 6.0 server and remote, and the reverse.** Added tests/compat/mixed_versions.py with four cells: HTTP in both directions, a new client against a v3 path remote, and an old client refused by a v4 path remote. Its README has the 2x2 table, and CI runs it as a new step in the old-release job. All four cells passed in one local run on Windows.
 
+- **20.10-b (Conditional) Opt-in group commit for agent loops: measured, not built.** Ran profile_agent_workload for 200 steps on Windows and on WSL2 ext4, and committed both raw JSON files with the exact commands. The Linux v4 commit stage is 0.090 ms of a 4.97 ms median step, so the batch bound is 1.6% to 1.8% and the "not built" verdict holds on both platforms.
+
 ## 5.3.0
 
 Phase 19: profiling, `save_changes`, batch reads and `materialize`, shrinking retention and `velo retention`, the snapshot-storage decision (FORMAT.md 11.5), Windows first-run cost, `velo report`, and release-artifact packaging.
