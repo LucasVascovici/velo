@@ -8,6 +8,7 @@ use napi_derive::napi;
 use velo_core::commands::compact::{self, Protected};
 use velo_core::commands::fsck::{self, Cruft};
 use velo_core::commands::gc::{self, AutoVacuum, Vacuum};
+use velo_core::commands::repack;
 use velo_core::commands::retention::{self, Policy, Tier};
 use velo_core::commands::tag;
 use velo_core::{SnapshotId, TagName};
@@ -104,6 +105,20 @@ pub struct VacuumInfo {
     pub bytes_after: f64,
     /// `"none"`, `"full"` or `"incremental"`.
     pub auto_vacuum: String,
+}
+
+/// What `repack` did, or for a dry run would do.
+#[napi(object)]
+pub struct RepackInfo {
+    pub snapshots_converted: f64,
+    pub keyframes_kept: f64,
+    pub chains_shortened: f64,
+    pub rows_before: f64,
+    pub rows_after: f64,
+    pub bytes_before: f64,
+    /// Estimated for a dry run: a lower bound on the saving.
+    pub bytes_after: f64,
+    pub dry_run: bool,
 }
 
 #[napi(object)]
@@ -343,6 +358,31 @@ impl Repo {
                     _ => "incremental",
                 }
                 .to_string(),
+            })
+        })
+    }
+
+    /// Convert stored full snapshots into deltas, a few at a time, so an
+    /// existing repository shrinks. With `dryRun` nothing is written and
+    /// `bytesAfter` is an estimate.
+    #[napi(ts_return_type = "Promise<RepackInfo>")]
+    pub fn repack(
+        &self,
+        dry_run: Option<bool>,
+    ) -> napi::bindgen_prelude::AsyncTask<Job<RepackInfo>> {
+        self.job(move |repo| {
+            let mut options = repack::Options::default();
+            options.dry_run = dry_run.unwrap_or(false);
+            let done = repack::run(repo, options)?;
+            Ok(RepackInfo {
+                snapshots_converted: done.snapshots_converted as f64,
+                keyframes_kept: done.keyframes_kept as f64,
+                chains_shortened: done.chains_shortened as f64,
+                rows_before: done.rows_before as f64,
+                rows_after: done.rows_after as f64,
+                bytes_before: done.bytes_before as f64,
+                bytes_after: done.bytes_after as f64,
+                dry_run: done.dry_run,
             })
         })
     }

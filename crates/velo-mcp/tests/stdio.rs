@@ -42,7 +42,7 @@ fn stdout_is_json_rpc_only() {
         assert_eq!(v["id"], i as u64 + 1);
     }
     let tools = lines[1]["result"]["tools"].as_array().unwrap();
-    assert_eq!(tools.len(), 19);
+    assert_eq!(tools.len(), 20);
     // What a client's JSON Schema validator needs of every tool.
     for t in tools {
         assert_eq!(t["inputSchema"]["type"], "object", "{t}");

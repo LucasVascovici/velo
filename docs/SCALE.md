@@ -212,6 +212,27 @@ What to take from it:
   snapshots and costs a small fraction of that. Do not let 2,000 snapshots of a
   10,000-file tree pile up before the first pass.
 
+## Repacking an existing repository
+
+A repository written before deltas stores every snapshot's whole tree, and
+migrating it to the current layout does not shrink it, because migration
+rewrites nothing. `velo repack` does the rewrite: it converts those full
+snapshots into deltas a few at a time, each batch in its own short transaction,
+so another `velo save` waits only a moment. It changes no snapshot id and
+rewrites no history, and it can be interrupted and run again to finish.
+
+```
+velo repack --dry-run   # what it would convert, with an estimated saving
+velo repack
+```
+
+The dry run's byte figure is an estimate, a lower bound on the saving, because
+it ignores index pages and page slack. The space is returned to the operating
+system by a vacuum at the end of a real run. The same operation is available as
+`Store.repack(dry_run=False)` in Python, `repack(dryRun?)` in Node and the
+`velo_repack` MCP tool. The repacked numbers for the envelope repositories will
+be added here from the measurement run of task 20.9-b.
+
 ## Method
 
 `bench/scale/scale.py` drives the release CLI and uses only the Python standard

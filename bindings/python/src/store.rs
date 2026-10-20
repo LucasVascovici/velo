@@ -10,6 +10,7 @@ use pyo3::types::{PyDict, PyList};
 use velo_core::commands::compact::{self, Protected};
 use velo_core::commands::fsck::{self, Cruft};
 use velo_core::commands::gc::{self, AutoVacuum, Vacuum};
+use velo_core::commands::repack;
 use velo_core::commands::retention::{self, Policy, Tier};
 use velo_core::commands::tag;
 use velo_core::{SnapshotId, TagName};
@@ -268,6 +269,32 @@ impl Repo {
                 _ => "incremental",
             },
         )?;
+        Ok(out)
+    }
+
+    /// Convert stored full snapshots into deltas, a few at a time, so an
+    /// existing repository shrinks. Returns `snapshots_converted`,
+    /// `keyframes_kept`, `chains_shortened`, `rows_before`, `rows_after`,
+    /// `bytes_before`, `bytes_after` and `dry_run`. With `dry_run` nothing is
+    /// written and `bytes_after` is an estimate, a lower bound on the saving.
+    #[pyo3(signature = (dry_run = false))]
+    fn repack<'py>(&self, py: Python<'py>, dry_run: bool) -> PyResult<Bound<'py, PyDict>> {
+        self.check_owner()?;
+        let done = py.detach(|| -> PyResult<_> {
+            let repo = self.core()?;
+            let mut options = repack::Options::default();
+            options.dry_run = dry_run;
+            repack::run(&repo, options).map_err(to_py)
+        })?;
+        let out = PyDict::new(py);
+        out.set_item("snapshots_converted", done.snapshots_converted)?;
+        out.set_item("keyframes_kept", done.keyframes_kept)?;
+        out.set_item("chains_shortened", done.chains_shortened)?;
+        out.set_item("rows_before", done.rows_before)?;
+        out.set_item("rows_after", done.rows_after)?;
+        out.set_item("bytes_before", done.bytes_before)?;
+        out.set_item("bytes_after", done.bytes_after)?;
+        out.set_item("dry_run", done.dry_run)?;
         Ok(out)
     }
 

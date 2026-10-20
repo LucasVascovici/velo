@@ -84,6 +84,30 @@ test('vacuum returns freed pages after retention', async () => {
   assert.equal(full.autoVacuum, 'incremental');
 });
 
+test('repack reports every field, and a second run has nothing to do', async () => {
+  const repo = await fresh();
+  await spread(repo);
+  const dry = await repo.repack(true);
+  assert.equal(dry.dryRun, true);
+  const done = await repo.repack();
+  assert.equal(done.dryRun, false);
+  for (const k of [
+    'snapshotsConverted',
+    'keyframesKept',
+    'chainsShortened',
+    'rowsBefore',
+    'rowsAfter',
+    'bytesBefore',
+    'bytesAfter',
+  ]) {
+    assert.equal(typeof done[k], 'number', k);
+  }
+  assert.ok(done.rowsAfter <= done.rowsBefore);
+  const again = await repo.repack();
+  assert.equal(again.snapshotsConverted, 0);
+  assert.equal(again.chainsShortened, 0);
+});
+
 test('compact squashes a range and re-mints its descendants', async () => {
   const repo = await fresh();
   const ids = await spread(repo, 6);
