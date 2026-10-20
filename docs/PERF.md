@@ -936,3 +936,39 @@ numbers. The gain would show where the objects check is not paid (a
 `save_changes` loop that puts bytes, or a caller that skips the check), which the
 section 9 harness does not exercise and this run did not measure. The p95 column
 is dominated by the same noise and is not evidence either way.
+
+### Group commit for an agent loop (20.10)
+
+Question: would an opt-in batch (`begin_batch` ... `commit`, N snapshots in one
+SQLite transaction) make agent steps measurably cheaper? Group commit can only
+remove the per-snapshot commit, so the commit stage bounds what it can win.
+
+Measured with `profile_agent_workload` (release, `--features timing`, Windows,
+1,000 files, 200 steps, 1 to 20 files rewritten per step; the run was shortened
+from 500 steps because of the time budget). Median per step, in milliseconds, for
+the `as_harness` variant (the other two variants agree to within 0.05 ms on the
+commit stage):
+
+| stage | median (ms) | share of the step |
+|---|---:|---:|
+| `save_tree.objects` | 72.0 | 87.5% |
+| `save_tree.insert_file_map` | 2.47 | 3.0% |
+| `save_tree.commit` | 0.39 | 0.5% |
+| whole step | 82.2 | |
+
+Per-step cost at batch size N is the one-by-one cost minus `commit x (N-1)/N`.
+With the measured commit stage that is N = 1: 82.2 ms (unchanged by
+construction), N = 8: about 81.9 ms (-0.34 ms, 0.4%), N = 32: about 81.9 ms
+(-0.38 ms, 0.5%). These N = 8 and N = 32 figures are an upper bound derived from
+the measured commit stage, not runs of a batch API, because none was built. The
+step-to-step noise (p95 123 ms against a median of 82 ms) is more than 300 times
+the saving.
+
+Verdict: **group commit is not needed and was not built.** The commit is already
+0.4 ms, so a batch could not move the step; the cost is the per-entry object
+check, which a batch does not touch. Consequently there is no `begin_batch`,
+no `batch.before_commit` failpoint, no change to the crash window, and nothing
+to bind. On the 500-step target itself: Windows is met (19.4 s against shadow
+git's 210.5 s, section 6); the Linux 500-step figure was not re-measured, and
+whichever way it lands, the remaining Linux cost is the same object-check and
+hashing work, not the commit.
