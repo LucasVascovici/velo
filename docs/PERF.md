@@ -943,32 +943,47 @@ Question: would an opt-in batch (`begin_batch` ... `commit`, N snapshots in one
 SQLite transaction) make agent steps measurably cheaper? Group commit can only
 remove the per-snapshot commit, so the commit stage bounds what it can win.
 
-Measured with `profile_agent_workload` (release, `--features timing`, Windows,
-1,000 files, 200 steps, 1 to 20 files rewritten per step; the run was shortened
-from 500 steps because of the time budget). Median per step, in milliseconds, for
-the `as_harness` variant (the other two variants agree to within 0.05 ms on the
-commit stage):
+Measured with `profile_agent_workload` (release, `--features timing`, 1,000
+files, 200 steps, 1 to 20 files rewritten per step; shortened from 500 steps
+because of the time budget). Median per step, in milliseconds, for the
+`as_harness` variant (the other two variants agree on the commit stage to within
+0.12 ms). Raw output:
+[Windows](../bench/results/2026-10-20-windows-group-commit-agent.json),
+[Linux](../bench/results/2026-10-20-linux-group-commit-agent.json). Commands:
 
-| stage | median (ms) | share of the step |
-|---|---:|---:|
-| `save_tree.objects` | 72.0 | 87.5% |
-| `save_tree.insert_file_map` | 2.47 | 3.0% |
-| `save_tree.commit` | 0.39 | 0.5% |
-| whole step | 82.2 | |
+```
+VELO_PROFILE_STEPS=200 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-windows-group-commit-agent.json cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1
+wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_STEPS=200 VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-linux-group-commit-agent.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1'
+```
+
+The Linux run is WSL2 on ext4 (`$HOME/velo-prof`).
+
+| stage | Windows (ms) | Windows share | Linux (ms) | Linux share |
+|---|---:|---:|---:|---:|
+| `save_tree.objects` | 64.7 | 88.5% | 1.49 | 30.0% |
+| `save_tree.insert_file_map` | 2.11 | 2.9% | 1.33 | 26.8% |
+| `save_tree.commit` | 0.34 | 0.5% | 0.090 | 1.8% |
+| whole step (median) | 73.1 | | 4.97 | |
 
 Per-step cost at batch size N is the one-by-one cost minus `commit x (N-1)/N`.
-With the measured commit stage that is N = 1: 82.2 ms (unchanged by
-construction), N = 8: about 81.9 ms (-0.34 ms, 0.4%), N = 32: about 81.9 ms
-(-0.38 ms, 0.5%). These N = 8 and N = 32 figures are an upper bound derived from
-the measured commit stage, not runs of a batch API, because none was built. The
-step-to-step noise (p95 123 ms against a median of 82 ms) is more than 300 times
-the saving.
+Windows: N = 1: 73.1 ms (unchanged by construction), N = 8: about 72.8 ms
+(-0.30 ms, 0.4%), N = 32: about 72.8 ms (-0.33 ms, 0.5%). Linux: N = 1: 4.97 ms,
+N = 8: about 4.89 ms (-0.079 ms, 1.6%), N = 32: about 4.88 ms (-0.087 ms, 1.8%).
+These are upper bounds derived from the measured commit stage, not runs of a
+batch API, because none was built. Windows step-to-step noise (p95 127 ms
+against a median of 73 ms) is more than 300 times the saving; Linux p95 is 12.7
+ms against a 4.97 ms median, about 90 times the saving.
 
-Verdict: **group commit is not needed and was not built.** The commit is already
-0.4 ms, so a batch could not move the step; the cost is the per-entry object
-check, which a batch does not touch. Consequently there is no `begin_batch`,
-no `batch.before_commit` failpoint, no change to the crash window, and nothing
-to bind. On the 500-step target itself: Windows is met (19.4 s against shadow
-git's 210.5 s, section 6); the Linux 500-step figure was not re-measured, and
-whichever way it lands, the remaining Linux cost is the same object-check and
-hashing work, not the commit.
+The earlier Linux figure (`perf-2026-10-16-linux.json`, `save_tree.commit` 82.8
+ms of a 93 ms step) predates storage v4. On v4 the Linux commit also collapsed,
+from 82.8 ms to 0.090 ms, as it did on Windows (134.8 ms to 0.39 ms), and the
+Linux step fell from 93 ms to 5.0 ms.
+
+Verdict: **group commit is not needed and was not built**, on both platforms.
+The commit is 0.5% of a Windows step and 1.8% of a Linux step, so a batch could
+not move either; no `begin_batch`, no `batch.before_commit` failpoint, no change
+to the crash window, and nothing to bind. On Linux the step is now spread over
+object checks (30%) and the file-map insert (27%), neither of which a batch
+touches. The 500-step totals in section 6 were not re-run for this section: the
+Windows figure is 19.4 s against shadow git's 210.5 s, and the Linux 200-step
+run above took 1.44 s of timed work.
