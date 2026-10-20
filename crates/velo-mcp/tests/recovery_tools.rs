@@ -221,6 +221,37 @@ fn blame_range_and_invalid_range() {
 }
 
 #[test]
+fn repack_reports_all_fields_and_validates_dry_run() {
+    let (_d, mut s) = project();
+    ok(&call(&mut s, "velo_save", json!({"message": "first"})));
+    let fields = [
+        "snapshots_converted",
+        "keyframes_kept",
+        "chains_shortened",
+        "rows_before",
+        "rows_after",
+        "bytes_before",
+        "bytes_after",
+        "dry_run",
+    ];
+    for (args, want) in [
+        (json!({"dry_run": true}), true),
+        (json!({"dry_run": false}), false),
+        (json!({}), false),
+    ] {
+        let r = call(&mut s, "velo_repack", args.clone());
+        let out = ok(&r);
+        assert_eq!(out["dry_run"], want, "{args}: {r}");
+        for f in fields {
+            assert!(out.get(f).is_some(), "{f} missing: {r}");
+        }
+    }
+    let r = call(&mut s, "velo_repack", json!({"dry_run": "yes"}));
+    assert_eq!(r["result"]["isError"], true, "{r}");
+    assert!(r.to_string().contains("'dry_run' must be a boolean"), "{r}");
+}
+
+#[test]
 fn store_mode_lists_tag_and_find_only() {
     let dir = tempfile::tempdir().unwrap();
     let repo = Repo::create_file(&dir.path().join("a.velo")).unwrap();
