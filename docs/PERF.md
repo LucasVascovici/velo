@@ -543,6 +543,75 @@ Reasons for the misses, each from a measurement above or in the linked results:
 - **Retention (not a numbered target).** The 18.10 retention run was repeated in
   19.4-e on Windows (see [`SCALE.md`](SCALE.md)); it was not repeated on Linux.
 
+### Result of the Phase 20 re-run (2026-10-20)
+
+Windows only, one run per cell, built from the current tip (velo 6.0.0, format
+v4, default keyframe interval 128). No harness parameter was changed to improve
+a number. Agent figures:
+[`2026-10-20-windows-agent-velo.json`](../bench/results/2026-10-20-windows-agent-velo.json)
+and
+[`2026-10-20-windows-agent-git.json`](../bench/results/2026-10-20-windows-agent-git.json),
+run as two `--only` invocations because the combined run with the 5.2-API row
+did not fit the time budget (and one shadow git run failed on a restore with an
+empty git error, so shadow git was run again; the rerun is the one published).
+The Linux/WSL2 runs were not made in this task, so target 1 on Linux is not
+re-measured. The v4 numbers themselves are in sections 8 and 9 and are not
+repeated here.
+
+| target | measured | verdict |
+|---|---|---|
+| 1. 500 steps, at most 3x shadow git on Linux | Windows: 19.4 s against shadow git 210.5 s (0.09x; was 64.4 s, 0.34x). Linux: not run | Windows met (the Windows aim was "not worse than git"); **Linux not re-measured**, last 4.5x (missed) |
+| 3. disk after 500 steps, at most 3x git (about 11 MB) | 11.03 MB against git 3.27 MB: **3.37x** (final disk after restores and branches 11.84 MB against 4.5 MB: 2.6x); was 152 MB, 47x | **missed against git's measured disk by 12%**; in absolute terms it is the 11 MB the derivation expected |
+| 4. one-file save at 100,000 files, at most 1.5x history-0 | Section 9: median 5.28 s over 400 saves at K = 128, against the 2.1 s history-0 floor of section 6 (2.5x); the first plain saves of the run took 9.3 s, so the run's own start is not a clean floor | **missed** (about 2.5x, not a like-for-like pair: the floor is from the 5.3 build and the 100,000-file run shared the machine) |
+| 5. binding overhead, at most 10% | not re-measured: `save_changes` still has no Rust twin of the harness | **not measured**, 10.5% on Windows when last measured |
+
+The other rows of the same agent run (Windows, velo against shadow git of the
+same run): 8 attempts plus merge 4.29 s against 38.5 s (0.11x); restore step 250
+median 480 ms against 480 ms (1.0x); "who wrote" x20 9.30 s against 3.01 s
+(**3.1x slower**, was 2.95 s against 2.42 s, 1.2x). Restore sits at 480 ms for
+both systems, against 216 ms and 422 ms in the 2026-10-16 run, so that day's
+drift moved both, and the velo row is within what the machine adds; it is not
+claimed as a regression or a win.
+
+Reasons for the misses and the loss:
+
+- **Disk, 3.37x.** What is stored now is a keyframe every 128 snapshots plus the
+  changed rows (about 10.5 files per step), then the objects and the snapshot
+  rows. 11.03 MB is the "about 11 MB" of the derivation under target 3; the
+  miss is the ratio, because git on this run stored 3.27 MB and 3x that is 9.8
+  MB. The 1,000-file case was not broken down further in this run.
+- **One-file save at 100,000 files.** Section 9: `save_tree.objects` is 95% of
+  the save (5,019 ms of 5,279 ms), one `objects.contains` per file on every
+  save. The row writes the targets were about are now 155 ms
+  (`insert_file_map`) and the commit 0.25 ms, so the growth with history is
+  gone from them, but the O(files) object check is not.
+- **Who wrote, 3.1x git.** Not profiled in this run. Section 9 measured
+  `read_file_at` at 1.75 ms (depth 64) to 3.13 ms (depth 127) against 0.18 ms at
+  depth 0 at 100,000 files, so reads walk delta chains; whether that is where
+  the blame time goes was not measured.
+- **Retention (not a numbered target, reduced run).** The ignored test
+  `default_policy_at_a_reduced_18_10_shape` (400 snapshots of 2,000 files,
+  800,000 rows, run at K = 1, so every tree is whole: the shape 19.4 measured,
+  not the K = 128 default of section 9; the `_at_k3` twin was not run). Stages
+  ([`2026-10-20-windows-retention-scale.txt`](../bench/results/2026-10-20-windows-retention-scale.txt)):
+  apply 11.8 s (examined 400, removed 170), gc 0.96 s, vacuum 4.85 s, with
+  `velo.db` 221.4 MB to 132.3 MB. The 19.4 run was 20,000,000 rows (416 s apply,
+  165 s gc, 193 s vacuum); per row that is apply 14.8 us against 20.8 us, gc
+  1.2 us against 8.3 us and vacuum 6.1 us against 9.6 us. Sizes differ by 25x,
+  so these are per-row ratios and not a replacement for the full run, which was
+  not repeated.
+- **Scale small (1,000 files by 50 snapshots, Windows).**
+  [`2026-10-20-windows-scale-small.json`](../bench/results/2026-10-20-windows-scale-small.json):
+  save median 121 ms first 10%, 137 ms last 10% (1.13x growth; the first-10% p95
+  of 6.9 s is the first save under Defender), 1,001 `file_map` rows, `.velo`
+  0.8 MiB, restore 108 ms, fsck 114 ms.
+- **Migrate and repack (reduced).** A 10,000-file by 150-snapshot repository
+  written by 5.3.0 (400 MB, 1,500,150 rows): first open by 6.0.0 took 165 ms,
+  `velo repack` 41 s, to 9.6 MB (1,500,150 rows to 20,150), ids and trees
+  identical to a pre-migration copy. See [`SCALE.md`](SCALE.md). The 5.18 GiB
+  envelope repository was not migrated here; the command is in
+  `bench/README.md`.
+
 ## 7. Not measured
 
 - **100,000 files x 2,000 snapshots (both platforms).** About 200 million

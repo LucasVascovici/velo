@@ -1,0 +1,33 @@
+{
+  "env": {
+    "date": "2026-10-20",
+    "platform": "Windows-11-10.0.22621-SP0",
+    "system": "Windows",
+    "machine": "AMD64",
+    "python": "3.12.8",
+    "git": "git version 2.42.0.windows.2",
+    "sqlite": "3.45.3",
+    "velo_binding": "unversioned binding",
+    "repo_commit": "cea8fc7",
+    "workdir": "C:\\Users\\lvi\\AppData\\Local\\Temp\\velo-agent-bench-i71hashz",
+    "steps": 500,
+    "files": 1000,
+    "restores": 100,
+    "seed": 1,
+    "quick": false,
+    "defender_note": "not provided: assume real-time scanning is ON"
+  },
+  "results": [
+    {
+      "system": "velo",
+      "provenance": "ids recompute from content; author and metadata are hashed into each snapshot id; signatures can be attached",
+      "steps_s": 19.424510499984535,
+      "disk_after_steps": 11027603,
+      "restore_total_s": 52.2228316000037,
+      "restore_median_s": 0.4798876000004384,
+      "who_wrote_s": 9.303591300000335,
+      "branches_s": 4.29109529998459,
+      "disk_final": 11837626
+    }
+  ]
+}

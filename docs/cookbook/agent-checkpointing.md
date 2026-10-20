@@ -215,6 +215,30 @@ each loss has a measured reason there:
 Restore meets its target on both platforms, and 500 steps on Windows meets it
 (velo is 3x faster than shadow git there).
 
+**Phase 20 re-run (Windows only, 2026-10-20, format v4).** velo and shadow git
+were re-run on Windows
+(`bench/results/2026-10-20-windows-agent-velo.json` and
+`-agent-git.json`); the tables above are the earlier runs and were not
+overwritten, and Linux was not re-run. No harness parameter was changed. On
+Windows, velo took 19.4 s for the 500 steps against 210.5 s for shadow git
+(0.09x), 4.29 s against 38.5 s for the 8 attempts plus merge, 480 ms against
+480 ms for the restore median, and 11.0 MB of disk after the steps against 3.3
+MB (final disk 11.8 MB against 4.5 MB), where 5.3.0 used 152 MB. The rows still
+lost, each with its reason (full detail in [`PERF.md`](../PERF.md) section 6,
+"Result of the Phase 20 re-run"):
+
+- **Disk after 500 steps: 3.37x shadow git** (11.0 MB against 3.27 MB), 12% over
+  the 3x target, though it is the 11 MB the target was derived from. What is
+  stored is a keyframe every 128 snapshots plus the changed rows.
+- **"Who wrote this line": 3.1x shadow git** (9.30 s against 3.01 s; was 1.2x).
+  Not profiled in this run; reads walk delta chains (`read_file_at` 1.75 to
+  3.13 ms at depth 64 to 127 at 100,000 files, `PERF.md` section 9), which is a
+  candidate, not a measured cause.
+- **500 steps on Linux: 4.5x shadow git** when last measured (not re-run).
+- **A one-file save at 100,000 files:** about 2.5x the history-0 save (5.3 s
+  median against a 2.1 s floor; target 1.5x) because each save checks the
+  existence of every object (`save_tree.objects`, 95% of the save).
+
 ### What velo is, and is not, here
 
 velo still loses most rows on Linux. Read the tables that way:
