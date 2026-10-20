@@ -833,19 +833,12 @@ pub(crate) fn dirty_scan(repo: &Repo) -> DirtyScan {
     // ── 5. Batch-write cache misses back to DB ────────────────────────────────
     let misses: Vec<_> = results.iter().filter(|r| r.4).collect();
 
-    if !misses.is_empty() {
-        if let Ok(tx) = conn.unchecked_transaction() {
-            if let Ok(mut stmt) = tx.prepare(
-                "INSERT OR REPLACE INTO index_cache (path, mtime_ns, size, hash)
-                 VALUES (?, ?, ?, ?)",
-            ) {
-                for (rel, hash, mtime, size, _, _) in &misses {
-                    let _ = stmt.execute(rusqlite::params![rel, mtime, size, hash]);
-                }
-            }
-            let _ = tx.commit();
-        }
-    }
+    store_cache_rows(
+        conn,
+        misses.iter().filter_map(|(rel, hash, mtime, size, _, _)| {
+            Some((rel.as_str(), *mtime, *size, hash.as_deref()?))
+        }),
+    );
 
     // ── 6. Compare hashes against snapshot ───────────────────────────────────
     for (rel, hash, mtime, size, _, mode) in results {
@@ -913,13 +906,57 @@ pub(crate) fn seed_cache_entries(repo: &Repo, rows: &[(String, i64, i64, String)
     if rows.is_empty() {
         return;
     }
-    let conn = repo.conn();
+    store_cache_rows(
+        repo.conn(),
+        rows.iter()
+            .map(|(p, m, s, h)| (p.as_str(), *m, *s, h.as_str())),
+    );
+}
+
+/// How close to "now" a file's mtime may be before the cache will not vouch
+/// for it. Filesystems stamp mtimes with a coarse clock (up to 2 s on FAT, a
+/// few ms of lag on ext4), so a file rewritten within the same tick as the
+/// stat we cached keeps the same `(mtime_ns, size)` with different content.
+const RACY_WINDOW_NS: i64 = 2_000_000_000;
+
+/// Whether a file with this mtime is "racy": not strictly older than the moment
+/// the cache row would be written, so a later same-size rewrite could carry an
+/// identical mtime. Git's racy-clean rule, applied when the row is written
+/// because rows carry no write time of their own.
+pub(crate) fn racy_mtime(mtime_ns: i64, now_ns: i64) -> bool {
+    mtime_ns > now_ns.saturating_sub(RACY_WINDOW_NS)
+}
+
+/// Write `(path, mtime_ns, size, hash)` rows to `index_cache` in one
+/// transaction. A racy row is not stored, and any row already held for its
+/// path is dropped, so the next scan re-hashes the file instead of trusting a
+/// stat that cannot tell two writes apart.
+fn store_cache_rows<'a>(
+    conn: &rusqlite::Connection,
+    rows: impl Iterator<Item = (&'a str, i64, i64, &'a str)>,
+) {
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos() as i64)
+        .unwrap_or(i64::MAX);
+    let rows: Vec<_> = rows.collect();
+    if rows.is_empty() {
+        return;
+    }
     if let Ok(tx) = conn.unchecked_transaction() {
-        if let Ok(mut stmt) = tx.prepare(
-            "INSERT OR REPLACE INTO index_cache (path, mtime_ns, size, hash) VALUES (?, ?, ?, ?)",
+        if let (Ok(mut put), Ok(mut del)) = (
+            tx.prepare(
+                "INSERT OR REPLACE INTO index_cache (path, mtime_ns, size, hash)
+                 VALUES (?, ?, ?, ?)",
+            ),
+            tx.prepare("DELETE FROM index_cache WHERE path = ?"),
         ) {
             for (p, m, s, h) in rows {
-                let _ = stmt.execute(rusqlite::params![p, m, s, h]);
+                if racy_mtime(m, now_ns) {
+                    let _ = del.execute([p]);
+                } else {
+                    let _ = put.execute(rusqlite::params![p, m, s, h]);
+                }
             }
         }
         let _ = tx.commit();

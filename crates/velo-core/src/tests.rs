@@ -12341,3 +12341,6 @@ mod storage_v4_profile;
 #[cfg(test)]
 #[cfg(windows)]
 mod first_save_threads;
+
+#[cfg(test)]
+mod racy_mtime;
