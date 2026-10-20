@@ -362,6 +362,19 @@ export interface RangeInput {
   newest: string
 }
 
+/** What `repack` did, or for a dry run would do. */
+export interface RepackInfo {
+  snapshotsConverted: number
+  keyframesKept: number
+  chainsShortened: number
+  rowsBefore: number
+  rowsAfter: number
+  bytesBefore: number
+  /** Estimated for a dry run: a lower bound on the saving. */
+  bytesAfter: number
+  dryRun: boolean
+}
+
 export interface RetentionOptions {
   /** Ascending by age. Absent means the default policy. */
   tiers?: Array<TierInput>
@@ -514,19 +527,6 @@ export interface VacuumInfo {
   bytesAfter: number
   /** `"none"`, `"full"` or `"incremental"`. */
   autoVacuum: string
-}
-
-/** What `repack` did, or for a dry run would do. */
-export interface RepackInfo {
-  snapshotsConverted: number
-  keyframesKept: number
-  chainsShortened: number
-  rowsBefore: number
-  rowsAfter: number
-  bytesBefore: number
-  /** Estimated for a dry run: a lower bound on the saving. */
-  bytesAfter: number
-  dryRun: boolean
 }
 
 /**
