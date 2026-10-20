@@ -48,6 +48,20 @@ Phase 20: format v4 (delta snapshots): the fixture, differential harness, tree a
 
 - **20.6-b Compaction, retention, squash and amend fold through the primitive; harness with removals.** compaction.rs (16 tests) and retention_scale.rs (the non-ignored test) now run at K=3 through `setup_k` and an `at_k3!` wrapper per test. compaction_in_place also gets `a_dry_run_writes_nothing_at_k3`. `cargo test -p velo-core` and `cargo test -p velo-cli` were both run on the final tree and pass.
 
+- **20.7-a Failpoints for delta write, keyframe write, fold and migration; crash scenarios on v4.** Added the four failpoints, and db::migrate now runs the schema script and the version stamp in one transaction. crash.rs runs every scenario at the production K and at K=3, plus new compact_fold and migrate_v3 scenarios. All pass on Windows with no new known window.
+
+- **20.7-b Hostile delta tables are typed errors; a cargo-fuzz target for the stored table.** Delta rows now decode through one shared helper, and a hash/mode NULL mismatch is Corrupt in every reader of tree_delta_rows. descend no longer swallows row errors. PathVersions::at returns Result, and tree_at enforces max_string_bytes. The delta_table fuzz target is added with its seeds, README line and CI matrix entry, plus 9 tests in hostile_deltas.rs.
+
+- **20.8-a repack core: convert existing keyframes to deltas in short, resumable transactions.** Added commands::repack::run, which converts keyframes to canonical deltas in per-chunk write-locked transactions, re-chunks overlong chains, and finishes with an incremental vacuum. It has a dry run, cancellation between chunks and the repack.after_chunk failpoint. A repack crash scenario and 7 unit tests pass.
+
+- **20.8-b velo repack CLI, Python/Node bindings, MCP tool, parity.** Added the missing MCP test for velo_repack in recovery_tools.rs. It covers dry_run true, false, omitted and an invalid value, and checks that all eight result fields are present.
+
+- **20.11-a Cold-start test kit: protocol, task cards, independent checker, friction log.** Added bench/coldstart with the protocol README, four task cards, stdlib check.py and an empty friction log with an Adapter decision section. check.py ran against a repo made by the local velo: PASS for the real actor, FAIL for a wrong one.
+
+- **20.12-a Nightly differential run with fresh seeds, starting from every migrated golden.** Added Start::{Empty,Golden} to the differential Config, copying the golden into the TempDir before open_and_migrate. Added the non-ignored differential_from_goldens, made differential_long cover all starts and rotating Ks with a failure file, and added nightly.yml.
+
+- **20.12-b Mixed-version CI: 5.x client against 6.0 server and remote, and the reverse.** Added tests/compat/mixed_versions.py with four cells: HTTP in both directions, a new client against a v3 path remote, and an old client refused by a v4 path remote. Its README has the 2x2 table, and CI runs it as a new step in the old-release job. All four cells passed in one local run on Windows.
+
 ## 5.3.0
 
 Phase 19: profiling, `save_changes`, batch reads and `materialize`, shrinking retention and `velo retention`, the snapshot-storage decision (FORMAT.md 11.5), Windows first-run cost, `velo report`, and release-artifact packaging.
