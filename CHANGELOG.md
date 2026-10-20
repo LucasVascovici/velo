@@ -6,6 +6,12 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## Unreleased
+
+### Fixed
+
+- **A file rewritten within one timestamp tick could be saved with its old content.** The stat cache trusted `(mtime_ns, size)` alone, so two same-size writes that landed in one filesystem tick (the second after the cache row was written) looked unchanged and `save` stored the first content. Cache rows are now written only for files whose mtime is more than 2 s older than the write (git's racy-clean rule); a fresher file has its row dropped and is re-hashed on the next scan. The on-disk format is unchanged, and a freshly restored or just-saved file now costs one re-hash on the next scan. Surfaced by `every_point_leaves_old_or_new` failing about half the runs on ext4.
+
 ## 5.3.0
 
 Phase 19: profiling, `save_changes`, batch reads and `materialize`, shrinking retention and `velo retention`, the snapshot-storage decision (FORMAT.md 11.5), Windows first-run cost, `velo report`, and release-artifact packaging.
