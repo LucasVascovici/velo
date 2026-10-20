@@ -734,3 +734,85 @@ Full size, not run by the agent:
 VELO_PROFILE_FILES=10000 VELO_PROFILE_SNAPSHOTS=2000 VELO_PROFILE_K=1 VELO_PROFILE_OUT=bench/results/fsck-v4-full.json cargo test --release -p velo-core fsck_v4_scale -- --ignored --nocapture
 VELO_PROFILE_FILES=10000 VELO_PROFILE_SNAPSHOTS=2000 VELO_PROFILE_K=128 VELO_PROFILE_OUT=bench/results/fsck-v4-full.json cargo test --release -p velo-core fsck_v4_scale -- --ignored --nocapture
 ```
+
+## 9. Format v4 on the real engine
+
+Reproduces section 8's prototype table with the real `WriteGuard::save_tree` and
+`Repo::set_keyframe_interval(k)`, from the ignored test `storage_v4_profile`
+(`crates/velo-core/src/tests/storage_v4_profile.rs`). One file changes per save;
+only the `save_tree` call is timed (the caller's entry vector is built outside the
+timer). Raw lines: `bench/results/2026-10-20-storage-v4-windows.json`. Medians are
+over the non-keyframe saves.
+
+### What was run, and what was not
+
+The measurement budget for this task was 60 minutes, and the real engine is far
+slower at 100,000 files than the prototype was: the first save of 100,000 files
+took 304 s on Windows, and a one-file save about 3.6 s. A K = 128 run needs 130
+saves, so about 14 minutes per K at 100,000 files. Two 100,000-file K = 128 runs
+(40 and 24 saves) hit the 590 s tool timeout and produced no data. What exists:
+
+| run | files | K | saves | committed |
+| --- | ---: | ---: | ---: | --- |
+| Windows, release, `timing` | 10,000 | 128 | 140 | yes |
+| Windows, release, `timing` | 100,000 | 4 | 6 | console only (seed 304 s, plain median 3,588 ms, first plain save 10,028 ms, one keyframe save 3,956 ms) |
+
+K = 8, 32 and 512, the 100,000-file K = 128 run and all of Linux are not run. The
+prototype was measured at 100,000 files only, so the 10,000-file cells below
+compare against the prototype's 100,000-file value divided by ten (both are
+O(files)); read that as an estimate, not a measurement. The acceptance run (K = 128
+at 100,000 files) is therefore **not** met and is listed for the owner below.
+
+### Windows, K = 128
+
+| cell | prototype (100,000 files) | real, 10,000 files | real, 100,000 files (K = 4, 6 saves) |
+| --- | ---: | ---: | ---: |
+| save median, one file (ms) | 110.2 | 426.2 (proto / 10: about 11) | 3,588 |
+| save p95 (ms) | 137.1 | 495.4 | n/a |
+| keyframe save (ms) | 571 (slowest) | 510.7 (n = 1) | 3,956 (n = 1) |
+| disk per snapshot (bytes) | 93,655 | 20,977 | not recorded |
+| `tree_at`, depth 0 / 64 / 127 (ms) | 78.4 / 82.4 / 83.4 | 11.3 / 9.8 / 12.9 | not run |
+| `read_file_at`, depth 0 / 64 / 127 (ms) | 0.021 / 0.816 / 1.43 | 0.099 / 1.62 / 2.80 | not run |
+
+Keyframe spike distribution at K = 128 (140 saves, so one keyframe after the
+seed): median = p90 = p99 = max = 510.7 ms. One sample is not a distribution; the
+spike at K = 128 needs the 100,000-file run below. At K = 4 and 100,000 files the
+single keyframe save (3,956 ms) was within 10% of the plain median, so the spike
+is small next to the per-save cost.
+
+Stage medians of a one-file save at 10,000 files (ms): `save_tree.objects` 403.3,
+`insert_file_map` 11.3, `validate` 2.9, `snapshot_id` 2.8, `commit` 0.13,
+`insert_rest` 0.02. Keyframe save: `objects` 408.2, `insert_file_map` 23.4,
+`commit` 67.9.
+
+### Cells more than 2x the prototype
+
+- **Save median: 426 ms against about 11 ms (39x) at 10,000 files, and 3,588 ms
+  against 110 ms (33x) at 100,000.** Stage: `save_tree.objects`, 95% of the
+  save. Every `TreeEntry::stored` entry is checked with `objects.contains` (one
+  filesystem existence check per file, about 40 microseconds on Windows) so that a
+  snapshot cannot name a missing object. The prototype used synthetic hashes and
+  never touched the object store. This is an O(files) cost the delta rows do not
+  remove; the id (`snapshot_id`, 2.8 ms here) and the row writes are as cheap as
+  the prototype said.
+- **Keyframe save: not above 2x its own plain save**, but `commit` rises from 0.13
+  to 67.9 ms and `insert_file_map` doubles. The prototype's keyframe figure
+  (571 ms at 100,000) is not comparable at this size.
+- **`read_file_at` at depth 127: 2.80 ms against 1.43 ms (1.96x, just under the
+  line); at depth 0: 0.099 against 0.021 ms (4.7x).** The depth 0 gap is
+  unexplained beyond the real path's extra snapshot lookups, and is under 0.1 ms.
+- `tree_at` and disk per snapshot are not above 2x the scaled prototype.
+
+### Commands for the owner
+
+Windows, 100,000 files (about 14 minutes per K; run one K at a time):
+
+```
+VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_OUT=bench/results/2026-10-20-storage-v4-windows.json cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1
+```
+
+Linux (ext4 path, as section 1 describes), 100,000 files:
+
+```
+wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=8,32,128,512 VELO_PROFILE_OUT=bench/results/2026-10-20-storage-v4-linux.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
+```

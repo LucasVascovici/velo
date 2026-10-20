@@ -12334,3 +12334,6 @@ mod hostile_deltas;
 
 #[cfg(test)]
 mod repack;
+
+#[cfg(test)]
+mod storage_v4_profile;
