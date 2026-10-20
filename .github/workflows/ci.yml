@@ -150,11 +150,14 @@ jobs:
           key: package-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: package-cargo-
 
-      # The restored target/ can hold an earlier run's unpacked copy of a
-      # crate at this same version, which the verify build then uses in place
-      # of the one just packaged.
+      # The workspace crates all share one version, so a copy of one unpacked
+      # or cached by an earlier run is indistinguishable from the one just
+      # packaged, and the verify build of a dependant then compiles against
+      # that older source.
       - name: Drop stale package output
-        run: rm -rf target/package
+        run: |
+          rm -rf target/package
+          find ~/.cargo/registry -maxdepth 3 -name 'velo-*' -exec rm -rf {} +
 
       - name: Package every published crate
         run: cargo package --workspace --locked --exclude prompt-registry --exclude velo-ffi --exclude velo-mcp

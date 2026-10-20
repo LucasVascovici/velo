@@ -602,3 +602,31 @@ fn restore_replaces_a_tracked_symlink_with_a_directory() {
         assert_eq!(fs::read_to_string(root.join("a/b")).unwrap(), "body");
     }
 }
+
+/// A tracked symlink that the target replaces with a regular file is replaced,
+/// not written through: its old target keeps its content, and two links to one
+/// target cannot race to write it.
+#[cfg(unix)]
+#[test]
+fn restore_replaces_a_tracked_symlink_with_a_file_not_its_target() {
+    for strategy in [Strat::Delta, Strat::RewriteAll] {
+        let (_tmp, root) = setup();
+        write(&root, "a", "yy");
+        write(&root, "c", "zzz");
+        write(&root, "x", "untouched");
+        let s1 = save(&root, "left");
+        fs::remove_file(root.join("a")).unwrap();
+        fs::remove_file(root.join("c")).unwrap();
+        std::os::unix::fs::symlink("x", root.join("a")).unwrap();
+        std::os::unix::fs::symlink("x", root.join("c")).unwrap();
+        save(&root, "right");
+
+        restore_with(&root, &s1, strategy);
+
+        for (p, body) in [("a", "yy"), ("c", "zzz")] {
+            assert!(!fs::symlink_metadata(root.join(p)).unwrap().is_symlink());
+            assert_eq!(fs::read_to_string(root.join(p)).unwrap(), body);
+        }
+        assert_eq!(fs::read_to_string(root.join("x")).unwrap(), "untouched");
+    }
+}
