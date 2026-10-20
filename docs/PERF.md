@@ -900,3 +900,39 @@ Linux (ext4 path, as section 1 describes), 100,000 files:
 ```
 wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=8,32,128,512 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-linux.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
 ```
+
+### Cache the last tree (20.10)
+
+Tried: a single-entry cache on a long-lived `Repo` holding the tree it last wrote,
+keyed by snapshot id plus the `head_token` taken after the commit, so the next
+save passes it to `write_tree` (and seeds `save_changes`) instead of reading the
+parent tree back. Measured with the section 9 harness (`storage_v4_profile`,
+release, `timing`, K = 128, one file changed per save, `save_tree` with stored
+entries), cache on against the same build with the cache cleared before every
+save. Only 10,000 files were run: the machine was shared with other jobs and a
+100,000-file seed alone took over six minutes, so the 100,000-file column was not
+repeated. Windows only; Linux not run.
+
+| run (10,000 files) | saves | cache | median (ms) | p95 (ms) | `insert_file_map` (ms) | `objects` (ms) |
+| --- | ---: | --- | ---: | ---: | ---: | ---: |
+| 1 | 60 | cleared | 1,631 | 8,966 | 21.4 | 1,571 |
+| 1 | 60 | on | 888 | 946 | 5.3 | 866 |
+| 2 | 40 | cleared | 1,031 | 2,151 | 21.9 | 981 |
+| 2 | 40 | on | 1,033 | 1,169 | 5.2 | 1,008 |
+
+The cache does what it was meant to: the parent-tree read inside `insert_file_map`
+drops about 16 ms (4x), and building the map to remember costs 1.0 to 1.6 ms
+(`save_tree.remember`). But 95% of a one-file save in this harness is
+`save_tree.objects` (the per-entry existence check), whose run-to-run swing
+(866 to 1,571 ms between runs 1) is 50 times the saving. Run 2, the quieter pair,
+shows the whole-save median unchanged (1,031 against 1,033 ms); run 1's 2x gap is
+the objects stage, not the cache. At 100,000 files the same saving is the 54 to
+74 ms parent read against a 5,279 ms save, about 1%.
+
+Verdict: **reverted.** The brief's rule was to keep the cache only if the median
+save drops measurably, and it does not: the whole-save median is within noise of
+the cache-cleared run. The code and tests were removed; nothing remains but these
+numbers. The gain would show where the objects check is not paid (a
+`save_changes` loop that puts bytes, or a caller that skips the check), which the
+section 9 harness does not exercise and this run did not measure. The p95 column
+is dominated by the same noise and is not evidence either way.
