@@ -6,7 +6,17 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
-## Unreleased
+## 6.0.1
+
+### Fixed
+
+- **A file rewritten within one timestamp tick could be saved with its old content.** The stat cache trusted `(mtime_ns, size)` alone, so two same-size writes that landed in one filesystem tick (the second after the cache row was written) looked unchanged and `save` stored the first content. Cache rows are now written only for files whose mtime is more than 2 s older than the write (git's racy-clean rule); a fresher file has its row dropped and is re-hashed on the next scan. The on-disk format is unchanged, and a freshly restored or just-saved file now costs one re-hash on the next scan. Surfaced by `every_point_leaves_old_or_new` failing about half the runs on ext4.
+
+### Security
+
+- **Lockfile bump for RUSTSEC-2026-0382 and RUSTSEC-2026-0381.** rustls-webpki 0.103.16 and webpki-roots 1.0.10 reject the distrusted emSign intermediates. Lockfile only.
+
+## 6.0.0
 
 Phase 20: format v4 (delta snapshots): the fixture, differential harness, tree accessor, schema, delta write path, fsck and fold primitive.
 
@@ -63,10 +73,6 @@ Phase 20: format v4 (delta snapshots): the fixture, differential harness, tree a
 - **20.12-b Mixed-version CI: 5.x client against 6.0 server and remote, and the reverse.** Added tests/compat/mixed_versions.py with four cells: HTTP in both directions, a new client against a v3 path remote, and an old client refused by a v4 path remote. Its README has the 2x2 table, and CI runs it as a new step in the old-release job. All four cells passed in one local run on Windows.
 
 - **20.10-b (Conditional) Opt-in group commit for agent loops: measured, not built.** Ran profile_agent_workload for 200 steps on Windows and on WSL2 ext4, and committed both raw JSON files with the exact commands. The Linux v4 commit stage is 0.090 ms of a 4.97 ms median step, so the batch bound is 1.6% to 1.8% and the "not built" verdict holds on both platforms.
-
-### Fixed
-
-- **A file rewritten within one timestamp tick could be saved with its old content.** The stat cache trusted `(mtime_ns, size)` alone, so two same-size writes that landed in one filesystem tick (the second after the cache row was written) looked unchanged and `save` stored the first content. Cache rows are now written only for files whose mtime is more than 2 s older than the write (git's racy-clean rule); a fresher file has its row dropped and is re-hashed on the next scan. The on-disk format is unchanged, and a freshly restored or just-saved file now costs one re-hash on the next scan. Surfaced by `every_point_leaves_old_or_new` failing about half the runs on ext4.
 
 ## 5.3.0
 
