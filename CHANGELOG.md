@@ -12,7 +12,7 @@ Phase 21: fix what the team simulation found, then re-measure.
 
 ### Changed
 
-- **21.6-a `push` publishes tags whose snapshot the remote already has, and says so.** The receiver appends the names of the tags it inserted to the OK line after the count. `LocalRemote` returns the same list, and `PushReport.tags` lists only names that were both offered and inserted. This adds a `new_tags` field to `PushOutcome::Ok`, a source-breaking change for code that constructs or exhaustively matches that variant.
+- **21.6-a `push` publishes tags whose snapshot the remote already has, and says so.** The receiver appends the names of the tags it inserted to the OK line after the count. `LocalRemote` returns the same list, and `PushReport.tags` lists only names that were both offered and inserted. The names reach `push` through a new provided method, `Remote::published_tags`, so `PushOutcome::Ok` keeps its fields and the change is not breaking.
 
 ### Fixed
 

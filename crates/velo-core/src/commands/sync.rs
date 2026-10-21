@@ -463,13 +463,13 @@ pub fn push_report(
         PushOutcome::Ok {
             new_snapshots,
             new_objects,
-            new_tags,
         } => {
             // Only names the receiver says it inserted, and only those this
             // push offered for snapshots it already had; tags that travelled
             // with newly sent snapshots are part of the snapshot count.
             let offered = offered.take();
-            let tags: Vec<String> = new_tags
+            let tags: Vec<String> = remote
+                .published_tags()
                 .unwrap_or_default()
                 .into_iter()
                 .filter(|n| offered.contains(n))
