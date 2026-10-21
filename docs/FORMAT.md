@@ -35,7 +35,10 @@ third-party tool — must conform to this document.
 ├── PARENT        snapshot id the working tree is based on ("" if unborn)
 ├── lock          advisory lock file (fs2); held by mutating operations
 ├── lock.holder   who holds the lock: pid, start time (ms), command; informational
-├── MERGE_HEAD    present only mid-merge/cherry-pick: "<pre-merge-id>:<source>"
+├── MERGE_HEAD    present only mid-merge/cherry-pick: "<pre-merge-id>:<source>:<source-id>"
+│                 (<source-id> is the snapshot the source resolved to when the
+│                 merge ran; the older two-field "<pre-merge-id>:<source>" is
+│                 still read, and then the source name is resolved again)
 ├── MERGE_ORIG    present only mid-merge: exact pre-merge bytes of CR-ending files the merge may rewrite
 └── REBASE_STATE  present only mid-rebase (with REBASE_ONTO, REBASE_ORIG_HEAD)
 ```

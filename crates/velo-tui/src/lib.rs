@@ -41,7 +41,6 @@ pub enum Outcome {
 /// re-checks the conflict under each short lock, so a decision cannot land
 /// after the merge was aborted.
 pub fn resolve_interactive(repo: &Repo, file: ConflictFile) -> Result<Outcome> {
-    let root = repo.root().to_path_buf();
     let mut session = resolve::open_session(repo, file)?;
     if session.hunks.is_empty() {
         // No genuine conflict — this file was recorded in error.
@@ -57,13 +56,7 @@ pub fn resolve_interactive(repo: &Repo, file: ConflictFile) -> Result<Outcome> {
     let term = Term::stdout();
     let mut cursor: usize = 0;
 
-    // MERGE_HEAD stores "pre_merge_hash:source_branch".
-    let merge_info = std::fs::read_to_string(root.join(".velo/MERGE_HEAD")).unwrap_or_default();
-    let source_branch: String = merge_info
-        .trim()
-        .split_once(':')
-        .map(|(_, b)| b.to_string())
-        .unwrap_or_else(|| "(unknown)".into());
+    let source_branch: String = resolve::merge_source(repo).unwrap_or_else(|| "(unknown)".into());
 
     // One-line status shown under the header. `draw` clears the screen on a
     // terminal, so a notice printed any other way would vanish at once.

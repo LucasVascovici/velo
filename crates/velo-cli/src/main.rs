@@ -2181,11 +2181,8 @@ fn run_resolve(
                 .unwrap_or_default()
                 .trim()
                 .to_string();
-            let source = std::fs::read_to_string(root.join(".velo/MERGE_HEAD"))
-                .ok()
-                .and_then(|s| s.trim().split_once(':').map(|(_, r)| r.trim().to_string()))
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "incoming".to_string());
+            let source =
+                resolve::merge_source(guard.repo()).unwrap_or_else(|| "incoming".to_string());
             for t in &taken {
                 let (meaning, lost, other) = match t.side {
                     TakeOption::Ours => (

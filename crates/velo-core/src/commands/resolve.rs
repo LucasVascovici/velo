@@ -531,12 +531,10 @@ pub fn mark_with(
 
 /// The source of the merge in progress (`feature`, `cherry-pick/<snap>`, ...).
 ///
-/// `.velo/MERGE_HEAD` holds `pre_merge_hash:source`.
+/// Read from `.velo/MERGE_HEAD` (see `commands::merge_head`).
 pub fn merge_source(repo: &Repo) -> Option<String> {
-    let text = std::fs::read_to_string(repo.root().join(".velo/MERGE_HEAD")).ok()?;
-    let (_, source) = text.split_once(':')?;
-    let source = source.trim();
-    (!source.is_empty()).then(|| source.to_string())
+    let head = crate::commands::merge_head::read(repo.root())?;
+    (!head.source.is_empty()).then_some(head.source)
 }
 
 /// Resolve several files by taking one side of each.

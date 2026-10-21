@@ -447,9 +447,13 @@ fn apply_one(guard: &WriteGuard, snapshot: &str) -> Result<Applied> {
     }
 
     // MERGE_HEAD's "<pre-hash>:rebase/<snap>" form drives resolve and abort.
-    storage::write_atomic(
-        &root.join(".velo/MERGE_HEAD"),
-        format!("{}:rebase/{}", position, &snapshot[..8]).as_bytes(),
+    crate::commands::merge_head::write(
+        root,
+        &crate::commands::merge_head::MergeHead {
+            pre: position.to_string(),
+            source: format!("rebase/{}", &snapshot[..8]),
+            source_id: Some(snapshot.to_string()),
+        },
     )?;
     applied.record_conflicts(conn)?;
     Ok(applied)

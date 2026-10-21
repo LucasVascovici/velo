@@ -13,6 +13,7 @@ pub mod history;
 pub mod import;
 pub mod init;
 pub mod merge;
+pub(crate) mod merge_head;
 pub(crate) mod moves;
 pub mod mv;
 pub mod paths;

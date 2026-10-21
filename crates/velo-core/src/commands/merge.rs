@@ -98,8 +98,9 @@ pub enum Mode<'a> {
     /// A **spec**, not a resolved id, and deliberately so: an exact local branch
     /// tip wins over a hash prefix (so a short branch name is never mis-read as
     /// one), tags and remote refs fall out of the fallback, and the *name* is
-    /// what gets written to `MERGE_HEAD` for the eventual save to resolve into a
-    /// second parent. A `SnapshotId` would throw that away. See [`crate::ids`]
+    /// what is shown from `MERGE_HEAD`; the id it resolved to is stored beside it,
+    /// so the eventual save records that snapshot as the second parent even if
+    /// the name moves. A `SnapshotId` would throw the name away. See [`crate::ids`]
     /// for why specs stay `&str`.
     Bring { source: &'a str },
     /// Abandon a merge in progress and restore the pre-merge state.
@@ -135,13 +136,26 @@ fn abort_inner(guard: &WriteGuard) -> Result<Outcome> {
         });
     }
 
-    // MERGE_HEAD stores "pre_merge_hash:source_branch".
-    let merge_info = fs::read_to_string(&merge_head_path).unwrap_or_default();
-    let merge_info = merge_info.trim();
-    let (pre_merge_hash, source_branch) = merge_info
-        .split_once(':')
-        .unwrap_or((merge_info, "(unknown)"));
-    let source = source_branch.to_string();
+    // MERGE_HEAD stores "pre_merge_hash:source:source_id" (the id is absent in
+    // the 6.0.1 form, which resolves the name instead).
+    let head = crate::commands::merge_head::read(root).unwrap_or_else(|| {
+        crate::commands::merge_head::MergeHead {
+            pre: String::new(),
+            source: "(unknown)".to_string(),
+            source_id: None,
+        }
+    });
+    let head = if head.source.is_empty() {
+        crate::commands::merge_head::MergeHead {
+            source: "(unknown)".to_string(),
+            ..head
+        }
+    } else {
+        head
+    };
+    let pre_merge_hash = head.pre.as_str();
+    let source = head.source.clone();
+    let source_id = head.source_id.clone();
 
     let conflict_paths: Vec<String> = conn
         .prepare("SELECT path FROM conflict_files")?
@@ -163,7 +177,13 @@ fn abort_inner(guard: &WriteGuard) -> Result<Outcome> {
                 ..Default::default()
             },
         )?;
-        remove_merge_added(guard, pre_merge_hash, &source, &conflict_paths)?;
+        remove_merge_added(
+            guard,
+            pre_merge_hash,
+            &source,
+            source_id.as_deref(),
+            &conflict_paths,
+        )?;
         crate::failpoint::hit("merge_abort.after_restore");
         restore_orig_bytes(guard);
     }
@@ -291,18 +311,24 @@ fn remove_merge_added(
     guard: &WriteGuard,
     pre_merge_hash: &str,
     source: &str,
+    source_id: Option<&str>,
     conflict_paths: &[String],
 ) -> Result<()> {
     let conn = guard.conn();
-    let source_hash = crate::commands::branch_tip(conn, source).or_else(|| {
-        let spec = source
-            .strip_prefix("cherry-pick/")
-            .or_else(|| source.strip_prefix("rebase/"))
-            .unwrap_or(source);
-        crate::commands::resolve_snapshot_id(guard.repo(), spec)
-            .ok()
-            .map(SnapshotId::into_string)
-    });
+    // The id recorded at merge time, so a fetch that moved the source since
+    // cannot change which files count as "added by the merge".
+    let source_hash = source_id
+        .map(str::to_string)
+        .or_else(|| crate::commands::branch_tip(conn, source))
+        .or_else(|| {
+            let spec = source
+                .strip_prefix("cherry-pick/")
+                .or_else(|| source.strip_prefix("rebase/"))
+                .unwrap_or(source);
+            crate::commands::resolve_snapshot_id(guard.repo(), spec)
+                .ok()
+                .map(SnapshotId::into_string)
+        });
     let pre_tree = apply::load_tree(conn, pre_merge_hash)?;
     let mut candidates: std::collections::BTreeSet<String> =
         conflict_paths.iter().cloned().collect();
@@ -492,9 +518,13 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
     // part-way through the file writes leaves a merge in progress that
     // `merge --abort` can undo, instead of a half-merged tree with nothing
     // naming what it was merging.
-    storage::write_atomic(
-        &root.join(".velo/MERGE_HEAD"),
-        format!("{}:{}", pre_merge_parent.trim(), target_branch).as_bytes(),
+    crate::commands::merge_head::write(
+        root,
+        &crate::commands::merge_head::MergeHead {
+            pre: pre_merge_parent.trim().to_string(),
+            source: target_branch.to_string(),
+            source_id: Some(target_hash.clone()),
+        },
     )?;
     crate::failpoint::hit("merge.after_state");
 

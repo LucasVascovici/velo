@@ -12344,3 +12344,6 @@ mod first_save_threads;
 
 #[cfg(test)]
 mod racy_mtime;
+
+#[cfg(test)]
+mod merge_head_resolved;
