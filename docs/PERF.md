@@ -987,3 +987,134 @@ object checks (30%) and the file-map insert (27%), neither of which a batch
 touches. The 500-step totals in section 6 were not re-run for this section: the
 Windows figure is 19.4 s against shadow git's 210.5 s, and the Linux 200-step
 run above took 1.44 s of timed work.
+
+## 10. Phase 21: the team run's rows
+
+The 2026-10-20 team run (2,000 files, 300 snapshots, Windows, Defender on,
+editor, chat client and rust-analyzer running) is a busy-machine baseline: git
+itself took about 600 ms for trivial commands, so none of it can be judged against
+the 40-200 ms budgets. It is kept here whole, losses included.
+
+| Metric | velo | git or budget |
+| :--- | ---: | :--- |
+| `clone (http)` | 88.3 s | budget 2.5 s (loss) |
+| parallel 4 writers, 10 saves each | 164.6 s wall | no budget |
+| `clone (path)` | 14.3 s | git 5.4 s (loss) |
+| `bundle create` | 3.7 s | git 1.3 s (loss) |
+| `grep regex` | 1.5 s | git 0.7 s (loss) |
+| `stash push+pop` | 3.0 s | budget 0.5 s (loss) |
+| `blame (deep history)` | 1.3 s | git 0.8 s (loss) |
+| `push 50 snapshots` / `pull 50 snapshots` | 4.3 s / 2.7 s | budgets 1.5 s / 0.8 s (loss) |
+| `save initial` | 9.9 s | git 25.0 s (win) |
+| `save big file 64KB edit` | 1.2 s | git 3.5 s (win) |
+| `.velo` size after 300 snapshots | 10.0 MB | `.git` 14.8 MB (win) |
+
+### Profile at a reduced size
+
+Harness: `crates/velo-core/src/tests/team_rows_profile.rs` (`profile_team_rows`).
+Size: 500 files, 80 snapshots, 3 samples, batch of 50, on the busy Windows
+machine (Defender on), release build with `timing,http`. Medians in ms; the two
+laps are the largest `timing` laps of the row. Results:
+`bench/results/2026-10-team-rows-windows.json`. Only one size was run, so there
+is no measured scaling factor to 2,000/300; the full-size run is in the commands
+for the owner below.
+
+| row | Windows (ms) | p95 | top two laps (ms) |
+|---|---:|---:|---|
+| clone (path) | 1077 | 1332 | `restore.write_files` 163, `restore.validate` 9 |
+| clone (http) | 1401 | 1653 | `restore.write_files` 139, `restore.validate` 9 |
+| bundle create | 151 | 169 | no library laps |
+| grep regex | 16 | 19 | no library laps |
+| stash push+pop | 126 | 161 | `restore.scan` 20, `restore.write_files` 5 |
+| blame (deep history) | 25 | 30 | no library laps |
+| push 50 (path) | 486 | 658 | no library laps |
+| pull 50 (path) | 461 | 672 | `restore.write_files` 33, `restore.scan` 16 |
+| push 50 (http) | 1004 | 1186 | no library laps |
+| pull 50 (http) | 1139 | 1246 | `restore.write_files` 25, `restore.scan` 25 |
+| parallel 4 writers, 10 saves | 2449 | 2480 | `lock_wait_ms` 6053 (summed over writers), `save_ms` 2338 |
+
+Linux: not measured by this task. The tool that ran it could not start WSL, so the
+Linux half is left for the owner (commands below). The Linux column is empty, not
+estimated.
+
+Reading the laps:
+
+- Clone: the library laps add up to about 200 ms of 1,077 ms. The rest is
+  outside the `timing` laps (fetching and copying objects, creating the
+  repository), so the next profile of clone needs laps there. Among the laps,
+  writing the working files dominates.
+- Bundle create, push, and the HTTP rows have no library laps at all: their cost
+  sits in code the timers do not cover (object enumeration and transfer), and the
+  HTTP rows add about 0.3-0.5 s over the path rows for the in-process server's
+  socket handling at this size.
+- Stash and pull are dominated by the working-tree scan and file writes, the
+  same two stages that Defender taxes per file (see `docs/WINDOWS.md`).
+- Parallel writers: `Repo::write` refuses a busy lock, so each writer retries.
+  Waiting (6,053 ms summed over 4 writers, 2,119 retries) is 2.6 times the time
+  spent saving; the cost is serialisation on the one lock, not save speed.
+
+### Rows likely to stay over budget at full size
+
+These are judgements from a reduced run, not measurements at full size.
+
+- `clone (http)` and `clone (path)`: dominant stage `restore.write_files` plus
+  untimed object transfer. Writing 2,000 files grows with the file count and
+  Defender's per-file cost.
+- `push` and `pull` of 50 snapshots over HTTP: dominant stage is transfer
+  outside the laps; at 500 files they are already at 1.0-1.1 s against 1.5 s and
+  0.8 s budgets.
+- `stash push+pop`: dominant stage `restore.scan`, which grows with file count.
+- `parallel writers`: dominant stage is lock wait, by design of the refusing
+  lock.
+- `grep regex` and `blame`: far under any budget at this size; whether they stay
+  so at 2,000/300 is for the owner's run.
+
+### Commands for the owner
+
+Run with nothing else running. On Windows, first exclude the work directory and
+the build output from real-time scanning (elevated PowerShell, see
+`docs/WINDOWS.md`; replace the paths with your own):
+
+```powershell
+Add-MpPreference -ExclusionPath "C:\path\to\velo\target"
+Add-MpPreference -ExclusionPath "$env:TEMP"
+```
+
+Windows, full size, from the repository root (use an absolute `VELO_PROFILE_OUT`;
+the test runs from the crate directory):
+
+```text
+VELO_PROFILE_FILES=2000 VELO_PROFILE_HISTORY=300 VELO_PROFILE_SAMPLES=3 \
+VELO_PROFILE_OUT=<absolute path>/bench/results/2026-10-team-rows-windows-full.json \
+cargo test -p velo-core --release --features timing,http profile_team_rows \
+    -- --ignored --nocapture --test-threads=1
+```
+
+Linux (or WSL, with a Linux target directory and a work directory under `$HOME`):
+
+```text
+CARGO_TARGET_DIR=$HOME/velo-target VELO_PROFILE_DIR=$HOME \
+VELO_PROFILE_FILES=2000 VELO_PROFILE_HISTORY=300 VELO_PROFILE_SAMPLES=3 \
+VELO_PROFILE_OUT=$PWD/bench/results/2026-10-team-rows-linux-full.json \
+cargo test -p velo-core --release --features timing,http profile_team_rows \
+    -- --ignored --nocapture --test-threads=1
+```
+
+The reduced Linux run the brief asked for uses the same command with
+`VELO_PROFILE_FILES=500 VELO_PROFILE_HISTORY=80` and
+`bench/results/2026-10-team-rows-linux.json`.
+
+Quiet-machine table, to be filled from those runs (seconds, 2,000 files, 300
+snapshots). Keep the losses.
+
+| row | Windows | Linux | target |
+|---|---:|---:|---|
+| clone (path) | | | git 5.4 s |
+| clone (http) | | | 2.5 s |
+| bundle create | | | git 1.3 s |
+| grep regex | | | git 0.7 s |
+| stash push+pop | | | 0.5 s |
+| blame (deep history) | | | git 0.8 s |
+| push 50 snapshots | | | 1.5 s |
+| pull 50 snapshots | | | 0.8 s |
+| parallel 4 writers, 10 saves each | | | no budget |
