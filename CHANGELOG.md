@@ -34,6 +34,7 @@ Phase 21: fix what the team simulation found, then re-measure.
 - **21.4-b Undo-heavy differential runs.** The docs give a 25-slice loop, one hour per slice, each with a distinct `VELO_DIFF_SEED`, and say how to total the sequence count.
 - **21.10-a A committed harness for the team run's over-target rows.** Added `team_rows_profile.rs`. An ignored `profile_team_rows` measures clone (path and HTTP), bundle, grep, stash, blame, push/pull (path and HTTP) and 4 parallel writers, with timing laps and JSON output. A smoke test, `team_rows_run_at_a_small_size`, runs every row in the normal suite.
 - **21.12-a CI: the semver baseline is now v6.0.1.** The stale comment in `ci.yml` is gone.
+- **21.12-b Re-measure the Linux 500-step agent run and fix the <worktree> placeholder in PERF.md.** The sandbox refused every wsl call, so the 500-step Linux run was not made. `docs/PERF.md` now says so and gives the repo-root owner command; no numbers were invented.
 
 ## 6.0.1
 
