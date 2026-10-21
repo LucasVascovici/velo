@@ -974,6 +974,22 @@ batch API, because none was built. Windows step-to-step noise (p95 127 ms
 against a median of 73 ms) is more than 300 times the saving; Linux p95 is 12.7
 ms against a 4.97 ms median, about 90 times the saving.
 
+#### Linux 500-step re-run (21.12-b): not done
+
+The 500-step Linux run was not made. The sandbox guard of the tool that ran
+this task refused every `wsl` call, so `bench/results/2026-10-linux-agent-500.json`
+does not exist and there are no new Linux numbers (no wins and no losses) beside
+the 200-step ones above. This is an environment block, not a result, and nothing
+here is estimated. The 200-step Linux figures above remain the only Linux ones.
+Owner step, run from the repo root:
+
+```
+wsl -e bash -lc 'mkdir -p $HOME/velo-prof && VELO_PROFILE_STEPS=500 VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_OUT=$PWD/bench/results/2026-10-linux-agent-500.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1'
+```
+
+Once it exists, add its per-stage medians as a new column beside the Linux
+column of the table above, losses included.
+
 The earlier Linux figure (`perf-2026-10-16-linux.json`, `save_tree.commit` 82.8
 ms of a 93 ms step) predates storage v4. On v4 the Linux commit also collapsed,
 from 82.8 ms to 0.090 ms, as it did on Windows (134.8 ms to 0.39 ms), and the
