@@ -126,8 +126,8 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .optional()?;
-    let (snapshot, message, parent_hash) = snap.ok_or_else(|| {
-        VeloError::invalid(format!("Nothing to undo on branch '{}'.", branch.trim()))
+    let (snapshot, message, parent_hash) = snap.ok_or_else(|| VeloError::NothingToUndo {
+        branch: branch.trim().to_string(),
     })?;
 
     refuse_if_depended_on(conn, &snapshot)?;

@@ -96,9 +96,10 @@ Quick start
     after_help = "Run `velo help <COMMAND>` for detailed usage of any command.
 
 EXIT CODES
-  0  success (including nothing to save, already up to date, nothing to pull)
-  1  error
-  2  command-line usage error
+  0  success (including nothing to save, already up to date, nothing to pull,
+     nothing to undo, nothing to redo)
+  1  error (including a name that does not resolve)
+  2  command-line usage error, and nothing else
   3  conflicts left to resolve (merge, cherry-pick or rebase stopped)
   4  histories diverged (pull, or a push the remote refused)
   5  repository locked by another velo process",
@@ -1742,8 +1743,8 @@ enum Exit {
     Diverged,
     /// `velo verify` found no trusted signature, or an invalid one.
     Untrusted,
-    /// A usage refusal made after parsing (a near-miss branch name).
-    Usage,
+    /// A refusal made after parsing (a near-miss branch name): an error, exit 1.
+    Refused,
 }
 
 impl Exit {
@@ -1753,7 +1754,7 @@ impl Exit {
             Exit::Conflicts => 3,
             Exit::Diverged => 4,
             Exit::Untrusted => 1,
-            Exit::Usage => 2,
+            Exit::Refused => 1,
         }
     }
 }
@@ -3281,7 +3282,15 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::Undo => {
-            let outcome = commands::undo::run(write())?;
+            let outcome = match commands::undo::run(write()) {
+                Ok(o) => o,
+                // Nothing to undo is not a failure: say so and exit 0.
+                Err(e @ VeloError::NothingToUndo { .. }) => {
+                    println!("{e}");
+                    return Ok(Exit::Success);
+                }
+                Err(e) => return Err(e),
+            };
             // Undo leaves `remote_refs` alone, so a tracking ref may still name
             // the snapshot just removed; say so rather than let it look gone.
             let tracking = commands::sync::tracking_refs_at(
@@ -3291,7 +3300,11 @@ fn run(cli: Cli) -> Result<Exit> {
             render::undo::print(&outcome, &tracking);
         }
 
-        Commands::Redo => render::undo::print_redo(&commands::redo::run(write())?),
+        Commands::Redo => match commands::redo::run(write()) {
+            Ok(o) => render::undo::print_redo(&o),
+            Err(e @ VeloError::NothingToRedo { .. }) => println!("{e}"),
+            Err(e) => return Err(e),
+        },
 
         Commands::Diff { args, paths } => {
             render::diff::print_comparison(&diffargs::dispatch(&repo, &args, &paths)?);
@@ -3423,7 +3436,7 @@ fn run(cli: Cli) -> Result<Exit> {
                              To create it: velo switch --create {name}",
                             console::style("error:").red().bold()
                         );
-                        return Ok(Exit::Usage);
+                        return Ok(Exit::Refused);
                     }
                 }
             }

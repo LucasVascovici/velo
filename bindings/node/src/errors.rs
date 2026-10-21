@@ -137,6 +137,9 @@ fn build(env: &Env, err: &Error) -> napi::Result<napi::Error> {
             obj.set("branch", branch.as_str())?;
             obj.set("snapshot", snapshot.as_str())?;
         }
+        Error::NothingToUndo { branch } | Error::NothingToRedo { branch } => {
+            obj.set("branch", branch.as_str())?;
+        }
         Error::RedoBranchMoved {
             branch,
             snapshot,

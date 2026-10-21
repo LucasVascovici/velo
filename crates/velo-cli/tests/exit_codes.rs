@@ -332,3 +332,25 @@ fn help_lists_every_exit_code() {
         );
     }
 }
+
+#[test]
+fn nothing_to_undo_and_redo_exit_zero_and_unknown_names_exit_one() {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    ok(d, &["init"]);
+    write(
+        d, "f.txt", "v1
+",
+    );
+    ok(d, &["save", "s1"]);
+    ok(d, &["undo"]);
+    let (out, code) = velo(d, &["undo"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("Nothing to undo on branch"), "{out}");
+    ok(d, &["redo"]);
+    let (out, code) = velo(d, &["redo"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("Nothing to redo on branch"), "{out}");
+    let (out, code) = velo(d, &["merge", "nosuch"]);
+    assert_eq!(code, Some(1), "{out}");
+}

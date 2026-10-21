@@ -544,9 +544,9 @@ Scripts can decide on the exit code:
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
-| 1 | Error |
-| 2 | Command-line usage error, or `switch` refusing a near-miss branch name (`mian` for `main`) without a terminal; `velo switch --create <name>` creates it anyway |
+| 0 | Success, including every nothing-to-do: "nothing to save", "already up to date", "nothing to pull", "nothing to undo" and "nothing to redo" |
+| 1 | Error, including a name that does not resolve and `switch` refusing a near-miss branch name (`mian` for `main`) without a terminal; `velo switch --create <name>` creates it anyway |
+| 2 | Command-line usage error rejected by the argument parser, and nothing else |
 | 3 | Conflicts left to resolve (`merge`, `cherry-pick`, `rebase` or `sync` stopped on conflicts) |
 | 4 | Histories diverged (`pull`, or a `push` or `sync` the remote refused) |
 | 5 | Repository locked by another velo process |

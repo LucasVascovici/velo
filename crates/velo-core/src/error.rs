@@ -182,6 +182,16 @@ pub enum Error {
         snapshot: crate::SnapshotId,
         tip: Option<crate::SnapshotId>,
     },
+    /// `undo` found no snapshot on the branch to remove. Nothing is wrong;
+    /// the CLI reports it as plain text and exits 0.
+    NothingToUndo {
+        branch: String,
+    },
+    /// `redo` found nothing in the trash for the branch. Like
+    /// [`Error::NothingToUndo`] this is a nothing-to-do, not a failure.
+    NothingToRedo {
+        branch: String,
+    },
     /// The branch has no commits yet and this operation needs at least one.
     UnbornBranch {
         branch: String,
@@ -366,6 +376,8 @@ impl fmt::Display for Error {
                 branch,
                 snapshot.short()
             ),
+            Error::NothingToUndo { branch } => write!(f, "Nothing to undo on branch '{branch}'."),
+            Error::NothingToRedo { branch } => write!(f, "Nothing to redo on branch '{branch}'."),
             Error::RedoBranchMoved {
                 branch,
                 snapshot,
@@ -496,6 +508,8 @@ impl Error {
             Error::Diverged { .. } => "Diverged",
             Error::NotFastForward { .. } => "NotFastForward",
             Error::RemoteRefAbsent { .. } => "RemoteRefAbsent",
+            Error::NothingToUndo { .. } => "NothingToUndo",
+            Error::NothingToRedo { .. } => "NothingToRedo",
             Error::RedoBranchMoved { .. } => "RedoBranchMoved",
             Error::UnbornBranch { .. } => "UnbornBranch",
             Error::NotFound { .. } => "NotFound",
@@ -593,6 +607,12 @@ impl Error {
                 remote: "origin".to_string(),
                 branch: "main".to_string(),
                 snapshot: id('b'),
+            },
+            Error::NothingToUndo {
+                branch: "main".to_string(),
+            },
+            Error::NothingToRedo {
+                branch: "main".to_string(),
             },
             Error::RedoBranchMoved {
                 branch: "main".to_string(),
@@ -698,6 +718,8 @@ mod variant_tests {
         "Diverged",
         "NotFastForward",
         "RemoteRefAbsent",
+        "NothingToUndo",
+        "NothingToRedo",
         "RedoBranchMoved",
         "UnbornBranch",
         "NotFound",
@@ -737,6 +759,8 @@ mod variant_tests {
             Error::Diverged { .. } => "Diverged",
             Error::NotFastForward { .. } => "NotFastForward",
             Error::RemoteRefAbsent { .. } => "RemoteRefAbsent",
+            Error::NothingToUndo { .. } => "NothingToUndo",
+            Error::NothingToRedo { .. } => "NothingToRedo",
             Error::RedoBranchMoved { .. } => "RedoBranchMoved",
             Error::UnbornBranch { .. } => "UnbornBranch",
             Error::NotFound { .. } => "NotFound",

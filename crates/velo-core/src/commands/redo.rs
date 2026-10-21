@@ -123,8 +123,8 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
 
     let snap = newest_trashed(conn, branch.trim())?;
-    let (snapshot, message, parent) = snap.ok_or_else(|| {
-        VeloError::invalid(format!("Nothing to redo on branch '{}'.", branch.trim()))
+    let (snapshot, message, parent) = snap.ok_or_else(|| VeloError::NothingToRedo {
+        branch: branch.trim().to_string(),
     })?;
     // Refused before any write: bringing the row back while the branch has
     // moved on would leave it as a non-tip whose child is the tip, and the

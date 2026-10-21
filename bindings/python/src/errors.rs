@@ -49,6 +49,8 @@ exceptions!(
     Diverged,
     NotFastForward,
     RemoteRefAbsent,
+    NothingToUndo,
+    NothingToRedo,
     RedoBranchMoved,
     UnbornBranch,
     NotFound,
@@ -199,6 +201,8 @@ pub fn to_py(err: Error) -> PyErr {
             } => raise!(RemoteRefAbsent,
                 "remote" => remote.as_str(), "branch" => branch.as_str(),
                 "snapshot" => snapshot.as_str()),
+            Error::NothingToUndo { branch } => raise!(NothingToUndo, "branch" => branch.as_str()),
+            Error::NothingToRedo { branch } => raise!(NothingToRedo, "branch" => branch.as_str()),
             Error::RedoBranchMoved {
                 branch,
                 snapshot,

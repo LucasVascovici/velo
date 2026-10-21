@@ -73,7 +73,7 @@ fn switch_create_flags() {
 fn switch_near_miss_refuses_without_tty() {
     let d = repo();
     let (out, code) = velo(d.path(), &["switch", "mian"]);
-    assert_eq!(code, Some(2), "{out}");
+    assert_eq!(code, Some(1), "{out}");
     assert!(
         out.contains(
             "no branch 'mian'; did you mean 'main'? To create it: velo switch --create mian"

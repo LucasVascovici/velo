@@ -3422,7 +3422,13 @@ mod tests {
     #[test]
     fn undo_with_nothing_to_undo_is_an_error() {
         let (_tmp, root) = setup();
-        assert!(with_write(&root, commands::undo::run).is_err());
+        write(&root, "f.txt", "v1");
+        save(&root, "s1");
+        with_write(&root, commands::undo::run).unwrap();
+        assert!(matches!(
+            with_write(&root, commands::undo::run),
+            Err(crate::Error::NothingToUndo { .. })
+        ));
     }
 
     #[test]
@@ -3472,7 +3478,10 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        assert!(with_write(&root, commands::redo::run).is_err());
+        assert!(matches!(
+            with_write(&root, commands::redo::run),
+            Err(crate::Error::NothingToRedo { .. })
+        ));
     }
 
     #[test]
