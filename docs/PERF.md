@@ -1136,6 +1136,65 @@ parallel row by lock wait) at lower absolute times, but it is one size only.
 - `grep regex` and `blame`: far under any budget at this size; whether they stay
   so at 2,000/300 is for the owner's run.
 
+### Clone laps and the verdict on each row (21.10-c)
+
+Clone now has laps in the `timing` build (they print nothing from the library):
+`clone.fetch` (open the remote, fetch and decode the pack), `clone.create_repo`
+(create the directory, `init`, open, take the write lock), `import.objects`
+(verify and store the objects, inside `bundle::import`) and `clone.import_rows`
+(snapshot, tree and ref rows, remote row). Same size as above, 500 files and 80
+snapshots, Windows, busy machine, two runs of 3 samples, medians in ms
+(`bench/results/2026-10-clone-laps-windows.json`):
+
+| stage | clone (http) run 1 | run 2 | share of total |
+|---|---:|---:|---:|
+| `clone.fetch` | 235 | 218 | 18% |
+| `clone.create_repo` | 64 | 48 | 4-5% |
+| `import.objects` | 641 | 628 | 50% |
+| `clone.import_rows` | 55 | 52 | 4% |
+| `restore.write_files` | 131 | 139 | 11% |
+| rest of restore | about 20 | about 20 | 2% |
+| total | 1289 | 1222 | |
+
+An earlier run with one lap over all of `import_pack` gave 679 ms for clone
+(http) and 676 ms for clone (path), against 633 ms and a `clone.fetch` of 177-189
+ms for the path row. Before this task clone (http) at 500/80 was 1,401 ms, and
+after it, with only laps added and no transport change, it is 1,222-1,289 ms: the
+difference is run-to-run spread, not a fix.
+
+Verdict for clone: there is no transport-level fix. The HTTP fetch is 18% of the
+row and is only 40-100 ms above the path row's fetch; the dominant stage is
+`import.objects`, half of the row on both transports. It verifies every frame in
+parallel and then creates the object files on one thread (`ObjectStore::import_many`
+already does it that way on purpose: creating files in parallel is slower, see
+the comment there), so what remains is one file create per object, taxed per
+file by Defender. That stage does not depend on the transport, which is why the
+two clone rows are within 20% of each other. A change to it would have to alter
+how objects are stored, which is outside this task (no bundle or format change).
+The 6x gap between clone (http) and clone (path) in the 88 s run is not
+reproduced at 250/40 or 500/80, so it is not a transport defect that these
+sizes show. Whether it appears at 2,000 files and 300 snapshots is for the
+owner's full-size run below; it was not run here.
+
+The other rows 21.10-b flagged, each by its dominant stage:
+
+- `stash push+pop`: `restore.scan` (20 of 126 ms on Windows, 15 of 124 ms on
+  Linux), the stat-and-compare walk of every file; it grows with file count and
+  needs the working-tree cache, a design change rather than a small fix. No
+  change here.
+- `push` and `pull` of 50 snapshots over HTTP: transfer outside the laps. The
+  path rows (486 and 461 ms) already cost almost as much, so the extra 0.4-0.7 s
+  of the HTTP rows is the in-process front end's sockets in the harness plus the
+  same object import; as for clone, the import is on a single thread per object
+  by design. No transport stage stood out, so no change; the status line and the
+  protocol stay as they are.
+- `parallel writers`: lock wait, by design. `Repo::write` refuses a busy lock
+  and the writers retry, so wait is 2.6 times the save time (1.5 times on
+  Linux). Making it faster means queuing writers behind the lock, a behaviour
+  change, not a measurement fix.
+- `clone (path)`: the same stages as clone (http), with `import.objects`
+  dominant, so the verdict above applies.
+
 ### Commands for the owner
 
 Run with nothing else running. On Windows, first exclude the work directory and

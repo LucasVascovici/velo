@@ -173,6 +173,7 @@ pub fn clone_with_token(
         )));
     }
 
+    crate::timing::begin();
     // Pull everything from the remote (empty have-set = send it all).
     let mut remote = transport::open_with_token(url, spawn, token)?;
     let (refs, pack) = {
@@ -186,6 +187,7 @@ pub fn clone_with_token(
         let transfer = PhaseGuard::cancellable(obs, Phase::Transferring, None, cancel);
         remote.fetch(&HashSet::new(), &transfer)?
     };
+    crate::timing::lap("clone.fetch");
     if refs.is_empty() {
         return Err(VeloError::invalid(format!(
             "'{}' has no commits yet, so there is nothing to clone.\n  \
@@ -210,8 +212,10 @@ pub fn clone_with_token(
     };
     let guard = repo.write()?;
     let conn = guard.conn();
+    crate::timing::lap("clone.create_repo");
 
     let (snaps, objs) = bundle::import_pack(&guard, &pack)?;
+    crate::timing::lap("clone.import_rows");
     guard.repo().emit_imported(snaps);
     crate::failpoint::hit("clone.after_import");
 

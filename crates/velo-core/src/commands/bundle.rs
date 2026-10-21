@@ -528,6 +528,7 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
     // Verified on the way in: each frame must decompress and re-hash to its
     // own name before it is stored; objects already held are skipped undecoded.
     let new_objects = objects.import_many(&bundle.objects, &progress, guard.repo().limits())?;
+    crate::timing::lap("import.objects");
     crate::failpoint::hit("bundle.after_objects");
 
     let existing: HashSet<String> = {
