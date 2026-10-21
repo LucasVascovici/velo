@@ -29,9 +29,20 @@ jobs:
           export VELO_DIFF_FAILURE_OUT=diff-failure.txt
           cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture
 
+      - name: Differential long run, undo-heavy mix
+        run: |
+          export VELO_DIFF_SEED=$RANDOM$RANDOM
+          echo "VELO_DIFF_SEED=$VELO_DIFF_SEED"
+          export VELO_DIFF_MIX=undo
+          export VELO_DIFF_SECS=1800
+          export VELO_DIFF_FAILURE_OUT=diff-failure-undo.txt
+          cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture
+
       - name: Upload the failing seed
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: diff-failure
-          path: diff-failure.txt
+          path: |
+            diff-failure.txt
+            diff-failure-undo.txt
