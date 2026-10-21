@@ -898,7 +898,7 @@ VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_KEYFRAMES=3 VELO_PROF
 Linux (ext4 path, as section 1 describes), 100,000 files:
 
 ```
-wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=8,32,128,512 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-linux.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
+wsl -e bash -lc 'mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=8,32,128,512 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-linux.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
 ```
 
 ### Cache the last tree (20.10)
@@ -953,7 +953,7 @@ because of the time budget). Median per step, in milliseconds, for the
 
 ```
 VELO_PROFILE_STEPS=200 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-windows-group-commit-agent.json cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1
-wsl -e bash -lc 'cd "$(wslpath "<worktree>")" && mkdir -p $HOME/velo-prof && VELO_PROFILE_STEPS=200 VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-linux-group-commit-agent.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1'
+wsl -e bash -lc 'mkdir -p $HOME/velo-prof && VELO_PROFILE_STEPS=200 VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-linux-group-commit-agent.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1'
 ```
 
 The Linux run is WSL2 on ext4 (`$HOME/velo-prof`).
