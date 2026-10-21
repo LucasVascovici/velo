@@ -86,3 +86,48 @@ fn merging_an_unborn_branch_says_it_has_no_commits() {
     .unwrap_err();
     assert!(matches!(err, VeloError::UnbornBranch { .. }), "{err:?}");
 }
+
+#[test]
+fn cherry_picking_a_change_already_present_updates_nothing() {
+    let (_t, repo) = setup();
+    let base = "a
+b
+c
+d
+e
+f
+g
+";
+    commit(&repo, base, "base");
+    go(&repo, "feat");
+    commit(
+        &repo,
+        &base.replacen(
+            "a
+", "A
+", 1,
+        ),
+        "feat edit",
+    );
+    let feat = resolve_snapshot_id(&repo, "feat").unwrap();
+    go(&repo, "main");
+    // main made the same edit and another one elsewhere, so the 3-way merge is
+    // clean but its result is byte-for-byte what main already has.
+    let ours = base
+        .replacen(
+            "a
+", "A
+", 1,
+        )
+        .replacen(
+            "g
+", "G
+", 1,
+        );
+    commit(&repo, &ours, "main edit");
+    let out = crate::commands::cherry_pick::run(&repo.write().unwrap(), &feat, None).unwrap();
+    assert_eq!(out.applied.updated(), 0, "{:?}", out.applied);
+    assert!(out.applied.files.is_empty(), "{:?}", out.applied);
+    assert!(out.saved_as.is_none());
+    assert_eq!(fs::read_to_string(repo.root().join("f.txt")).unwrap(), ours);
+}

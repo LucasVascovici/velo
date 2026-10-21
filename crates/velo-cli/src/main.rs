@@ -3571,7 +3571,8 @@ fn run(cli: Cli) -> Result<Exit> {
                 .map(|spec| resolve_spec(&repo, spec))
                 .transpose()?;
             let lines = lines.as_deref().map(parse_line_range).transpose()?;
-            render::blame::print(&commands::blame::run(
+            let asked = lines.is_some();
+            let blame = commands::blame::run(
                 &repo,
                 Path::new(&file),
                 commands::blame::Options {
@@ -3579,7 +3580,17 @@ fn run(cli: Cli) -> Result<Exit> {
                     lines,
                     ..Default::default()
                 },
-            )?);
+            )?;
+            render::blame::print(&blame);
+            if asked && blame.lines.is_empty() {
+                // A range past the end of the file selects nothing; say how long
+                // the file is so the silence is not mistaken for a failure.
+                if let Ok(bytes) = repo.read_file_at(&blame.snapshot, &blame.path) {
+                    let nl = bytes.iter().filter(|b| **b == b'\n').count();
+                    let n = nl + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+                    eprintln!("file has {n} lines");
+                }
+            }
         }
 
         Commands::ExportGit { output, branch } => {

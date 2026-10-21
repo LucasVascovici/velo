@@ -91,3 +91,187 @@ fn merge_into_an_unborn_branch_says_it_adopts_the_source_history() {
         "{out}"
     );
 }
+
+fn mk(dir: &Path) {
+    ok(dir, &["init"]);
+}
+
+#[test]
+fn merge_summary_after_mv_and_edit_agrees_with_status() {
+    let t = TempDir::new().unwrap();
+    let d = t.path();
+    mk(d);
+    write(
+        d,
+        "a.txt",
+        "1
+2
+3
+4
+5
+6
+7
+8
+",
+    );
+    ok(d, &["save", "base"]);
+    ok(d, &["switch", "feat"]);
+    ok(d, &["mv", "a.txt", "b.txt"]);
+    write(
+        d,
+        "b.txt",
+        "1
+two
+3
+4
+5
+6
+7
+8
+",
+    );
+    ok(d, &["save", "move and edit"]);
+    ok(d, &["switch", "main"]);
+    write(
+        d,
+        "other.txt",
+        "x
+",
+    );
+    ok(d, &["save", "other"]);
+    let merge = ok(d, &["merge", "feat"]);
+    assert!(merge.contains("New:      1"), "{merge}");
+    assert!(merge.contains("Updated:  0"), "{merge}");
+    assert!(merge.contains("Deleted:  1"), "{merge}");
+    let status = ok(d, &["status"]);
+    assert!(status.contains("New 1 file(s)"), "{status}");
+    assert!(status.contains("Deleted 1 file(s)"), "{status}");
+}
+
+#[test]
+fn cherry_pick_of_a_present_change_prints_only_nothing_to_apply() {
+    let t = TempDir::new().unwrap();
+    let d = t.path();
+    mk(d);
+    write(
+        d,
+        "f.txt",
+        "a
+b
+c
+d
+e
+f
+g
+",
+    );
+    ok(d, &["save", "base"]);
+    ok(d, &["switch", "feat"]);
+    write(
+        d,
+        "f.txt",
+        "A
+b
+c
+d
+e
+f
+g
+",
+    );
+    ok(d, &["save", "feat"]);
+    ok(d, &["switch", "main"]);
+    write(
+        d,
+        "f.txt",
+        "A
+b
+c
+d
+e
+f
+G
+",
+    );
+    ok(d, &["save", "main"]);
+    let out = ok(d, &["cherry-pick", "feat"]);
+    assert!(out.contains("Nothing to apply"), "{out}");
+    assert!(!out.contains("Updated"), "{out}");
+    assert!(!out.contains("Auto-merged"), "{out}");
+}
+
+#[test]
+fn blame_lines_past_the_end_says_how_long_the_file_is() {
+    let t = TempDir::new().unwrap();
+    let d = t.path();
+    mk(d);
+    write(
+        d,
+        "f.txt",
+        "one
+two
+three
+",
+    );
+    ok(d, &["save", "base"]);
+    let out = Command::new(env!("CARGO_BIN_EXE_velo"))
+        .args(["blame", "f.txt", "--lines", "100-110"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let err = String::from_utf8_lossy(&out.stderr);
+    assert!(err.contains("file has 3 lines"), "{err}");
+}
+
+#[test]
+fn conflicts_text_shows_context_under_both_sides() {
+    let t = TempDir::new().unwrap();
+    let d = t.path();
+    mk(d);
+    write(
+        d,
+        "f.txt",
+        "c1
+c2
+mid
+c3
+c4
+",
+    );
+    ok(d, &["save", "base"]);
+    ok(d, &["switch", "feat"]);
+    write(
+        d,
+        "f.txt",
+        "c1
+c2
+theirs
+c3
+c4
+",
+    );
+    ok(d, &["save", "feat"]);
+    ok(d, &["switch", "main"]);
+    write(
+        d,
+        "f.txt",
+        "c1
+c2
+ours
+c3
+c4
+",
+    );
+    ok(d, &["save", "main"]);
+    let _ = velo(d, &["merge", "feat"]);
+    let (out, good) = velo(d, &["conflicts", "f.txt"]);
+    assert!(good, "{out}");
+    let ours_at = out.find("ours (your last saved").expect(&out);
+    let theirs_at = out.find("theirs (feat").expect(&out);
+    let (ours_block, theirs_block) = (&out[ours_at..theirs_at], &out[theirs_at..]);
+    for block in [ours_block, theirs_block] {
+        assert!(block.contains("c2"), "{out}");
+        assert!(block.contains("c3"), "{out}");
+    }
+}

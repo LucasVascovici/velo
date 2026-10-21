@@ -10,8 +10,11 @@ pub fn print(outcome: &Outcome) {
         style(&outcome.message).dim()
     );
 
-    super::apply::print_files(&outcome.applied);
-    super::apply::print_summary("Cherry-pick", &outcome.applied);
+    // A change that is already present reports nothing but that fact.
+    if !outcome.applied.files.is_empty() {
+        super::apply::print_files(&outcome.applied);
+        super::apply::print_summary("Cherry-pick", &outcome.applied);
+    }
 
     let conflicts = outcome.applied.conflicts();
     if !conflicts.is_empty() {
