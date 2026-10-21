@@ -23,7 +23,7 @@ mod tests {
     use crate::{BranchName, ObjectHash, Repo, SnapshotId, SnapshotMeta, TagName};
 
     // ==================================================================
-#[cfg(test)]
+    #[cfg(test)]
     // Helpers
     // =========================================================================
 
@@ -12348,5 +12348,6 @@ mod racy_mtime;
 
 #[cfg(test)]
 mod merge_head_resolved;
-=======
+
+#[cfg(test)]
 mod push_tags;
