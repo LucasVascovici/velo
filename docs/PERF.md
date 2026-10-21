@@ -1015,9 +1015,11 @@ Harness: `crates/velo-core/src/tests/team_rows_profile.rs` (`profile_team_rows`)
 Size: 500 files, 80 snapshots, 3 samples, batch of 50, on the busy Windows
 machine (Defender on), release build with `timing,http`. Medians in ms; the two
 laps are the largest `timing` laps of the row. Results:
-`bench/results/2026-10-team-rows-windows.json`. Only one size was run, so there
-is no measured scaling factor to 2,000/300; the full-size run is in the commands
-for the owner below.
+`bench/results/2026-10-team-rows-windows.json`. A second, half-size Windows run
+(250 files, 40 snapshots, same machine, same build) is in
+`bench/results/2026-10-team-rows-windows-small.json`. All 11 rows were measured
+on Windows at both sizes; 0 rows were measured on Linux (see below). The
+full-size (2,000/300) run is in the commands for the owner below.
 
 | row | Windows (ms) | p95 | top two laps (ms) |
 |---|---:|---:|---|
@@ -1033,9 +1035,33 @@ for the owner below.
 | pull 50 (http) | 1139 | 1246 | `restore.write_files` 25, `restore.scan` 25 |
 | parallel 4 writers, 10 saves | 2449 | 2480 | `lock_wait_ms` 6053 (summed over writers), `save_ms` 2338 |
 
-Linux: not measured by this task. The tool that ran it could not start WSL, so the
-Linux half is left for the owner (commands below). The Linux column is empty, not
-estimated.
+Linux: not measured, 0 of 11 rows. The sandbox guard of the tool that ran this
+task refused every `wsl` call, so `bench/results/2026-10-team-rows-linux.json`
+does not exist and the Linux times and laps are not in this table. This is an
+environment block, not a result: the Linux profile is an owner step, with the
+reduced-size command under "Commands for the owner", and criterion 1 of the task
+is met for Windows only until it is run. The Linux column is empty, not estimated.
+
+Doubling both files and history (250/40 to 500/80), median time scaled by:
+
+| row | 250/40 (ms) | 500/80 (ms) | factor |
+|---|---:|---:|---:|
+| clone (path) | 718 | 1077 | 1.5 |
+| clone (http) | 697 | 1401 | 2.0 |
+| bundle create | 55 | 151 | 2.7 |
+| grep regex | 9.5 | 16 | 1.7 |
+| stash push+pop | 107 | 126 | 1.2 |
+| blame (deep history) | 7.7 | 25 | 3.2 |
+| push 50 (path) | 618 | 486 | 0.8 |
+| pull 50 (path) | 459 | 461 | 1.0 |
+| push 50 (http) | 1014 | 1004 | 1.0 |
+| pull 50 (http) | 928 | 1139 | 1.2 |
+| parallel 4 writers, 10 saves | 2241 | 2449 | 1.1 |
+
+Two points do not give a curve, and the busy machine's run-to-run spread is
+larger than the 0.8 on push. Read the factors as direction only: clone, bundle,
+grep and blame grow with size; push, pull, stash and the parallel row barely
+moved, because their batch (50 snapshots) and the lock are fixed.
 
 Reading the laps:
 
@@ -1055,7 +1081,9 @@ Reading the laps:
 
 ### Rows likely to stay over budget at full size
 
-These are judgements from a reduced run, not measurements at full size.
+These are judgements from the 250/40 and 500/80 runs on Windows, not
+measurements at full size, and the factors above come from only two points, so
+the list is a guess. Nothing here is known for Linux.
 
 - `clone (http)` and `clone (path)`: dominant stage `restore.write_files` plus
   untimed object transfer. Writing 2,000 files grows with the file count and
