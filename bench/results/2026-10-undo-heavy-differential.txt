@@ -1,0 +1,23 @@
+Undo-heavy differential run (ARCHITECTURE.md 21.4-b)
+
+platform:   Windows 11 Enterprise 10.0.22621, x86_64, release build
+commit:     78afa7a (branch phase-21, includes the 21.4-a harness)
+mix:        VELO_DIFF_MIX=undo (removals, network ops, undo-heavy)
+command:    VELO_DIFF_SEED=1000000 VELO_DIFF_MIX=undo VELO_DIFF_SECS=520 \
+            VELO_DIFF_FAILURE_OUT=<file> cargo test -p velo-core --release \
+            --locked differential_long -- --ignored --nocapture
+seconds:    165 (the run stopped at its first failure; budget was 520)
+sequences:  18 started (seed/start pairs, 40 ops each); 17 clean, 1 failed
+linux/WSL:  not run (the failure stopped the measurement)
+
+FAILURE (the reproduction 21.4-c needs; nothing was fixed here)
+  seed:        1000002
+  start:       Golden("format-v4")
+  subject K:   3
+  ops:         40
+  replay:      VELO_DIFF_SEED=1000002 VELO_DIFF_OPS=40 (the differential_long run with the same mix)
+  report:      step 25: Save: fsck is red on reference local:
+               [DeltaBaseMissing { snapshot: "dd0b83bfc48171a795e4f6bd60272d1309f174960cb6d2e241dd6e9ef14a50ac",
+                                   base: "5e191e0229f6e4cdf5575bcdcc3f8d9abf7552a277aff50c74e6a111fbfa2845" }]
+  note:        the red repository is the K=1 reference, not the subject.
+  shrunk ops:  [Redo, Undo, Edit { file: 1, variant: Some(2) }, Save]

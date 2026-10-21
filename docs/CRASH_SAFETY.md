@@ -190,3 +190,22 @@ The run spawns one child process per point, so it takes about a minute. Without
 points compile to nothing. To add an operation, add a `Scenario` (a fixture
 builder and the operation) to `crash.rs`; the harness discovers its points by
 running it once, and the four checks run on each.
+
+## Undo-heavy differential run
+
+The differential harness (`differential_long` in `crates/velo-core/src/tests/differential.rs`)
+also runs an undo-heavy mix, and the nightly run uses it too. The first measured run
+(Windows, release, commit 78afa7a, seed 1000000) started 18 sequences and stopped at
+the 18th: 17 were clean, and seed 1000002 from the `format-v4` start (subject K=3)
+left the K=1 reference with a `DeltaBaseMissing` fsck finding after the shrunk ops
+`Redo, Undo, Edit, Save`. This is a reproduction, not a clean count, and it is
+recorded in `bench/results/2026-10-undo-heavy-differential.txt` for the fix. Once it
+is fixed, the owner reaches 10,000 sequences (about 9 seconds per sequence
+at the rate seen here, so roughly 25 hours; split it across seeds and machines) with:
+
+```bash
+VELO_DIFF_MIX=undo VELO_DIFF_SECS=3600 VELO_DIFF_FAILURE_OUT=fail.txt \
+  cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture
+```
+
+Every seed and start pair the run prints (`differential_long: seed ...`) is one sequence.
