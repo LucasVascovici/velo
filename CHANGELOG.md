@@ -16,6 +16,7 @@ Phase 21: fix what the team simulation found, then re-measure.
 
 ### Fixed
 
+- **21.10-c Fix the dominant cost of clone over HTTP, or write the reason.** `bundle::import` now calls `timing::begin()` at its start and laps a new `import.verify` stage before `import.objects`, so pull, push and serve rows no longer count earlier work as `import.objects`. PERF.md notes the new lap.
 - **21.1-a MERGE_HEAD records the resolved source snapshot; save, abort and status read it.** MERGE_HEAD now stores `<pre>:<source>:<source-id>`, written and parsed only in the new `commands/merge_head.rs`. Save and `merge --abort` use the stored id. The old two-field form is still read and re-resolved. The repro test fails without the save.rs change and passes with it.
 - **21.2-a redo refuses with a typed error when the branch moved since the undo.** The stray `#[cfg(test)]` at tests.rs:26 was already gone, so no new commit was needed for it.
 - **21.3-a switch, whole-tree restore and stash pop refuse while a merge or rebase is in progress.** Added `commands::refuse_in_progress` (rebase named first, then merge), called from `switch::run` unless forced, from `restore::run` for whole-tree restores without force, and from `stash::pop`.
