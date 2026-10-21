@@ -465,11 +465,15 @@ pub fn push_report(
             new_objects,
             new_tags,
         } => {
-            let tags = if new_tags.unwrap_or(0) > 0 {
-                offered.take()
-            } else {
-                Vec::new()
-            };
+            // Only names the receiver says it inserted, and only those this
+            // push offered for snapshots it already had; tags that travelled
+            // with newly sent snapshots are part of the snapshot count.
+            let offered = offered.take();
+            let tags: Vec<String> = new_tags
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| offered.contains(n))
+                .collect();
             remotemod::set_remote_ref(conn, remote_name, &branch, &local_tip)?;
             if new_snapshots == 0 && new_objects == 0 {
                 return Ok(PushReport {

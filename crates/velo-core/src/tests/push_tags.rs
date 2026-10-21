@@ -93,7 +93,8 @@ fn scenario(url: &str, origin: &Path, base: &SnapshotId, holder: &Path, token: O
     tag_at(&copy, "rel", &mine);
     let report = push(&copy, token.map(String::from));
     assert!(matches!(report.pushed, Pushed::AlreadyUpToDate { .. }));
-    assert!(report.tags.contains(&"v1".to_string()), "{:?}", report.tags);
+    // `rel` is offered too, but the remote already holds that name.
+    assert_eq!(report.tags, vec!["v1".to_string()]);
 
     let fresh = holder.join("fresh");
     clone_to(url, &fresh, token);
@@ -101,6 +102,23 @@ fn scenario(url: &str, origin: &Path, base: &SnapshotId, holder: &Path, token: O
     assert!(got.contains(&("v1".to_string(), mine.to_string())));
     // The remote's own tag was not moved.
     assert!(got.contains(&("rel".to_string(), base.to_string())));
+
+    // The remote now holds v1 and rel on earlier history. A new snapshot with
+    // its own tag, plus a new tag on the old snapshot: the report lists only
+    // the tag published for a snapshot the remote already had, not the old
+    // ones it has held for a while and not the one that travelled with the
+    // new snapshot.
+    let newer = save(&copy, "c.txt", "newer");
+    tag_at(&copy, "v2", &newer);
+    tag_at(&copy, "v3", &mine);
+    let report = push(&copy, token.map(String::from));
+    assert!(matches!(report.pushed, Pushed::Sent { .. }));
+    assert_eq!(report.tags, vec!["v3".to_string()]);
+    let fresh2 = holder.join("fresh2");
+    clone_to(url, &fresh2, token);
+    let got = tags(&fresh2);
+    assert!(got.contains(&("v2".to_string(), newer.to_string())));
+    assert!(got.contains(&("v3".to_string(), mine.to_string())));
 
     // Nothing left to publish: the next push reports no tags.
     assert!(push(&copy, token.map(String::from)).tags.is_empty());
@@ -171,7 +189,7 @@ mod http {
         let (o, base) = origin(holder.path());
         // Connections: clone (refs + upload), push (refs + receive), push,
         // fresh clone (refs + upload), final push. Surplus is harmless.
-        let (url, server) = serve(o.clone(), 10);
+        let (url, server) = serve(o.clone(), 16);
         scenario(&url, &o, &base, holder.path(), Some("w"));
         drop(server); // the thread ends on its own; do not block on spare accepts
     }

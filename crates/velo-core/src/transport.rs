@@ -65,9 +65,9 @@ pub enum PushOutcome {
     Ok {
         new_snapshots: usize,
         new_objects: usize,
-        /// Tags the remote newly created, or `None` when it did not say (an
-        /// older server replies with two numbers only).
-        new_tags: Option<usize>,
+        /// Names of the tags the remote newly created, or `None` when it did
+        /// not say (an older server replies with two numbers only).
+        new_tags: Option<Vec<String>>,
     },
     Rejected(String),
 }
@@ -256,12 +256,12 @@ impl Remote for LocalRemote {
         match fast_forward_check(conn, branch, new_tip, &pack) {
             Some(reason) => Ok(PushOutcome::Rejected(reason)),
             None => {
-                let (s, o, t) = bundle::import_pack_tags(&guard, &pack)?;
+                let (s, o, names) = bundle::import_pack_tags(&guard, &pack)?;
                 guard.repo().emit_imported(s);
                 Ok(PushOutcome::Ok {
                     new_snapshots: s,
                     new_objects: o,
-                    new_tags: Some(t),
+                    new_tags: Some(names),
                 })
             }
         }
@@ -670,13 +670,17 @@ impl Remote for StreamRemote {
 }
 
 fn parse_status(status: &str) -> Result<PushOutcome> {
-    // "OK <snaps> <objs> [<tags>]" or "REJECT <reason…>"
+    // "OK <snaps> <objs> [<tags> <name>...]" or "REJECT <reason…>"
     if let Some(rest) = status.strip_prefix("OK ") {
         let mut it = rest.split_whitespace();
         let s = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
         let o = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
         // A trailing tag count is optional: 6.0.1 clients stop after two numbers.
-        let t = it.next().and_then(|x| x.parse().ok());
+        // The names follow the count; tag names hold no whitespace.
+        let t = it
+            .next()
+            .and_then(|x| x.parse::<usize>().ok())
+            .map(|_| it.map(String::from).collect());
         Ok(PushOutcome::Ok {
             new_snapshots: s,
             new_objects: o,

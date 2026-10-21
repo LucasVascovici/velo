@@ -67,9 +67,14 @@ fn apply_push(
         match transport::fast_forward_check(guard.conn(), branch, new_tip, pack) {
             Some(reason) => format!("REJECT {}", reason),
             None => {
-                let (s, o, t) = bundle::import_pack_tags(guard, pack)?;
+                let (s, o, names) = bundle::import_pack_tags(guard, pack)?;
                 guard.repo().emit_imported(s);
-                format!("OK {} {} {}", s, o, t)
+                let mut line = format!("OK {} {} {}", s, o, names.len());
+                for n in &names {
+                    line.push(' ');
+                    line.push_str(n);
+                }
+                line
             }
         },
     )
