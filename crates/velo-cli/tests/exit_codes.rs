@@ -192,6 +192,26 @@ fn refused_push_during_a_pending_merge_points_at_conflicts_and_save() {
 }
 
 #[test]
+fn redo_after_the_branch_moved_exits_1_and_names_the_branch() {
+    let (_root, a, b) = pair();
+    write(&a, "a.txt", "1\n");
+    ok(&a, &["save", "A1"]);
+    write(&a, "a.txt", "2\n");
+    ok(&a, &["save", "A2"]);
+    ok(&a, &["push"]);
+    ok(&b, &["pull"]);
+    ok(&b, &["undo"]);
+    write(&a, "a.txt", "3\n");
+    ok(&a, &["save", "A3"]);
+    ok(&a, &["push"]);
+    ok(&b, &["pull"]);
+    let (out, code) = velo(&b, &["redo"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("branch 'main' moved"), "{out}");
+    assert!(out.contains("velo restore"), "{out}");
+}
+
+#[test]
 fn ahead_only_pull_exits_0() {
     let (_root, a, _b) = pair();
     write(&a, "a.txt", "a\n");

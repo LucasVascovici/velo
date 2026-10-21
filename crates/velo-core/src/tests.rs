@@ -12351,3 +12351,6 @@ mod merge_head_resolved;
 
 #[cfg(test)]
 mod push_tags;
+
+#[cfg(test)]
+mod redo_after_branch_move;

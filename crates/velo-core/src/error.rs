@@ -173,6 +173,15 @@ pub enum Error {
         branch: String,
         snapshot: crate::SnapshotId,
     },
+    /// `redo` would bring back a snapshot whose parent is no longer the branch
+    /// tip, because the branch moved (a pull, merge or fetch fast-forward)
+    /// after the undo. `snapshot` is the trashed one, `tip` where the branch is
+    /// now. The snapshot stays in the trash; `restore` can still show it.
+    RedoBranchMoved {
+        branch: String,
+        snapshot: crate::SnapshotId,
+        tip: Option<crate::SnapshotId>,
+    },
     /// The branch has no commits yet and this operation needs at least one.
     UnbornBranch {
         branch: String,
@@ -357,6 +366,25 @@ impl fmt::Display for Error {
                 branch,
                 snapshot.short()
             ),
+            Error::RedoBranchMoved {
+                branch,
+                snapshot,
+                tip,
+            } => match tip {
+                Some(tip) => write!(
+                    f,
+                    "cannot redo {}: branch '{}' moved to {} since it was undone",
+                    snapshot.short(),
+                    branch,
+                    tip.short()
+                ),
+                None => write!(
+                    f,
+                    "cannot redo {}: branch '{}' moved since it was undone",
+                    snapshot.short(),
+                    branch
+                ),
+            },
             Error::UnbornBranch { branch } => write!(f, "branch '{}' has no commits yet", branch),
             Error::NotFound { kind, name } => write!(f, "no {} found matching '{}'", kind, name),
             Error::AmbiguousPrefix { prefix, matches } => write!(
@@ -468,6 +496,7 @@ impl Error {
             Error::Diverged { .. } => "Diverged",
             Error::NotFastForward { .. } => "NotFastForward",
             Error::RemoteRefAbsent { .. } => "RemoteRefAbsent",
+            Error::RedoBranchMoved { .. } => "RedoBranchMoved",
             Error::UnbornBranch { .. } => "UnbornBranch",
             Error::NotFound { .. } => "NotFound",
             Error::AmbiguousPrefix { .. } => "AmbiguousPrefix",
@@ -564,6 +593,11 @@ impl Error {
                 remote: "origin".to_string(),
                 branch: "main".to_string(),
                 snapshot: id('b'),
+            },
+            Error::RedoBranchMoved {
+                branch: "main".to_string(),
+                snapshot: id('b'),
+                tip: Some(id('c')),
             },
             Error::UnbornBranch {
                 branch: "main".to_string(),
@@ -664,6 +698,7 @@ mod variant_tests {
         "Diverged",
         "NotFastForward",
         "RemoteRefAbsent",
+        "RedoBranchMoved",
         "UnbornBranch",
         "NotFound",
         "AmbiguousPrefix",
@@ -702,6 +737,7 @@ mod variant_tests {
             Error::Diverged { .. } => "Diverged",
             Error::NotFastForward { .. } => "NotFastForward",
             Error::RemoteRefAbsent { .. } => "RemoteRefAbsent",
+            Error::RedoBranchMoved { .. } => "RedoBranchMoved",
             Error::UnbornBranch { .. } => "UnbornBranch",
             Error::NotFound { .. } => "NotFound",
             Error::AmbiguousPrefix { .. } => "AmbiguousPrefix",

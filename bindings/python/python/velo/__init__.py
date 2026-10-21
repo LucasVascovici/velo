@@ -39,6 +39,7 @@ from ._velo import (
     Diverged,
     NotFastForward,
     RemoteRefAbsent,
+    RedoBranchMoved,
     UnbornBranch,
     NotFound,
     AmbiguousPrefix,
@@ -67,6 +68,6 @@ __all__ = [
     "AmbiguousPrefix", "Compacted", "Corrupt", "MissingObject",
     "UntrustedData", "UnsafePath", "LimitExceeded", "AccessDenied",
     "WouldOverwriteEdits", "MissingCleanChanges", "SnapshotHasDependents",
-    "RemoteRefAbsent", "InvalidInput", "Unsupported", "VeloIOError",
+    "RemoteRefAbsent", "RedoBranchMoved", "InvalidInput", "Unsupported", "VeloIOError",
     "DatabaseError", "ReentrantCall",
 ]

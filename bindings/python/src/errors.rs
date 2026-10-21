@@ -49,6 +49,7 @@ exceptions!(
     Diverged,
     NotFastForward,
     RemoteRefAbsent,
+    RedoBranchMoved,
     UnbornBranch,
     NotFound,
     AmbiguousPrefix,
@@ -198,6 +199,13 @@ pub fn to_py(err: Error) -> PyErr {
             } => raise!(RemoteRefAbsent,
                 "remote" => remote.as_str(), "branch" => branch.as_str(),
                 "snapshot" => snapshot.as_str()),
+            Error::RedoBranchMoved {
+                branch,
+                snapshot,
+                tip,
+            } => raise!(RedoBranchMoved,
+                "branch" => branch.as_str(), "snapshot" => snapshot.as_str(),
+                "tip" => tip.as_ref().map(|t| t.as_str().to_string())),
             Error::UnbornBranch { branch } => raise!(UnbornBranch, "branch" => branch.as_str()),
             Error::NotFound { kind, name } => {
                 raise!(NotFound, "kind" => ref_kind(kind), "name" => name.as_str())

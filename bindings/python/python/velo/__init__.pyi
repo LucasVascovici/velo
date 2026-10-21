@@ -15,7 +15,7 @@ __all__ = [
     "AmbiguousPrefix", "Compacted", "Corrupt", "MissingObject",
     "UntrustedData", "UnsafePath", "LimitExceeded", "AccessDenied",
     "WouldOverwriteEdits", "MissingCleanChanges", "SnapshotHasDependents",
-    "RemoteRefAbsent", "InvalidInput", "Unsupported", "VeloIOError",
+    "RemoteRefAbsent", "RedoBranchMoved", "InvalidInput", "Unsupported", "VeloIOError",
     "DatabaseError", "ReentrantCall",
 ]
 
@@ -67,6 +67,10 @@ class RemoteRefAbsent(VeloError):
     remote: str
     branch: str
     snapshot: str
+class RedoBranchMoved(VeloError):
+    branch: str
+    snapshot: str
+    tip: str | None
 class UnbornBranch(VeloError):
     branch: str
 class NotFound(VeloError):

@@ -361,6 +361,9 @@ NOTES
 NOTES
     · Redo is cleared the moment you run `velo save` — once you
       diverge, there is nothing to redo.
+    · Redo refuses if the branch moved since the undo (a pull or
+      merge fast-forwarded it); `velo restore <id>` still shows the
+      undone snapshot.
     · Redo aborts if there are unsaved changes."
     )]
     Redo,
@@ -2033,6 +2036,16 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             None => lines.push("  another velo process is writing; retry in a moment".into()),
         },
+        VeloError::RedoBranchMoved { snapshot, .. } => {
+            lines.push(
+                "  The branch moved after the undo, so the undone snapshot is no longer its child."
+                    .into(),
+            );
+            lines.push(format!(
+                "  velo restore {} still shows it.",
+                snapshot.short()
+            ));
+        }
         VeloError::RemoteRefAbsent { remote, .. } => {
             lines.push(format!(
                 "  Run velo fetch {} to bring it back, then try again.",
