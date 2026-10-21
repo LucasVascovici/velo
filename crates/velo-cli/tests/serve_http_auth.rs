@@ -117,6 +117,33 @@ fn default_policy_serves_anonymous_fetch_and_refuses_push() {
 }
 
 #[test]
+fn refused_push_without_a_token_names_the_variable_and_the_server_option() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    repo(&origin);
+    let server = spawn(&origin, &[], None);
+    let clone = clone_with_change(root.path(), &server.url, None);
+    let (out, ok) = velo(&clone, &["push"], None);
+    assert!(!ok, "{out}");
+    assert!(out.contains("VELO_TOKEN_ORIGIN"), "{out}");
+    assert!(out.contains("VELO_SERVE_TOKEN"), "{out}");
+    assert!(out.contains("--token-file"), "{out}");
+}
+
+#[test]
+fn refused_push_with_a_wrong_token_says_rejected_and_hides_it() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    repo(&origin);
+    let server = spawn(&origin, &[], Some("s3cret"));
+    let clone = clone_with_change(root.path(), &server.url, Some("s3cret"));
+    let (out, ok) = velo(&clone, &["push"], Some("wr0ngtoken"));
+    assert!(!ok, "{out}");
+    assert!(out.contains("rejected the token"), "{out}");
+    assert!(!out.contains("wr0ngtoken"), "{out}");
+}
+
+#[test]
 fn server_token_gates_every_request() {
     let root = TempDir::new().unwrap();
     let origin = root.path().join("origin");

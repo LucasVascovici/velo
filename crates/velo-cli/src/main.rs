@@ -1660,12 +1660,13 @@ fn real_main() {
     // The force-flag suggestion depends on which command was run, so it is
     // captured before `cli.command` is consumed.
     let force_form = force_form(&cli.command);
+    let remote = remote_of(&cli.command).map(str::to_string);
 
     let code = match run(cli) {
         Ok(exit) => exit.code(),
         Err(e) => {
             eprintln!("{} {}", console::style("error:").red().bold(), e);
-            if let Some(hint) = hint_for(&e, force_form) {
+            if let Some(hint) = hint_for(&e, force_form, remote.as_deref()) {
                 eprintln!("{}", hint);
             } else if let Some(hint) =
                 show_habit_hint(&std::env::args().skip(1).collect::<Vec<_>>())
@@ -1725,6 +1726,17 @@ fn force_form(command: &Commands) -> Option<&'static str> {
     match command {
         Commands::Switch { .. } => Some("velo switch <branch> --force"),
         Commands::Restore { .. } => Some("velo restore <snapshot> --force"),
+        _ => None,
+    }
+}
+
+/// The remote a network command talks to, so a refusal can name the
+/// environment variable that holds that remote's token.
+fn remote_of(command: &Commands) -> Option<&str> {
+    match command {
+        Commands::Push { remote, .. }
+        | Commands::Fetch { remote }
+        | Commands::Pull { remote, .. } => Some(remote),
         _ => None,
     }
 }
@@ -1828,7 +1840,7 @@ fn recipe_state(repo: &velo_core::Repo, remote: &str, branch: &str) -> render::s
 /// Core states what went wrong and carries the details; deciding what to suggest
 /// is presentation, so it lives here. Centralising it means every command gets
 /// the same guidance instead of each one embedding advice in an error string.
-fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
+fn hint_for(e: &VeloError, force_form: Option<&str>, remote: Option<&str>) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
     match e {
         VeloError::DirtyWorkingTree { paths } => {
@@ -2053,10 +2065,29 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             ));
         }
         VeloError::AccessDenied { .. } => {
-            lines.push(
-                "  Set VELO_TOKEN_<REMOTE> (the remote's name, uppercased) or VELO_TOKEN to a bearer token for it."
-                    .into(),
-            );
+            let var = remote.map(token_var);
+            let sent = match remote {
+                Some(r) => token_for(r).is_some(),
+                None => std::env::var("VELO_TOKEN").is_ok_and(|v| !v.is_empty()),
+            };
+            let names = match &var {
+                Some(v) => format!("{v} (or VELO_TOKEN)"),
+                None => "VELO_TOKEN_<REMOTE> (the remote's name, uppercased) or VELO_TOKEN".into(),
+            };
+            if sent {
+                lines.push(format!(
+                    "  The server rejected the token in {names}, or the token lacks permission for this."
+                ));
+                lines.push(
+                    "  Check the value, or ask the server's owner for a token that may write."
+                        .into(),
+                );
+            } else {
+                lines.push(format!(
+                    "  No token was sent. Set {names} to a bearer token for this remote."
+                ));
+                lines.push("  The server accepts pushes only with a token: its owner runs `velo serve-http` with VELO_SERVE_TOKEN=<token> or --token-file FILE and gives you one.".into());
+            }
             lines.push("  Never put the token in the URL.".into());
         }
         _ => return None,
