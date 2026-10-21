@@ -59,6 +59,7 @@ test('saveTree, then treeAt and readFileAt round-trip', async () => {
   assert.equal((await repo.readObject(a.object)).toString(), 'hello');
   assert.equal(await repo.resolve(id.slice(0, 8)), id);
   assert.equal(await repo.branchTip('main'), id);
+  assert.equal(await repo.isTrashed(id), false);
   const head = await repo.snapshot(id);
   assert.equal(head.id, id);
   assert.equal(head.message, 'one');

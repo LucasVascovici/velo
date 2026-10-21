@@ -45,6 +45,8 @@ def test_save_tree_roundtrip(tmp_path):
     assert entry.created_at.tzinfo is not None
     assert repo.resolve(sid[:12]) == sid
     assert repo.branch_tip("main") == sid
+    assert repo.is_trashed(sid) is False
+    assert repo.is_trashed("0" * 64) is False
 
 
 def test_list_entries_and_kinds(tmp_path):

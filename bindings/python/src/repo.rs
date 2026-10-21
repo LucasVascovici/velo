@@ -684,6 +684,12 @@ impl Repo {
         Ok(id.as_str().to_string())
     }
 
+    /// Whether `id` is a snapshot this repository once held and moved to the
+    /// trash (an undo, a reset).
+    fn is_trashed(&self, id: &str) -> PyResult<bool> {
+        velo_core::commands::is_trashed(&*self.core()?, id).map_err(to_py)
+    }
+
     fn branch_tip(&self, branch: &str) -> PyResult<Option<String>> {
         let tip = self
             .core()?
