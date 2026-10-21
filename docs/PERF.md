@@ -554,13 +554,13 @@ and
 run as two `--only` invocations because the combined run with the 5.2-API row
 did not fit the time budget (and one shadow git run failed on a restore with an
 empty git error, so shadow git was run again; the rerun is the one published).
-The Linux/WSL2 runs were not made in this task, so target 1 on Linux is not
-re-measured. The v4 numbers themselves are in sections 8 and 9 and are not
+The shadow-git comparison was not run on Linux, so target 1 on Linux has velo's
+numbers but no ratio. The v4 numbers themselves are in sections 8 and 9 and are not
 repeated here.
 
 | target | measured | verdict |
 |---|---|---|
-| 1. 500 steps, at most 3x shadow git on Linux | Windows: 19.4 s against shadow git 210.5 s (0.09x; was 64.4 s, 0.34x). Linux: not run | Windows met (the Windows aim was "not worse than git"); **Linux not re-measured**, last 4.5x (missed) |
+| 1. 500 steps, at most 3x shadow git on Linux | Windows: 19.4 s against shadow git 210.5 s (0.09x; was 64.4 s, 0.34x). Linux: velo 6.3 s for 500 steps (step median 6.78 ms), shadow git not run (section 9, "Linux 500-step re-run") | Windows met (the Windows aim was "not worse than git"); **Linux ratio not measured**, last 4.5x (missed) |
 | 3. disk after 500 steps, at most 3x git (about 11 MB) | 11.03 MB against git 3.27 MB: **3.37x** (final disk after restores and branches 11.84 MB against 4.5 MB: 2.6x); was 152 MB, 47x | **missed against git's measured disk by 12%**; in absolute terms it is the 11 MB the derivation expected |
 | 4. one-file save at 100,000 files, at most 1.5x history-0 | Section 9: median 5.28 s over 400 saves at K = 128, against the 2.1 s history-0 floor of section 6 (2.5x); the first plain saves of the run took 9.3 s, so the run's own start is not a clean floor | **missed** (about 2.5x, not a like-for-like pair: the floor is from the 5.3 build and the 100,000-file run shared the machine) |
 | 5. binding overhead, at most 10% | not re-measured: `save_changes` still has no Rust twin of the harness | **not measured**, 10.5% on Windows when last measured |
@@ -974,21 +974,37 @@ batch API, because none was built. Windows step-to-step noise (p95 127 ms
 against a median of 73 ms) is more than 300 times the saving; Linux p95 is 12.7
 ms against a 4.97 ms median, about 90 times the saving.
 
-#### Linux 500-step re-run (21.12-b): not done
+#### Linux 500-step re-run (21.12-b)
 
-The 500-step Linux run was not made. The sandbox guard of the tool that ran
-this task refused every `wsl` call, so `bench/results/2026-10-linux-agent-500.json`
-does not exist and there are no new Linux numbers (no wins and no losses) beside
-the 200-step ones above. This is an environment block, not a result, and nothing
-here is estimated. The 200-step Linux figures above remain the only Linux ones.
-Owner step, run from the repo root:
+Run with 500 steps on WSL2 (ext4, `$HOME/velo-prof`), same machine and build as
+the 200-step run (1,000 files, `--features timing`, release). Raw output:
+[Linux, 500 steps](../bench/results/2026-10-linux-agent-500.json). Command, from
+the repo root:
 
 ```
 wsl -e bash -lc 'mkdir -p $HOME/velo-prof && VELO_PROFILE_STEPS=500 VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_OUT=$PWD/bench/results/2026-10-linux-agent-500.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing profile_agent_workload -- --ignored --nocapture --test-threads=1'
 ```
 
-Once it exists, add its per-stage medians as a new column beside the Linux
-column of the table above, losses included.
+Median per step in milliseconds, `as_harness` variant, beside the 200-step run:
+
+| stage | Linux 200 steps | Linux 500 steps |
+|---|---:|---:|
+| `save_tree.objects` | 1.49 | 1.90 |
+| `save_tree.insert_file_map` | 1.33 | 1.82 |
+| `save_tree.commit` | 0.090 | 0.124 |
+| whole step (median) | 4.97 | 6.78 |
+| whole step (p95) | 12.7 | 20.7 |
+
+This is a loss against the 200-step figures: the median step is 36% slower and
+p95 63% slower at 500 steps, and every stage grew (the history is longer and
+the working set has drifted further from the first tree). It is the same run
+on the same machine, so the growth is real, though one run of one seed does not
+size it. The other variants at 500 steps: `no_reread` 5.23 ms median,
+`save_tree_only` 4.57 ms (both `prediction_ok`); whole run 6.33 s wall for the
+`as_harness` variant; restore at step 250 median 1,199 ms. Shadow git was not
+run on Linux in this task, so the "at most 3x shadow git on Linux" target is
+still not a measured ratio: velo's side is 6.3 s for 500 steps, and the last
+measured ratio (4.5x, a miss) predates storage v4.
 
 The earlier Linux figure (`perf-2026-10-16-linux.json`, `save_tree.commit` 82.8
 ms of a 93 ms step) predates storage v4. On v4 the Linux commit also collapsed,
@@ -1034,29 +1050,34 @@ laps are the largest `timing` laps of the row. Results:
 `bench/results/2026-10-team-rows-windows.json`. A second, half-size Windows run
 (250 files, 40 snapshots, same machine, same build) is in
 `bench/results/2026-10-team-rows-windows-small.json`. All 11 rows were measured
-on Windows at both sizes; 0 rows were measured on Linux (see below). The
+on Windows at both sizes and all 11 on Linux at 500/80 (see below). The
 full-size (2,000/300) run is in the commands for the owner below.
 
-| row | Windows (ms) | p95 | top two laps (ms) |
-|---|---:|---:|---|
-| clone (path) | 1077 | 1332 | `restore.write_files` 163, `restore.validate` 9 |
-| clone (http) | 1401 | 1653 | `restore.write_files` 139, `restore.validate` 9 |
-| bundle create | 151 | 169 | no library laps |
-| grep regex | 16 | 19 | no library laps |
-| stash push+pop | 126 | 161 | `restore.scan` 20, `restore.write_files` 5 |
-| blame (deep history) | 25 | 30 | no library laps |
-| push 50 (path) | 486 | 658 | no library laps |
-| pull 50 (path) | 461 | 672 | `restore.write_files` 33, `restore.scan` 16 |
-| push 50 (http) | 1004 | 1186 | no library laps |
-| pull 50 (http) | 1139 | 1246 | `restore.write_files` 25, `restore.scan` 25 |
-| parallel 4 writers, 10 saves | 2449 | 2480 | `lock_wait_ms` 6053 (summed over writers), `save_ms` 2338 |
+| row | Windows (ms) | p95 | top two laps (ms) | Linux (ms) | p95 | top two laps, Linux (ms) |
+|---|---:|---:|---|---:|---:|---|
+| clone (path) | 1077 | 1332 | `restore.write_files` 163, `restore.validate` 9 | 946 | 947 | `restore.write_files` 49, `restore.scan` 4 |
+| clone (http) | 1401 | 1653 | `restore.write_files` 139, `restore.validate` 9 | 632 | 801 | `restore.write_files` 29, `restore.scan` 2 |
+| bundle create | 151 | 169 | no library laps | 124 | 275 | no library laps |
+| grep regex | 16 | 19 | no library laps | 6.7 | 8 | no library laps |
+| stash push+pop | 126 | 161 | `restore.scan` 20, `restore.write_files` 5 | 124 | 146 | `restore.scan` 15, `restore.write_files` 3 |
+| blame (deep history) | 25 | 30 | no library laps | 19 | 22 | no library laps |
+| push 50 (path) | 486 | 658 | no library laps | 328 | 408 | no library laps |
+| pull 50 (path) | 461 | 672 | `restore.write_files` 33, `restore.scan` 16 | 313 | 358 | `restore.scan` 9, `restore.write_files` 3 |
+| push 50 (http) | 1004 | 1186 | no library laps | 570 | 656 | no library laps |
+| pull 50 (http) | 1139 | 1246 | `restore.write_files` 25, `restore.scan` 25 | 538 | 723 | `restore.scan` 9.5, `restore.write_files` 4.4 |
+| parallel 4 writers, 10 saves | 2449 | 2480 | `lock_wait_ms` 6053 (summed over writers), `save_ms` 2338 | 647 | 657 | `lock_wait_ms` 988 (summed over writers), `save.scan` 405 (`save_ms` 639) |
 
-Linux: not measured, 0 of 11 rows. The sandbox guard of the tool that ran this
-task refused every `wsl` call, so `bench/results/2026-10-team-rows-linux.json`
-does not exist and the Linux times and laps are not in this table. This is an
-environment block, not a result: the Linux profile is an owner step, with the
-reduced-size command under "Commands for the owner", and criterion 1 of the task
-is met for Windows only until it is run. The Linux column is empty, not estimated.
+Linux: all 11 rows measured, at the same 500/80 size and with the same build
+flags, as WSL2 on ext4 (`$HOME/velo-prof`) on the same busy workstation, not a
+quiet machine. Results: `bench/results/2026-10-team-rows-linux.json`. One run of
+3 samples per row, so the Linux column carries the same caveat as the Windows
+one: read it as direction, not as a budget measurement. Linux is faster than
+Windows on every row (the closest, stash and clone (path), are within 15%;
+clone (http), grep, pull (http) and the parallel row are 2x or more), and no
+Linux row at this size is over its budget, but the budgets are for 2,000 files
+and 300 snapshots, which this run does not cover. On Linux the parallel row's lock
+wait is 1.5 times the time spent saving, against 2.6 times on Windows: still
+serialisation on the one lock.
 
 Doubling both files and history (250/40 to 500/80), median time scaled by:
 
@@ -1099,7 +1120,9 @@ Reading the laps:
 
 These are judgements from the 250/40 and 500/80 runs on Windows, not
 measurements at full size, and the factors above come from only two points, so
-the list is a guess. Nothing here is known for Linux.
+the list is a guess. The Linux 500/80 run above shows the same shape (clone
+and the HTTP rows dominated by untimed transfer, stash by `restore.scan`, the
+parallel row by lock wait) at lower absolute times, but it is one size only.
 
 - `clone (http)` and `clone (path)`: dominant stage `restore.write_files` plus
   untimed object transfer. Writing 2,000 files grows with the file count and
@@ -1144,9 +1167,10 @@ cargo test -p velo-core --release --features timing,http profile_team_rows \
     -- --ignored --nocapture --test-threads=1
 ```
 
-The reduced Linux run the brief asked for uses the same command with
+The reduced Linux run (500 files, 80 snapshots) uses the same command with
 `VELO_PROFILE_FILES=500 VELO_PROFILE_HISTORY=80` and
-`bench/results/2026-10-team-rows-linux.json`.
+`bench/results/2026-10-team-rows-linux.json`; it has been run (table above).
+The full-size Linux run is still the owner's.
 
 Quiet-machine table, to be filled from those runs (seconds, 2,000 files, 300
 snapshots). Keep the losses.
