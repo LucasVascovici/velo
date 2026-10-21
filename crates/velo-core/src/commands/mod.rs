@@ -1156,3 +1156,14 @@ pub(crate) fn remove_empty_parents(dir: &Path, root: &Path) {
         }
     }
 }
+
+/// Whether `id` is a snapshot this repository once held and moved to the trash
+/// (an undo, a reset), so a message can mention the undo only when it happened.
+pub fn is_trashed(repo: &Repo, id: &str) -> Result<bool> {
+    use rusqlite::OptionalExtension;
+    Ok(repo
+        .conn()
+        .query_row("SELECT 1 FROM trash WHERE hash = ?", [id], |_| Ok(()))
+        .optional()?
+        .is_some())
+}

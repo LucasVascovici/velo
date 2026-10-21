@@ -72,18 +72,43 @@ fn diverged() -> (TempDir, PathBuf, PathBuf) {
     (root, a, b)
 }
 
-const RECIPE: [&str; 5] = [
-    "velo sync",
-    "velo pull",
-    "velo merge origin/main",
-    "velo save \"Merge origin/main\"",
-    "velo push",
-];
+/// The commands a refusal suggests, in order, one per recipe step.
+fn suggested(out: &str) -> Vec<&str> {
+    out.lines()
+        .filter_map(|l| l.trim_start().strip_prefix("· "))
+        .map(|l| l.split("  ").next().unwrap().trim())
+        .collect()
+}
 
-fn assert_recipe(out: &str) {
-    for line in RECIPE {
-        assert!(out.contains(line), "missing `{line}`:\n{out}");
-    }
+/// The recipe for a repository that has not fetched the remote's tip.
+fn assert_not_fetched_recipe(out: &str) {
+    assert_eq!(
+        suggested(out),
+        [
+            "velo sync",
+            "velo fetch",
+            "velo merge origin/main",
+            "velo save \"Merge origin/main\"",
+            "velo push"
+        ],
+        "{out}"
+    );
+    assert!(!out.contains("velo pull"), "{out}");
+}
+
+/// The recipe once the remote's tip is here and not yet merged.
+fn assert_fetched_recipe(out: &str) {
+    assert_eq!(
+        suggested(out),
+        [
+            "velo sync",
+            "velo merge origin/main",
+            "velo save \"Merge origin/main\"",
+            "velo push"
+        ],
+        "{out}"
+    );
+    assert!(!out.contains("velo pull"), "{out}");
 }
 
 #[test]
@@ -100,15 +125,70 @@ fn diverged_pull_exits_4_and_prints_the_recipe() {
     let (_root, _a, b) = diverged();
     let (out, code) = velo(&b, &["pull"]);
     assert_eq!(code, Some(4), "{out}");
-    assert_recipe(&out);
+    assert_fetched_recipe(&out);
 }
 
 #[test]
-fn refused_push_exits_4_and_prints_the_same_recipe() {
+fn refused_push_exits_4_and_leads_with_velo_sync_and_no_false_undo() {
     let (_root, _a, b) = diverged();
     let (out, code) = velo(&b, &["push"]);
     assert_eq!(code, Some(4), "{out}");
-    assert_recipe(&out);
+    assert_not_fetched_recipe(&out);
+    assert!(!out.contains("undone here"), "{out}");
+    assert!(!out.contains("undo"), "{out}");
+    assert!(out.contains("origin/main is at "), "{out}");
+    assert!(out.contains("not fetched yet"), "{out}");
+}
+
+#[test]
+fn refused_push_mentions_undo_only_when_the_tip_is_in_the_trash() {
+    let (_root, _a, b) = pair();
+    write(
+        &b, "b.txt", "b
+",
+    );
+    ok(&b, &["save", "B1"]);
+    ok(&b, &["push"]);
+    ok(&b, &["undo"]);
+    let (out, code) = velo(&b, &["push"]);
+    assert_eq!(code, Some(4), "{out}");
+    assert!(out.contains("undone here"), "{out}");
+    assert!(!out.contains("not fetched yet"), "{out}");
+    assert_eq!(suggested(&out)[0], "velo sync", "{out}");
+}
+
+#[test]
+fn refused_push_during_a_pending_merge_points_at_conflicts_and_save() {
+    let (_root, a, b) = pair();
+    write(
+        &a,
+        "shared.txt",
+        "from a
+",
+    );
+    ok(&a, &["save", "A1"]);
+    ok(&a, &["push"]);
+    write(
+        &b,
+        "shared.txt",
+        "from b
+",
+    );
+    ok(&b, &["save", "B1"]);
+    ok(&b, &["fetch"]);
+    let (out, code) = velo(&b, &["merge", "origin/main"]);
+    assert_eq!(code, Some(3), "{out}");
+    let (out, code) = velo(&b, &["push"]);
+    assert_eq!(code, Some(4), "{out}");
+    assert_eq!(
+        suggested(&out),
+        [
+            "velo conflicts",
+            "velo save \"Merge origin/main\"",
+            "velo push"
+        ],
+        "{out}"
+    );
 }
 
 #[test]
@@ -206,7 +286,7 @@ fn tracking_counts_say_as_of_last_fetch() {
     ok(&b, &["save", "B1"]);
     let out = ok(&b, &["status"]);
     assert!(out.contains("as of last fetch"), "{out}");
-    assert_recipe(&out);
+    assert_fetched_recipe(&out);
 }
 
 #[test]

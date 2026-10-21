@@ -5,39 +5,76 @@ use velo_core::commands::sync::{
     BranchCreated, Cloned, Fetched, Pulled, PushReport, Pushed, Synced,
 };
 
-/// The steps after a refused push, in order. One definition so `push`, `pull`
-/// and `status` can never give different advice. `pull` and `push` carry the
-/// remote name only when it is not the default one.
-pub fn recipe(remote: &str, branch: &str) -> Vec<(String, &'static str)> {
+/// What the repository holds of the remote's branch, which decides which steps
+/// of the reconcile are still ahead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RecipeState {
+    /// The tracking tip's snapshots are not in this repository: fetch first.
+    NotFetched,
+    /// The remote's tip is here and not yet merged.
+    Fetched,
+    /// A merge is in progress and waits to be resolved or saved.
+    MergePending,
+    /// The remote's tip is already an ancestor of the local tip: only push is left.
+    MergeSaved,
+}
+
+/// The steps after a refused push, in order, for the repository's `state`. One
+/// definition so `push`, `pull` and `status` can never give different advice.
+/// `sync`, `fetch` and `push` carry the remote name only when it is not the
+/// default one. `velo pull` is not a step: on a diverged branch it only prints
+/// this list again.
+pub fn recipe(remote: &str, branch: &str, state: RecipeState) -> Vec<(String, &'static str)> {
     let arg = if remote == "origin" {
         String::new()
     } else {
         format!(" {remote}")
     };
-    vec![
-        (
-            format!("velo sync{arg}"),
-            "fetch, merge if clean, push (or by hand:)",
-        ),
-        (format!("velo pull{arg}"), "bring their snapshots in"),
-        (
-            format!("velo merge {remote}/{branch}"),
-            "combine them with yours",
-        ),
-        (
-            format!("velo save \"Merge {remote}/{branch}\""),
-            "record the merge",
-        ),
-        (format!("velo push{arg}"), "publish"),
-    ]
+    let merge = (
+        format!("velo merge {remote}/{branch}"),
+        "combine them with yours",
+    );
+    let save = (
+        format!("velo save \"Merge {remote}/{branch}\""),
+        "record the merge",
+    );
+    let push = (format!("velo push{arg}"), "publish");
+    let sync = |why| (format!("velo sync{arg}"), why);
+    match state {
+        RecipeState::NotFetched => vec![
+            sync("fetch, merge if clean, push (or by hand:)"),
+            (format!("velo fetch{arg}"), "bring their snapshots in"),
+            merge,
+            save,
+            push,
+        ],
+        RecipeState::Fetched => vec![
+            sync("merge if clean, push (or by hand:)"),
+            merge,
+            save,
+            push,
+        ],
+        RecipeState::MergePending => vec![
+            (
+                "velo conflicts".to_string(),
+                "see what is left to resolve, if anything",
+            ),
+            save,
+            push,
+        ],
+        RecipeState::MergeSaved => vec![push],
+    }
 }
 
-/// Print [`recipe`] as an aligned list.
-pub fn print_recipe(remote: &str, branch: &str) {
-    let steps = recipe(remote, branch);
+/// Print [`recipe`] as an aligned list. The first step is bold: it is the one
+/// to run.
+pub fn print_recipe(remote: &str, branch: &str, state: RecipeState) {
+    let steps = recipe(remote, branch, state);
     let width = steps.iter().map(|(c, _)| c.len()).max().unwrap_or(0);
-    for (cmd, why) in &steps {
-        println!("    · {}  {}", style(format!("{cmd:<width$}")).cyan(), why);
+    for (i, (cmd, why)) in steps.iter().enumerate() {
+        let cmd = style(format!("{cmd:<width$}")).cyan();
+        let cmd = if i == 0 { cmd.bold() } else { cmd };
+        println!("    · {cmd}  {why}");
     }
 }
 
@@ -239,7 +276,7 @@ pub fn print_pulled(pulled: &Pulled) {
                 behind
             );
             println!("  Reconcile with:");
-            print_recipe(remote, branch);
+            print_recipe(remote, branch, RecipeState::Fetched);
         }
         // `Pulled` is non-exhaustive; a future outcome falls back to its debug form.
         other => println!("{other:?}"),

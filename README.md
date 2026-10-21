@@ -716,7 +716,7 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
 ```
   ↓ 1 behind origin/main (as of last fetch) — velo sync to catch up
   ↕ diverged from origin/main (1 ahead, 1 behind, as of last fetch) — reconcile with:
-      velo sync   (or by hand: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push)
+      velo sync   (or by hand: velo fetch, velo merge origin/main, velo save "Merge origin/main", velo push)
   ✔ up to date with origin/main (as of last fetch)
 ```
 
@@ -725,7 +725,7 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
 ```bash
 velo push
 # → Push rejected — 'main' has commits you don't have (non-fast-forward).
-#   velo sync   (or by hand: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push)   (exit code 4)
+#   velo sync   (or by hand: velo fetch, velo merge origin/main, velo save "Merge origin/main", velo push)   (exit code 4)
 
 velo sync
 # fetches, merges what merges cleanly, saves the merge and pushes it.
@@ -737,7 +737,7 @@ velo sync                  # now a fast-forward push
 
 `velo sync` never pushes a merge with conflicts and has no `--force`. If the
 remote moves again while it runs, it exits 4 and you run it again. The manual
-route (`velo pull`, `velo merge origin/main`, `velo save`, `velo push`) still works.
+route (`velo fetch`, `velo merge origin/main`, `velo save`, `velo push`) still works.
 
 Nothing is ever force-overwritten, and `pull` never rewrites your history behind
 your back.

@@ -55,5 +55,9 @@ fn undo_names_the_tracking_ref_and_merge_says_fetch() {
 
     let (_, err, code) = velo(&copy, &["push"]);
     assert_eq!(code, 4, "{err}");
-    assert!(err.contains("velo fetch brings it back"), "{err}");
+    // The save above dropped the undone snapshot from the trash, so the
+    // refusal says only what is true: the tip is not here yet.
+    assert!(err.contains("not fetched yet"), "{err}");
+    assert!(!err.contains("undone here"), "{err}");
+    assert!(err.contains("velo fetch"), "{err}");
 }

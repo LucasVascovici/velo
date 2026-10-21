@@ -1801,6 +1801,25 @@ mod token_tests {
     }
 }
 
+/// Which steps of the reconcile are still ahead, from what the repository holds.
+fn recipe_state(repo: &velo_core::Repo, remote: &str, branch: &str) -> render::sync::RecipeState {
+    use render::sync::RecipeState;
+    if repo.root().join(".velo/MERGE_HEAD").exists() {
+        return RecipeState::MergePending;
+    }
+    let spec = format!("{remote}/{branch}");
+    let Ok(tracking) = commands::resolve_snapshot_id(repo, &spec) else {
+        return RecipeState::NotFetched;
+    };
+    let Ok(local) = commands::resolve_snapshot_id(repo, branch) else {
+        return RecipeState::Fetched;
+    };
+    match commands::merge::merge_base(repo, &local, &tracking) {
+        Ok(Some(base)) if base == tracking => RecipeState::MergeSaved,
+        _ => RecipeState::Fetched,
+    }
+}
+
 /// What to do about an error, for the kinds that have an obvious next step.
 ///
 /// Core states what went wrong and carries the details; deciding what to suggest
@@ -1956,7 +1975,14 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 console::style(branch).cyan(),
                 console::style(remote).cyan()
             ));
-            let recipe = render::sync::recipe(remote, branch);
+            let state = std::env::current_dir()
+                .ok()
+                .and_then(|d| commands::find_repo_root(&d))
+                .and_then(|root| velo_core::Repo::open(&root).ok())
+                .map_or(render::sync::RecipeState::NotFetched, |repo| {
+                    recipe_state(&repo, remote, branch)
+                });
+            let recipe = render::sync::recipe(remote, branch, state);
             let steps: Vec<(&str, &str, Tone)> = recipe
                 .iter()
                 .map(|(cmd, why)| (cmd.as_str(), *why, Tone::Do))
@@ -3681,18 +3707,23 @@ fn run(cli: Cli) -> Result<Exit> {
                 Ok(report) => render::sync::print_push_report(&report),
                 Err(e) => {
                     // The refused push has just refreshed the tracking ref to the
-                    // advertised tip. If this repository no longer holds that
-                    // snapshot (undone here), a plain merge would fail; say how
-                    // to get it back.
+                    // advertised tip, whose snapshots were usually never fetched.
+                    // Say that; mention an undo only when the id is in the trash.
                     if let VeloError::NotFastForward { branch, remote } = &e {
                         let spec = format!("{remote}/{branch}");
                         if let Err(VeloError::RemoteRefAbsent { snapshot, .. }) =
                             commands::resolve_snapshot_id(&repo, &spec)
                         {
-                            eprintln!(
-                                "{spec} points at {}, which this repository no longer has (undone here?); velo fetch brings it back as remotes/{spec}, then velo merge {spec}",
-                                render::id::short(snapshot.as_str())
-                            );
+                            let short = render::id::short(snapshot.as_str());
+                            if commands::is_trashed(&repo, snapshot.as_str()).unwrap_or(false) {
+                                eprintln!(
+                                    "{spec} is at {short}, which was undone here; velo sync (or velo fetch, then velo merge {spec}) brings it back"
+                                );
+                            } else {
+                                eprintln!(
+                                    "{spec} is at {short}, not fetched yet; velo sync (or velo fetch, then velo merge {spec})"
+                                );
+                            }
                         }
                     }
                     return Err(e);
