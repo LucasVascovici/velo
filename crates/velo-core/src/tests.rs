@@ -12359,3 +12359,6 @@ mod in_progress_guards;
 
 #[cfg(test)]
 mod team_rows_profile;
+
+#[cfg(test)]
+mod blame_attribution;
