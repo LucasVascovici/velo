@@ -480,6 +480,11 @@ pub(crate) struct Imported {
 /// The body of [`import_pack`], also reporting the tags it inserted so that
 /// `bundle apply` does not call a tag-only bundle "up to date".
 pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
+    // Pull, push and serve reach this without having begun a lap sequence, so
+    // the first lap would otherwise measure from whatever ran last on this
+    // thread. Clone's `clone.create_repo` lap ends immediately before this
+    // call, so restarting the mark here loses nothing there.
+    crate::timing::begin();
     // ── Refuse unsafe paths before anything is written ────────────────────────
     // A snapshot id commits to its rows whatever they say, so a hostile bundle
     // can carry a valid snapshot whose tree is `../escape`. Checked per
@@ -523,6 +528,7 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
     }
 
     // ── Write + verify objects (dedup by name) ────────────────────────────────
+    crate::timing::lap("import.verify");
     let objects = guard.repo().objects();
     let progress = guard.phase(Phase::Importing, Some(bundle.objects.len() as u64));
     // Verified on the way in: each frame must decompress and re-hash to its

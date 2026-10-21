@@ -1141,7 +1141,10 @@ parallel row by lock wait) at lower absolute times, but it is one size only.
 Clone now has laps in the `timing` build (they print nothing from the library):
 `clone.fetch` (open the remote, fetch and decode the pack), `clone.create_repo`
 (create the directory, `init`, open, take the write lock), `import.objects`
-(verify and store the objects, inside `bundle::import`) and `clone.import_rows`
+(store the objects, inside `bundle::import`; the path and signature checks
+before it are the separate `import.verify` lap, and `bundle::import` restarts
+the lap clock itself, so a pull or push row never counts time spent before the
+import) and `clone.import_rows`
 (snapshot, tree and ref rows, remote row). Same size as above, 500 files and 80
 snapshots, Windows, busy machine, two runs of 3 samples, medians in ms
 (`bench/results/2026-10-clone-laps-windows.json`):
