@@ -198,9 +198,13 @@ also runs an undo-heavy mix, and the nightly run uses it too. The first measured
 (Windows, release, commit 78afa7a, seed 1000000) started 18 sequences and stopped at
 the 18th: 17 were clean, and seed 1000002 from the `format-v4` start (subject K=3)
 left the K=1 reference with a `DeltaBaseMissing` fsck finding after the shrunk ops
-`Redo, Undo, Edit, Save`. This is a reproduction, not a clean count, and it is
-recorded in `bench/results/2026-10-undo-heavy-differential.txt` for the fix. Once it
-is fixed, the owner reaches 10,000 sequences (about 9 seconds per sequence
+`Redo, Undo, Edit, Save`. The cause was a `save` that discarded the redo stack
+(the trash rows) but left their stored trees behind, a delta chain whose base was
+itself an unreferenced tree; `fsck` read that base as missing. `save` now removes
+the discarded trees with the fold, and `fsck` treats an unreachable chain as cruft
+rather than corruption. The regression is `tests/orphan_delta_repro.rs`. The run is
+recorded in `bench/results/2026-10-undo-heavy-differential.txt`. To reach 10,000
+sequences the owner (about 9 seconds per sequence
 at the rate seen here, so roughly 25 hours) by repeating the one-hour slice below
 about 25 times, each with a distinct `VELO_DIFF_SEED` so the runs do not overlap
 (each slice covers about 400 sequences). Run it across machines if you prefer:

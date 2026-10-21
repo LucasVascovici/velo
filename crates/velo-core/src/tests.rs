@@ -12367,3 +12367,5 @@ mod blame_attribution;
 mod fsck_orphan_chain;
 #[cfg(test)]
 mod message_fixes;
+#[cfg(test)]
+mod orphan_delta_repro;

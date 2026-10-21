@@ -468,6 +468,24 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
                 UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> ''))",
         [branch.trim()],
     )?;
+    // The discarded snapshots' stored trees go with them, folded so that no
+    // delta is left based on a tree that is gone (20.6): leaving them behind
+    // made orphan delta rows that `fsck` then had to explain.
+    let discarded: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT hash FROM trash WHERE branch = ?1
+               AND hash NOT IN (SELECT parent_hash FROM snapshots
+                    UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> '')",
+        )?;
+        let rows = stmt.query_map([branch.trim()], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    let discarded_refs: Vec<&str> = discarded.iter().map(String::as_str).collect();
+    crate::tree_store::remove_trees_by_parent(
+        &tx,
+        &discarded_refs,
+        guard.repo().keyframe_interval(),
+    )?;
     tx.execute(
         "DELETE FROM trash WHERE branch = ?1
            AND hash NOT IN (SELECT parent_hash FROM snapshots
