@@ -12364,4 +12364,6 @@ mod team_rows_profile;
 mod blame_attribution;
 
 #[cfg(test)]
+mod fsck_orphan_chain;
+#[cfg(test)]
 mod message_fixes;

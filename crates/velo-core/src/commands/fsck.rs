@@ -1032,8 +1032,27 @@ fn check_deltas(
         .iter()
         .map(|(s, b)| (s.as_str(), b.as_str()))
         .collect();
+    // Delta snapshots some live or trashed snapshot needs, found by walking
+    // the bases up from each of them. A link outside this set that is itself
+    // in neither table is an unreachable chain: cruft, not corruption.
+    let mut needed: HashSet<&str> = HashSet::new();
+    for start in first_parents.keys() {
+        let mut cur = *start;
+        for _ in 0..=crate::tree_store::MAX_CHAIN_LINKS {
+            if !needed.insert(cur) {
+                break;
+            }
+            match base_of.get(cur) {
+                Some(b) => cur = b,
+                None => break,
+            }
+        }
+    }
     for (snap, base) in &links {
-        if !all_snaps.contains(base) && !trash.contains_key(base) {
+        let unreachable = !needed.contains(snap.as_str())
+            && !all_snaps.contains(snap)
+            && !trash.contains_key(snap);
+        if !unreachable && !all_snaps.contains(base) && !trash.contains_key(base) {
             problems.push(Problem::DeltaBaseMissing {
                 snapshot: snap.clone(),
                 base: base.clone(),
