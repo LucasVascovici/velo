@@ -112,6 +112,16 @@ fn assert_fetched_recipe(out: &str) {
 }
 
 #[test]
+fn switch_mid_merge_exits_1_and_mentions_the_merge() {
+    let tmp = conflicted();
+    let (_, code) = velo(tmp.path(), &["merge", "feature"]);
+    assert_eq!(code, Some(3));
+    let (out, code) = velo(tmp.path(), &["switch", "feature"]);
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.to_lowercase().contains("merge"), "{out}");
+}
+
+#[test]
 fn conflicted_merge_exits_3_and_still_prints_the_summary() {
     let tmp = conflicted();
     let (out, code) = velo(tmp.path(), &["merge", "feature"]);

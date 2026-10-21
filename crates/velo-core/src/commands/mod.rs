@@ -63,6 +63,28 @@ pub(crate) fn require_working_tree(repo: &Repo, command: &str) -> Result<()> {
     )))
 }
 
+/// Refuse to move the working position while a merge or rebase is unfinished.
+///
+/// `MERGE_HEAD` and `REBASE_STATE` describe a position the repository is
+/// part-way through; switching or restoring the whole tree underneath them
+/// strands the conflict and the pending parent. A rebase is named first
+/// because a conflicted rebase step writes both files and "rebase" is the
+/// truer description.
+pub(crate) fn refuse_in_progress(root: &Path) -> Result<()> {
+    use crate::error::InProgress;
+    if root.join(".velo/REBASE_STATE").exists() {
+        return Err(VeloError::OperationInProgress {
+            what: InProgress::Rebase,
+        });
+    }
+    if root.join(".velo/MERGE_HEAD").exists() {
+        return Err(VeloError::OperationInProgress {
+            what: InProgress::Merge,
+        });
+    }
+    Ok(())
+}
+
 /// Hex characters of a snapshot id shown in output.
 ///
 /// **Display only.** Ids are stored, compared, keyed and transmitted at full

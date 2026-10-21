@@ -603,10 +603,12 @@ pub fn pull(
         // fast-forward wouldn't actually advance `main`.
         adopt_tracking_commits(conn, remote_name, &branch, &remote_tip)?;
         remotemod::set_remote_ref(conn, remote_name, &branch, &remote_tip)?;
-        crate::commands::restore::run(
+        crate::commands::restore::run_with(
             guard,
             &SnapshotId::from_stored(remote_tip.as_str()),
             crate::commands::restore::Options::default(),
+            crate::commands::restore::Strategy::Delta,
+            None,
         )?;
         Ok(Pulled::FastForwarded {
             branch,
@@ -865,7 +867,13 @@ fn fast_forward_to(
     adopt_tracking_commits(conn, remote, branch, remote_tip)?;
     remotemod::set_remote_ref(conn, remote, branch, remote_tip)?;
     let to = SnapshotId::from_stored(remote_tip);
-    crate::commands::restore::run(guard, &to, crate::commands::restore::Options::default())?;
+    crate::commands::restore::run_with(
+        guard,
+        &to,
+        crate::commands::restore::Options::default(),
+        crate::commands::restore::Strategy::Delta,
+        None,
+    )?;
     Ok(to)
 }
 

@@ -37,6 +37,9 @@ pub enum Outcome {
 pub fn run(guard: &WriteGuard, branch_name: &str, force: bool) -> Result<Outcome> {
     require_working_tree(guard.repo(), "switch")?;
     let root = guard.root();
+    if !force {
+        crate::commands::refuse_in_progress(root)?;
+    }
     if branch_name.starts_with("_deleted_") {
         return Err(VeloError::invalid(format!(
             "Branch '{}' has been deleted.",

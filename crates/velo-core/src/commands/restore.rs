@@ -88,7 +88,14 @@ pub(crate) enum Strategy {
 }
 
 /// Put the working tree back to how it was at `snapshot`.
+///
+/// A whole-tree restore without `force` is refused while a merge or rebase is
+/// in progress. A path-limited restore stays allowed: it is how one picks a
+/// version of a conflicted file.
 pub fn run(guard: &WriteGuard, snapshot: &SnapshotId, options: Options<'_>) -> Result<Outcome> {
+    if !options.force && options.paths.is_empty() {
+        crate::commands::refuse_in_progress(guard.root())?;
+    }
     run_with(guard, snapshot, options, Strategy::Delta, None)
 }
 

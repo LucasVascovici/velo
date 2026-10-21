@@ -12353,3 +12353,6 @@ mod push_tags;
 
 #[cfg(test)]
 mod redo_after_branch_move;
+
+#[cfg(test)]
+mod in_progress_guards;
