@@ -12362,3 +12362,6 @@ mod team_rows_profile;
 
 #[cfg(test)]
 mod blame_attribution;
+
+#[cfg(test)]
+mod message_fixes;

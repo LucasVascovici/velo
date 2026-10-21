@@ -35,7 +35,7 @@ pub fn print(outcome: &Outcome) {
                     style(super::id::short(from)).yellow()
                 ),
                 None => println!(
-                    "{} {} branch '{}' — no commits yet, so your first {} starts its history.",
+                    "{} {} branch '{}' — no commits yet, so your first {} starts its history. (Merging another branch into it adopts that branch's history.)",
                     style("✨").bold(),
                     verb,
                     style(branch).cyan().bold(),

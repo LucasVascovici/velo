@@ -76,3 +76,18 @@ fn show_lists_both_parents_and_history_marks_merge() {
         "{plain}"
     );
 }
+
+#[test]
+fn merge_into_an_unborn_branch_says_it_adopts_the_source_history() {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    ok(d, &["init"]);
+    write(d, "a.txt", "a\n");
+    ok(d, &["save", "base"]);
+    ok(d, &["switch", "fresh"]);
+    let out = ok(d, &["merge", "main"]);
+    assert!(
+        out.contains("only the history of the merged branch"),
+        "{out}"
+    );
+}

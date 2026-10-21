@@ -420,12 +420,17 @@ fn do_merge(guard: &WriteGuard, target_branch: &str) -> Result<Outcome> {
             h
         }
         None => {
+            if absent_ref.is_none() && crate::commands::branch_exists(conn, target_branch) {
+                return Err(VeloError::UnbornBranch {
+                    branch: target_branch.to_string(),
+                });
+            }
             return Err(absent_ref.unwrap_or_else(|| {
                 VeloError::invalid(format!(
                     "'{}' not found — expected a branch, tag, snapshot, or remote ref.",
                     target_branch
                 ))
-            }))
+            }));
         }
     };
 

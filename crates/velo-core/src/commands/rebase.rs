@@ -192,9 +192,13 @@ fn do_continue(guard: &WriteGuard, author: Option<&Author>) -> Result<Outcome> {
         });
     }
     if root.join(".velo/MERGE_HEAD").exists() {
-        return Err(VeloError::Conflicts {
-            paths: conflict_paths(guard.repo()),
-        });
+        let paths = conflict_paths(guard.repo());
+        if paths.is_empty() {
+            return Err(VeloError::invalid(
+                "all conflicts are resolved; run velo save to record this step, then velo rebase --continue",
+            ));
+        }
+        return Err(VeloError::Conflicts { paths });
     }
 
     // With no conflict pending the tree must be clean: the user saves after

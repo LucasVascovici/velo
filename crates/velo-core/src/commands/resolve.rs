@@ -107,6 +107,22 @@ pub fn list_conflicts(repo: &Repo) -> Result<Vec<ConflictFile>> {
     Ok(rows)
 }
 
+/// The error for a path that has no conflict row. While a merge or rebase is
+/// in progress and the path exists in the working tree, it is a file that was
+/// already resolved, which is not the same as a path that does not exist.
+fn missing_conflict_error(root: &std::path::Path, path: &str) -> VeloError {
+    let in_progress =
+        root.join(".velo/MERGE_HEAD").exists() || root.join(".velo/REBASE_STATE").exists();
+    let exists = crate::safe_path::join_checked(root, path)
+        .map(|p| p.exists())
+        .unwrap_or(false);
+    if in_progress && exists {
+        VeloError::invalid(format!("'{path}' is not in conflict (already resolved)"))
+    } else {
+        VeloError::not_found(RefKind::Path, path)
+    }
+}
+
 /// Look up one conflict by path.
 pub fn get_conflict(repo: &Repo, path: &str) -> Result<ConflictFile> {
     let normalised = db::normalise(path);
@@ -123,7 +139,7 @@ pub fn get_conflict(repo: &Repo, path: &str) -> Result<ConflictFile> {
                 })
             },
         )
-        .map_err(|_| VeloError::not_found(RefKind::Path, path))
+        .map_err(|_| missing_conflict_error(repo.root(), path))
 }
 
 /// Load a conflict's three sides, compute its hunks, and re-attach decisions
@@ -203,7 +219,7 @@ fn conflict_row(guard: &WriteGuard, path: &str) -> Option<ConflictFile> {
 }
 
 fn require_conflict_row(guard: &WriteGuard, path: &str) -> Result<ConflictFile> {
-    conflict_row(guard, path).ok_or_else(|| VeloError::not_found(RefKind::Path, path))
+    conflict_row(guard, path).ok_or_else(|| missing_conflict_error(guard.root(), path))
 }
 
 /// Forget one hunk's decision.
@@ -226,7 +242,7 @@ pub fn finalise(guard: &WriteGuard, session: &ConflictSession) -> Result<()> {
     match conflict_row(guard, path) {
         None => {
             return Err(if guard.root().join(".velo/MERGE_HEAD").exists() {
-                VeloError::not_found(RefKind::Path, path.as_str())
+                missing_conflict_error(guard.root(), path.as_str())
             } else {
                 VeloError::NoOperationInProgress {
                     what: InProgress::Merge,
