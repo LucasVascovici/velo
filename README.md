@@ -250,7 +250,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | **Undo a commit** | `git reset --soft HEAD~1`, `git reset --hard`, `git reflog`... | `velo undo` — one command, reversible |
 | **Redo an undo** | Not built-in — requires `git reflog` | `velo redo` |
 | **Abort a merge** | `git merge --abort` (resets working tree) | `velo merge --abort` (restores to exact pre-merge state, even after all conflicts resolved) |
-| **Named stashes** | `git stash push -m "name"`, recalled by index | `velo stash push <name>`, recalled by name |
+| **Named stashes** | `git stash push -m "name"`, recalled by index | `velo stash push <name>` (or `-m <name>`), recalled by name |
 | **Branch history** | `git log --all --graph --oneline --decorate` | `velo history --all --graph` |
 | **View a snapshot** | `git show <hash>` | `velo show <hash>` |
 | **Apply one commit** | `git cherry-pick <hash>` | `velo cherry-pick <hash>` |
@@ -314,7 +314,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
-| Save dirty state | `git stash push -m "name"` | `velo stash push <name>` |
+| Save dirty state | `git stash push -m "name"` | `velo stash push <name>` (`-m` also works) |
 | List stashes | `git stash list` | `velo stash list` |
 | Apply a stash | `git stash pop` or `git stash apply stash@{2}` | `velo stash pop <name>` |
 | Drop a stash | `git stash drop stash@{2}` | `velo stash drop <name>` |

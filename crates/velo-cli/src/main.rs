@@ -1436,6 +1436,14 @@ enum StashSub {
         /// Name for the shelf. Auto-generated (stash-YYYYMMDD-HHMMSS) if omitted.
         #[arg(value_name = "NAME", help = "Shelf name (auto-generated if omitted)")]
         name: Option<String>,
+        /// Git's spelling of the shelf name, accepted as an alias for NAME.
+        #[arg(
+            short = 'm',
+            long = "message",
+            value_name = "NAME",
+            conflicts_with = "name"
+        )]
+        message: Option<String>,
     },
 
     /// List all stash shelves.
@@ -1515,11 +1523,11 @@ fn clap_habit_hint(args: &[String], offending: &str) -> Option<&'static str> {
         .collect();
     Some(
         match (words.first().copied()?, words.get(1).copied(), offending) {
+            ("history", _, tok) if !tok.starts_with('-') && tok.contains(':') => {
+                spec_habit_hint(tok, "history")?
+            }
             ("history", _, tok) if !tok.starts_with('-') => {
                 "hint: velo history --branch <ref> shows another branch's history"
-            }
-            ("stash", Some("push"), "-m" | "--message") => {
-                "hint: the shelf name is an argument: velo stash push \"<name>\""
             }
             ("grep", _, "-n" | "--line-number") => {
                 "hint: velo grep always shows line numbers; there is no -n"
@@ -1536,17 +1544,59 @@ fn clap_habit_hint(args: &[String], offending: &str) -> Option<&'static str> {
 /// argument errors, so they are offered after the lookup itself fails.
 fn show_habit_hint(args: &[String]) -> Option<&'static str> {
     let mut words = args.iter().filter(|a| !a.starts_with('-'));
-    if words.next().map(String::as_str) != Some("show") {
+    let cmd = words.next()?.as_str();
+    if !matches!(cmd, "show" | "restore" | "diff" | "blame" | "history") {
         return None;
     }
-    let target = words.next()?;
-    if target == "HEAD" || target.starts_with("HEAD~") || target.starts_with("HEAD^") {
-        Some("hint: velo has no HEAD; name a branch, tag or snapshot id (velo history lists them)")
+    // `blame --at ref:path` carries the spec behind a flag, so every
+    // argument is a candidate there.
+    if cmd == "blame" {
+        return args.iter().find_map(|a| spec_habit_hint(a, cmd));
+    }
+    spec_habit_hint(words.next()?, cmd)
+}
+
+/// A hint for a snapshot spec typed in git's spelling: `HEAD~N`, `HEAD^` or
+/// `ref:path`. Plain `HEAD` is accepted (see `resolve_spec`), so it has none.
+fn spec_habit_hint(target: &str, cmd: &str) -> Option<&'static str> {
+    if target.starts_with("HEAD~") || target.starts_with("HEAD^") {
+        Some(
+            "hint: velo has no HEAD~N; name a branch, tag or snapshot id (velo history lists them)",
+        )
     } else if target.contains(':') {
-        Some("hint: velo show <ref> -- <path> shows a path's changes; velo restore <ref> -- <path> pulls the file out")
+        Some(match cmd {
+            "restore" => "hint: velo restore <ref> -- <path> pulls a file out of a snapshot; ref:path is git's spelling",
+            "diff" => "hint: velo diff <ref> -- <path> narrows a diff to a path; ref:path is git's spelling",
+            "history" => "hint: velo history -- <path> follows a path; velo show <ref> -- <path> shows it at a snapshot",
+            "blame" => "hint: velo blame <path> --at <ref> takes the path and the ref separately; ref:path is git's spelling",
+            _ => "hint: velo show <ref> -- <path> shows a path's changes; velo restore <ref> -- <path> pulls the file out",
+        })
     } else {
         None
     }
+}
+
+/// Resolve a snapshot spec typed on the command line. `HEAD` (exactly) is
+/// git's name for where you are; velo accepts it as the current position,
+/// with a note, so the habit costs nothing. Core knows nothing of HEAD.
+fn resolve_spec(repo: &velo_core::Repo, spec: &str) -> Result<velo_core::SnapshotId> {
+    if spec != "HEAD" {
+        return commands::resolve_snapshot_id(repo, spec);
+    }
+    let root = repo.root();
+    let position = std::fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let position = position.trim();
+    let id = if position.is_empty() {
+        let branch = std::fs::read_to_string(root.join(".velo/HEAD")).map_err(VeloError::Io)?;
+        commands::resolve_snapshot_id(repo, branch.trim())?
+    } else {
+        commands::resolve_snapshot_id(repo, position)?
+    };
+    eprintln!(
+        "note: HEAD means the current position ({}) in velo",
+        render::id::short(id.as_ref())
+    );
+    Ok(id)
 }
 
 /// Edit distance counting a swap of two neighbours as one edit.
@@ -3148,7 +3198,7 @@ fn run(cli: Cli) -> Result<Exit> {
             force,
             paths,
         } => {
-            let hash = commands::resolve_snapshot_id(&repo, &target)?;
+            let hash = resolve_spec(&repo, &target)?;
             let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
             render::restore::print(&commands::restore::run(
                 write(),
@@ -3194,16 +3244,14 @@ fn run(cli: Cli) -> Result<Exit> {
                     .iter()
                     .any(|x| x.name.as_str() == b);
                 if !is_local && bare.contains('/') {
-                    if let Ok(id) = commands::resolve_snapshot_id(&repo, &bare) {
+                    if let Ok(id) = resolve_spec(&repo, &bare) {
                         from = Some(id.to_string());
                         branch = None;
                     }
                 }
             }
             let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
-            let from = from
-                .map(|t| commands::resolve_snapshot_id(&repo, t.as_str()))
-                .transpose()?;
+            let from = from.map(|t| resolve_spec(&repo, t.as_str())).transpose()?;
             let file_paths: Vec<&Path> = file_filter.iter().map(Path::new).collect();
             let meta = meta_filter
                 .iter()
@@ -3250,7 +3298,7 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::Show { target, paths } => {
-            let id = commands::resolve_snapshot_id(&repo, &target)?;
+            let id = resolve_spec(&repo, &target)?;
             let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
             let signed = velo_core::sign::signed_snapshots(&repo)?;
             render::diff::print_snapshot(
@@ -3324,7 +3372,7 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::CherryPick { target } => {
-            let target = commands::resolve_snapshot_id(&repo, &target)?;
+            let target = resolve_spec(&repo, &target)?;
             let outcome =
                 commands::cherry_pick::run(write(), &target, author::from_env()?.as_ref())?;
             render::cherry_pick::print(&outcome);
@@ -3409,7 +3457,7 @@ fn run(cli: Cli) -> Result<Exit> {
                 // takes the id it actually needs.
                 let target = snapshot
                     .as_deref()
-                    .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                    .map(|spec| resolve_spec(&repo, spec))
                     .transpose()?;
                 let created = commands::tag::create(write(), &name, target.as_ref(), force)?;
                 render::tag::print_created(&created);
@@ -3433,7 +3481,7 @@ fn run(cli: Cli) -> Result<Exit> {
             // merge does not move the source, so its tip is that parent.
             let second_parent = match (&outcome, branch.as_deref()) {
                 (commands::merge::Outcome::FastForwarded { .. }, Some(source)) => {
-                    commands::resolve_snapshot_id(&repo, source)
+                    resolve_spec(&repo, source)
                         .ok()
                         .map(|id| (source, id.as_str().to_string()))
                 }
@@ -3502,8 +3550,8 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::Stash { sub } => match sub {
-            StashSub::Push { name } => {
-                render::stash::print_pushed(&commands::stash::push(write(), name)?)
+            StashSub::Push { name, message } => {
+                render::stash::print_pushed(&commands::stash::push(write(), name.or(message))?)
             }
             StashSub::List => render::stash::print_list(&commands::stash::list(&repo)?),
             StashSub::Pop { name } => {
@@ -3520,7 +3568,7 @@ fn run(cli: Cli) -> Result<Exit> {
         Commands::Blame { file, at, lines } => {
             let at = at
                 .as_deref()
-                .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                .map(|spec| resolve_spec(&repo, spec))
                 .transpose()?;
             let lines = lines.as_deref().map(parse_line_range).transpose()?;
             render::blame::print(&commands::blame::run(
@@ -3595,7 +3643,7 @@ fn run(cli: Cli) -> Result<Exit> {
         } => {
             let snapshot = snapshot
                 .as_deref()
-                .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                .map(|spec| resolve_spec(&repo, spec))
                 .transpose()?;
             let results = commands::grep::run(
                 &repo,
@@ -3626,7 +3674,7 @@ fn run(cli: Cli) -> Result<Exit> {
                 (true, _, _) => commands::rebase::Mode::Abort,
                 (false, true, _) => commands::rebase::Mode::Continue,
                 (false, false, Some(spec)) => {
-                    onto = commands::resolve_snapshot_id(&repo, spec)?;
+                    onto = resolve_spec(&repo, spec)?;
                     commands::rebase::Mode::Start { onto: &onto }
                 }
                 (false, false, None) => {
@@ -3715,7 +3763,7 @@ fn run(cli: Cli) -> Result<Exit> {
             BundleSub::Create { file, target } => {
                 let target = target
                     .as_deref()
-                    .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                    .map(|spec| resolve_spec(&repo, spec))
                     .transpose()?;
                 render::bundle::print_created(&commands::bundle::create(
                     &repo,
@@ -3753,7 +3801,7 @@ fn run(cli: Cli) -> Result<Exit> {
                     if let VeloError::NotFastForward { branch, remote } = &e {
                         let spec = format!("{remote}/{branch}");
                         if let Err(VeloError::RemoteRefAbsent { snapshot, .. }) =
-                            commands::resolve_snapshot_id(&repo, &spec)
+                            resolve_spec(&repo, &spec)
                         {
                             let short = render::id::short(snapshot.as_str());
                             if commands::is_trashed(&repo, snapshot.as_str()).unwrap_or(false) {

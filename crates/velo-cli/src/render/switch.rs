@@ -20,6 +20,13 @@ pub fn print(outcome: &Outcome) {
             existing,
             inherits,
         } => {
+            if !*existing {
+                println!("Created branch '{}'", style(branch).cyan().bold());
+                println!(
+                    "(velo switch creates a missing branch; {} says so explicitly.)",
+                    style("velo switch --create <name>").cyan()
+                );
+            }
             let verb = if *existing {
                 "Switched to"
             } else {
