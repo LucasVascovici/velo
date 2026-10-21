@@ -7,7 +7,10 @@ command:    VELO_DIFF_SEED=1000000 VELO_DIFF_MIX=undo VELO_DIFF_SECS=520 \
             VELO_DIFF_FAILURE_OUT=<file> cargo test -p velo-core --release \
             --locked differential_long -- --ignored --nocapture
 seconds:    165 (the run stopped at its first failure; budget was 520)
-sequences:  18 started (seed/start pairs, 40 ops each); 17 clean, 1 failed
+budget:     VELO_DIFF_SECS=520 rather than the briefed 2400, to fit the time allowed for this
+            task; the failure stopped the run at 165 s anyway.
+rate:       about 9 s per sequence (approximate: 165 s / 18 includes build and startup noise)
+sequences:  18 started (each seed covers 6 (seed, start) pairs: empty plus 5 goldens; 40 ops each); 17 clean, 1 failed
 linux/WSL:  not run (the failure stopped the measurement)
 
 FAILURE (the reproduction 21.4-c needs; nothing was fixed here)

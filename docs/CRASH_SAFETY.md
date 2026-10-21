@@ -201,11 +201,18 @@ left the K=1 reference with a `DeltaBaseMissing` fsck finding after the shrunk o
 `Redo, Undo, Edit, Save`. This is a reproduction, not a clean count, and it is
 recorded in `bench/results/2026-10-undo-heavy-differential.txt` for the fix. Once it
 is fixed, the owner reaches 10,000 sequences (about 9 seconds per sequence
-at the rate seen here, so roughly 25 hours; split it across seeds and machines) with:
+at the rate seen here, so roughly 25 hours) by repeating the one-hour slice below
+about 25 times, each with a distinct `VELO_DIFF_SEED` so the runs do not overlap
+(each slice covers about 400 sequences). Run it across machines if you prefer:
 
 ```bash
-VELO_DIFF_MIX=undo VELO_DIFF_SECS=3600 VELO_DIFF_FAILURE_OUT=fail.txt \
-  cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture
+for run in $(seq 0 24); do
+  VELO_DIFF_SEED=$((1000000 + run*100000)) VELO_DIFF_MIX=undo VELO_DIFF_SECS=3600 \
+    VELO_DIFF_FAILURE_OUT=fail-$run.txt \
+    cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture \
+    2>&1 | tee run-$run.log
+done
+cat run-*.log | grep -c 'differential_long: seed'   # total sequences
 ```
 
 Every seed and start pair the run prints (`differential_long: seed ...`) is one sequence.
