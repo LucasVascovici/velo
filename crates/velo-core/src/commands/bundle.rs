@@ -457,6 +457,16 @@ pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize,
     Ok((imported.snapshots, imported.objects))
 }
 
+/// [`import_pack`], also returning the number of tag rows inserted. A push
+/// reports it so the sender learns whether its tags really arrived.
+pub(crate) fn import_pack_tags(
+    guard: &WriteGuard,
+    bundle: &Bundle,
+) -> Result<(usize, usize, usize)> {
+    let imported = import(guard, bundle)?;
+    Ok((imported.snapshots, imported.objects, imported.tags))
+}
+
 /// What [`import`] actually inserted.
 pub(crate) struct Imported {
     pub snapshots: usize,

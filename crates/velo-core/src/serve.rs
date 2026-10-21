@@ -56,7 +56,7 @@ fn pack_for(
 }
 
 /// Run the fast-forward check and import if it passes, returning the status
-/// string the client expects (`OK <snapshots> <objects>` or `REJECT <reason>`).
+/// string the client expects (`OK <snapshots> <objects> <tags>` or `REJECT <reason>`).
 fn apply_push(
     guard: &crate::WriteGuard,
     branch: &str,
@@ -67,9 +67,9 @@ fn apply_push(
         match transport::fast_forward_check(guard.conn(), branch, new_tip, pack) {
             Some(reason) => format!("REJECT {}", reason),
             None => {
-                let (s, o) = bundle::import_pack(guard, pack)?;
+                let (s, o, t) = bundle::import_pack_tags(guard, pack)?;
                 guard.repo().emit_imported(s);
-                format!("OK {} {}", s, o)
+                format!("OK {} {} {}", s, o, t)
             }
         },
     )

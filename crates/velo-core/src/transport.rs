@@ -65,6 +65,9 @@ pub enum PushOutcome {
     Ok {
         new_snapshots: usize,
         new_objects: usize,
+        /// Tags the remote newly created, or `None` when it did not say (an
+        /// older server replies with two numbers only).
+        new_tags: Option<usize>,
     },
     Rejected(String),
 }
@@ -253,11 +256,12 @@ impl Remote for LocalRemote {
         match fast_forward_check(conn, branch, new_tip, &pack) {
             Some(reason) => Ok(PushOutcome::Rejected(reason)),
             None => {
-                let (s, o) = bundle::import_pack(&guard, &pack)?;
+                let (s, o, t) = bundle::import_pack_tags(&guard, &pack)?;
                 guard.repo().emit_imported(s);
                 Ok(PushOutcome::Ok {
                     new_snapshots: s,
                     new_objects: o,
+                    new_tags: Some(t),
                 })
             }
         }
@@ -666,14 +670,17 @@ impl Remote for StreamRemote {
 }
 
 fn parse_status(status: &str) -> Result<PushOutcome> {
-    // "OK <snaps> <objs>" or "REJECT <reason…>"
+    // "OK <snaps> <objs> [<tags>]" or "REJECT <reason…>"
     if let Some(rest) = status.strip_prefix("OK ") {
         let mut it = rest.split_whitespace();
         let s = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
         let o = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+        // A trailing tag count is optional: 6.0.1 clients stop after two numbers.
+        let t = it.next().and_then(|x| x.parse().ok());
         Ok(PushOutcome::Ok {
             new_snapshots: s,
             new_objects: o,
+            new_tags: t,
         })
     } else if let Some(reason) = status.strip_prefix("REJECT ") {
         Ok(PushOutcome::Rejected(reason.to_string()))

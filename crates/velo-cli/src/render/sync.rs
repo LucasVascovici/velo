@@ -122,7 +122,21 @@ pub fn print_fetched(fetched: &Fetched) {
 }
 
 pub fn print_push_report(report: &PushReport) {
-    print_pushed(&report.pushed);
+    // Tags published for snapshots the remote already had must not hide behind
+    // a bare "already up to date".
+    let tags_only =
+        matches!(report.pushed, Pushed::AlreadyUpToDate { .. }) && !report.tags.is_empty();
+    if !tags_only {
+        print_pushed(&report.pushed);
+    }
+    if !report.tags.is_empty() {
+        println!(
+            "{} {} tag(s) published: {}",
+            style("✔").green().bold(),
+            report.tags.len(),
+            report.tags.join(", ")
+        );
+    }
     if let Pushed::Sent { branch, .. } = &report.pushed {
         if !report.also_published.is_empty() {
             println!(

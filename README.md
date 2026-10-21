@@ -532,7 +532,7 @@ velo pull
 | `velo remote` | List configured remotes |
 | `velo remote remove <name>` | Remove a remote and its tracking refs |
 | `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
-| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work; merged side branches are published with it under their own names) |
+| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work; merged side branches are published with it under their own names; tags on pushed history are published too, even ones made after their snapshot was pushed, and an existing remote tag is never moved) |
 | `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
 | `velo sync [remote] [branch]` | Fetch, then fast-forward, push, or merge and push if the merge is clean; a conflict stops with exit 3 and the merge left in progress (`resolve`, `save`, `sync`). Never pushes a conflicted merge, never forces |
 
