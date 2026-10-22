@@ -6,6 +6,23 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 6.2.0
+
+Phase 22: put it in front of a stranger.
+
+### Added
+
+- **22.2-a Dated name availability table and distribution-name recommendation.** Added docs/NAMES.md, dated 2026-10-22, with live registry checks and the URL used per row. It recommends PyPI velo-core and unscoped npm velo-core, with velo-timeline as the fallback, and lists the cost of each option.
+
+### Changed
+
+- **22.0-a Open 6.2.0: workspace and lockfile versions, semver baseline v6.1.0.** Workspace version and the four internal deps are now 6.2.0. The four lockfiles show only velo-* version lines. The semver baseline is v6.1.0. `cargo build --workspace --locked` passes. The workspace tests passed, except one flaky test noted below.
+- **22.2-b Apply the distribution names and align binding versions with the workspace.** Fixed all four review items. The node lockfile and index.js are regenerated at 6.2.0, and the packages workflow now strips CR when reading the workspace version.
+
+### Fixed
+
+- **22.0-b Fix the README fit table against the code.** Rewrote the regulated audit trails row of the README fit table to describe shipped Ed25519 signed snapshots and bundles, fsck tamper detection, and what is still missing. The other rows checked out against the code and were left alone.
+
 ## 6.1.0
 
 Phase 21: fix what the team simulation found, then re-measure.
