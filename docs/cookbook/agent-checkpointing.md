@@ -150,7 +150,31 @@ state, the last one merged back; restore step 250, 100 times; "who wrote this
 line" for 20 lines at the end of the run. Seeded, so every system sees the same
 edits. Each system's answers are checked against the generator's record.
 
-**Windows 11** (i7-1370P, Python 3.12.8, git 2.42.0.windows.2, Defender
+**Linux GitHub runner, velo 6.2.0, format v4, 2026-10-22** (`ubuntu-24.04`
+hosted runner, image 20261012.334.1, Python 3.12.15, git 2.55.0, commit
+`dd15186`, `bench.yml` run 39866892547; the runner is not the laptop, so these
+numbers are not comparable with the tables below; disk is the store after the
+whole run, open handle):
+
+| system | 500 steps (s) | 8 attempts + merge (s) | restore step 250, median (ms) | 100 restores (s) | who wrote x20 (s) | disk (MB) |
+|---|---|---|---|---|---|---|
+| velo | 1.3 | 0.3 | 24 | 2.4 | 0.26 | 12 |
+| velo (5.2 API) | 2.5 | 0.6 | 1,665 | 166.9 | 0.26 | 12 |
+| shadow git | 12.1 | 3.2 | 46 | 4.6 | 0.17 | 4 |
+| git worktree | 11.8 | 3.3 | 46 | 4.7 | 0.17 | 12 |
+| dir copy | 51.8 | 9.4 | 101 | 10.5 | 0.42 | 571 |
+| jsonl log | 0.2 | 0.04 | 96 | 9.6 | 0.36 | 7 |
+| sqlite blobs | 1.5 | 0.3 | 83 | 8.4 | 0.00 | 33 |
+
+On this run velo is 0.10x shadow git for 500 steps and 0.53x for restore, 1.49x
+for "who wrote" (slower), and 3.1x for disk, which still misses the 3x target;
+see [`PERF.md`](../PERF.md) section 6. Raw:
+`bench/results/2026-10-linux-runner-agent-500-v4.json`.
+
+The tables below are earlier versions (5.3 era, format v3) on other machines,
+kept as they were.
+
+**Windows 11, earlier version** (i7-1370P, Python 3.12.8, git 2.42.0.windows.2, Defender
 real-time protection assumed ON, exclusions not checked):
 
 | system | 500 steps (s) | 8 attempts + merge (s) | restore step 250, median (ms) | 100 restores (s) | who wrote x20 (s) | disk (MB) |
@@ -163,7 +187,7 @@ real-time protection assumed ON, exclusions not checked):
 | jsonl log | 1.4 | 0.4 | 705 | 71.8 | 0.55 | 7 |
 | sqlite blobs | 8.8 | 2.1 | 738 | 74.1 | 0.00 | 33 |
 
-**Linux** (Ubuntu 22.04 under WSL2 on the same machine, ext4, Python 3.10.12,
+**Linux, earlier version** (Ubuntu 22.04 under WSL2 on the same machine, ext4, Python 3.10.12,
 git 2.34.1; not a bare-metal or CI Linux box, and the `agent` job in
 `bench.yml` reruns it on a GitHub runner):
 

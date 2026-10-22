@@ -624,6 +624,57 @@ Reasons for the misses and the loss:
   envelope repository was not migrated here; the command is in
   `bench/README.md`.
 
+### Result on a Linux GitHub runner, 6.x (format v4)
+
+Measured 2026-10-22 by `bench.yml` (`suite=agent`, `workflow_dispatch`), run
+39866892547, on ref `main` at commit `dd15186` (6.2.0, current format v4). The
+runner is a GitHub-hosted `ubuntu-24.04` (image version 20261012.334.1, kernel
+6.17.0-1022-azure, Python 3.12.15, git 2.55.0); the CPU model was not recorded by
+the harness or the job log. It is not the laptop and not WSL2, so these numbers
+are **not comparable with the earlier WSL2 numbers** (4.5x on 2026-10-16); only
+ratios inside this one table mean anything. Defaults: 500 steps, 1,000 files,
+100 restores, seed 1. The 23.4-a harness (at-rest disk) was not on the phase
+branch yet, so the disk column is the store as left after the workload (open
+handle, apparent bytes). Raw:
+[`2026-10-linux-runner-agent-500-v4.json`](../bench/results/2026-10-linux-runner-agent-500-v4.json).
+
+| system | 500 steps (s) | 8 attempts + merge (s) | restore step 250, median (ms) | 100 restores (s) | who wrote x20 (s) | disk after steps (MB) | disk final (MB) |
+|---|---|---|---|---|---|---|---|
+| velo | 1.26 | 0.28 | 24 | 2.43 | 0.256 | 11.1 | 11.9 |
+| velo (5.2 API) | 2.50 | 0.58 | 1,665 | 166.9 | 0.256 | 11.2 | 12.0 |
+| shadow git | 12.15 | 3.18 | 46 | 4.63 | 0.172 | 3.5 | 3.8 |
+| git worktree | 11.77 | 3.34 | 46 | 4.65 | 0.168 | 3.2 | 12.0 |
+| dir copy | 51.80 | 9.40 | 101 | 10.50 | 0.420 | 488.5 | 570.8 |
+| jsonl log | 0.25 | 0.04 | 96 | 9.58 | 0.365 | 6.4 | 7.3 |
+| sqlite blobs | 1.50 | 0.26 | 83 | 8.38 | 0.001 | 28.5 | 33.0 |
+
+Judged against the targets above, `velo` row against `shadow git`:
+
+- **500 steps at most 3x shadow git: met, 0.10x** (1.26 s against 12.15 s, so
+  velo is about 9.7x faster here). Earlier the same target was missed at 4.5x on
+  WSL2; the one-file-per-snapshot rows of format v4 and `save_changes` account
+  for the change (inferred, not isolated by a run). It is one runner and one
+  seed, so it is not a promise for other machines.
+- **Restore: met, 0.53x** (median 24 ms against 46 ms; 100 restores 2.43 s
+  against 4.63 s). The 5.2-API row, kept as the old harness, is 36x slower than
+  shadow git on restore (1,665 ms median), which is the reason `materialize`
+  exists.
+- **"Who wrote" within 1.5x: met, but only just, 1.49x** (0.256 s against 0.172 s
+  for 20 lines). It is a loss on its own terms (velo is slower than git) and a
+  small shift in runner noise would flip it; it is recorded as met by the
+  stated threshold, not as comfortable.
+- **Disk at most 3x: missed, 3.20x after the steps (11.1 MB against 3.5 MB) and
+  3.12x final (11.9 MB against 3.8 MB).** The measured reason is that each
+  snapshot still carries per-snapshot rows and the SQLite store has no delta
+  compression, while git packs and deltas the 1,000 small files (this reason is
+  inferred from the store layout, not isolated by a run here). This is the
+  open-handle number; the at-rest figure needs the 23.4-a harness and was not
+  measured. The gap closed from 41x (174 MB, format v3) to 3.2x, and it is still
+  a miss.
+
+Not measured here: the Windows leg, the at-rest disk, and a run on any other
+ref. A single run, single seed; no variance estimate.
+
 ## 7. Not measured
 
 - **100,000 files x 2,000 snapshots (both platforms).** About 200 million
