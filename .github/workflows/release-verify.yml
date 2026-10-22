@@ -198,6 +198,9 @@ jobs:
     env:
       TAG: ${{ needs.assets.outputs.tag }}
     steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Download, install into a fresh venv, save and read history
         shell: bash
         run: |
@@ -224,6 +227,9 @@ jobs:
               history = repo.history(branch="main")
               assert len(history) == 1, history
               print("ok:", history[0])
+              # Release the database before the directory is removed (Windows).
+              del history
+              del repo
           PY
           "$py" check.py
 
@@ -288,6 +294,9 @@ jobs:
     env:
       TAG: ${{ needs.assets.outputs.tag }}
     steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Download and extract
         shell: bash
         run: |
