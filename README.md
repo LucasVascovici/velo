@@ -75,6 +75,7 @@ yet. The bindings, release assets and Windows are in [docs/INSTALL.md](docs/INST
 
 | You are | Read |
 | :--- | :--- |
+| Deciding | [Is velo for you?](docs/IS_VELO_FOR_YOU.md), with comparisons for [agent checkpointing](docs/compare/agent-checkpointing.md), [registries](docs/compare/registries.md) and [document history](docs/compare/document-history.md) |
 | An agent builder | [Library and bindings, MCP server](docs/LIBRARY.md), [agent checkpointing cookbook](docs/cookbook/agent-checkpointing.md) |
 | An app builder | [Library and bindings](docs/LIBRARY.md), [STABILITY.md](docs/STABILITY.md), [FORMAT.md](docs/FORMAT.md) |
 | A CLI user | [The CLI](docs/CLI.md), [Collaboration](docs/COLLABORATION.md), [Integrity and signing](docs/INTEGRITY.md) |

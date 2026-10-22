@@ -3,6 +3,11 @@
 Every page in this directory, by who it is for. The front page is the
 [README](../README.md).
 
+## Deciding
+
+- [IS_VELO_FOR_YOU.md](IS_VELO_FOR_YOU.md): where velo is slower and faster than Git, what it costs in disk, and what only it gives you, from the measured benchmarks.
+- Comparisons: [agent checkpointing](compare/agent-checkpointing.md) (shadow Git and `git worktree`), [registries](compare/registries.md) (an append-only log or SQLite), [document history](compare/document-history.md) (Git).
+
 ## Agent builders
 
 - [LIBRARY.md](LIBRARY.md): the Rust library and the Python, Node, C and WebAssembly bindings, and the MCP server.
