@@ -308,8 +308,19 @@ not repacked in this run.
 ## Commands for the owner
 
 Run from the repository root with `cargo build --release -p velo-cli` done.
-Each full run takes hours on Windows; run it in a terminal, not under a
-time-limited tool.
+Each full run takes hours on Windows. `scale.py` has no time limit of its own
+(`--command-timeout SECONDS` is optional and bounds one velo command), and it
+rewrites `--out` after every phase with `"partial": true` and the
+`completed_phases`, so a killed run keeps what it measured. Run it detached,
+not under a time-limited tool:
+
+```text
+# Windows: a separate terminal, or detached from this one
+Start-Process -NoNewWindow -FilePath python -ArgumentList 'bench/scale/scale.py','--preset','ratio-100k','--out','bench/results/<date>-windows-ratio-100k.json' -RedirectStandardError scale.log
+
+# Linux
+nohup python3 bench/scale/scale.py --preset ratio-100k --out bench/results/<date>-linux-ratio-100k.json > scale.out 2> scale.log &
+```
 
 ```text
 # Full envelope, Windows (Defender on; say so with --defender-note if excluded)
@@ -320,7 +331,10 @@ python bench/scale/scale.py --preset envelope-b --out bench/results/<date>-windo
 python3 bench/scale/scale.py --velo target/release/velo --preset envelope-a --out bench/results/<date>-linux-envelope-v4-a-full.json
 python3 bench/scale/scale.py --velo target/release/velo --preset envelope-b --out bench/results/<date>-linux-envelope-v4-b-full.json
 
-# Reduced 100,000-file shape that did not finish here (run with no 590 s limit)
+# 100,000 files x 500 snapshots: reports save_ratio_vs_history0 (target 1.5x)
+python bench/scale/scale.py --preset ratio-100k --out bench/results/<date>-windows-ratio-100k.json
+
+# Reduced 100,000-file shape that did not finish here; run it detached
 python bench/scale/scale.py --files 100000 --snapshots 20 --out bench/results/<date>-windows-envelope-v4-b-reduced.json
 
 # Full retention run (10,000 files x 2,000 snapshots, the 18.10/19.4 shape)

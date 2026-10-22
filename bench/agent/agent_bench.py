@@ -9,6 +9,7 @@ winner; restore to step n 100 times; "who wrote this line" across the run.
 """
 import argparse
 import datetime
+import gc
 import json
 import os
 import platform
@@ -188,6 +189,12 @@ class Velo52:
 
     def disk(self):
         return dir_bytes(self.repo_dir)
+
+    def close(self):
+        # Dropping the Repo lets SQLite checkpoint and remove the WAL, so
+        # disk() afterwards is the store at rest, not with the handle open.
+        self.repo = None
+        gc.collect()
 
 
 class Velo(Velo52):
@@ -396,6 +403,9 @@ class JsonlLog:
     def disk(self):
         return self.log.stat().st_size
 
+    def close(self):
+        self.fh.close()
+
 
 class SqliteBlobs:
     name = "sqlite blobs"
@@ -461,11 +471,26 @@ class SqliteBlobs:
     def disk(self):
         return self.db_path.stat().st_size
 
+    def close(self):
+        self.db.close()
+
 
 ADAPTERS = [Velo52, Velo, ShadowGit, GitWorktree, DirCopy, JsonlLog, SqliteBlobs]
 
 
 # ------------------------------------------------------------------ driver
+
+def cpu_name():
+    if platform.system() == "Linux":
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        return line.split(":", 1)[1].strip()
+        except OSError:
+            pass
+    return platform.processor() or "unknown"
+
 
 def tool_version(cmd):
     try:
@@ -544,6 +569,11 @@ def bench_system(cls, root, args, project, edits, who_targets, expect_who):
     t_branch += time.perf_counter() - t0
     res["branches_s"] = t_branch
     res["disk_final"] = a.disk()
+    # disk_final is measured with the handle open and keeps its meaning so old
+    # results compare; this is the same store after the handle is closed.
+    if hasattr(a, "close"):
+        a.close()
+    res["disk_at_rest_bytes"] = a.disk()
     return res
 
 
@@ -601,6 +631,14 @@ def main():
     }
     if platform.system() == "Windows":
         env["defender_note"] = args.defender_note or "not provided: assume real-time scanning is ON"
+    machine = {
+        "os": platform.system(),
+        "platform": platform.platform(),
+        "cpu": cpu_name(),
+        "logical_cores": os.cpu_count(),
+    }
+    if "defender_note" in env:
+        machine["defender_note"] = env["defender_note"]
     only = set(args.only.split(",")) if args.only else None
     results = []
     for cls in ADAPTERS:
@@ -612,17 +650,17 @@ def main():
         print(f"== {cls.name}", file=sys.stderr, flush=True)
         results.append(bench_system(cls, root, args, project, edits, who_targets, expect_who))
 
-    md = ["| system | %d steps (s) | 8 attempts + merge (s) | restore, median (ms) | who wrote x%d (s) | disk (MB) | provenance |"
-          % (args.steps, WHO_QUERIES), "|---|---|---|---|---|---|---|"]
+    md = ["| system | %d steps (s) | 8 attempts + merge (s) | restore, median (ms) | who wrote x%d (s) | disk, open (MB) | disk, at rest (MB) | provenance |"
+          % (args.steps, WHO_QUERIES), "|---|---|---|---|---|---|---|---|"]
     for r in results:
-        md.append("| %s | %.1f | %.2f | %.1f | %.2f | %.1f | %s |" % (
+        md.append("| %s | %.1f | %.2f | %.1f | %.2f | %.1f | %.1f | %s |" % (
             r["system"], r["steps_s"], r["branches_s"], r["restore_median_s"] * 1000,
-            r["who_wrote_s"], r["disk_final"] / 1e6, r["provenance"]))
+            r["who_wrote_s"], r["disk_final"] / 1e6, r["disk_at_rest_bytes"] / 1e6, r["provenance"]))
     print("\n".join(md))
 
     path = args.out or f"bench/results/agent-{env['date']}-{env['system'].lower()}.json"
     Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps({"env": env, "results": results}, indent=2))
+    Path(path).write_text(json.dumps({"env": env, "machine": machine, "results": results}, indent=2))
     print(f"wrote {path}", file=sys.stderr)
     if not args.workdir:
         shutil.rmtree(work, ignore_errors=True)

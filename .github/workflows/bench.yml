@@ -7,13 +7,23 @@ on:
       suite:
         description: "Which benchmark to run"
         type: choice
-        options: [scale, agent]
+        options: [scale, agent, retention]
         default: scale
       preset:
-        description: "Benchmark preset (small, envelope-a, envelope-b)"
+        description: "Benchmark preset (small, envelope-a, envelope-b, ratio-100k)"
         type: choice
-        options: [small, envelope-a, envelope-b]
+        options: [small, envelope-a, envelope-b, ratio-100k]
         default: small
+      files:
+        description: "Optional file count; overrides the preset when set"
+        type: string
+        required: false
+        default: ""
+      snapshots:
+        description: "Optional snapshot count; overrides the preset when set"
+        type: string
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -25,18 +35,70 @@ jobs:
     timeout-minutes: 350
     steps:
       - uses: actions/checkout@v4
+      - name: Runner identity
+        run: |
+          {
+            echo "### Runner"
+            echo '```text'
+            uname -a
+            echo "nproc: $(nproc)"
+            echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
+            df -h "$RUNNER_TEMP"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build release CLI
         run: cargo build --release -p velo-cli --locked
       - name: Run scale benchmark
+        env:
+          PRESET: ${{ inputs.preset }}
+          FILES: ${{ inputs.files }}
+          SNAPSHOTS: ${{ inputs.snapshots }}
         run: |
-          python3 bench/scale/scale.py --preset "${{ inputs.preset }}" \
-            --workdir "$RUNNER_TEMP/velo-bench" --out results.json | tee "$GITHUB_STEP_SUMMARY"
+          args=(--preset "$PRESET")
+          if [ -n "$FILES" ]; then args+=(--files "$FILES"); fi
+          if [ -n "$SNAPSHOTS" ]; then args+=(--snapshots "$SNAPSHOTS"); fi
+          python3 bench/scale/scale.py "${args[@]}" \
+            --workdir "$RUNNER_TEMP/velo-bench" --out results.json | tee -a "$GITHUB_STEP_SUMMARY"
+      # Upload even when the run is cut off: scale.py rewrites results.json
+      # after every phase, so a partial file is still worth keeping.
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: scale-results-${{ inputs.preset }}
           path: results.json
+
+  # The 10,000 files x 2,000 snapshots retention test (18.10/19.4 shape).
+  retention:
+    if: inputs.suite == 'retention'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - name: Runner identity
+        run: |
+          {
+            echo "### Runner"
+            echo '```text'
+            uname -a
+            echo "nproc: $(nproc)"
+            echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
+            df -h "$RUNNER_TEMP"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run the retention test
+        run: |
+          cargo test --release -p velo-core --features timing --lib \
+            default_policy_at_ten_thousand_files_and_two_thousand_snapshots \
+            -- --ignored --nocapture 2>&1 | tee retention.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: retention-log
+          path: retention.log
 
   # Agent-checkpointing benchmark against git, directory copies, a log and
   # SQLite (bench/agent/README.md). Needs the Python binding, built release.
@@ -46,6 +108,17 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
+      - name: Runner identity
+        run: |
+          {
+            echo "### Runner"
+            echo '```text'
+            uname -a
+            echo "nproc: $(nproc)"
+            echo "cpu: $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2- | sed 's/^ //')"
+            df -h "$RUNNER_TEMP"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -60,7 +133,7 @@ jobs:
           .venv/bin/maturin develop --release --manifest-path bindings/python/Cargo.toml
       - name: Run agent benchmark
         run: |
-          .venv/bin/python bench/agent/agent_bench.py             --workdir "$RUNNER_TEMP/velo-agent-bench"             --out agent-results.json | tee "$GITHUB_STEP_SUMMARY"
+          .venv/bin/python bench/agent/agent_bench.py --workdir "$RUNNER_TEMP/velo-agent-bench" --out agent-results.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: agent-results
