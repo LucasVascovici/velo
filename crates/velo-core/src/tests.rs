@@ -12380,3 +12380,5 @@ mod fsck_orphan_chain;
 mod message_fixes;
 #[cfg(test)]
 mod orphan_delta_repro;
+#[cfg(test)]
+mod save_existence;
