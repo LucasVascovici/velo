@@ -10,7 +10,7 @@ npm test
 ```
 
 ```js
-const { Repo } = require('@velo/core')
+const { Repo } = require('velo-core')
 const repo = await Repo.init('work')
 const id = await repo.saveTree({
   branch: 'main',

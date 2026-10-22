@@ -1113,7 +1113,7 @@ dependencies = [
 
 [[package]]
 name = "velo-py"
-version = "0.1.0"
+version = "6.2.0"
 dependencies = [
  "pyo3",
  "velo-core",

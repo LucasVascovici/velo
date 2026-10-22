@@ -123,7 +123,7 @@ It also exposes `merge_plan`, `merge_commit`, `create_branch` and more; see its 
 
 ### Node.js
 
-[`bindings/node`](bindings/node) is a napi-rs binding (`@velo/core`); every method
+[`bindings/node`](bindings/node) is a napi-rs binding (`velo-core`); every method
 returns a `Promise`:
 
 ```bash
@@ -131,7 +131,7 @@ cd bindings/node && npm install && npm run build
 ```
 
 ```js
-const { Repo } = require('@velo/core')
+const { Repo } = require('velo-core')
 const repo = await Repo.init('work')
 const id = await repo.saveTree({
   branch: 'main',
@@ -997,7 +997,7 @@ file. Nothing is on PyPI or npm; a release asset can be removed, so this is
 reversible, unlike a registry version. Replace `vX.Y.Z` with a release tag.
 
 ```bash
-# Python (abi3 wheel, one per platform: velo-<version>-cp39-abi3-<platform>.whl)
+# Python (abi3 wheel, one per platform: velo_core-<version>-cp39-abi3-<platform>.whl)
 pip install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/<wheel file>
 
 # Node (velo-core-<version>-<platform>.tgz, platform is linux, macos or windows)
@@ -1099,7 +1099,7 @@ other crates are consumers of it.
 | `crates/velo-mcp` | A stdio MCP server that makes velo a checkpoint layer for agents |
 | `crates/velo-testkit` | Shared test fixtures |
 | `bindings/python` | PyO3 binding, built with maturin |
-| `bindings/node` | napi-rs binding (`@velo/core`) |
+| `bindings/node` | napi-rs binding (`velo-core`) |
 | `bindings/wasm` | wasm-bindgen binding over single-file repositories |
 
 The bindings are separate Cargo workspaces so their toolchains stay out of the

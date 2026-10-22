@@ -56,7 +56,7 @@ Then, in an isolated environment per wedge:
 ```bash
 # Python: use the wheel for your platform
 python -m venv ~/coldstart/python/venv
-~/coldstart/python/venv/bin/pip install ./velo-<version>-cp39-abi3-<platform>.whl
+~/coldstart/python/venv/bin/pip install ./velo_core-<version>-cp39-abi3-<platform>.whl
 
 # Node: use the tarball for your platform (linux, macos or windows)
 mkdir -p ~/coldstart/node/work && cd ~/coldstart/node/work && npm init -y
