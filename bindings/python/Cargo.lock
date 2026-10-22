@@ -1082,7 +1082,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
 name = "velo-core"
-version = "6.0.1"
+version = "6.1.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -1103,7 +1103,7 @@ dependencies = [
 
 [[package]]
 name = "velo-merge"
-version = "6.0.1"
+version = "6.1.0"
 dependencies = [
  "serde_json",
  "serde_yaml_ng",
