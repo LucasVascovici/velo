@@ -15,6 +15,7 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 velo-core = { path = "../../crates/velo-core" }
 wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde-wasm-bindgen = "0.6"
@@ -45,3 +46,8 @@ strip = true
 # further ~10% gzip; see the Size section of README.md.
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
+
+# Used by the code `#[wasm_bindgen]` generates for `async fn` exports, so no
+# source line names it and cargo-machete cannot see the use.
+[package.metadata.cargo-machete]
+ignored = ["wasm-bindgen-futures"]
