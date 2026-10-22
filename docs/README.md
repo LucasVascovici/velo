@@ -11,6 +11,7 @@ Every page in this directory, by who it is for. The front page is the
 ## Agent builders
 
 - [LIBRARY.md](LIBRARY.md): the Rust library and the Python, Node, C and WebAssembly bindings, and the MCP server.
+- Five-minute quickstarts, each run in CI from the built packages: [Python agent checkpointing](quickstart/python-agent-checkpointing.md), [Node config registry](quickstart/node-config-registry.md), [Rust document editor](quickstart/rust-document-editor.md) and [MCP](quickstart/mcp.md).
 - [cookbook/](cookbook/README.md): worked recipes, starting with [agent checkpointing](cookbook/agent-checkpointing.md).
 - [report-sample.html](report-sample.html): a sample `velo report` of an agent run; a static page that works offline.
 
