@@ -323,8 +323,11 @@ python3 bench/scale/scale.py --velo target/release/velo --preset envelope-b --ou
 # Reduced 100,000-file shape that did not finish here (run with no 590 s limit)
 python bench/scale/scale.py --files 100000 --snapshots 20 --out bench/results/<date>-windows-envelope-v4-b-reduced.json
 
-# Full retention run (the ignored test, default K, at its full size)
-cargo test --release -p velo-core --lib default_policy_at_a_reduced_18_10_shape -- --ignored --nocapture
+# Full retention run (10,000 files x 2,000 snapshots, the 18.10/19.4 shape)
+cargo test --release -p velo-core --features timing --lib default_policy_at_ten_thousand_files_and_two_thousand_snapshots -- --ignored --nocapture
+
+# Reduced retention run (2,000 files x 400 snapshots)
+cargo test --release -p velo-core --features timing --lib default_policy_at_a_reduced_18_10_shape -- --ignored --nocapture
 ```
 
 The test lives in `crates/velo-core/src/tests/retention_scale.rs`.
