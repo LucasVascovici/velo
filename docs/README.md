@@ -38,6 +38,7 @@ Every page in this directory, by who it is for. The front page is the
 - [THREAT_MODEL.md](THREAT_MODEL.md): what velo defends against.
 - [SCALE.md](SCALE.md): the measured scale envelope.
 - [PERF.md](PERF.md): where the time goes.
+- [PRODUCTION.md](PRODUCTION.md): the production checklist, each line green with its evidence or red with its reason.
 - [SECURITY.md](../SECURITY.md): reporting a vulnerability.
 
 ## Contributors
