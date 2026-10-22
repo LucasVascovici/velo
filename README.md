@@ -48,7 +48,7 @@ To see who wrote each line of an agent run, open the [sample `velo report`](docs
 | AI agent workspaces / checkpointing | Snapshot per tool call, branch per attempt, undo/redo, merge the winner; blame answers "which run wrote this line"; metadata (`eval_run`, `model`, `tool_call_id`) is trustworthy after the fact | Excellent — the wedge |
 | Prompt, config and policy registries | Publish / tag / rollback, audit trail, reviewable diffs | Excellent — [`examples/prompt-registry`](examples/prompt-registry) is the proof |
 | Document and knowledge editors | Drafts as branches, per-line provenance, rename-aware history | Very good for text; structured formats via merge drivers |
-| Regulated audit trails | Recomputable content addressing | Good; signing is decided, not yet implemented |
+| Regulated audit trails | Recomputable content addressing; Ed25519-signed snapshots (`velo sign`, `velo verify --trust`) whose signatures travel in bundles; `velo fsck` recomputes every id, so altered content or history is caught, and a signature from a key you do not trust fails verification | Good; no key storage, revocation or web of trust (see [Signing snapshots](#signing-snapshots)) |
 | Local-first / offline field apps | Bundles need no server; explicit merges; HTTP sync; WASM single-file repos | Medium |
 | Headless CMS / low-code | Draft → preview branch → publish → revert; JSON/YAML/TOML drivers | Medium |
 | Reproducible research, assessment | "What exactly was run / submitted", provably; chunked storage for large files | Medium |
