@@ -33,6 +33,32 @@ class AuditTests(unittest.TestCase):
         self.assertEqual(inv, [])
         self.assertEqual(len(warn), 1)
 
+    def test_absolute_path_under_checkout_is_invalid(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "crates", "velo-core"))
+            f = os.path.join(d, "docs", "ROADMAP.md").replace("\\", "/")
+            inv, _ = audit.audit("cat " + f, "/tmp/sb")
+            self.assertTrue(inv)
+
+    def test_tilde_path_under_checkout_is_invalid(self):
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, "velo", "crates", "velo-core"))
+            old = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
+            os.environ["HOME"] = os.environ["USERPROFILE"] = d
+            try:
+                inv, _ = audit.audit("cat ~/velo/docs/ROADMAP.md", "/tmp/sb")
+            finally:
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            self.assertTrue(inv)
+
+    def test_bindings_tests_path_is_invalid(self):
+        inv, _ = audit.audit("cat ../velo/bindings/python/tests/test_api.py", "/tmp/sb")
+        self.assertTrue(inv)
+
     def test_exit_codes(self):
         with tempfile.TemporaryDirectory() as d:
             bad = os.path.join(d, "bad.txt")

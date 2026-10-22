@@ -31,6 +31,7 @@ INVALID_NAMES = ["ARCHITECTURE.md", "DEVELOPING.md", "CLAUDE.md"]
 INVALID_PATTERNS = [
     r"crates[/\\]velo-",
     r"bindings[/\\][^/\\\s\"']+[/\\]src",
+    r"bindings[/\\][^/\\\s\"']+[/\\]tests[/\\]",
     r"velo[\w.-]*[/\\]tests[/\\]",
 ]
 PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|~/|/)[^\s\"'`<>|*?,;()\[\]{}]+")
@@ -91,8 +92,7 @@ def audit(text, sandbox):
     for p in sorted(set(PATH_RE.findall(text))):
         p = p.rstrip(".:")
         if p.startswith("~/"):
-            warnings.append("outside sandbox: " + p)
-            continue
+            p = os.path.expanduser(p)
         n = _norm(p)
         if n == sb or n.startswith(sb + "/"):
             continue
