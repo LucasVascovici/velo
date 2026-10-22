@@ -1,0 +1,114 @@
+name: static-analysis
+
+# Static and dynamic analysis for the unsafe code in velo-ffi and the few other
+# unsafe sites. Results and dispositions are recorded in docs/REVIEW_KIT.md.
+
+on:
+  schedule:
+    - cron: "41 4 * * 1"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+    paths:
+      - "crates/velo-ffi/**"
+      - ".github/workflows/static-analysis.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Blocking: every crate root must state its unsafe policy, and only the
+  # documented files outside velo-ffi may contain an unsafe block.
+  unsafe-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check crate roots and unsafe sites
+        shell: bash
+        run: |
+          set -eu
+          for f in crates/velo-mcp/src/lib.rs crates/velo-mcp/src/main.rs \
+                   crates/velo-merge/src/lib.rs crates/velo-testkit/src/lib.rs \
+                   crates/velo-tui/src/lib.rs; do
+            grep -q 'forbid(unsafe_code)' "$f" || { echo "missing forbid(unsafe_code): $f"; exit 1; }
+          done
+          for f in crates/velo-core/src/lib.rs crates/velo-cli/src/main.rs; do
+            grep -q 'deny(unsafe_code)' "$f" || { echo "missing deny(unsafe_code): $f"; exit 1; }
+          done
+          found=$(grep -rlE '^\s*(unsafe\s*\{|unsafe\s+(fn|impl|extern))|=\s*unsafe\s*\{' crates --include='*.rs' | grep -v '^crates/velo-ffi/' | sort)
+          echo "$found"
+          expected=$(printf '%s\n' crates/velo-cli/src/lockwait.rs crates/velo-cli/src/main.rs crates/velo-core/src/storage.rs | sort)
+          [ "$found" = "$expected" ] || { echo "unexpected unsafe outside velo-ffi"; exit 1; }
+
+  # Blocking: clean at the time it was added.
+  clippy-unsafe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Clippy unsafe lints on velo-ffi
+        run: >
+          cargo clippy -p velo-ffi --locked --
+          -D warnings
+          -W clippy::undocumented_unsafe_blocks
+          -W clippy::multiple_unsafe_ops_per_block
+          -W clippy::ptr_as_ptr
+
+  # Advisory until a first clean run is recorded in docs/REVIEW_KIT.md.
+  geiger:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-geiger --locked
+      - name: Unsafe inventory
+        run: cargo geiger --forbid-only
+
+  # Miri is not used: velo-ffi's tests call into bundled C SQLite, which Miri
+  # cannot execute. AddressSanitizer covers the same memory errors natively.
+  asan:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - name: AddressSanitizer on velo-ffi tests
+        env:
+          RUSTFLAGS: -Zsanitizer=address
+        run: cargo +nightly test -p velo-ffi --target x86_64-unknown-linux-gnu
+
+  careful:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-careful --locked
+      - name: cargo careful on velo-ffi tests
+        run: cargo +nightly careful test -p velo-ffi
+
+  machete:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-machete --locked
+      - run: cargo machete

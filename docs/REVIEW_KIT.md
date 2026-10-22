@@ -100,3 +100,61 @@ sha256sum target/x86_64-unknown-linux-musl/release/velo
 ```
 
 `$PWD` must be the checkout root in each run; the two hashes must match.
+
+## Automated passes
+
+The static and dynamic analysis passes below run weekly and on every change to
+`crates/velo-ffi/` in
+[.github/workflows/static-analysis.yml](../.github/workflows/static-analysis.yml),
+one job per pass. Alongside them, the dependency audit and `cargo deny` jobs
+run in CI. Results are as of 2026-10-22 (Rust 1.94.0, cargo 1.94.0).
+
+The claim that `unsafe` is confined to `velo-ffi` is nearly, but not exactly,
+true. Outside `velo-ffi` there are three sites, each under a crate-level
+`deny(unsafe_code)` with a narrow `allow`:
+
+| Site | Why |
+|---|---|
+| `crates/velo-core/src/storage.rs` | read-only `memmap2` map of a pack file, justified in place |
+| `crates/velo-cli/src/lockwait.rs` | `kill(pid, 0)` liveness probe for a lock holder (Unix) and its Windows counterpart |
+| `crates/velo-cli/src/main.rs` | `SetConsoleOutputCP(65001)` on Windows so UTF-8 output renders |
+
+`velo-mcp`, `velo-merge`, `velo-testkit` and `velo-tui` are
+`#![forbid(unsafe_code)]`. The `unsafe-policy` CI job checks the crate-root
+attributes and fails if a new file outside `velo-ffi` gains an unsafe block.
+
+### Why Miri is not used
+
+Miri interprets Rust MIR and cannot execute foreign code. `velo-ffi`'s tests
+open real repositories, which calls into the bundled C SQLite through
+`rusqlite`, so Miri stops at the first foreign call. AddressSanitizer and
+`cargo careful` run the real code natively instead.
+
+### Passes
+
+| Pass | Tool and version | Command | Ran locally | Findings |
+|---|---|---|---|---|
+| Unsafe policy | grep over crate roots | the `unsafe-policy` job | yes (by hand, same patterns) | 0 |
+| Clippy unsafe lints | clippy 1.94.0 | `cargo clippy -p velo-ffi -- -W clippy::undocumented_unsafe_blocks -W clippy::multiple_unsafe_ops_per_block -W clippy::ptr_as_ptr` | yes | 1, fixed |
+| Unsafe inventory | cargo-geiger (latest at run time) | `cargo geiger --forbid-only` | no | pending first CI run |
+| AddressSanitizer | nightly rustc | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test -p velo-ffi --target x86_64-unknown-linux-gnu` | no | pending first CI run |
+| cargo careful | cargo-careful (latest at run time) | `cargo +nightly careful test -p velo-ffi` | no | pending first CI run |
+| Unused dependencies | cargo-machete (latest at run time) | `cargo machete` | no | pending first CI run |
+
+The author's machine could not run the Linux-only and cargo-installed passes
+(WSL was not reachable from the environment that produced this change, and
+`cargo-geiger` is not installed there), so those four rows are recorded as
+pending. Their CI jobs are advisory (`continue-on-error: true`) until a first
+clean run is recorded here, at which point the `continue-on-error` line is
+removed so they block. The unsafe-policy and clippy jobs are clean now and
+block.
+
+### Findings and dispositions
+
+| Pass | Finding | Disposition |
+|---|---|---|
+| Clippy `ptr_as_ptr` | `crates/velo-ffi/src/tree.rs`: `Box::into_raw(bytes) as *mut u8` | fixed: now `.cast::<u8>()`, same behaviour |
+| Clippy `undocumented_unsafe_blocks` | none | clean |
+| Clippy `multiple_unsafe_ops_per_block` | none | clean |
+| Unsafe policy | `velo-core`, `velo-cli` contain three unsafe sites despite the "confined to velo-ffi" description | documented above; not a defect, the sites are minimal and each has an `allow` |
+| geiger, ASan, careful, machete | not yet run | open: record the first CI results here |
