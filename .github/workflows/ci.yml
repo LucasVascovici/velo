@@ -210,7 +210,7 @@ jobs:
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: velo-core,velo-merge
-          baseline-rev: v6.0.1
+          baseline-rev: v6.1.0
           feature-group: all-features
 
   # Licences, bans, sources and advisories against deny.toml for the root
