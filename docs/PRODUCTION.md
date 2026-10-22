@@ -6,7 +6,34 @@ here as **green**, with a link to its proof, or **red**, with the reason. This
 page records the evidence; it does not make the decision. Removing or keeping
 the note is the owner's call.
 
-Current count: **7 green, 4 red** (lines 7, 9, 10 and 11).
+Current count: **6 green, 5 red** (lines 6, 7, 9, 10 and 11).
+
+## How a line turns green
+
+A green line links to a committed result that matches its sentence, at the size,
+platform and format the sentence names. A line whose evidence is a reduced run,
+a different platform or a prediction is red or marked partial.
+
+Each line that was green was re-read against that rule:
+
+- Line 1: checked, holds. The corpus holds a repository and a bundle from each
+  released format, and the `corpus` job runs on Linux, Windows and macOS; the
+  `old-release` job covers mixed versions.
+- Line 2: checked, holds, with the limits the section states. The seven fuzz
+  targets run nightly. The sentence is about what is known, not a proof, and the
+  section says so.
+- Line 3: checked, holds. The crash harness runs on v3 and v4 storage, on Linux
+  and Windows in CI. macOS is not in the `crash` job.
+- Line 4: checked, holds. The tests are committed and run in the normal test
+  jobs; TLS is out of scope by design.
+- Line 5: checked, holds, with one known gap (a later countersignature is not
+  re-sent on a later sync).
+- Line 6: **did not hold**, now red. Its evidence was a document that disclaims
+  the work; see section 6.
+- Line 8: checked, holds. The `semver` job compares against the latest released
+  tag (`v6.1.0`), and the `package`, `parity`, corpus and `old-release` jobs
+  exist as listed. The one recorded exception is stated.
+- Line 7 is red and carries a partial row of its own: see its first table row.
 
 | # | Line | Verdict |
 | --- | --- | --- |
@@ -15,7 +42,7 @@ Current count: **7 green, 4 red** (lines 7, 9, 10 and 11).
 | 3 | An interrupted operation leaves a repository `fsck` accepts, on v4 as on v3 | green |
 | 4 | A hosted remote cannot be written without authorisation | green |
 | 5 | A signed history round-trips and tampering is caught | green |
-| 6 | The documented sizes are measured sizes, on the current format | green |
+| 6 | The documented sizes are measured sizes, on the current format | **red** |
 | 7 | The headline workload is within its stated factor, and a regression fails CI | **red** |
 | 8 | The API and format promises are enforced by CI | green |
 | 9 | A stranger can follow the README to a working result | **red** |
@@ -78,12 +105,22 @@ Current count: **7 green, 4 red** (lines 7, 9, 10 and 11).
 - Known gap: a later countersignature is not re-sent on a later sync
   ([THREAT_MODEL.md](THREAT_MODEL.md)).
 
-## 6. Documented sizes are measured: green
+## 6. Documented sizes are measured: red
 
-- [SCALE.md](SCALE.md), "Measured on 6.x (format v4)", holds the measured
-  envelope on the current format; the 5.x tables are kept and labelled as v3.
-  The runs are in [`bench/results`](../bench/results) and
-  [`bench/scale`](../bench/scale).
+- [SCALE.md](SCALE.md), "Measured on 6.x (format v4)", is the current
+  envelope, and in its own words the full-size shapes were not re-run on 6.x
+  and no Linux run was made. The 5.x tables are kept and labelled as v3. The runs
+  are in [`bench/results`](../bench/results) and [`bench/scale`](../bench/scale).
+- What is missing:
+  - Windows only: 10,000 files x 200 snapshots is the only shape that
+    completed on 6.x.
+  - 100,000 files x 20 snapshots did not finish its first save.
+  - 30,000 files x 20 snapshots was killed at `gc` and is partial.
+  - There was no Linux run, and the retention run was not repeated on 6.x; its
+    416 s / 165 s / 193 s figures are from before format v4.
+- It turns green when the full-size shapes are measured on 6.x on Linux and on
+  Windows, and every cell in SCALE.md is labelled with its platform, version and
+  whether the run completed. The sentence above does not change.
 
 ## 7. Headline workload against its stated factor: red
 
@@ -91,7 +128,7 @@ The verdicts below are as [PERF.md](PERF.md) records them, misses included.
 
 | Target | Verdict | Where |
 | --- | --- | --- |
-| One-file save at 100,000 files, under 1 s (22.3) | met: median 246 ms, slowest 496 ms, Windows | [PERF.md](PERF.md), "After the parent-membership rule (22.3)" |
+| One-file save at 100,000 files, under 1 s (22.3) | partial: median 246 ms, slowest 496 ms, measured through the library `save_tree` on Windows; the CLI `save` path was measured at 30,000 files, not 100,000 | [PERF.md](PERF.md), "After the parent-membership rule (22.3)" |
 | Who wrote this line, within 1.5x shadow git (22.4) | met: 0.87x | [PERF.md](PERF.md) section 11 |
 | Disk after 500 steps, at most 3x git (22.5) | met at rest (2.10x); 3.37x with the handle held open, as the benchmark does, and section 6 keeps that figure | [PERF.md](PERF.md) section 12 |
 | 500 steps, at most 3x shadow git on Linux | **not measured** since storage v4; the last measurement was 4.5x, a miss | [PERF.md](PERF.md) sections 5 and 6 |
