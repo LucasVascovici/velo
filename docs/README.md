@@ -23,6 +23,7 @@ Every page in this directory, by who it is for. The front page is the
 - [COLLABORATION.md](COLLABORATION.md): clone, push, pull, diverging, bundles and hosting a remote.
 - [INTEGRITY.md](INTEGRITY.md): integrity checks, signing, and leaving velo and coming back.
 - [WINDOWS.md](WINDOWS.md): notes for Windows.
+- [demo/README.md](demo/README.md): the scripted demo, with its [transcript](demo/transcript.md).
 
 ## Operators
 
