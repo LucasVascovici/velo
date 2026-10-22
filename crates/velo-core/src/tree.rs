@@ -621,10 +621,14 @@ impl WriteGuard<'_> {
 
         let mut working: std::collections::BTreeMap<String, Slot> =
             std::collections::BTreeMap::new();
-        if let Some(parent) = spec.parent {
-            for (path, (hash, mode)) in crate::tree_store::tree_of(self.conn(), parent)? {
-                working.insert(path, Slot::Parent(hash, mode));
-            }
+        // Kept whole rather than consumed: its object hashes are the trusted
+        // set below, and `write_tree` reuses it instead of reading it again.
+        let parent_tree = match spec.parent {
+            Some(parent) => Some(crate::tree_store::tree_of(self.conn(), parent)?),
+            None => None,
+        };
+        for (path, (hash, mode)) in parent_tree.iter().flatten() {
+            working.insert(path.clone(), Slot::Parent(hash.clone(), *mode));
         }
         let in_parent: std::collections::HashSet<String> = working.keys().cloned().collect();
         crate::timing::lap("save_changes.load_parent");
@@ -697,6 +701,35 @@ impl WriteGuard<'_> {
         crate::timing::lap("save_changes.apply");
 
         let objects = self.repo().objects();
+        // Prove every `Stored` put before anything is written. An object the
+        // parent's tree names is trusted (taken from the tree as loaded, so a
+        // deleted or replaced path still counts); the rest are asked of the
+        // store in one batch.
+        {
+            let known: std::collections::HashSet<&str> = parent_tree
+                .iter()
+                .flat_map(|t| t.values().map(|(h, _)| h.as_str()))
+                .collect();
+            let mut queued = std::collections::HashSet::new();
+            let unseen: Vec<&str> = working
+                .values()
+                .filter_map(|slot| match slot {
+                    Slot::Put(TreeEntry {
+                        content: Content::Stored(o),
+                        ..
+                    }) => Some(o.as_str()),
+                    _ => None,
+                })
+                .filter(|o| !known.contains(o) && queued.insert(*o))
+                .collect();
+            crate::timing::count("save_changes.checked", unseen.len() as u64);
+            if !unseen.is_empty() {
+                let missing = objects.missing(&unseen)?;
+                if let Some(first) = missing.into_iter().next() {
+                    return Err(VeloError::MissingObject { hash: first });
+                }
+            }
+        }
         let mut tree: Vec<(String, String, i64)> = Vec::with_capacity(working.len());
         let mut written: Vec<(String, ObjectHash)> = Vec::new();
         for (path, slot) in working {
@@ -715,14 +748,8 @@ impl WriteGuard<'_> {
                             };
                             objects.put(&content)?
                         }
-                        Content::Stored(object) => {
-                            if !objects.contains(object.as_str()) {
-                                return Err(VeloError::MissingObject {
-                                    hash: object.into_string(),
-                                });
-                            }
-                            object.into_string()
-                        }
+                        // Proved above, or named by the parent's tree.
+                        Content::Stored(object) => object.into_string(),
                     };
                     written.push((path.clone(), ObjectHash::from_stored(object.clone())));
                     tree.push((path, object, mode));
@@ -743,7 +770,7 @@ impl WriteGuard<'_> {
                 author: spec.author,
                 timestamp_ms: spec.timestamp_ms,
             },
-            None,
+            parent_tree.as_ref(),
         )?;
         Ok(Saved { snapshot, written })
     }

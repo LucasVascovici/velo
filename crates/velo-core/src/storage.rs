@@ -504,6 +504,9 @@ impl ObjectStore<'_> {
         }
     }
 
+    /// Whether one object is present. Producers use [`missing`](Self::missing)
+    /// instead; this is kept for tests.
+    #[cfg(test)]
     pub(crate) fn contains(&self, hash: &str) -> bool {
         match self {
             ObjectStore::Files(f) => f.contains(hash),
