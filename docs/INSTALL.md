@@ -94,6 +94,26 @@ see [Use it from your language](LIBRARY.md).
 
 Each release also carries a CycloneDX software bill of materials for `velo-cli`, attached as `velo-<version>.cdx.json`. Release builds are checked for reproducibility by `.github/workflows/reproducible.yml`, which builds the Linux x86-64 musl binary twice from the same tag in different directories and fails if the hashes differ; no differences are known so far.
 
+### Verify a download
+
+Every release asset carries a GitHub build-provenance attestation, and the
+checksum files are signed keylessly with cosign using the release workflow's
+GitHub identity. No key is involved.
+
+```bash
+# Checksums: SHA256SUMS.txt covers the CLI and MCP archives and the SBOM,
+# SHA256SUMS-bindings.txt covers the wheels and Node tarballs.
+sha256sum -c --ignore-missing SHA256SUMS.txt
+# PowerShell
+(Get-FileHash velo-x86_64-windows.zip -Algorithm SHA256).Hash.ToLower()  # compare with SHA256SUMS.txt
+
+# Build provenance of one file
+gh attestation verify velo-x86_64-linux.tar.gz --repo LucasVascovici/velo
+
+# Signature over the checksum file (the same works for SHA256SUMS-bindings.txt)
+cosign verify-blob --bundle SHA256SUMS.txt.sigstore.json   --certificate-identity-regexp 'https://github.com/LucasVascovici/velo/.github/workflows/release.yml@refs/tags/v.*'   --certificate-oidc-issuer https://token.actions.githubusercontent.com   SHA256SUMS.txt
+```
+
 ### Build from source
 
 Requires Rust 1.88 or later.

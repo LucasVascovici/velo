@@ -34,6 +34,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
+      id-token: write
+      attestations: write
 
     strategy:
       fail-fast: false
@@ -169,6 +171,14 @@ jobs:
           if (-not (Test-Path $mcp)) { throw "Binary not found: $mcp" }
           Compress-Archive -Path $mcp -DestinationPath "${{ matrix.mcp_package }}"
 
+      # Build provenance: ties each archive to this workflow run and commit.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            ${{ matrix.package }}
+            ${{ matrix.mcp_package }}
+
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
@@ -186,6 +196,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@v4
 
@@ -203,6 +215,11 @@ jobs:
           SRC=$(ls crates/velo-cli/*.cdx.json | head -1)
           mv "$SRC" "velo-${VERSION}.cdx.json"
           echo "SBOM_FILE=velo-${VERSION}.cdx.json" >> "$GITHUB_ENV"
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: ${{ env.SBOM_FILE }}
 
       - name: Attach SBOM to the release
         uses: softprops/action-gh-release@v2
@@ -227,6 +244,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -247,6 +266,22 @@ jobs:
           test "$(ls *.tgz | wc -l)" -eq 3
           sha256sum *.whl *.tgz > SHA256SUMS-bindings.txt
           cat SHA256SUMS-bindings.txt
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            bindings-dist/*.whl
+            bindings-dist/*.tgz
+
+      # Keyless signing with the workflow's GitHub OIDC identity; no keys or
+      # secrets are stored anywhere.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+      - name: Sign the bindings checksums
+        shell: bash
+        working-directory: bindings-dist
+        run: cosign sign-blob --yes --bundle SHA256SUMS-bindings.txt.sigstore.json SHA256SUMS-bindings.txt
+
       - name: Attach to the release
         uses: softprops/action-gh-release@v2
         with:
@@ -254,6 +289,48 @@ jobs:
             bindings-dist/*.whl
             bindings-dist/*.tgz
             bindings-dist/SHA256SUMS-bindings.txt
+            bindings-dist/SHA256SUMS-bindings.txt.sigstore.json
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # -- Checksums over the CLI and MCP archives and the SBOM, signed ----------
+  checksums:
+    name: Checksums
+    needs: [build, sbom]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Download the CLI assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir cli-dist
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"             --pattern 'velo-*' --dir cli-dist
+      - name: Write checksums
+        shell: bash
+        working-directory: cli-dist
+        run: |
+          ls -l
+          # 5 CLI archives, 5 MCP archives and the SBOM.
+          test "$(ls velo-* | wc -l)" -eq 11
+          sha256sum velo-* > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3.7.0
+      - name: Sign the checksums
+        shell: bash
+        working-directory: cli-dist
+        run: cosign sign-blob --yes --bundle SHA256SUMS.txt.sigstore.json SHA256SUMS.txt
+      - name: Attach to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            cli-dist/SHA256SUMS.txt
+            cli-dist/SHA256SUMS.txt.sigstore.json
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
