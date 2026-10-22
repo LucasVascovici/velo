@@ -1,0 +1,102 @@
+# Dry-run publish for the registry packages, with no upload.
+#
+# Builds each package that a crates.io, PyPI or npm publish would send, under
+# the names chosen in docs/NAMES.md, and installs it into a clean place.
+# The cargo side is split: ci.yml's `package` job runs
+# `cargo package --workspace` for every publishable crate, and this file adds
+# a true `cargo publish --dry-run` for velo-merge, the one crate whose
+# dependencies are all external, so the registry check can run before any of
+# its siblings exist on crates.io.
+#
+# No secrets, tokens or upload credentials are used. The exact commands that do
+# publish are in docs/RELEASING.md and are run by hand.
+name: Publish dry run
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "bindings/**"
+      - "packaging/**"
+      - "Cargo.toml"
+      - ".github/workflows/publish-dry-run.yml"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  crates:
+    name: crates.io dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Dry-run publish velo-merge
+        run: cargo publish --dry-run --locked -p velo-merge
+
+  pypi:
+    name: PyPI dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the sdist and the wheel
+        run: |
+          set -euo pipefail
+          python -m pip install "maturin>=1.5,<2" twine
+          cd bindings/python
+          maturin sdist --out dist
+          maturin build --release --out dist
+          ls dist
+      - name: Check the package metadata
+        run: twine check bindings/python/dist/*
+      - name: Install the sdist into a fresh venv (builds from source)
+        run: |
+          set -euo pipefail
+          sdist=$(ls "$GITHUB_WORKSPACE"/bindings/python/dist/*.tar.gz)
+          work=$(mktemp -d)
+          cd "$work"   # outside the checkout, so the source tree cannot shadow the package
+          python -m venv venv
+          venv/bin/python -m pip install "$sdist"
+          venv/bin/python -c 'import velo; print(velo.__file__)'
+
+  npm:
+    name: npm dry run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Place the prebuilt binary, as packages.yml does
+        working-directory: bindings/node
+        run: |
+          npm install
+          npx napi build --platform --release
+          ls ./*.node
+      - name: npm publish --dry-run
+        working-directory: bindings/node
+        run: |
+          # package.json is "private": true so that nothing publishes by
+          # accident. Lift that on the runner's copy only, or npm refuses
+          # even a dry run.
+          npm pkg set private=false
+          npm publish --dry-run --access public
+      - name: Pack, install into a temp project and require
+        run: |
+          set -euo pipefail
+          cd bindings/node
+          npm pack
+          tgz=$(ls "$PWD"/velo-core-*.tgz)
+          work=$(mktemp -d)
+          cd "$work"
+          npm init -y
+          npm install "$tgz"
+          node -e 'const v = require("velo-core"); console.log(Object.keys(v).slice(0, 5))'

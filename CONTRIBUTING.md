@@ -6,6 +6,8 @@ expected to follow. By taking part you agree to the
 [Code of Conduct](CODE_OF_CONDUCT.md). Questions go through [SUPPORT.md](SUPPORT.md);
 vulnerabilities go through [SECURITY.md](SECURITY.md), never a public issue.
 
+Maintainers cutting a release: see [docs/RELEASING.md](docs/RELEASING.md).
+
 ## Build
 
 Requires Rust 1.88 or later (the minimum supported version, checked in CI).
