@@ -32,7 +32,8 @@ deferred, with the reason.
 |---|---|---|
 | Cross-process change notification | Accepted as documentation | Events are in-process only. A poll on `Repo::head_token` works across processes today; a file-based notify is built only if an adopter asks. |
 | A managed or hosted option | Declined for now | `serve-http` has bearer tokens and a deployment example, but no tenants, quotas or UI. Revisit when a hosted consumer exists. |
-| Continuous git mirroring | Under consideration; a one-way mirror is the likely first step, pending user evidence | Export and import exist, but a team cannot adopt velo without leaving git. |
+| Continuous git mirroring | Deferred until asked (decided 2026-10-23) | Export and import exist, and no cold-start run or outside user has asked for a mirror. Trigger: a friction-log entry or an outside reader asks for it. The first step would be a one-way `velo mirror` to a git remote. |
+| Agent-framework adapter (a checkpointer for an agent framework's state interface, or a coding-agent hook that snapshots the workspace around tool calls) | Deferred until asked (decided 2026-10-23) | The candidates are different products, and the choice is made from what cold-start agents and outside users reach for. It is built only for a named user outside the project, as a separate package over the Python binding, outside the core crates' dependency tree. An adapter nobody uses is maintenance with no adoption. |
 | More language bindings (Go, Java, .NET) | Declined until asked | They could use the C ABI, which stays stable and documented. |
 | An editor or IDE view | Declined for now | `velo report` is static; its model is data an editor can render. |
 | A delta wire (v5) | Deferred | The wire is full trees so mixed versions work. It will be decided on its own measurement, not before. |
