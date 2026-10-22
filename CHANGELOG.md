@@ -6,6 +6,37 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 6.1.0
+
+Phase 21: fix what the team simulation found, then re-measure.
+
+### Changed
+
+- **21.6-a `push` publishes tags whose snapshot the remote already has, and says so.** The receiver appends the names of the tags it inserted to the OK line after the count. `LocalRemote` returns the same list, and `PushReport.tags` lists only names that were both offered and inserted. The names reach `push` through a new provided method, `Remote::published_tags`, so `PushOutcome::Ok` keeps its fields and the change is not breaking.
+
+### Fixed
+
+- **21.10-c Fix the dominant cost of clone over HTTP, or write the reason.** `bundle::import` now calls `timing::begin()` at its start and laps a new `import.verify` stage before `import.objects`, so pull, push and serve rows no longer count earlier work as `import.objects`. PERF.md notes the new lap.
+- **21.1-a MERGE_HEAD records the resolved source snapshot; save, abort and status read it.** MERGE_HEAD now stores `<pre>:<source>:<source-id>`, written and parsed only in the new `commands/merge_head.rs`. Save and `merge --abort` use the stored id. The old two-field form is still read and re-resolved. The repro test fails without the save.rs change and passes with it.
+- **21.2-a redo refuses with a typed error when the branch moved since the undo.** The stray `#[cfg(test)]` at tests.rs:26 was already gone, so no new commit was needed for it.
+- **21.3-a switch, whole-tree restore and stash pop refuse while a merge or rebase is in progress.** Added `commands::refuse_in_progress` (rebase named first, then merge), called from `switch::run` unless forced, from `restore::run` for whole-tree restores without force, and from `stash::pop`.
+- **21.4-c fsck: an unreachable orphan delta chain is cruft that --repair clears.** The undo-heavy reproduction was a gap in save, not undo. A new save deleted the branch's trash rows but left their stored delta trees behind, so an orphan chain stayed whose base was itself an unreferenced tree. `save` now removes those trees with the fold in the same transaction. The new test `orphan_delta_repro` replays Redo, Undo, Edit, Save on the format-v4 golden at K=1 and asserts fsck reports no problems and no cruft.
+- **21.5-a Push refusal states what is true; the reconcile recipe follows the repository state, with `velo sync` first.** A refused push now says "origin/main is at <id>, not fetched yet; velo sync ..." and mentions undo only when the id is in the trash. The recipe takes a `RecipeState` and has no `velo pull` step.
+- **21.7-a The HTTP push refusal names the token variable and the server option.** A refused push now names `VELO_TOKEN_<REMOTE>` and, when no token was sent, also `VELO_SERVE_TOKEN` and `--token-file`. When a token was sent, it says the token was rejected and never prints the value. HTTP statuses, refusal kinds and the exit code are unchanged.
+- **21.8-a resolve, rebase --continue and merge say what is actually wrong.** Resolving an already-resolved path says "not in conflict", `rebase --continue` before save says to run `velo save` (exit 1), merging an unborn branch returns `UnbornBranch`, and merging into an unborn branch states that it adopts the source's history.
+- **21.8-b cherry-pick counts, merge summary after mv, conflicts context and blame past EOF.** A cherry-pick of a change already present no longer counts as Updated or Auto-merged and prints only "Nothing to apply". The conflicts text shows context under both sides, blame past EOF prints "file has N lines" on stderr, and the merge summary after mv plus an edit now says New, as status does.
+- **21.11-a Blame's walk is correct after merge, fast-forward, rebase, cherry-pick and take-theirs.** The oracle warnings come from its parsing plus by-design replay authorship. The CLI now prints `(unknown)` in an empty author cell.
+
+### Added
+
+- **21.9-a Accept the cheap git spellings and make every git-habit refusal name the velo spelling.** `stash push -m` and plain `HEAD` are now accepted. `HEAD` resolves to the current position and prints a stderr note. `ref:path` hints now cover restore, diff, history and blame as well as show, and `switch <new>` prints "Created branch" and mentions `--create`.
+- **21.9-b One exit-code rule: not-found is 1, nothing-to-do is 0.** Added typed `NothingToUndo` and `NothingToRedo` errors, mirrored in the Python, Node and FFI bindings. The CLI prints them as plain text and exits 0. The switch near-miss refusal now exits 1. The README exit-code table and the `--help` block state the rule.
+- **21.4-a Differential harness: a Pull op, an undo-heavy mix, and pinned undo/pull/redo sequences.** Added `Op::Pull`, a `Mix::undo_heavy` switch, the `VELO_DIFF_MIX=undo` knob and a second nightly step, with tests `undo_pull_redo_sequence`, `undo_heavy_smoke` and `default_mix_op_list_is_unchanged`.
+- **21.4-b Undo-heavy differential runs.** The docs give a 25-slice loop, one hour per slice, each with a distinct `VELO_DIFF_SEED`, and say how to total the sequence count.
+- **21.10-a A committed harness for the team run's over-target rows.** Added `team_rows_profile.rs`. An ignored `profile_team_rows` measures clone (path and HTTP), bundle, grep, stash, blame, push/pull (path and HTTP) and 4 parallel writers, with timing laps and JSON output. A smoke test, `team_rows_run_at_a_small_size`, runs every row in the normal suite.
+- **21.12-a CI: the semver baseline is now v6.0.1.** The stale comment in `ci.yml` is gone.
+- **21.12-b Re-measure the Linux 500-step agent run and fix the <worktree> placeholder in PERF.md.** The sandbox refused every wsl call, so the 500-step Linux run was not made. `docs/PERF.md` now says so and gives the repo-root owner command; no numbers were invented.
+
 ## 6.0.1
 
 ### Fixed

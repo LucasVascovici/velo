@@ -173,6 +173,7 @@ pub fn clone_with_token(
         )));
     }
 
+    crate::timing::begin();
     // Pull everything from the remote (empty have-set = send it all).
     let mut remote = transport::open_with_token(url, spawn, token)?;
     let (refs, pack) = {
@@ -186,6 +187,7 @@ pub fn clone_with_token(
         let transfer = PhaseGuard::cancellable(obs, Phase::Transferring, None, cancel);
         remote.fetch(&HashSet::new(), &transfer)?
     };
+    crate::timing::lap("clone.fetch");
     if refs.is_empty() {
         return Err(VeloError::invalid(format!(
             "'{}' has no commits yet, so there is nothing to clone.\n  \
@@ -210,8 +212,10 @@ pub fn clone_with_token(
     };
     let guard = repo.write()?;
     let conn = guard.conn();
+    crate::timing::lap("clone.create_repo");
 
     let (snaps, objs) = bundle::import_pack(&guard, &pack)?;
+    crate::timing::lap("clone.import_rows");
     guard.repo().emit_imported(snaps);
     crate::failpoint::hit("clone.after_import");
 
@@ -354,6 +358,10 @@ pub struct PushReport {
     /// Branch labels other than the pushed branch carried by the snapshots
     /// that were sent, sorted and deduplicated. Empty unless snapshots were sent.
     pub also_published: Vec<String>,
+    /// Tags that were sent for snapshots the remote already had and that the
+    /// remote did not hold, so they were published by this push. Against a
+    /// server too old to count them this is empty.
+    pub tags: Vec<String>,
 }
 
 /// Send a branch to a remote. Fast-forward only — the remote enforces it.
@@ -398,6 +406,7 @@ pub fn push_report(
     let remote_was_empty = std::cell::Cell::new(false);
     let advertised_tip: std::cell::Cell<Option<String>> = std::cell::Cell::new(None);
     let side: std::cell::RefCell<std::collections::BTreeSet<String>> = Default::default();
+    let offered: std::cell::RefCell<Vec<String>> = Default::default();
     let mut build = |refs: &[transport::RemoteRef]| -> Result<bundle::Bundle> {
         advertised_tip.set(
             refs.iter()
@@ -418,6 +427,7 @@ pub fn push_report(
         for h in &peer_has {
             snap_set.remove(h);
         }
+        let have_all = bundle::reachable_ancestry(conn, &local_tip);
         let _packing = guard.phase(Phase::Packing, Some(snap_set.len() as u64));
         let mut pack = bundle::build_pack_excluding(conn, &objects, &snap_set, &peer_has)?;
         // Send commits under their real branch name: a commit we obtained via
@@ -434,6 +444,18 @@ pub fn push_report(
                 side.borrow_mut().insert(s.branch.clone());
             }
         }
+        // A tag made after its snapshot was pushed names a snapshot the
+        // remote has, so the pack (scoped to what is sent) leaves it out.
+        // Offer it; the receiver never replaces a tag it already holds.
+        let mut stmt = conn.prepare("SELECT name, snapshot_hash FROM tags ORDER BY name")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        for row in rows {
+            let (name, hash) = row?;
+            if have_all.contains(&hash) && !pack.tags.iter().any(|(n, _)| *n == name) {
+                offered.borrow_mut().push(name.clone());
+                pack.tags.push((name, hash));
+            }
+        }
         Ok(pack)
     };
 
@@ -446,6 +468,16 @@ pub fn push_report(
             new_snapshots,
             new_objects,
         } => {
+            // Only names the receiver says it inserted, and only those this
+            // push offered for snapshots it already had; tags that travelled
+            // with newly sent snapshots are part of the snapshot count.
+            let offered = offered.take();
+            let tags: Vec<String> = remote
+                .published_tags()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| offered.contains(n))
+                .collect();
             remotemod::set_remote_ref(conn, remote_name, &branch, &local_tip)?;
             if new_snapshots == 0 && new_objects == 0 {
                 return Ok(PushReport {
@@ -454,6 +486,7 @@ pub fn push_report(
                         remote: remote_name.to_string(),
                     },
                     also_published: Vec::new(),
+                    tags,
                 });
             }
             let created = created_branch.get().then(|| {
@@ -472,6 +505,7 @@ pub fn push_report(
                     created,
                 },
                 also_published: side.take().into_iter().collect(),
+                tags,
             })
         }
         // The remote has commits we don't. `NotFastForward` carries the branch
@@ -573,10 +607,12 @@ pub fn pull(
         // fast-forward wouldn't actually advance `main`.
         adopt_tracking_commits(conn, remote_name, &branch, &remote_tip)?;
         remotemod::set_remote_ref(conn, remote_name, &branch, &remote_tip)?;
-        crate::commands::restore::run(
+        crate::commands::restore::run_with(
             guard,
             &SnapshotId::from_stored(remote_tip.as_str()),
             crate::commands::restore::Options::default(),
+            crate::commands::restore::Strategy::Delta,
+            None,
         )?;
         Ok(Pulled::FastForwarded {
             branch,
@@ -835,7 +871,13 @@ fn fast_forward_to(
     adopt_tracking_commits(conn, remote, branch, remote_tip)?;
     remotemod::set_remote_ref(conn, remote, branch, remote_tip)?;
     let to = SnapshotId::from_stored(remote_tip);
-    crate::commands::restore::run(guard, &to, crate::commands::restore::Options::default())?;
+    crate::commands::restore::run_with(
+        guard,
+        &to,
+        crate::commands::restore::Options::default(),
+        crate::commands::restore::Strategy::Delta,
+        None,
+    )?;
     Ok(to)
 }
 

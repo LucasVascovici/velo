@@ -22,27 +22,80 @@ pub struct Outcome {
     pub message: String,
 }
 
+/// The newest trashed snapshot on `branch`: hash, message and parent hash.
+fn newest_trashed(
+    conn: &rusqlite::Connection,
+    branch: &str,
+) -> Result<Option<(String, String, String)>> {
+    Ok(conn
+        .query_row(
+            "SELECT hash, message, COALESCE(parent_hash, '') FROM trash
+             WHERE branch = ? ORDER BY deleted_at_ms DESC LIMIT 1",
+            [branch],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()?)
+}
+
+/// Whether the branch is still where `undo` left it. Returns the branch's
+/// current tip when it is not, so the caller can name it.
+///
+/// A redo re-inserts the trashed row as the branch's newest snapshot, which
+/// is only coherent while the row's parent is the tip. Three cases are
+/// coherent: the branch has no snapshot at all (the undone one was its first,
+/// so nothing can have moved), the tip is the row's parent, or the tip is the
+/// row itself (a fetch brought the same snapshot back). A root snapshot (empty
+/// parent) matches no tip: it can only come back to a branch with no commits.
+///
+/// One more case is a repair rather than a rewind: the trashed row is missing
+/// from `snapshots` while live snapshots still name it as a parent (it was
+/// undone out from under them, see `undone_parent_recovery`). Bringing it back
+/// completes their history whatever the branch tip is.
+fn moved_tip(
+    conn: &rusqlite::Connection,
+    branch: &str,
+    snapshot: &str,
+    parent: &str,
+) -> Option<Option<String>> {
+    let tip = crate::commands::branch_tip(conn, branch);
+    let unchanged = match &tip {
+        Some(t) => t == snapshot || (!parent.is_empty() && t == parent),
+        None => true,
+    };
+    if unchanged || is_needed_parent(conn, snapshot) {
+        None
+    } else {
+        Some(tip)
+    }
+}
+
+/// Whether live snapshots build on `snapshot` while it is absent from them.
+fn is_needed_parent(conn: &rusqlite::Connection, snapshot: &str) -> bool {
+    conn.query_row(
+        "SELECT NOT EXISTS (SELECT 1 FROM snapshots WHERE hash = ?1)
+            AND EXISTS (SELECT 1 FROM snapshots WHERE parent_hash = ?1 OR merge_parent = ?1)",
+        [snapshot],
+        |r| r.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
+}
+
 /// What `run` would restore on the current branch, without changing anything.
 ///
 /// Uses the same query as `run`, so a caller can tell the user "your last undo
 /// removed X" and be right about what `redo` would bring back. Needs no write
-/// lock: it only reads the trash.
+/// lock: it only reads the trash. Returns `None` when `run` would refuse with
+/// `RedoBranchMoved`, because then nothing would be brought back.
 pub fn peek(repo: &crate::Repo) -> Result<Option<Outcome>> {
     let branch = repo.head_branch().into_string();
-    let found = repo
-        .conn()
-        .query_row(
-            "SELECT hash, message FROM trash WHERE branch = ? ORDER BY deleted_at_ms DESC LIMIT 1",
-            [branch.trim()],
-            |r| {
-                Ok(Outcome {
-                    snapshot: r.get(0)?,
-                    message: r.get(1)?,
-                })
-            },
-        )
-        .optional()?;
-    Ok(found)
+    let branch = branch.trim();
+    let Some((snapshot, message, parent)) = newest_trashed(repo.conn(), branch)? else {
+        return Ok(None);
+    };
+    if moved_tip(repo.conn(), branch, &snapshot, &parent).is_some() {
+        return Ok(None);
+    }
+    Ok(Some(Outcome { snapshot, message }))
 }
 
 /// Restore the most recently undone snapshot on the current branch.
@@ -69,16 +122,21 @@ pub fn run(guard: &WriteGuard) -> Result<Outcome> {
     let conn = guard.conn();
     let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_else(|_| "main".into());
 
-    let snap: Option<(String, String)> = conn
-        .query_row(
-            "SELECT hash, message FROM trash WHERE branch = ? ORDER BY deleted_at_ms DESC LIMIT 1",
-            [branch.trim()],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    let (snapshot, message) = snap.ok_or_else(|| {
-        VeloError::invalid(format!("Nothing to redo on branch '{}'.", branch.trim()))
+    let snap = newest_trashed(conn, branch.trim())?;
+    let (snapshot, message, parent) = snap.ok_or_else(|| VeloError::NothingToRedo {
+        branch: branch.trim().to_string(),
     })?;
+    // Refused before any write: bringing the row back while the branch has
+    // moved on would leave it as a non-tip whose child is the tip, and the
+    // restore would then put the tree and PARENT on a snapshot `branches`
+    // does not list.
+    if let Some(tip) = moved_tip(conn, branch.trim(), &snapshot, &parent) {
+        return Err(VeloError::RedoBranchMoved {
+            branch: branch.trim().to_string(),
+            snapshot: SnapshotId::from_stored(snapshot.as_str()),
+            tip: tip.map(|t| SnapshotId::from_stored(t.as_str())),
+        });
+    }
 
     let tx = guard.transaction()?;
     tx.execute(

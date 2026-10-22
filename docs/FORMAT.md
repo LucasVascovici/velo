@@ -35,7 +35,10 @@ third-party tool — must conform to this document.
 ├── PARENT        snapshot id the working tree is based on ("" if unborn)
 ├── lock          advisory lock file (fs2); held by mutating operations
 ├── lock.holder   who holds the lock: pid, start time (ms), command; informational
-├── MERGE_HEAD    present only mid-merge/cherry-pick: "<pre-merge-id>:<source>"
+├── MERGE_HEAD    present only mid-merge/cherry-pick: "<pre-merge-id>:<source>:<source-id>"
+│                 (<source-id> is the snapshot the source resolved to when the
+│                 merge ran; the older two-field "<pre-merge-id>:<source>" is
+│                 still read, and then the source name is resolved again)
 ├── MERGE_ORIG    present only mid-merge: exact pre-merge bytes of CR-ending files the merge may rewrite
 └── REBASE_STATE  present only mid-rebase (with REBASE_ONTO, REBASE_ORIG_HEAD)
 ```
@@ -539,9 +542,22 @@ bundle changes. Under `<base>/velo/v1/`: `GET refs` returns a refs block;
 `POST upload` takes the client's have-ids (length-prefixed strings) and returns
 a refs block followed by the pack; `POST receive` takes branch and new tip
 (length-prefixed) followed by the pack and returns a length-prefixed status
-(`OK <snapshots> <objects>` or `REJECT <reason>`). A refused push is a `200`
-carrying `REJECT`, as over ssh; other non-2xx codes are failures.
+(`OK <snapshots> <objects> <tags> <name>...` or `REJECT <reason>`). A refused push is a
+`200` carrying `REJECT`, as over ssh; other non-2xx codes are failures.
 Fast-forward-only semantics are unchanged.
+
+**Tags on push.** A push also offers every local tag whose snapshot is in the
+pushed branch's history, including a tag made after its snapshot was pushed.
+Such a tag rides in the pack's `tags` section with no snapshots beside it, so
+the bundle format is unchanged. The receiver inserts a tag only when the name
+is free (`INSERT OR IGNORE`): a tag it already holds, even on another snapshot,
+is never moved or deleted. The trailing `<tags>` number in the `OK` line is how
+many tags the receiver created, and the names of those tags follow it, separated
+by spaces (tag names hold no whitespace); 6.0.1 and older clients read two numbers and
+ignore it, and 6.0.1 and older receivers apply the same insert rule (they do not
+validate tags beyond the name being free), so an older receiver accepts such a
+pack and publishes the tag, while a newer client talking to an older server
+simply gets no tag count and reports no tags. There is no `--tags` flag.
 
 **Addressing.** A server holding one repository answers at `<any prefix>/velo/v1/`.
 A server holding a directory of repositories answers at

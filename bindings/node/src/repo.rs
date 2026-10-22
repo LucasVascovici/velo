@@ -735,6 +735,13 @@ impl Repo {
         })
     }
 
+    /// Whether `id` is a snapshot this repository once held and moved to the
+    /// trash (an undo, a reset).
+    #[napi(ts_return_type = "Promise<boolean>")]
+    pub fn is_trashed(&self, id: String) -> AsyncTask<Job<bool>> {
+        self.job(move |repo| velo_core::commands::is_trashed(repo, &id))
+    }
+
     #[napi(ts_return_type = "Promise<string | null>")]
     pub fn branch_tip(&self, branch: String) -> AsyncTask<Job<Option<String>>> {
         self.job(move |repo| {

@@ -39,10 +39,13 @@ fn assert_hint(args: &[&str], hint: &str) {
 
 #[test]
 fn habit_hints() {
-    assert_hint(&["show", "HEAD"], "velo has no HEAD");
+    assert_hint(&["show", "HEAD~1"], "velo has no HEAD~N");
     assert_hint(&["show", "main:f.txt"], "velo restore <ref> -- <path>");
     assert_hint(&["history", "main"], "velo history --branch <ref>");
-    assert_hint(&["stash", "push", "-m", "x"], "velo stash push \"<name>\"");
+    assert_hint(&["restore", "main:f.txt"], "velo restore <ref> -- <path>");
+    assert_hint(&["diff", "main:f.txt"], "velo diff <ref> -- <path>");
+    assert_hint(&["history", "main:f.txt"], "velo show <ref> -- <path>");
+    assert_hint(&["blame", "f.txt", "--at", "main:f.txt"], "--at <ref>");
     assert_hint(&["grep", "-n", "a"], "always shows line numbers");
     assert_hint(&["diff", "--stat"], "no summary mode");
     assert_hint(&["-C", ".", "status"], "cd <dir> first");
@@ -70,7 +73,7 @@ fn switch_create_flags() {
 fn switch_near_miss_refuses_without_tty() {
     let d = repo();
     let (out, code) = velo(d.path(), &["switch", "mian"]);
-    assert_eq!(code, Some(2), "{out}");
+    assert_eq!(code, Some(1), "{out}");
     assert!(
         out.contains(
             "no branch 'mian'; did you mean 'main'? To create it: velo switch --create mian"
@@ -97,4 +100,36 @@ fn help_push_mentions_exit_code_and_sync() {
     let (out, code) = velo(d.path(), &["help", "push"]);
     assert_eq!(code, Some(0), "{out}");
     assert!(out.contains("code 4") && out.contains("velo sync"), "{out}");
+}
+
+#[test]
+fn stash_push_accepts_dash_m() {
+    let d = repo();
+    std::fs::write(
+        d.path().join("f.txt"),
+        "changed
+",
+    )
+    .unwrap();
+    let (out, code) = velo(d.path(), &["stash", "push", "-m", "foo"]);
+    assert_eq!(code, Some(0), "{out}");
+    let (out, _) = velo(d.path(), &["stash", "list"]);
+    assert!(out.contains("foo"), "{out}");
+}
+
+#[test]
+fn show_head_is_the_current_position() {
+    let d = repo();
+    let (out, code) = velo(d.path(), &["show", "HEAD"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("HEAD means the current position"), "{out}");
+}
+
+#[test]
+fn switch_new_name_says_it_created_the_branch() {
+    let d = repo();
+    let (out, code) = velo(d.path(), &["switch", "brandnew2"]);
+    assert_eq!(code, Some(0), "{out}");
+    assert!(out.contains("Created branch 'brandnew2'"), "{out}");
+    assert!(out.contains("--create"), "{out}");
 }

@@ -237,24 +237,34 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
     let merge_parent: String = if let Some((_, _, _, mp)) = &amend_target {
         mp.clone()
     } else if merge_pending {
-        let info = fs::read_to_string(root.join(".velo/MERGE_HEAD")).unwrap_or_default();
-        let source_branch = info.trim().split_once(':').map(|(_, b)| b).unwrap_or("");
+        let head = crate::commands::merge_head::read(root);
+        let source_branch = head.as_ref().map(|h| h.source.as_str()).unwrap_or("");
+        let recorded = head.as_ref().and_then(|h| h.source_id.clone());
         // Resolve the source to a snapshot: exact branch tip first, then a
         // remote ref like `origin/main`, so merges of either still record
         // their second parent (and a short branch name isn't read as a hash).
         let mut absent_ref = None;
-        let resolved = crate::commands::branch_tip(conn, source_branch)
-            .or_else(
-                || match crate::commands::resolve_snapshot_id(guard.repo(), source_branch) {
-                    Ok(id) => Some(id.into_string()),
-                    Err(e @ crate::error::Error::RemoteRefAbsent { .. }) => {
-                        absent_ref = Some(e);
-                        None
-                    }
-                    Err(_) => None,
-                },
-            )
-            .unwrap_or_default();
+        let resolved =
+            if source_branch.starts_with("cherry-pick/") || source_branch.starts_with("rebase/") {
+                // A pick or rebase step is a single-parent commit.
+                String::new()
+            } else if let Some(id) = recorded {
+                // The snapshot the merge combined, not whatever the name means now.
+                id
+            } else {
+                crate::commands::branch_tip(conn, source_branch)
+                    .or_else(|| {
+                        match crate::commands::resolve_snapshot_id(guard.repo(), source_branch) {
+                            Ok(id) => Some(id.into_string()),
+                            Err(e @ crate::error::Error::RemoteRefAbsent { .. }) => {
+                                absent_ref = Some(e);
+                                None
+                            }
+                            Err(_) => None,
+                        }
+                    })
+                    .unwrap_or_default()
+            };
         // A merge parent must be a live snapshot; refuse before the transaction
         // opens rather than record one that does not exist.
         if let Some(e) = absent_ref {
@@ -457,6 +467,24 @@ pub fn run(guard: &WriteGuard, message: Option<&str>, options: Options<'_>) -> R
                 AND hash NOT IN (SELECT parent_hash FROM snapshots
                 UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> ''))",
         [branch.trim()],
+    )?;
+    // The discarded snapshots' stored trees go with them, folded so that no
+    // delta is left based on a tree that is gone (20.6): leaving them behind
+    // made orphan delta rows that `fsck` then had to explain.
+    let discarded: Vec<String> = {
+        let mut stmt = tx.prepare(
+            "SELECT hash FROM trash WHERE branch = ?1
+               AND hash NOT IN (SELECT parent_hash FROM snapshots
+                    UNION SELECT merge_parent FROM snapshots WHERE COALESCE(merge_parent, '') <> '')",
+        )?;
+        let rows = stmt.query_map([branch.trim()], |r| r.get(0))?;
+        rows.collect::<std::result::Result<_, _>>()?
+    };
+    let discarded_refs: Vec<&str> = discarded.iter().map(String::as_str).collect();
+    crate::tree_store::remove_trees_by_parent(
+        &tx,
+        &discarded_refs,
+        guard.repo().keyframe_interval(),
     )?;
     tx.execute(
         "DELETE FROM trash WHERE branch = ?1

@@ -12,7 +12,6 @@ use std::fs;
 use crate::commands::require_working_tree;
 use crate::commands::{apply, apply::Applied, get_dirty_files};
 use crate::error::{InProgress, RefKind, Result, VeloError};
-use crate::storage;
 use crate::{Author, SnapshotId, WriteGuard};
 
 /// What a cherry-pick did.
@@ -84,9 +83,13 @@ pub fn run(guard: &WriteGuard, target: &SnapshotId, author: Option<&Author>) -> 
     if !applied.is_clean() {
         // MERGE_HEAD's "<pre-hash>:cherry-pick/<snap>" form is what lets
         // `velo merge --abort` unwind a half-applied pick.
-        storage::write_atomic(
-            &root.join(".velo/MERGE_HEAD"),
-            format!("{}:cherry-pick/{}", position.trim(), &snapshot[..8]).as_bytes(),
+        crate::commands::merge_head::write(
+            root,
+            &crate::commands::merge_head::MergeHead {
+                pre: position.trim().to_string(),
+                source: format!("cherry-pick/{}", &snapshot[..8]),
+                source_id: Some(snapshot.to_string()),
+            },
         )?;
         applied.record_conflicts(conn)?;
         return Ok(Outcome {

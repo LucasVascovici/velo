@@ -62,6 +62,10 @@ extern "C" {
 #define VELO_ERR_SNAPSHOT_HAS_DEPENDENTS 31
 /* A remote-tracking ref names a snapshot this repository does not hold. */
 #define VELO_ERR_REMOTE_REF_ABSENT 32
+/* redo was refused because the branch moved after the undo. */
+#define VELO_ERR_REDO_BRANCH_MOVED 33
+#define VELO_ERR_NOTHING_TO_UNDO 34
+#define VELO_ERR_NOTHING_TO_REDO 35
 /* Binding-level errors. */
 #define VELO_ERR_NULL_ARGUMENT 100
 #define VELO_ERR_INVALID_UTF8 101

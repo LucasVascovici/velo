@@ -14,7 +14,9 @@
 //! seed and the shortest op list that still fails, as a `Vec<Op>` literal.
 //!
 //! Knobs, read here and nowhere in the library: `VELO_DIFF_SEED`,
-//! `VELO_DIFF_OPS` (default 40), `VELO_DIFF_SECS` (the `#[ignore]`d long run) and
+//! `VELO_DIFF_OPS` (default 40), `VELO_DIFF_SECS` (the `#[ignore]`d long run),
+//! `VELO_DIFF_MIX=undo` (the long run draws the undo-heavy mix with network ops
+//! and removals on, instead of the default one) and
 //! `VELO_DIFF_FAILURE_OUT` (a path the long run writes the failing seed, start,
 //! subject K and shrunk ops to, so CI can attach it).
 //!
@@ -78,6 +80,10 @@ struct Mix {
     removals: bool,
     /// Fetch, push and remote commits; import writes deltas at the receiver's K.
     network: bool,
+    /// About half the draws are undo, redo, pull, remote commits and gc (which
+    /// empties the trash), so the undo and fold paths see sequences the default
+    /// mix rarely produces. The default mix's op list is untouched when unset.
+    undo_heavy: bool,
 }
 
 /// One side of the comparison. `a` is the repository under test; `b` is its
@@ -167,6 +173,7 @@ enum Op {
     Compact { n: u8 },
     Gc,
     Fetch,
+    Pull,
     Push,
     RemoteCommit { variant: u8 },
     Abort,
@@ -183,6 +190,21 @@ fn gen_ops(seed: u64, count: usize, mix: Mix) -> Vec<Op> {
         } else {
             Some(rng.range(1, 9) as u8)
         };
+        // The undo-heavy draw comes first and only when asked for, so the
+        // default mix consumes the generator exactly as it always did.
+        if mix.undo_heavy && rng.below(2) == 0 {
+            let remote = rng.range(1, 9) as u8;
+            ops.push(match rng.below(7) {
+                0 | 1 => Op::Undo,
+                2 => Op::Redo,
+                3 if mix.network => Op::Pull,
+                4 if mix.network => Op::RemoteCommit { variant: remote },
+                5 if mix.removals => Op::Gc,
+                6 if mix.network => Op::Push,
+                _ => Op::Undo,
+            });
+            continue;
+        }
         // Edits and saves dominate, so the history has something to act on.
         let op = match rng.below(40) {
             0..=7 => Op::Edit { file, variant },
@@ -380,6 +402,7 @@ fn apply(side: &Side, op: &Op, step: usize) -> Result<(), Error> {
         )
         .map(drop),
         Op::Fetch => sync::fetch(&repo.write()?, "origin", &spawn, Default::default()).map(drop),
+        Op::Pull => sync::pull(&repo.write()?, "origin", &spawn, Default::default()).map(drop),
         Op::Push => {
             sync::push(&repo.write()?, "origin", None, &spawn, Default::default()).map(drop)
         }
@@ -627,6 +650,7 @@ fn differential_smoke() {
     let mix = Mix {
         removals: true,
         network: true,
+        undo_heavy: false,
     };
     let reference = Config {
         keyframe_interval: Some(1),
@@ -648,6 +672,7 @@ fn differential_replays_a_seed() {
     let mix = Mix {
         removals: true,
         network: true,
+        undo_heavy: false,
     };
     assert_eq!(gen_ops(77, 40, mix), gen_ops(77, 40, mix));
     assert_ne!(gen_ops(77, 40, mix), gen_ops(78, 40, mix));
@@ -657,6 +682,7 @@ fn differential_replays_a_seed() {
         Mix {
             removals: false,
             network: false,
+            undo_heavy: false,
         },
     )
     .iter()
@@ -682,9 +708,11 @@ fn differential_long() {
     let starts: Vec<Start> = std::iter::once(Start::Empty)
         .chain(GOLDENS.iter().map(|t| Start::Golden(t)))
         .collect();
+    let undo = std::env::var("VELO_DIFF_MIX").is_ok_and(|v| v == "undo");
     let mix = Mix {
-        removals: false,
-        network: false,
+        removals: undo,
+        network: undo,
+        undo_heavy: undo,
     };
     let mut i = 0usize;
     while Instant::now() < deadline {
@@ -724,6 +752,7 @@ fn differential_from_goldens() {
     let mix = Mix {
         removals: false,
         network: false,
+        undo_heavy: false,
     };
     for tag in GOLDENS {
         let reference = Config {
@@ -737,5 +766,102 @@ fn differential_from_goldens() {
             };
             check_seed(&reference, &subject, 11, 30, mix);
         }
+    }
+}
+
+/// The default mix still draws the op list it drew before the undo-heavy mix
+/// and `Pull` existed: no `Pull`, and a prefix of a recorded seed is stable.
+#[test]
+fn default_mix_op_list_is_unchanged() {
+    let mix = Mix {
+        removals: true,
+        network: true,
+        undo_heavy: false,
+    };
+    let ops = gen_ops(1, 400, mix);
+    assert!(ops.iter().all(|op| !matches!(op, Op::Pull)));
+    assert_eq!(format!("{:?}", &ops[..4]), "[Retention, Save, Save, Gc]");
+    let heavy_mix = Mix {
+        undo_heavy: true,
+        ..mix
+    };
+    let heavy = gen_ops(1, 400, heavy_mix);
+    assert!(heavy.iter().any(|op| matches!(op, Op::Pull)));
+    let undos = heavy
+        .iter()
+        .filter(|op| matches!(op, Op::Undo | Op::Redo))
+        .count();
+    assert!(undos > 80, "undo-heavy mix drew only {undos} of 400");
+    // Pull needs a remote, so a mix without the network never draws it.
+    let quiet = gen_ops(
+        1,
+        400,
+        Mix {
+            network: false,
+            ..heavy_mix
+        },
+    );
+    assert!(quiet
+        .iter()
+        .all(|op| !matches!(op, Op::Pull | Op::Push | Op::RemoteCommit { .. })));
+}
+
+/// Two undos, a remote commit, a pull and a redo: both sides must agree on the
+/// outcome of each (a refusal is fine if both refuse alike) and fsck is clean
+/// after every step, which `run_ops` checks.
+#[test]
+fn undo_pull_redo_sequence() {
+    let edit = |file, v| Op::Edit {
+        file,
+        variant: Some(v),
+    };
+    let ops = vec![
+        edit(0, 1),
+        Op::Save,
+        Op::Push,
+        edit(0, 2),
+        Op::Save,
+        edit(1, 3),
+        Op::Save,
+        Op::Undo,
+        Op::Undo,
+        Op::RemoteCommit { variant: 4 },
+        Op::Pull,
+        Op::Redo,
+        Op::Gc,
+        Op::Pull,
+    ];
+    let reference = Config {
+        keyframe_interval: Some(1),
+        ..Default::default()
+    };
+    for k in [2, 3, 128] {
+        let subject = Config {
+            keyframe_interval: Some(k),
+            ..Default::default()
+        };
+        if let Err(f) = run_ops(&reference, &subject, &ops) {
+            panic!("K {k}: step {}: {}", f.step, f.why);
+        }
+    }
+}
+
+#[test]
+fn undo_heavy_smoke() {
+    let mix = Mix {
+        removals: true,
+        network: true,
+        undo_heavy: true,
+    };
+    let reference = Config {
+        keyframe_interval: Some(1),
+        ..Default::default()
+    };
+    let subject = Config {
+        keyframe_interval: Some(2),
+        ..Default::default()
+    };
+    for seed in [101, 102, 103] {
+        check_seed(&reference, &subject, seed, op_count(), mix);
     }
 }

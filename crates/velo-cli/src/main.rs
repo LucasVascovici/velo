@@ -96,9 +96,10 @@ Quick start
     after_help = "Run `velo help <COMMAND>` for detailed usage of any command.
 
 EXIT CODES
-  0  success (including nothing to save, already up to date, nothing to pull)
-  1  error
-  2  command-line usage error
+  0  success (including nothing to save, already up to date, nothing to pull,
+     nothing to undo, nothing to redo)
+  1  error (including a name that does not resolve)
+  2  command-line usage error, and nothing else
   3  conflicts left to resolve (merge, cherry-pick or rebase stopped)
   4  histories diverged (pull, or a push the remote refused)
   5  repository locked by another velo process",
@@ -361,6 +362,9 @@ NOTES
 NOTES
     · Redo is cleared the moment you run `velo save` — once you
       diverge, there is nothing to redo.
+    · Redo refuses if the branch moved since the undo (a pull or
+      merge fast-forwarded it); `velo restore <id>` still shows the
+      undone snapshot.
     · Redo aborts if there are unsaved changes."
     )]
     Redo,
@@ -1433,6 +1437,14 @@ enum StashSub {
         /// Name for the shelf. Auto-generated (stash-YYYYMMDD-HHMMSS) if omitted.
         #[arg(value_name = "NAME", help = "Shelf name (auto-generated if omitted)")]
         name: Option<String>,
+        /// Git's spelling of the shelf name, accepted as an alias for NAME.
+        #[arg(
+            short = 'm',
+            long = "message",
+            value_name = "NAME",
+            conflicts_with = "name"
+        )]
+        message: Option<String>,
     },
 
     /// List all stash shelves.
@@ -1512,11 +1524,11 @@ fn clap_habit_hint(args: &[String], offending: &str) -> Option<&'static str> {
         .collect();
     Some(
         match (words.first().copied()?, words.get(1).copied(), offending) {
+            ("history", _, tok) if !tok.starts_with('-') && tok.contains(':') => {
+                spec_habit_hint(tok, "history")?
+            }
             ("history", _, tok) if !tok.starts_with('-') => {
                 "hint: velo history --branch <ref> shows another branch's history"
-            }
-            ("stash", Some("push"), "-m" | "--message") => {
-                "hint: the shelf name is an argument: velo stash push \"<name>\""
             }
             ("grep", _, "-n" | "--line-number") => {
                 "hint: velo grep always shows line numbers; there is no -n"
@@ -1533,17 +1545,59 @@ fn clap_habit_hint(args: &[String], offending: &str) -> Option<&'static str> {
 /// argument errors, so they are offered after the lookup itself fails.
 fn show_habit_hint(args: &[String]) -> Option<&'static str> {
     let mut words = args.iter().filter(|a| !a.starts_with('-'));
-    if words.next().map(String::as_str) != Some("show") {
+    let cmd = words.next()?.as_str();
+    if !matches!(cmd, "show" | "restore" | "diff" | "blame" | "history") {
         return None;
     }
-    let target = words.next()?;
-    if target == "HEAD" || target.starts_with("HEAD~") || target.starts_with("HEAD^") {
-        Some("hint: velo has no HEAD; name a branch, tag or snapshot id (velo history lists them)")
+    // `blame --at ref:path` carries the spec behind a flag, so every
+    // argument is a candidate there.
+    if cmd == "blame" {
+        return args.iter().find_map(|a| spec_habit_hint(a, cmd));
+    }
+    spec_habit_hint(words.next()?, cmd)
+}
+
+/// A hint for a snapshot spec typed in git's spelling: `HEAD~N`, `HEAD^` or
+/// `ref:path`. Plain `HEAD` is accepted (see `resolve_spec`), so it has none.
+fn spec_habit_hint(target: &str, cmd: &str) -> Option<&'static str> {
+    if target.starts_with("HEAD~") || target.starts_with("HEAD^") {
+        Some(
+            "hint: velo has no HEAD~N; name a branch, tag or snapshot id (velo history lists them)",
+        )
     } else if target.contains(':') {
-        Some("hint: velo show <ref> -- <path> shows a path's changes; velo restore <ref> -- <path> pulls the file out")
+        Some(match cmd {
+            "restore" => "hint: velo restore <ref> -- <path> pulls a file out of a snapshot; ref:path is git's spelling",
+            "diff" => "hint: velo diff <ref> -- <path> narrows a diff to a path; ref:path is git's spelling",
+            "history" => "hint: velo history -- <path> follows a path; velo show <ref> -- <path> shows it at a snapshot",
+            "blame" => "hint: velo blame <path> --at <ref> takes the path and the ref separately; ref:path is git's spelling",
+            _ => "hint: velo show <ref> -- <path> shows a path's changes; velo restore <ref> -- <path> pulls the file out",
+        })
     } else {
         None
     }
+}
+
+/// Resolve a snapshot spec typed on the command line. `HEAD` (exactly) is
+/// git's name for where you are; velo accepts it as the current position,
+/// with a note, so the habit costs nothing. Core knows nothing of HEAD.
+fn resolve_spec(repo: &velo_core::Repo, spec: &str) -> Result<velo_core::SnapshotId> {
+    if spec != "HEAD" {
+        return commands::resolve_snapshot_id(repo, spec);
+    }
+    let root = repo.root();
+    let position = std::fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let position = position.trim();
+    let id = if position.is_empty() {
+        let branch = std::fs::read_to_string(root.join(".velo/HEAD")).map_err(VeloError::Io)?;
+        commands::resolve_snapshot_id(repo, branch.trim())?
+    } else {
+        commands::resolve_snapshot_id(repo, position)?
+    };
+    eprintln!(
+        "note: HEAD means the current position ({}) in velo",
+        render::id::short(id.as_ref())
+    );
+    Ok(id)
 }
 
 /// Edit distance counting a swap of two neighbours as one edit.
@@ -1657,12 +1711,13 @@ fn real_main() {
     // The force-flag suggestion depends on which command was run, so it is
     // captured before `cli.command` is consumed.
     let force_form = force_form(&cli.command);
+    let remote = remote_of(&cli.command).map(str::to_string);
 
     let code = match run(cli) {
         Ok(exit) => exit.code(),
         Err(e) => {
             eprintln!("{} {}", console::style("error:").red().bold(), e);
-            if let Some(hint) = hint_for(&e, force_form) {
+            if let Some(hint) = hint_for(&e, force_form, remote.as_deref()) {
                 eprintln!("{}", hint);
             } else if let Some(hint) =
                 show_habit_hint(&std::env::args().skip(1).collect::<Vec<_>>())
@@ -1688,8 +1743,8 @@ enum Exit {
     Diverged,
     /// `velo verify` found no trusted signature, or an invalid one.
     Untrusted,
-    /// A usage refusal made after parsing (a near-miss branch name).
-    Usage,
+    /// A refusal made after parsing (a near-miss branch name): an error, exit 1.
+    Refused,
 }
 
 impl Exit {
@@ -1699,7 +1754,7 @@ impl Exit {
             Exit::Conflicts => 3,
             Exit::Diverged => 4,
             Exit::Untrusted => 1,
-            Exit::Usage => 2,
+            Exit::Refused => 1,
         }
     }
 }
@@ -1722,6 +1777,17 @@ fn force_form(command: &Commands) -> Option<&'static str> {
     match command {
         Commands::Switch { .. } => Some("velo switch <branch> --force"),
         Commands::Restore { .. } => Some("velo restore <snapshot> --force"),
+        _ => None,
+    }
+}
+
+/// The remote a network command talks to, so a refusal can name the
+/// environment variable that holds that remote's token.
+fn remote_of(command: &Commands) -> Option<&str> {
+    match command {
+        Commands::Push { remote, .. }
+        | Commands::Fetch { remote }
+        | Commands::Pull { remote, .. } => Some(remote),
         _ => None,
     }
 }
@@ -1801,12 +1867,31 @@ mod token_tests {
     }
 }
 
+/// Which steps of the reconcile are still ahead, from what the repository holds.
+fn recipe_state(repo: &velo_core::Repo, remote: &str, branch: &str) -> render::sync::RecipeState {
+    use render::sync::RecipeState;
+    if repo.root().join(".velo/MERGE_HEAD").exists() {
+        return RecipeState::MergePending;
+    }
+    let spec = format!("{remote}/{branch}");
+    let Ok(tracking) = commands::resolve_snapshot_id(repo, &spec) else {
+        return RecipeState::NotFetched;
+    };
+    let Ok(local) = commands::resolve_snapshot_id(repo, branch) else {
+        return RecipeState::Fetched;
+    };
+    match commands::merge::merge_base(repo, &local, &tracking) {
+        Ok(Some(base)) if base == tracking => RecipeState::MergeSaved,
+        _ => RecipeState::Fetched,
+    }
+}
+
 /// What to do about an error, for the kinds that have an obvious next step.
 ///
 /// Core states what went wrong and carries the details; deciding what to suggest
 /// is presentation, so it lives here. Centralising it means every command gets
 /// the same guidance instead of each one embedding advice in an error string.
-fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
+fn hint_for(e: &VeloError, force_form: Option<&str>, remote: Option<&str>) -> Option<String> {
     let mut lines: Vec<String> = Vec::new();
     match e {
         VeloError::DirtyWorkingTree { paths } => {
@@ -1956,7 +2041,14 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
                 console::style(branch).cyan(),
                 console::style(remote).cyan()
             ));
-            let recipe = render::sync::recipe(remote, branch);
+            let state = std::env::current_dir()
+                .ok()
+                .and_then(|d| commands::find_repo_root(&d))
+                .and_then(|root| velo_core::Repo::open(&root).ok())
+                .map_or(render::sync::RecipeState::NotFetched, |repo| {
+                    recipe_state(&repo, remote, branch)
+                });
+            let recipe = render::sync::recipe(remote, branch, state);
             let steps: Vec<(&str, &str, Tone)> = recipe
                 .iter()
                 .map(|(cmd, why)| (cmd.as_str(), *why, Tone::Do))
@@ -2007,6 +2099,16 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             }
             None => lines.push("  another velo process is writing; retry in a moment".into()),
         },
+        VeloError::RedoBranchMoved { snapshot, .. } => {
+            lines.push(
+                "  The branch moved after the undo, so the undone snapshot is no longer its child."
+                    .into(),
+            );
+            lines.push(format!(
+                "  velo restore {} still shows it.",
+                snapshot.short()
+            ));
+        }
         VeloError::RemoteRefAbsent { remote, .. } => {
             lines.push(format!(
                 "  Run velo fetch {} to bring it back, then try again.",
@@ -2014,10 +2116,29 @@ fn hint_for(e: &VeloError, force_form: Option<&str>) -> Option<String> {
             ));
         }
         VeloError::AccessDenied { .. } => {
-            lines.push(
-                "  Set VELO_TOKEN_<REMOTE> (the remote's name, uppercased) or VELO_TOKEN to a bearer token for it."
-                    .into(),
-            );
+            let var = remote.map(token_var);
+            let sent = match remote {
+                Some(r) => token_for(r).is_some(),
+                None => std::env::var("VELO_TOKEN").is_ok_and(|v| !v.is_empty()),
+            };
+            let names = match &var {
+                Some(v) => format!("{v} (or VELO_TOKEN)"),
+                None => "VELO_TOKEN_<REMOTE> (the remote's name, uppercased) or VELO_TOKEN".into(),
+            };
+            if sent {
+                lines.push(format!(
+                    "  The server rejected the token in {names}, or the token lacks permission for this."
+                ));
+                lines.push(
+                    "  Check the value, or ask the server's owner for a token that may write."
+                        .into(),
+                );
+            } else {
+                lines.push(format!(
+                    "  No token was sent. Set {names} to a bearer token for this remote."
+                ));
+                lines.push("  The server accepts pushes only with a token: its owner runs `velo serve-http` with VELO_SERVE_TOKEN=<token> or --token-file FILE and gives you one.".into());
+            }
             lines.push("  Never put the token in the URL.".into());
         }
         _ => return None,
@@ -2155,11 +2276,8 @@ fn run_resolve(
                 .unwrap_or_default()
                 .trim()
                 .to_string();
-            let source = std::fs::read_to_string(root.join(".velo/MERGE_HEAD"))
-                .ok()
-                .and_then(|s| s.trim().split_once(':').map(|(_, r)| r.trim().to_string()))
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| "incoming".to_string());
+            let source =
+                resolve::merge_source(guard.repo()).unwrap_or_else(|| "incoming".to_string());
             for t in &taken {
                 let (meaning, lost, other) = match t.side {
                     TakeOption::Ours => (
@@ -3081,7 +3199,7 @@ fn run(cli: Cli) -> Result<Exit> {
             force,
             paths,
         } => {
-            let hash = commands::resolve_snapshot_id(&repo, &target)?;
+            let hash = resolve_spec(&repo, &target)?;
             let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
             render::restore::print(&commands::restore::run(
                 write(),
@@ -3127,16 +3245,14 @@ fn run(cli: Cli) -> Result<Exit> {
                     .iter()
                     .any(|x| x.name.as_str() == b);
                 if !is_local && bare.contains('/') {
-                    if let Ok(id) = commands::resolve_snapshot_id(&repo, &bare) {
+                    if let Ok(id) = resolve_spec(&repo, &bare) {
                         from = Some(id.to_string());
                         branch = None;
                     }
                 }
             }
             let branch = branch.map(|b| b.parse::<BranchName>()).transpose()?;
-            let from = from
-                .map(|t| commands::resolve_snapshot_id(&repo, t.as_str()))
-                .transpose()?;
+            let from = from.map(|t| resolve_spec(&repo, t.as_str())).transpose()?;
             let file_paths: Vec<&Path> = file_filter.iter().map(Path::new).collect();
             let meta = meta_filter
                 .iter()
@@ -3166,7 +3282,15 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::Undo => {
-            let outcome = commands::undo::run(write())?;
+            let outcome = match commands::undo::run(write()) {
+                Ok(o) => o,
+                // Nothing to undo is not a failure: say so and exit 0.
+                Err(e @ VeloError::NothingToUndo { .. }) => {
+                    println!("{e}");
+                    return Ok(Exit::Success);
+                }
+                Err(e) => return Err(e),
+            };
             // Undo leaves `remote_refs` alone, so a tracking ref may still name
             // the snapshot just removed; say so rather than let it look gone.
             let tracking = commands::sync::tracking_refs_at(
@@ -3176,14 +3300,18 @@ fn run(cli: Cli) -> Result<Exit> {
             render::undo::print(&outcome, &tracking);
         }
 
-        Commands::Redo => render::undo::print_redo(&commands::redo::run(write())?),
+        Commands::Redo => match commands::redo::run(write()) {
+            Ok(o) => render::undo::print_redo(&o),
+            Err(e @ VeloError::NothingToRedo { .. }) => println!("{e}"),
+            Err(e) => return Err(e),
+        },
 
         Commands::Diff { args, paths } => {
             render::diff::print_comparison(&diffargs::dispatch(&repo, &args, &paths)?);
         }
 
         Commands::Show { target, paths } => {
-            let id = commands::resolve_snapshot_id(&repo, &target)?;
+            let id = resolve_spec(&repo, &target)?;
             let paths: Vec<&Path> = paths.iter().map(Path::new).collect();
             let signed = velo_core::sign::signed_snapshots(&repo)?;
             render::diff::print_snapshot(
@@ -3257,7 +3385,7 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::CherryPick { target } => {
-            let target = commands::resolve_snapshot_id(&repo, &target)?;
+            let target = resolve_spec(&repo, &target)?;
             let outcome =
                 commands::cherry_pick::run(write(), &target, author::from_env()?.as_ref())?;
             render::cherry_pick::print(&outcome);
@@ -3308,7 +3436,7 @@ fn run(cli: Cli) -> Result<Exit> {
                              To create it: velo switch --create {name}",
                             console::style("error:").red().bold()
                         );
-                        return Ok(Exit::Usage);
+                        return Ok(Exit::Refused);
                     }
                 }
             }
@@ -3342,7 +3470,7 @@ fn run(cli: Cli) -> Result<Exit> {
                 // takes the id it actually needs.
                 let target = snapshot
                     .as_deref()
-                    .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                    .map(|spec| resolve_spec(&repo, spec))
                     .transpose()?;
                 let created = commands::tag::create(write(), &name, target.as_ref(), force)?;
                 render::tag::print_created(&created);
@@ -3366,7 +3494,7 @@ fn run(cli: Cli) -> Result<Exit> {
             // merge does not move the source, so its tip is that parent.
             let second_parent = match (&outcome, branch.as_deref()) {
                 (commands::merge::Outcome::FastForwarded { .. }, Some(source)) => {
-                    commands::resolve_snapshot_id(&repo, source)
+                    resolve_spec(&repo, source)
                         .ok()
                         .map(|id| (source, id.as_str().to_string()))
                 }
@@ -3435,8 +3563,8 @@ fn run(cli: Cli) -> Result<Exit> {
         }
 
         Commands::Stash { sub } => match sub {
-            StashSub::Push { name } => {
-                render::stash::print_pushed(&commands::stash::push(write(), name)?)
+            StashSub::Push { name, message } => {
+                render::stash::print_pushed(&commands::stash::push(write(), name.or(message))?)
             }
             StashSub::List => render::stash::print_list(&commands::stash::list(&repo)?),
             StashSub::Pop { name } => {
@@ -3453,10 +3581,11 @@ fn run(cli: Cli) -> Result<Exit> {
         Commands::Blame { file, at, lines } => {
             let at = at
                 .as_deref()
-                .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                .map(|spec| resolve_spec(&repo, spec))
                 .transpose()?;
             let lines = lines.as_deref().map(parse_line_range).transpose()?;
-            render::blame::print(&commands::blame::run(
+            let asked = lines.is_some();
+            let blame = commands::blame::run(
                 &repo,
                 Path::new(&file),
                 commands::blame::Options {
@@ -3464,7 +3593,17 @@ fn run(cli: Cli) -> Result<Exit> {
                     lines,
                     ..Default::default()
                 },
-            )?);
+            )?;
+            render::blame::print(&blame);
+            if asked && blame.lines.is_empty() {
+                // A range past the end of the file selects nothing; say how long
+                // the file is so the silence is not mistaken for a failure.
+                if let Ok(bytes) = repo.read_file_at(&blame.snapshot, &blame.path) {
+                    let nl = bytes.iter().filter(|b| **b == b'\n').count();
+                    let n = nl + usize::from(!bytes.is_empty() && !bytes.ends_with(b"\n"));
+                    eprintln!("file has {n} lines");
+                }
+            }
         }
 
         Commands::ExportGit { output, branch } => {
@@ -3528,7 +3667,7 @@ fn run(cli: Cli) -> Result<Exit> {
         } => {
             let snapshot = snapshot
                 .as_deref()
-                .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                .map(|spec| resolve_spec(&repo, spec))
                 .transpose()?;
             let results = commands::grep::run(
                 &repo,
@@ -3559,7 +3698,7 @@ fn run(cli: Cli) -> Result<Exit> {
                 (true, _, _) => commands::rebase::Mode::Abort,
                 (false, true, _) => commands::rebase::Mode::Continue,
                 (false, false, Some(spec)) => {
-                    onto = commands::resolve_snapshot_id(&repo, spec)?;
+                    onto = resolve_spec(&repo, spec)?;
                     commands::rebase::Mode::Start { onto: &onto }
                 }
                 (false, false, None) => {
@@ -3648,7 +3787,7 @@ fn run(cli: Cli) -> Result<Exit> {
             BundleSub::Create { file, target } => {
                 let target = target
                     .as_deref()
-                    .map(|spec| commands::resolve_snapshot_id(&repo, spec))
+                    .map(|spec| resolve_spec(&repo, spec))
                     .transpose()?;
                 render::bundle::print_created(&commands::bundle::create(
                     &repo,
@@ -3681,18 +3820,23 @@ fn run(cli: Cli) -> Result<Exit> {
                 Ok(report) => render::sync::print_push_report(&report),
                 Err(e) => {
                     // The refused push has just refreshed the tracking ref to the
-                    // advertised tip. If this repository no longer holds that
-                    // snapshot (undone here), a plain merge would fail; say how
-                    // to get it back.
+                    // advertised tip, whose snapshots were usually never fetched.
+                    // Say that; mention an undo only when the id is in the trash.
                     if let VeloError::NotFastForward { branch, remote } = &e {
                         let spec = format!("{remote}/{branch}");
                         if let Err(VeloError::RemoteRefAbsent { snapshot, .. }) =
-                            commands::resolve_snapshot_id(&repo, &spec)
+                            resolve_spec(&repo, &spec)
                         {
-                            eprintln!(
-                                "{spec} points at {}, which this repository no longer has (undone here?); velo fetch brings it back as remotes/{spec}, then velo merge {spec}",
-                                render::id::short(snapshot.as_str())
-                            );
+                            let short = render::id::short(snapshot.as_str());
+                            if commands::is_trashed(&repo, snapshot.as_str()).unwrap_or(false) {
+                                eprintln!(
+                                    "{spec} is at {short}, which was undone here; velo sync (or velo fetch, then velo merge {spec}) brings it back"
+                                );
+                            } else {
+                                eprintln!(
+                                    "{spec} is at {short}, not fetched yet; velo sync (or velo fetch, then velo merge {spec})"
+                                );
+                            }
                         }
                     }
                     return Err(e);

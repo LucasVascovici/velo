@@ -15,7 +15,7 @@ __all__ = [
     "AmbiguousPrefix", "Compacted", "Corrupt", "MissingObject",
     "UntrustedData", "UnsafePath", "LimitExceeded", "AccessDenied",
     "WouldOverwriteEdits", "MissingCleanChanges", "SnapshotHasDependents",
-    "RemoteRefAbsent", "InvalidInput", "Unsupported", "VeloIOError",
+    "RemoteRefAbsent", "NothingToUndo", "NothingToRedo", "RedoBranchMoved", "InvalidInput", "Unsupported", "VeloIOError",
     "DatabaseError", "ReentrantCall",
 ]
 
@@ -67,6 +67,14 @@ class RemoteRefAbsent(VeloError):
     remote: str
     branch: str
     snapshot: str
+class NothingToUndo(VeloError):
+    branch: str
+class NothingToRedo(VeloError):
+    branch: str
+class RedoBranchMoved(VeloError):
+    branch: str
+    snapshot: str
+    tip: str | None
 class UnbornBranch(VeloError):
     branch: str
 class NotFound(VeloError):
@@ -300,6 +308,7 @@ class Repo:
     def snapshot(self, id: str) -> Entry: ...
     def snapshot_meta(self, id: str) -> Dict[str, Dict[str, str]]: ...
     def resolve(self, spec: str) -> str: ...
+    def is_trashed(self, id: str) -> bool: ...
     def branch_tip(self, branch: str) -> Optional[str]: ...
     def head_token(self) -> int: ...
     def history(

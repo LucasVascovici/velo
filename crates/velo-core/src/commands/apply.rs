@@ -179,6 +179,7 @@ pub(crate) fn reconcile_tree_moving(
         our_h: &'a str,
         thr_h: &'a str,
         thr_m: i64,
+        our_m: i64,
         decision: Option<Reconcile>,
     }
     let mut planned: Vec<Planned> = Vec::new();
@@ -198,6 +199,7 @@ pub(crate) fn reconcile_tree_moving(
             our_h,
             thr_h,
             thr_m,
+            our_m,
             decision,
         });
     }
@@ -239,6 +241,19 @@ pub(crate) fn reconcile_tree_moving(
         })
         .collect();
     for (i, r) in merged {
+        // A clean merge whose bytes equal ours changes nothing on disk: the
+        // incoming change is already present. Reporting it as auto-merged (and
+        // rewriting the file) would count a change that did not happen.
+        let r = match r {
+            Reconcile::AutoMerged { content, mode }
+                if mode == planned[i].our_m
+                    && contents.get(planned[i].our_h).map(|b| b.as_slice())
+                        == Some(content.as_slice()) =>
+            {
+                Reconcile::Nothing
+            }
+            other => other,
+        };
         planned[i].decision = Some(r);
     }
     drop(contents);
@@ -414,11 +429,18 @@ pub(crate) fn reconcile_tree_moving(
             path: m.from.clone(),
             action: FileAction::Deleted,
         });
-        if !files.iter().any(|f| f.path == m.to) {
-            files.push(FileOutcome {
+        match files.iter_mut().find(|f| f.path == m.to) {
+            // The destination did not exist on our side, so against our tree it
+            // is a new file even when the move carried an edit that merged in;
+            // `status` says New for it, and the summary must agree.
+            Some(f) if matches!(f.action, FileAction::Updated | FileAction::AutoMerged) => {
+                f.action = FileAction::Added;
+            }
+            Some(_) => {}
+            None => files.push(FileOutcome {
                 path: m.to.clone(),
                 action: FileAction::Added,
-            });
+            }),
         }
     }
     if moved {

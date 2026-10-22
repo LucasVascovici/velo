@@ -37,8 +37,8 @@ pub fn dispatch(repo: &Repo, args: &[String], paths: &[String]) -> Result<Diff, 
 
         [one] => {
             if let Some((a, b)) = split_range(one) {
-                let a = commands::resolve_snapshot_id(repo, a)?;
-                let b = commands::resolve_snapshot_id(repo, b)?;
+                let a = crate::resolve_spec(repo, a)?;
+                let b = crate::resolve_spec(repo, b)?;
                 let mut diff = commands::diff::between(repo, &a, Some(&b), &paths)?;
                 relabel(&mut diff, Some(one), None);
                 Ok(diff)
@@ -53,7 +53,7 @@ pub fn dispatch(repo: &Repo, args: &[String], paths: &[String]) -> Result<Diff, 
                 }
             } else {
                 // A snapshot / tag / branch: compare it against the working tree.
-                let a = commands::resolve_snapshot_id(repo, one).map_err(|_| {
+                let a = crate::resolve_spec(repo, one).map_err(|_| {
                     Error::invalid(format!(
                         "'{}' is neither a file nor a snapshot, tag, or branch.\n  \
                          To diff a path that doesn't exist any more, use: velo diff -- {}",
@@ -65,8 +65,8 @@ pub fn dispatch(repo: &Repo, args: &[String], paths: &[String]) -> Result<Diff, 
         }
 
         [a, b] => {
-            let a_id = commands::resolve_snapshot_id(repo, a)?;
-            let b_id = commands::resolve_snapshot_id(repo, b)?;
+            let a_id = crate::resolve_spec(repo, a)?;
+            let b_id = crate::resolve_spec(repo, b)?;
             let mut diff = commands::diff::between(repo, &a_id, Some(&b_id), &paths)?;
             relabel(&mut diff, Some(a), Some(b));
             Ok(diff)
@@ -111,7 +111,7 @@ fn position(repo: &Repo) -> Result<SnapshotId, Error> {
             "Nothing has been saved yet, so there is nothing to compare against.",
         ));
     }
-    commands::resolve_snapshot_id(repo, raw)
+    crate::resolve_spec(repo, raw)
 }
 
 /// Split `a..b` into its ends. `None` when there is no range separator.

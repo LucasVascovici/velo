@@ -250,7 +250,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 | **Undo a commit** | `git reset --soft HEAD~1`, `git reset --hard`, `git reflog`... | `velo undo` — one command, reversible |
 | **Redo an undo** | Not built-in — requires `git reflog` | `velo redo` |
 | **Abort a merge** | `git merge --abort` (resets working tree) | `velo merge --abort` (restores to exact pre-merge state, even after all conflicts resolved) |
-| **Named stashes** | `git stash push -m "name"`, recalled by index | `velo stash push <name>`, recalled by name |
+| **Named stashes** | `git stash push -m "name"`, recalled by index | `velo stash push <name>` (or `-m <name>`), recalled by name |
 | **Branch history** | `git log --all --graph --oneline --decorate` | `velo history --all --graph` |
 | **View a snapshot** | `git show <hash>` | `velo show <hash>` |
 | **Apply one commit** | `git cherry-pick <hash>` | `velo cherry-pick <hash>` |
@@ -314,7 +314,7 @@ Git is a masterpiece of engineering — but its interface was designed in 2005 f
 
 | Task | Git | Velo |
 | :--- | :--- | :--- |
-| Save dirty state | `git stash push -m "name"` | `velo stash push <name>` |
+| Save dirty state | `git stash push -m "name"` | `velo stash push <name>` (`-m` also works) |
 | List stashes | `git stash list` | `velo stash list` |
 | Apply a stash | `git stash pop` or `git stash apply stash@{2}` | `velo stash pop <name>` |
 | Drop a stash | `git stash drop stash@{2}` | `velo stash drop <name>` |
@@ -532,7 +532,7 @@ velo pull
 | `velo remote` | List configured remotes |
 | `velo remote remove <name>` | Remove a remote and its tracking refs |
 | `velo fetch [remote]` | Download remote history into `remotes/<remote>/*` — never touches your branches or working tree |
-| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work; merged side branches are published with it under their own names) |
+| `velo push [remote] [branch]` | Publish a branch (fast-forward only; refuses to overwrite remote work; merged side branches are published with it under their own names; tags on pushed history are published too, even ones made after their snapshot was pushed, and an existing remote tag is never moved) |
 | `velo pull [remote]` | Fetch the current branch, then fast-forward — or report divergence and stop |
 | `velo sync [remote] [branch]` | Fetch, then fast-forward, push, or merge and push if the merge is clean; a conflict stops with exit 3 and the merge left in progress (`resolve`, `save`, `sync`). Never pushes a conflicted merge, never forces |
 
@@ -544,9 +544,9 @@ Scripts can decide on the exit code:
 
 | Code | Meaning |
 |------|---------|
-| 0 | Success, including "nothing to save", "already up to date" and "nothing to pull" |
-| 1 | Error |
-| 2 | Command-line usage error, or `switch` refusing a near-miss branch name (`mian` for `main`) without a terminal; `velo switch --create <name>` creates it anyway |
+| 0 | Success, including every nothing-to-do: "nothing to save", "already up to date", "nothing to pull", "nothing to undo" and "nothing to redo" |
+| 1 | Error, including a name that does not resolve and `switch` refusing a near-miss branch name (`mian` for `main`) without a terminal; `velo switch --create <name>` creates it anyway |
+| 2 | Command-line usage error rejected by the argument parser, and nothing else |
 | 3 | Conflicts left to resolve (`merge`, `cherry-pick`, `rebase` or `sync` stopped on conflicts) |
 | 4 | Histories diverged (`pull`, or a `push` or `sync` the remote refused) |
 | 5 | Repository locked by another velo process |
@@ -716,7 +716,7 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
 ```
   ↓ 1 behind origin/main (as of last fetch) — velo sync to catch up
   ↕ diverged from origin/main (1 ahead, 1 behind, as of last fetch) — reconcile with:
-      velo sync   (or by hand: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push)
+      velo sync   (or by hand: velo fetch, velo merge origin/main, velo save "Merge origin/main", velo push)
   ✔ up to date with origin/main (as of last fetch)
 ```
 
@@ -725,7 +725,7 @@ Branch: main  Position: 45877e2a3b0b3fa1  "Add login page"
 ```bash
 velo push
 # → Push rejected — 'main' has commits you don't have (non-fast-forward).
-#   velo sync   (or by hand: velo pull, velo merge origin/main, velo save "Merge origin/main", velo push)   (exit code 4)
+#   velo sync   (or by hand: velo fetch, velo merge origin/main, velo save "Merge origin/main", velo push)   (exit code 4)
 
 velo sync
 # fetches, merges what merges cleanly, saves the merge and pushes it.
@@ -737,7 +737,7 @@ velo sync                  # now a fast-forward push
 
 `velo sync` never pushes a merge with conflicts and has no `--force`. If the
 remote moves again while it runs, it exits 4 and you run it again. The manual
-route (`velo pull`, `velo merge origin/main`, `velo save`, `velo push`) still works.
+route (`velo fetch`, `velo merge origin/main`, `velo save`, `velo push`) still works.
 
 Nothing is ever force-overwritten, and `pull` never rewrites your history behind
 your back.

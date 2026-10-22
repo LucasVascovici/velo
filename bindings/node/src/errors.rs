@@ -137,6 +137,18 @@ fn build(env: &Env, err: &Error) -> napi::Result<napi::Error> {
             obj.set("branch", branch.as_str())?;
             obj.set("snapshot", snapshot.as_str())?;
         }
+        Error::NothingToUndo { branch } | Error::NothingToRedo { branch } => {
+            obj.set("branch", branch.as_str())?;
+        }
+        Error::RedoBranchMoved {
+            branch,
+            snapshot,
+            tip,
+        } => {
+            obj.set("branch", branch.as_str())?;
+            obj.set("snapshot", snapshot.as_str())?;
+            obj.set("tip", tip.as_ref().map(|t| t.as_str().to_string()))?;
+        }
         Error::UnsafePath { path: p, problem } => {
             obj.set("path", p.as_str())?;
             obj.set("problem", problem.to_string())?;

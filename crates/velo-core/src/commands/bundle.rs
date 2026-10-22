@@ -457,17 +457,34 @@ pub(crate) fn import_pack(guard: &WriteGuard, bundle: &Bundle) -> Result<(usize,
     Ok((imported.snapshots, imported.objects))
 }
 
+/// [`import_pack`], also returning the number of tag rows inserted. A push
+/// reports it so the sender learns whether its tags really arrived.
+pub(crate) fn import_pack_tags(
+    guard: &WriteGuard,
+    bundle: &Bundle,
+) -> Result<(usize, usize, Vec<String>)> {
+    let imported = import(guard, bundle)?;
+    Ok((imported.snapshots, imported.objects, imported.tag_names))
+}
+
 /// What [`import`] actually inserted.
 pub(crate) struct Imported {
     pub snapshots: usize,
     pub objects: usize,
     /// Tag rows inserted; `INSERT OR IGNORE` reports 0 for a name already held.
     pub tags: usize,
+    /// The names of those tag rows, so a push can say which were created.
+    pub tag_names: Vec<String>,
 }
 
 /// The body of [`import_pack`], also reporting the tags it inserted so that
 /// `bundle apply` does not call a tag-only bundle "up to date".
 pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
+    // Pull, push and serve reach this without having begun a lap sequence, so
+    // the first lap would otherwise measure from whatever ran last on this
+    // thread. Clone's `clone.create_repo` lap ends immediately before this
+    // call, so restarting the mark here loses nothing there.
+    crate::timing::begin();
     // ── Refuse unsafe paths before anything is written ────────────────────────
     // A snapshot id commits to its rows whatever they say, so a hostile bundle
     // can carry a valid snapshot whose tree is `../escape`. Checked per
@@ -511,11 +528,13 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
     }
 
     // ── Write + verify objects (dedup by name) ────────────────────────────────
+    crate::timing::lap("import.verify");
     let objects = guard.repo().objects();
     let progress = guard.phase(Phase::Importing, Some(bundle.objects.len() as u64));
     // Verified on the way in: each frame must decompress and re-hash to its
     // own name before it is stored; objects already held are skipped undecoded.
     let new_objects = objects.import_many(&bundle.objects, &progress, guard.repo().limits())?;
+    crate::timing::lap("import.objects");
     crate::failpoint::hit("bundle.after_objects");
 
     let existing: HashSet<String> = {
@@ -586,6 +605,7 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
     let tx = guard.transaction()?;
     let mut new_snaps = 0usize;
     let mut new_tags = 0usize;
+    let mut new_tag_names: Vec<String> = Vec::new();
     {
         let mut ins_snap = tx.prepare(
             "INSERT INTO snapshots (hash, message, branch, parent_hash, merge_parent, created_at_ms)
@@ -672,7 +692,11 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
         let mut ins_tag =
             tx.prepare("INSERT OR IGNORE INTO tags (name, snapshot_hash) VALUES (?, ?)")?;
         for (name, hash) in &bundle.tags {
-            new_tags += ins_tag.execute(params![name, hash])?;
+            let changed = ins_tag.execute(params![name, hash])?;
+            if changed > 0 {
+                new_tag_names.push(name.clone());
+            }
+            new_tags += changed;
         }
 
         // Rename edges, for the snapshots this repository actually has. Ignoring
@@ -726,6 +750,7 @@ pub(crate) fn import(guard: &WriteGuard, bundle: &Bundle) -> Result<Imported> {
         snapshots: new_snaps,
         objects: new_objects,
         tags: new_tags,
+        tag_names: new_tag_names,
     })
 }
 

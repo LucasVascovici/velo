@@ -3422,7 +3422,13 @@ mod tests {
     #[test]
     fn undo_with_nothing_to_undo_is_an_error() {
         let (_tmp, root) = setup();
-        assert!(with_write(&root, commands::undo::run).is_err());
+        write(&root, "f.txt", "v1");
+        save(&root, "s1");
+        with_write(&root, commands::undo::run).unwrap();
+        assert!(matches!(
+            with_write(&root, commands::undo::run),
+            Err(crate::Error::NothingToUndo { .. })
+        ));
     }
 
     #[test]
@@ -3472,7 +3478,10 @@ mod tests {
         let (_tmp, root) = setup();
         write(&root, "f.txt", "v1");
         save(&root, "s1");
-        assert!(with_write(&root, commands::redo::run).is_err());
+        assert!(matches!(
+            with_write(&root, commands::redo::run),
+            Err(crate::Error::NothingToRedo { .. })
+        ));
     }
 
     #[test]
@@ -12344,3 +12353,28 @@ mod first_save_threads;
 
 #[cfg(test)]
 mod racy_mtime;
+
+#[cfg(test)]
+mod merge_head_resolved;
+
+#[cfg(test)]
+mod push_tags;
+
+#[cfg(test)]
+mod redo_after_branch_move;
+
+#[cfg(test)]
+mod in_progress_guards;
+
+#[cfg(test)]
+mod team_rows_profile;
+
+#[cfg(test)]
+mod blame_attribution;
+
+#[cfg(test)]
+mod fsck_orphan_chain;
+#[cfg(test)]
+mod message_fixes;
+#[cfg(test)]
+mod orphan_delta_repro;

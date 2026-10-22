@@ -55,6 +55,7 @@ crate is not published to crates.io.
 | 30 | `VELO_ERR_MISSING_CLEAN_CHANGES` | A hand edit would drop lines the other side changed cleanly |
 | 31 | `VELO_ERR_SNAPSHOT_HAS_DEPENDENTS` | Undoing a snapshot would leave other snapshots without their parent |
 | 32 | `VELO_ERR_REMOTE_REF_ABSENT` | A remote-tracking ref names a snapshot this repository does not hold; fetch to restore it |
+| 33 | `VELO_ERR_REDO_BRANCH_MOVED` | `redo` refused: the branch moved after the undo, so the undone snapshot is no longer its child |
 | 100 | `VELO_ERR_NULL_ARGUMENT` | A required pointer was NULL |
 | 101 | `VELO_ERR_INVALID_UTF8` | A string was not UTF-8 |
 | 102 | `VELO_ERR_PANIC` | Rust panicked inside the call |

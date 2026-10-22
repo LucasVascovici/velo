@@ -59,6 +59,12 @@ pub const VELO_ERR_MISSING_CLEAN_CHANGES: i32 = 30;
 pub const VELO_ERR_SNAPSHOT_HAS_DEPENDENTS: i32 = 31;
 /// A remote-tracking ref names a snapshot this repository does not hold.
 pub const VELO_ERR_REMOTE_REF_ABSENT: i32 = 32;
+/// `redo` was refused because the branch moved after the undo.
+pub const VELO_ERR_REDO_BRANCH_MOVED: i32 = 33;
+/// `undo` found nothing to undo.
+pub const VELO_ERR_NOTHING_TO_UNDO: i32 = 34;
+/// `redo` found nothing to redo.
+pub const VELO_ERR_NOTHING_TO_REDO: i32 = 35;
 
 /// A required pointer argument was NULL.
 pub const VELO_ERR_NULL_ARGUMENT: i32 = 100;
@@ -106,6 +112,9 @@ pub fn code_of(error: &Error) -> i32 {
         Error::MissingCleanChanges { .. } => VELO_ERR_MISSING_CLEAN_CHANGES,
         Error::SnapshotHasDependents { .. } => VELO_ERR_SNAPSHOT_HAS_DEPENDENTS,
         Error::RemoteRefAbsent { .. } => VELO_ERR_REMOTE_REF_ABSENT,
+        Error::RedoBranchMoved { .. } => VELO_ERR_REDO_BRANCH_MOVED,
+        Error::NothingToUndo { .. } => VELO_ERR_NOTHING_TO_UNDO,
+        Error::NothingToRedo { .. } => VELO_ERR_NOTHING_TO_REDO,
         Error::Corrupt { .. } => VELO_ERR_CORRUPT,
         Error::MissingObject { .. } => VELO_ERR_MISSING_OBJECT,
         Error::UntrustedData { .. } => VELO_ERR_UNTRUSTED_DATA,

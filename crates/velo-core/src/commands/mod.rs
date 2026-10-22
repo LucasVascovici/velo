@@ -13,6 +13,7 @@ pub mod history;
 pub mod import;
 pub mod init;
 pub mod merge;
+pub(crate) mod merge_head;
 pub(crate) mod moves;
 pub mod mv;
 pub mod paths;
@@ -60,6 +61,28 @@ pub(crate) fn require_working_tree(repo: &Repo, command: &str) -> Result<()> {
         "{} needs a working tree; this repository is a single file",
         command
     )))
+}
+
+/// Refuse to move the working position while a merge or rebase is unfinished.
+///
+/// `MERGE_HEAD` and `REBASE_STATE` describe a position the repository is
+/// part-way through; switching or restoring the whole tree underneath them
+/// strands the conflict and the pending parent. A rebase is named first
+/// because a conflicted rebase step writes both files and "rebase" is the
+/// truer description.
+pub(crate) fn refuse_in_progress(root: &Path) -> Result<()> {
+    use crate::error::InProgress;
+    if root.join(".velo/REBASE_STATE").exists() {
+        return Err(VeloError::OperationInProgress {
+            what: InProgress::Rebase,
+        });
+    }
+    if root.join(".velo/MERGE_HEAD").exists() {
+        return Err(VeloError::OperationInProgress {
+            what: InProgress::Merge,
+        });
+    }
+    Ok(())
 }
 
 /// Hex characters of a snapshot id shown in output.
@@ -1155,4 +1178,15 @@ pub(crate) fn remove_empty_parents(dir: &Path, root: &Path) {
             break;
         }
     }
+}
+
+/// Whether `id` is a snapshot this repository once held and moved to the trash
+/// (an undo, a reset), so a message can mention the undo only when it happened.
+pub fn is_trashed(repo: &Repo, id: &str) -> Result<bool> {
+    use rusqlite::OptionalExtension;
+    Ok(repo
+        .conn()
+        .query_row("SELECT 1 FROM trash WHERE hash = ?", [id], |_| Ok(()))
+        .optional()?
+        .is_some())
 }

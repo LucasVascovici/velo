@@ -278,7 +278,7 @@ fn clone_push_pull_full_collaboration_loop() {
     assert!(!ok, "B push must be rejected:\n{out}");
     assert!(out.contains("non-fast-forward"), "and must say why:\n{out}");
     assert!(
-        out.contains("velo pull") && out.contains("velo merge origin/main"),
+        out.contains("velo sync") && out.contains("velo merge origin/main"),
         "and must point at the fix:\n{out}"
     );
 

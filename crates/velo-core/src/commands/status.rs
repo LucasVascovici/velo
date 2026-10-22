@@ -124,16 +124,7 @@ pub fn run(repo: &Repo, paths: &[String]) -> Result<Status> {
     modified.sort_unstable();
     deleted.sort_unstable();
 
-    let merging = std::fs::read_to_string(repo.root().join(".velo/MERGE_HEAD"))
-        .ok()
-        .map(|info| {
-            info.trim()
-                .split_once(':')
-                .map(|(_, b)| b)
-                .unwrap_or("")
-                .trim()
-                .to_string()
-        });
+    let merging = crate::commands::merge_head::read(repo.root()).map(|h| h.source);
 
     Ok(Status {
         branch,

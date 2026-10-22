@@ -63,16 +63,10 @@ pub fn print_text(source: Option<&str>, sessions: &[ConflictSession], missing: &
                 h.ancestor_start + 1,
                 h.ancestor_end
             );
-            for l in &h.context_before {
-                println!("  {}", style(format!("  {l}")).dim());
-            }
             println!("  {}", style("ours (your last saved snapshot):").cyan());
-            side(&h.ours);
+            side(&h.context_before, &h.ours, &h.context_after);
             println!("  {}", style(format!("theirs ({theirs_label}):")).magenta());
-            side(&h.theirs);
-            for l in &h.context_after {
-                println!("  {}", style(format!("  {l}")).dim());
-            }
+            side(&h.context_before, &h.theirs, &h.context_after);
             if let Some(d) = &h.decision {
                 println!("  decision: {}", decision_text(d));
             }
@@ -80,12 +74,20 @@ pub fn print_text(source: Option<&str>, sessions: &[ConflictSession], missing: &
     }
 }
 
-fn side(lines: &[String]) {
+/// One side of a hunk with the unchanged common context around it, so
+/// neither column looks as if it were missing lines.
+fn side(before: &[String], lines: &[String], after: &[String]) {
+    for l in before {
+        println!("  {}", style(format!("  {l}")).dim());
+    }
     if lines.is_empty() {
         println!("    {}", style("(deleted)").dim());
     }
     for l in lines {
         println!("    {l}");
+    }
+    for l in after {
+        println!("  {}", style(format!("  {l}")).dim());
     }
 }
 

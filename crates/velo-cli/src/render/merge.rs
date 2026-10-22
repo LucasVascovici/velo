@@ -13,7 +13,7 @@ pub fn print(outcome: &Outcome, second_parent: Option<(&str, &str)>) {
         } => print_aborted(source, restored_to.as_deref()),
 
         Outcome::StartedUnbornBranch { branch, at } => println!(
-            "{} Fast-forwarded '{}' to {} — the branch had no commits of its own.",
+            "{} Fast-forwarded '{}' to {} — the branch had no commits of its own, so it now has only the history of the merged branch.",
             style("✔").green().bold(),
             branch,
             style(super::id::short(at)).yellow()

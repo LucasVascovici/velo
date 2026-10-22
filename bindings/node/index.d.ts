@@ -79,6 +79,11 @@ export declare class Repo {
   snapshotMeta(id: string): Promise<Record<string, Record<string, string>>>
   /** Resolve a snapshot name (id, prefix, branch, tag, ...) to a full id. */
   resolve(spec: string): Promise<string>
+  /**
+   * Whether `id` is a snapshot this repository once held and moved to the
+   * trash (an undo, a reset).
+   */
+  isTrashed(id: string): Promise<boolean>
   branchTip(branch: string): Promise<string | null>
   headToken(): Promise<bigint>
   /** Sign `snapshot` with `key`; the signature is stored beside the snapshot. */

@@ -32,6 +32,9 @@ def test_recent_variants_are_exported():
         "MissingCleanChanges",
         "SnapshotHasDependents",
         "RemoteRefAbsent",
+        "NothingToUndo",
+        "NothingToRedo",
+        "RedoBranchMoved",
     ):
         assert name in velo.__all__
         assert issubclass(getattr(velo, name), velo.VeloError)

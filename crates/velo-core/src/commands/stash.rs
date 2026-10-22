@@ -271,6 +271,10 @@ pub fn list(repo: &Repo) -> Result<Vec<Shelf>> {
 pub fn pop(guard: &WriteGuard, name: Option<String>) -> Result<Popped> {
     require_working_tree(guard.repo(), "stash")?;
     let root = guard.root();
+    // Popping rewrites the working tree and PARENT, which would strand a merge
+    // or rebase in progress. `push` and `drop` are left alone: push refuses a
+    // clean tree and a conflicted one is dirty, and drop only deletes a shelf.
+    crate::commands::refuse_in_progress(root)?;
     let conn = guard.conn();
     let shelf = find_shelf(conn, name)?;
 

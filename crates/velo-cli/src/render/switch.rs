@@ -20,6 +20,13 @@ pub fn print(outcome: &Outcome) {
             existing,
             inherits,
         } => {
+            if !*existing {
+                println!("Created branch '{}'", style(branch).cyan().bold());
+                println!(
+                    "(velo switch creates a missing branch; {} says so explicitly.)",
+                    style("velo switch --create <name>").cyan()
+                );
+            }
             let verb = if *existing {
                 "Switched to"
             } else {
@@ -35,7 +42,7 @@ pub fn print(outcome: &Outcome) {
                     style(super::id::short(from)).yellow()
                 ),
                 None => println!(
-                    "{} {} branch '{}' — no commits yet, so your first {} starts its history.",
+                    "{} {} branch '{}' — no commits yet, so your first {} starts its history. (Merging another branch into it adopts that branch's history.)",
                     style("✨").bold(),
                     verb,
                     style(branch).cyan().bold(),

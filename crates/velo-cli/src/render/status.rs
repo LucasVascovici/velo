@@ -97,7 +97,7 @@ fn print_tracking(tracking: &Tracking) {
                     a,
                     b
                 );
-                super::sync::print_recipe(remote, branch);
+                super::sync::print_recipe(remote, branch, super::sync::RecipeState::Fetched);
             }
         },
     }

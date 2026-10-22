@@ -192,9 +192,13 @@ fn do_continue(guard: &WriteGuard, author: Option<&Author>) -> Result<Outcome> {
         });
     }
     if root.join(".velo/MERGE_HEAD").exists() {
-        return Err(VeloError::Conflicts {
-            paths: conflict_paths(guard.repo()),
-        });
+        let paths = conflict_paths(guard.repo());
+        if paths.is_empty() {
+            return Err(VeloError::invalid(
+                "all conflicts are resolved; run velo save to record this step, then velo rebase --continue",
+            ));
+        }
+        return Err(VeloError::Conflicts { paths });
     }
 
     // With no conflict pending the tree must be clean: the user saves after
@@ -447,9 +451,13 @@ fn apply_one(guard: &WriteGuard, snapshot: &str) -> Result<Applied> {
     }
 
     // MERGE_HEAD's "<pre-hash>:rebase/<snap>" form drives resolve and abort.
-    storage::write_atomic(
-        &root.join(".velo/MERGE_HEAD"),
-        format!("{}:rebase/{}", position, &snapshot[..8]).as_bytes(),
+    crate::commands::merge_head::write(
+        root,
+        &crate::commands::merge_head::MergeHead {
+            pre: position.to_string(),
+            source: format!("rebase/{}", &snapshot[..8]),
+            source_id: Some(snapshot.to_string()),
+        },
     )?;
     applied.record_conflicts(conn)?;
     Ok(applied)

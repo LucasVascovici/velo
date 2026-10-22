@@ -95,6 +95,17 @@ pub trait Remote {
         build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
         progress: &PhaseGuard,
     ) -> Result<PushOutcome>;
+
+    /// Names of the tags the remote newly created in the last accepted
+    /// [`push`](Remote::push), or `None` when it did not say (an older server
+    /// replies with two numbers only, and a transport that never learns
+    /// returns the default).
+    ///
+    /// This travels beside [`PushOutcome`] rather than inside it so that the
+    /// published enum keeps the shape existing callers match on.
+    fn published_tags(&self) -> Option<Vec<String>> {
+        None
+    }
 }
 
 /// How much of a pack to move between progress ticks.
@@ -179,10 +190,12 @@ pub fn open_with_token(url: &str, spawn: &Spawn, token: Option<&str>) -> Result<
         Ok(Box::new(StreamRemote {
             url: url.to_string(),
             spawn: spawn.clone(),
+            tags: None,
         }))
     } else {
         Ok(Box::new(LocalRemote {
             root: crate::commands::remote::resolve_remote_root(url)?,
+            tags: None,
         }))
     }
 }
@@ -198,6 +211,7 @@ fn has_userinfo(url: &str) -> bool {
 
 pub struct LocalRemote {
     root: PathBuf,
+    tags: Option<Vec<String>>,
 }
 
 impl Remote for LocalRemote {
@@ -253,14 +267,19 @@ impl Remote for LocalRemote {
         match fast_forward_check(conn, branch, new_tip, &pack) {
             Some(reason) => Ok(PushOutcome::Rejected(reason)),
             None => {
-                let (s, o) = bundle::import_pack(&guard, &pack)?;
+                let (s, o, names) = bundle::import_pack_tags(&guard, &pack)?;
                 guard.repo().emit_imported(s);
+                self.tags = Some(names);
                 Ok(PushOutcome::Ok {
                     new_snapshots: s,
                     new_objects: o,
                 })
             }
         }
+    }
+
+    fn published_tags(&self) -> Option<Vec<String>> {
+        self.tags.clone()
     }
 }
 
@@ -364,6 +383,7 @@ fn join_url(base: &str, endpoint: &str) -> String {
 pub struct HttpRemote {
     base: String,
     token: Option<String>,
+    tags: Option<Vec<String>>,
 }
 
 #[cfg(feature = "http")]
@@ -372,6 +392,7 @@ impl HttpRemote {
         HttpRemote {
             base: base.into(),
             token: None,
+            tags: None,
         }
     }
 
@@ -563,7 +584,13 @@ impl Remote for HttpRemote {
         };
         let mut reader = self.checked(resp)?.into_reader();
         let status = read_string(&mut reader, crate::Limits::default().max_string_bytes)?;
-        parse_status(&status)
+        let (outcome, tags) = parse_status(&status)?;
+        self.tags = tags;
+        Ok(outcome)
+    }
+
+    fn published_tags(&self) -> Option<Vec<String>> {
+        self.tags.clone()
     }
 }
 
@@ -572,6 +599,7 @@ impl Remote for HttpRemote {
 pub struct StreamRemote {
     url: String,
     spawn: Spawn,
+    tags: Option<Vec<String>>,
 }
 
 impl Remote for StreamRemote {
@@ -661,22 +689,37 @@ impl Remote for StreamRemote {
         // S→C status
         let status = read_string(&mut stdout, crate::Limits::default().max_string_bytes)?;
         finish(child)?;
-        parse_status(&status)
+        let (outcome, tags) = parse_status(&status)?;
+        self.tags = tags;
+        Ok(outcome)
+    }
+
+    fn published_tags(&self) -> Option<Vec<String>> {
+        self.tags.clone()
     }
 }
 
-fn parse_status(status: &str) -> Result<PushOutcome> {
-    // "OK <snaps> <objs>" or "REJECT <reason…>"
+fn parse_status(status: &str) -> Result<(PushOutcome, Option<Vec<String>>)> {
+    // "OK <snaps> <objs> [<tags> <name>...]" or "REJECT <reason…>"
     if let Some(rest) = status.strip_prefix("OK ") {
         let mut it = rest.split_whitespace();
         let s = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
         let o = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
-        Ok(PushOutcome::Ok {
-            new_snapshots: s,
-            new_objects: o,
-        })
+        // A trailing tag count is optional: 6.0.1 clients stop after two numbers.
+        // The names follow the count; tag names hold no whitespace.
+        let t = it
+            .next()
+            .and_then(|x| x.parse::<usize>().ok())
+            .map(|_| it.map(String::from).collect());
+        Ok((
+            PushOutcome::Ok {
+                new_snapshots: s,
+                new_objects: o,
+            },
+            t,
+        ))
     } else if let Some(reason) = status.strip_prefix("REJECT ") {
-        Ok(PushOutcome::Rejected(reason.to_string()))
+        Ok((PushOutcome::Rejected(reason.to_string()), None))
     } else {
         Err(VeloError::invalid(format!(
             "Unexpected response from remote: {}",
