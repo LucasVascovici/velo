@@ -3,7 +3,7 @@
   "name": "io.github.LucasVascovici/velo-mcp",
   "title": "velo",
   "description": "Checkpoint layer for agents: save, restore, diff and inspect a velo repository over MCP.",
-  "version": "6.2.0",
+  "version": "6.2.1",
   "websiteUrl": "https://github.com/LucasVascovici/velo/releases/latest",
   "repository": {
     "url": "https://github.com/LucasVascovici/velo",

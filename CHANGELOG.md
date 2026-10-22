@@ -6,6 +6,8 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 6.2.1
+
 ## 6.2.0
 
 Phase 22: put it in front of a stranger.
