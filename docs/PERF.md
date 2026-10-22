@@ -675,6 +675,54 @@ Judged against the targets above, `velo` row against `shadow git`:
 Not measured here: the Windows leg, the at-rest disk, and a run on any other
 ref. A single run, single seed; no variance estimate.
 
+### One-file save at 100,000 files, 500 snapshots (CLI, Windows)
+
+**The 100,000 x 500 run was not made; this is a 50,000-file, 40-snapshot run,
+and the target at 100,000 files stays unrestated.** The measurement budget
+allowed foreground calls of at most 590 s. A first attempt at 100,000 files was
+killed (exit 143) during its first full save, after file generation plus 590 s,
+so that save takes longer than the limit on this machine. The step was then
+repeated at 50,000 files and 40 snapshots (`scale.py --files 50000 --snapshots
+40`, one file changed per snapshot, seed 1, release build of 6.2.1, CLI `velo
+save`). Raw:
+[`2026-10-windows-ratio-50k-40.json`](../bench/results/2026-10-windows-ratio-50k-40.json).
+
+Machine: the same Intel Core i7-1370P laptop (20 logical CPUs), Windows 11
+Enterprise 10.0.22621, NTFS. **Defender real-time protection was on and the
+work directory was not excluded** (the exclusion list is not readable without
+admin), so every small-file figure is inflated and has a heavy tail.
+
+| measure | value |
+|---|---|
+| first save (50,000 files) | 352.8 s |
+| `save_history0_median_s` (median of saves 2 to 11) | 0.928 s |
+| last-10% median / p95 (4 saves) | 0.862 s / 3.32 s |
+| `save_ratio_vs_history0` | 0.93x |
+| target | at most 1.5x: **met, at this size and 40 snapshots only** |
+
+What this does and does not settle:
+
+- The CLI one-file save median is now measured at 50,000 files (about 0.9 s).
+  The gap between 30,000 and 100,000 files through the CLI is **narrowed, not
+  closed**: 100,000 files has no CLI figure from this task.
+- The ratio is not comparable with the "about 2.5x" miss in target row 4
+  above. That row is 100,000 files and 400 saves at K = 128 against a 2.1 s
+  floor from another build; this one is half the files and 40 snapshots, so the
+  history has barely grown. It does **not supersede** the 2.5x row; it only
+  shows the save does not slow down over the first 40 snapshots at 50,000
+  files. Row 4 stays "missed" until the 100,000 x 500 run is made.
+- The last-10% p95 (3.3 s) is a Defender or disk stall among 4 samples, not a
+  trend. One run, one seed.
+
+Command for the owner (the first save alone exceeds 10 minutes, so run it
+detached; expect about an hour in total):
+
+```
+python bench/scale/scale.py --preset ratio-100k --workdir <scratch outside the checkout> \
+  --out bench/results/2026-10-windows-ratio-100k-500.json \
+  --defender-note "<whether Defender excluded the workdir>"
+```
+
 ## 7. Not measured
 
 - **100,000 files x 2,000 snapshots (both platforms).** About 200 million
