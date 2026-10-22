@@ -309,15 +309,20 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir cli-dist
-          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}"             --pattern 'velo-*' --dir cli-dist
+          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
+            --pattern 'velo-*.tar.gz' --pattern 'velo-*.zip' \
+            --pattern 'velo-*.cdx.json' --dir cli-dist
       - name: Write checksums
         shell: bash
         working-directory: cli-dist
         run: |
           ls -l
           # 5 CLI archives, 5 MCP archives and the SBOM.
-          test "$(ls velo-* | wc -l)" -eq 11
-          sha256sum velo-* > SHA256SUMS.txt
+          # The globs match the download patterns, so the Node tarballs
+          # (velo-core-*.tgz) attached in parallel never enter the file.
+          files=$(ls velo-*.tar.gz velo-*.zip velo-*.cdx.json)
+          test "$(echo "$files" | wc -l)" -eq 11
+          sha256sum $files > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Install cosign
         uses: sigstore/cosign-installer@v3.7.0
