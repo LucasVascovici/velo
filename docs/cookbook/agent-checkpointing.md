@@ -229,7 +229,10 @@ lost, each with its reason (full detail in [`PERF.md`](../PERF.md) section 6,
 
 - **Disk after 500 steps: 3.37x shadow git** (11.0 MB against 3.27 MB), 12% over
   the 3x target, though it is the 11 MB the target was derived from. What is
-  stored is a keyframe every 128 snapshots plus the changed rows.
+  stored is a keyframe every 128 snapshots plus the changed rows. Of the
+  11.2 MB, 4.3 MB is the live write-ahead log, which SQLite removes when the
+  last handle closes: at rest the repository is 6.9 MB, 2.1x git (3.1 MB of
+  objects, 3.8 MB of database; breakdown in PERF.md section 12).
 - **"Who wrote this line": 3.1x shadow git** (9.30 s against 3.01 s; was 1.2x).
   Measured cause: the blame walk visits every ancestor snapshot (about 500)
   although the file changed in about 5, and at each visit it reads the text of

@@ -1,0 +1,47 @@
+Agent disk breakdown after 500 steps (22.5-a)
+Date 2026-10-22, Windows 11, velo Python binding 6.2.0 (release, maturin develop), default K = 128.
+Workload: bench/agent/agent_bench.py project and edits (seed 0, 1,000 files, 500 steps, same
+Velo class: save_changes per step), driven by a throwaway harness that stops after step 500,
+before branches and restores (agent_bench.py has no flag to stop there; its disk_after_steps
+is the same point). The harness is not committed; it imports agent_bench and runs
+make_project / make_edit / Velo.checkpoint, then measures.
+dbstat is not in Windows Python's sqlite3, so the database was copied after the run, checkpointed
+(wal_checkpoint(TRUNCATE) on the copy only) and read with WSL python3 (sqlite3 with dbstat).
+
+== Directory totals (bytes) ==
+handle open, WAL live (what agent_bench counts):   11,155,312   (earlier identical run: 11,114,112)
+  velo.db                                            3,690,496   (first run; 3,772,416 after the WAL is folded in)
+  velo.db-wal                                        4,280,712   (high-water of the 1000-page autocheckpoint)
+  velo.db-shm                                           32,768
+  objects/ (6,352 files, file bytes)                 3,109,785
+handle dropped (WAL checkpointed and removed):       6,882,552
+  velo.db 3,772,416 + objects 3,109,785 + 351 bytes of small files
+shadow git on the same workload (PERF section 6):    3,270,000 (3.27 MB)
+  ratio open handle 11.16 / 3.27 = 3.41x ; ratio at rest 6.88 / 3.27 = 2.10x
+
+== velo.db by table and index (dbstat pgsize, page_size 4096, 921 pages, 0 free) ==
+tree_delta_rows (5,300 rows)           995,328  delta rows
+  idx_delta_rows_path                  544,768  delta rows, path index
+file_map (4,000 rows = 4 keyframes)    659,456  keyframe rows
+  idx_filemap_snap                     339,968  file_map index 1
+  idx_filemap_path                     114,688  file_map index 2
+snapshot_meta (2,004 rows)             196,608  metadata
+  sqlite_autoindex_snapshot_meta_1     217,088
+  idx_meta_snap                        172,032
+  idx_meta_lookup                       69,632
+snapshots (501 rows)                    86,016
+  sqlite_autoindex_snapshots_1          45,056
+  idx_snap_branch                       16,384
+tree_deltas (497 rows)                  77,824
+  sqlite_autoindex_tree_deltas_1        45,056
+  idx_tree_deltas_base                  45,056
+empty tables, their autoindexes, schema 159,744
+total                                3,784,704  (db after checkpoint of the copy)
+
+== Keyframe interval sweep ==
+K changed by a temporary local edit of tree_store::KEYFRAME_INTERVAL, reverted, nothing committed.
+K     keyframes  open handle   handle dropped   velo.db      tree_at median / max (ms)
+64        8      12,458,656     7,967,992       4,857,856    3.5 / 5.6
+128       4      11,155,312     6,882,552       3,772,416    5.7 / 10.0
+256       2      10,635,144     6,370,552       3,260,416    11.2 / 26.4
+(tree_at timed on every 7th snapshot, 72 calls, handle open; objects are 3,109,785 for all K.)

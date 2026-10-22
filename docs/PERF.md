@@ -1420,3 +1420,75 @@ costs 20 to 40 times a depth-0 read. Blame reads objects (a flat store read, no
 chain), but its per-visit tree lookups walk the chain, which is why skipping
 visits whose object equals a parent's (22.4-a) is what paid off. Nothing beyond
 that cache is justified by these numbers, now that the 1.5x budget is met.
+
+## 12. Where the 11 MB go (22.5)
+
+Section 6 target 3 (at most 3x git on disk after 500 steps) read 11.03 MB
+against git's 3.27 MB, 3.37x. This section breaks that down. Raw numbers:
+`bench/results/2026-10-22-agent-disk-breakdown.txt`. Workload: the agent
+benchmark's 1,000 files and 500 `save_changes` steps (seed 0), stopped after
+step 500, before branches and restores, by a throwaway harness (the benchmark
+has no flag for that point). Windows, Python binding 6.2.0, K = 128, page size
+4096. `dbstat` was read from a copy of the database, in WSL, because Windows
+Python's sqlite3 lacks it.
+
+**The WAL is 38% of the 11.2 MB.** The benchmark counts the directory while the
+repository handle is still open, so `velo.db-wal` is in the figure:
+
+| part | bytes | share |
+|---|---|---|
+| `velo.db-wal` (live, high-water of the 1000-page autocheckpoint) | 4,280,712 | 38% |
+| objects (6,352 files) | 3,109,785 | 28% |
+| `velo.db` (3.69 MB; 3.77 MB once the WAL is folded in) | 3,772,416 | 34% |
+| `-shm` and small files | 33,000 | 0.3% |
+| **open handle** | 11,155,312 | 3.41x git |
+| **handle dropped (WAL checkpointed, removed)** | 6,882,552 | **2.10x git** |
+
+**Inside `velo.db`** (3,784,704 bytes after a checkpoint):
+
+| role | table / index | bytes |
+|---|---|---|
+| delta rows | `tree_delta_rows` (5,300 rows) | 995,328 |
+| delta rows | `idx_delta_rows_path` | 544,768 |
+| keyframe rows | `file_map` (4,000 rows, 4 keyframes) | 659,456 |
+| file_map index 1 | `idx_filemap_snap` | 339,968 |
+| file_map index 2 | `idx_filemap_path` | 114,688 |
+| metadata | `snapshot_meta` and its 3 indexes | 655,360 |
+| snapshots | `snapshots`, autoindex, `idx_snap_branch` | 147,456 |
+| delta headers | `tree_deltas`, autoindex, `idx_tree_deltas_base` | 167,936 |
+| empty tables, schema | 4 KB each | 159,744 |
+
+**Verdict.** The disk target is met at rest and was missed only by the way it
+was measured. A repository whose last handle is closed (every CLI invocation,
+and a Python `Repo` that has been dropped) has its WAL checkpointed and deleted
+by SQLite: 6.88 MB, 2.10x git's 3.27 MB. With the handle held open, as the
+benchmark does, 4.28 MB of WAL sits in the directory and the ratio is 3.41x.
+Section 6's 3.37x stands as the open-handle figure and is not rewritten. No
+code change was made: the WAL is bounded (the autocheckpoint is 1000 pages), it
+is not stored data, and shrinking it with a lower `wal_autocheckpoint` or a
+`journal_size_limit` would trade save latency for a number that disappears when
+the handle closes. That is a possible follow-up, not a format matter.
+
+**Keyframe interval K** (a writer-side constant, changed by a local edit and
+not committed; handle dropped, same workload):
+
+| K | keyframes | disk at rest | `velo.db` | `tree_at` median / max |
+|---|---|---|---|---|
+| 64 | 8 | 7.97 MB (2.44x) | 4.86 MB | 3.5 / 5.6 ms |
+| 128 (default) | 4 | 6.88 MB (2.10x) | 3.77 MB | 5.7 / 10.0 ms |
+| 256 | 2 | 6.37 MB (1.95x) | 3.26 MB | 11.2 / 26.4 ms |
+
+Each doubling of K saves 0.5 to 1.1 MB and about doubles the read cost
+(roughly linear in depth, consistent with section 11). 128 stays: it is already
+under 3x, and 256 saves 0.5 MB for twice the read time.
+
+**Schema-level levers, recorded, not taken** (they change the schema and
+FORMAT.md, which this task does not). Keyframes and their two indexes are
+1.11 MB (16% of the at-rest total); the delta rows and their path index are
+1.54 MB (22%); metadata 0.66 MB (10%). FORMAT.md 11.5 option C (32-byte blob
+hashes, `WITHOUT ROWID`) would roughly halve the hash bytes in `file_map`,
+`tree_delta_rows` and their indexes: an estimate, not measured, of 0.6 to 0.9
+MB (9 to 13% of 6.88 MB), taking the ratio from 2.10x to about 1.85x. The
+objects (3.11 MB, 45% of the at-rest total) are the content itself, about the
+size of git's whole store, so what remains is the price of keeping every
+snapshot's tree queryable in SQLite.
