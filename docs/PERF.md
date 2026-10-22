@@ -887,9 +887,79 @@ Stage medians of a one-file save at 100,000 files (ms): `save_tree.objects`
   snapshot is 2.2x the prototype (210 KB against 94 KB): the real keyframe row
   set is larger and this run held three keyframes in 400 saves.
 
+### After the parent-membership rule (22.3)
+
+`save_tree` and `save_changes` now skip the existence check for objects the parent
+snapshot already references (22.3-a, 22.3-b). Re-run on 2026-10-22, Windows, release
+with `timing`, 100,000 files, K = 128, **40 saves, no keyframe** (a shortened run:
+the seed save took 194 s, the 40 saves about 30 s). Raw lines:
+`bench/results/2026-10-22-storage-v4-windows-22.3.json`. Machine state: nothing
+else heavy running on purpose, Defender on; it is a different load from the
+2026-10-20 run, which shared the machine with other jobs, so the comparison is
+indicative, not like-for-like.
+
+| stage (median, ms) | before (20.10 run) | after (22.3) |
+| --- | ---: | ---: |
+| `save_tree.load_parent` | not split out | 73.1 |
+| `save_tree.objects` | 5,019.5 | 52.3 |
+| `save_tree.insert_file_map` | 154.7 | 31.9 |
+| `save_tree.snapshot_id` | 40.9 | 32.5 |
+| `save_tree.validate` | 35.8 | 27.0 |
+| `save_tree.commit` | 0.25 | 0.15 |
+| save median | 5,279 | **246** |
+| save p95 | 15,598 | 422 |
+| slowest plain save | 22,200 | 496 |
+
+**Verdict against the under-1-s target: met.** The median is 246 ms and even the
+slowest save of 40 is 496 ms. By stage: `objects` fell 96x (5,020 to 52 ms) because
+only the one changed file is now checked; what is left is the parent read
+(`load_parent`, 73 ms, the largest stage), the id (`snapshot_id`, 33 ms), the file
+map rows (32 ms) and `validate` (27 ms). The 110 ms prototype floor is not reached:
+the remaining O(files) work is the parent read and the id hash, and together with
+validate and the row writes it is about 215 ms of the 246.
+
+**Flat against history.** Median of the first 10% of saves (4 saves) 396 ms, of the
+last 10% (4 saves) 227 ms. The first saves are the slowest (a cold cache after the
+194 s seed save), so there is no growth with history over 40 saves; 40 saves cannot
+show growth that appears only after the K = 128 keyframe, which this run did not
+reach. Disk per snapshot, 614 bytes, is over plain saves only and is not comparable
+with the 210 KB of the 400-save run (three keyframes). The 400-save run below is
+needed for that.
+
+**CLI `save` path.** Raw lines: `bench/results/2026-10-22-cli-save-30k-windows.json`.
+The 100,000-file CLI run did not fit: its seed save (`velo save`, snapshot 0) was
+killed at the 580 s tool timeout, so 30,000 files were used, 10 snapshots, 1 file
+changed per snapshot, release `velo.exe`, wall clock of the whole process. Seed save
+157 s; second save 4.9 s (a one-off, not explained here); saves 3 to 10 median
+**0.45 s** (0.39 to 0.51 s). That is flat from save 3 on and is the dirty scan plus
+the one put. It does not pay a per-file object-existence cost: at 30,000 files the
+old `objects` stage would have been about 1.5 s alone. The CLI has no `timing`
+feature, so there is no stage split; whether the 0.45 s is mostly the scan was not
+measured. The scale harness's closing `velo gc` was interrupted by hand and
+`scale.py` wrote no summary, so only the per-save lines are recorded. The
+100,000-file CLI figure is a follow-up for the owner.
+
 ### Commands for the owner
 
-Windows, 100,000 files (about 50 minutes for K = 128 with three keyframes; run one K at a time, and give VELO_PROFILE_OUT as an absolute path because the test runs from crates/velo-core):
+Full-length run after 22.3 (400 saves, keyframes as in the 20.10 run), Windows:
+
+```
+VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_KEYFRAMES=3 VELO_PROFILE_OUT=$PWD/bench/results/<date>-storage-v4-windows-22.3-full.json cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1
+```
+
+Linux in WSL, 100,000 files, K = 128 (ext4 path, as section 1 describes):
+
+```
+wsl -e bash -lc 'mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_SAVES=40 VELO_PROFILE_KEYFRAMES=0 VELO_PROFILE_OUT=$PWD/bench/results/<date>-storage-v4-linux-22.3.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
+```
+
+CLI save at 100,000 files (run outside a tool timeout; the seed save is the long part):
+
+```
+cargo build --release -p velo-cli && python bench/scale/scale.py --files 100000 --snapshots 10 --change 1 --velo target/release/velo.exe --out bench/results/<date>-cli-save-100k-windows.json
+```
+
+Earlier invocations (pre-22.3): Windows, 100,000 files (about 50 minutes for K = 128 with three keyframes; run one K at a time, and give VELO_PROFILE_OUT as an absolute path because the test runs from crates/velo-core):
 
 ```
 VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_KEYFRAMES=3 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-windows.json cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1
