@@ -24,6 +24,51 @@ The task is done from an installed wheel or tarball, not from a checkout. The
 documents the agent receives must show `save_changes`, `velo report` and
 `velo sync`; check that before each run (see "Before you start").
 
+## Pass threshold (fixed 2026-10-23, before the first run)
+
+A wedge counts as passing when **two independent runs reach a green
+`check.py` inside the 45-minute limit**. This number was written down before
+any run so it cannot be adjusted afterwards to fit the results.
+
+- Every wedge is run at least twice, each time by a different fresh agent with
+  no memory of an earlier run.
+- A run that times out at 45 minutes is a result and is recorded, not retried.
+- A run that read the repository is invalid and is repeated, not counted
+  (see "Audit" in the runbook).
+
+## Limits
+
+A software sandbox cannot isolate an agent from its training data: an agent
+may know velo from before the run, and the audit only sees what a transcript
+shows. Isolation here means an empty directory outside any checkout, the
+documents handed over as text and the installed package. State this limit in
+every results write-up.
+
+## Runbook
+
+All scripts use only the Python standard library.
+
+1. **Prepare**: `python prepare.py --tag vX.Y.Z --wedge python --run 1 --root ~/coldstart`
+   builds `~/coldstart/python-run1/` (refuses a root inside a git work tree),
+   downloads and checksum-verifies the release assets, installs the package,
+   copies the documents in as text, and writes `PROMPT.txt` and `run.json`. It
+   prints the term check; a missing term is a doc-defect row for the log.
+2. **Run**: give a fresh agent `PROMPT.txt` and the `work/` directory, and
+   nothing else. Start the clock when the prompt is given; stop at 45 minutes.
+3. **Audit**: `python audit.py transcript.jsonl --sandbox ~/coldstart/python-run1`.
+   Exit 1 means invalid: a read of the project's planning notes, the source or the tests,
+   or any path under a velo checkout. Repeat the run with a new agent. Other
+   paths outside the sandbox are warnings to read, not to count.
+4. **Check**: `python check.py <repo-dir> --actor <actor> --file <file>` with
+   the values in `run.json`.
+5. **Log**: one row per event in a copy of `friction-log.md`, named
+   `friction-log-<tag>.md`, with the run's validity in the summary table.
+6. **Rank**: `python rank.py friction-log-<tag>.md` and paste the table into
+   the `## Ranked` section. Defects are ranked by distinct runs that hit them.
+7. **Fix**: fix the doc defects that need no design, highest rank first.
+8. **Round two**: repeat steps 1 to 6 at the fixed tag with new agents, into
+   `friction-log-<tag>-round2.md`. Keep both logs.
+
 ## Before you start
 
 1. Pick the release tag to test (`vX.Y.Z`).
@@ -67,8 +112,11 @@ npm install ~/coldstart/assets/velo-core-<version>-<platform>.tgz
 The Rust wedge uses the crate the agent adds to its own `Cargo.toml`, as the
 README and `docs/INSTALL.md` say to; do not hand it a path into a checkout. The CLI the checker
 needs comes from `cargo install --git https://github.com/LucasVascovici/velo
---tag vX.Y.Z velo-cli`, or the release binary. The MCP wedge needs `velo-mcp`
-built from the same tag, as `docs/LIBRARY.md` says.
+--tag vX.Y.Z velo-cli`, or the release binary. The MCP wedge installs the
+`velo-mcp-<target>` release archive (and the `velo-<target>` one for the CLI):
+download both with `gh release download`, then verify them against
+`SHA256SUMS.txt` (`sha256sum --check --ignore-missing SHA256SUMS.txt`) before
+extracting. Do not build `velo-mcp` from source.
 
 Install the checker's `velo` outside the agent's reach if you can, so the agent
 is not helped by `--help` on a binary it was not given. If the agent was given
@@ -85,7 +133,7 @@ Exactly these, copied into its empty working directory:
   acceptance section is for the checker and is not shown to the agent.
 
 It does not receive: the source tree, `docs/` other than `docs/LIBRARY.md` and its cookbook,
-`ARCHITECTURE.md`, example scripts, or any hint beyond the sentence. Linked
+the source or the tests, example scripts, or any hint beyond the sentence. Linked
 pages beyond those are not available to it; if it asks for one, that is a
 finding. Let it use the web only if you are testing that on purpose, and record
 it.
@@ -137,8 +185,8 @@ says which file and actor to pass.
 
 ## Adapter decision
 
-ARCHITECTURE 19.9 chooses the first framework adapter from what the cold-start
-agents reach for, not from a guess. Owner: fill this in after the run.
+The adapter decision in `docs/ROADMAP.md` chooses the first framework adapter
+from what the cold-start agents reach for, not from a guess. Owner: fill this in after the run.
 
 - Frameworks, libraries or APIs the agents reached for unprompted:
 - Count of agents that reached for each:
