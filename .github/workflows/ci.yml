@@ -278,6 +278,9 @@ jobs:
         shell: bash
         env:
           VELO_PERF_AGENT_STEPS: ${{ matrix.os == 'windows-latest' && '100' || '' }}
+          # 100,000 files of setup is too slow on the Windows runner; its baseline
+          # must be taken with the same value (bench/perf/README.md).
+          VELO_PERF_SAVE_TREE_FILES: ${{ matrix.os == 'windows-latest' && '10000' || '' }}
         run: |
           set -o pipefail
           cargo test -p velo-core --release --locked perf_guard -- --ignored --nocapture --test-threads=1 2>&1 | tee perf.log

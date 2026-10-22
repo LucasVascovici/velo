@@ -1,10 +1,24 @@
 # Performance guard
 
 CI runs a small guard on every pull request (`perf` job in
-`.github/workflows/ci.yml`, Ubuntu and Windows). It measures two workloads:
+`.github/workflows/ci.yml`, Ubuntu and Windows). It measures four workloads:
 
 - `agent_steps`: 500 `WriteGuard::save_changes` steps over a 1,000-file project.
 - `save_10k`: a one-file `save` in a 10,000-file working tree (median of 5).
+- `save_tree_100k`: a one-file-change `WriteGuard::save_tree` on a 100,000-entry
+  tree, previous snapshot as parent (median of 5; setup untimed).
+- `blame_walk`: `blame` of a 200-line file at the tip of a 200-snapshot,
+  two-author history (median of 5; setup untimed).
+
+Environment overrides, for runners too slow for the full size:
+
+- `VELO_PERF_AGENT_STEPS` (default 500): steps in `agent_steps`. CI sets 100 on Windows.
+- `VELO_PERF_SAVE_TREE_FILES` (default 100000): files in `save_tree_100k`. CI sets
+  10000 on Windows. A shortened run is not comparable to a full-size baseline, so
+  the Windows baseline must be taken with the same value set.
+
+The two newest workloads have no baseline entry yet: they are reported and pass
+until a baseline is calibrated on the runner.
 
 Absolute milliseconds on a shared runner measure the runner, so each workload
 is divided by a calibration run on the same machine: 64 MiB of blake3 hashing,
