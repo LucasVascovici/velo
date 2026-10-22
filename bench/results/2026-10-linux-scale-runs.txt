@@ -1,7 +1,4 @@
-# Linux scale envelope runs (bench.yml, suite=scale). One line per run:
+# Linux scale envelope runs (bench.yml, suite=scale), dispatched without waiting.
 # run id | preset | ref | commit | dispatch time
-# NOT DISPATCHED. The dispatch from the task agent was refused by the permission
-# layer, so no run id exists. Owner commands (each up to 350 min):
-#   gh workflow run bench.yml --ref main -f suite=scale -f preset=envelope-a
-#   gh workflow run bench.yml --ref main -f suite=scale -f preset=envelope-b
-# Then append: <run id> | <preset> | main | <commit> | <time>
+39868500578 | envelope-a | main | dd15186951b811b3dea173f702dad34d8731d1de | 2026-10-22T22:56:46Z
+39868510865 | envelope-b | main | dd15186951b811b3dea173f702dad34d8731d1de | 2026-10-22T22:56:52Z
