@@ -356,7 +356,7 @@ pub unsafe extern "C" fn velo_read_file_at(
         let id = snapshot_arg(repo, spec)?;
         let bytes = repo.read_file_at(&id, path)?.into_boxed_slice();
         *len_slot = bytes.len();
-        *data_slot = Box::into_raw(bytes) as *mut u8;
+        *data_slot = Box::into_raw(bytes).cast::<u8>();
         Ok(())
     })
 }

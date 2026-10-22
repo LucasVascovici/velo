@@ -887,9 +887,79 @@ Stage medians of a one-file save at 100,000 files (ms): `save_tree.objects`
   snapshot is 2.2x the prototype (210 KB against 94 KB): the real keyframe row
   set is larger and this run held three keyframes in 400 saves.
 
+### After the parent-membership rule (22.3)
+
+`save_tree` and `save_changes` now skip the existence check for objects the parent
+snapshot already references (22.3-a, 22.3-b). Re-run on 2026-10-22, Windows, release
+with `timing`, 100,000 files, K = 128, **40 saves, no keyframe** (a shortened run:
+the seed save took 194 s, the 40 saves about 30 s). Raw lines:
+`bench/results/2026-10-22-storage-v4-windows-22.3.json`. Machine state: nothing
+else heavy running on purpose, Defender on; it is a different load from the
+2026-10-20 run, which shared the machine with other jobs, so the comparison is
+indicative, not like-for-like.
+
+| stage (median, ms) | before (20.10 run) | after (22.3) |
+| --- | ---: | ---: |
+| `save_tree.load_parent` | not split out | 73.1 |
+| `save_tree.objects` | 5,019.5 | 52.3 |
+| `save_tree.insert_file_map` | 154.7 | 31.9 |
+| `save_tree.snapshot_id` | 40.9 | 32.5 |
+| `save_tree.validate` | 35.8 | 27.0 |
+| `save_tree.commit` | 0.25 | 0.15 |
+| save median | 5,279 | **246** |
+| save p95 | 15,598 | 422 |
+| slowest plain save | 22,200 | 496 |
+
+**Verdict against the under-1-s target: met.** The median is 246 ms and even the
+slowest save of 40 is 496 ms. By stage: `objects` fell 96x (5,020 to 52 ms) because
+only the one changed file is now checked; what is left is the parent read
+(`load_parent`, 73 ms, the largest stage), the id (`snapshot_id`, 33 ms), the file
+map rows (32 ms) and `validate` (27 ms). The 110 ms prototype floor is not reached:
+the remaining O(files) work is the parent read and the id hash, and together with
+validate and the row writes it is about 215 ms of the 246.
+
+**Flat against history.** Median of the first 10% of saves (4 saves) 396 ms, of the
+last 10% (4 saves) 227 ms. The first saves are the slowest (a cold cache after the
+194 s seed save), so there is no growth with history over 40 saves; 40 saves cannot
+show growth that appears only after the K = 128 keyframe, which this run did not
+reach. Disk per snapshot, 614 bytes, is over plain saves only and is not comparable
+with the 210 KB of the 400-save run (three keyframes). The 400-save run below is
+needed for that.
+
+**CLI `save` path.** Raw lines: `bench/results/2026-10-22-cli-save-30k-windows.json`.
+The 100,000-file CLI run did not fit: its seed save (`velo save`, snapshot 0) was
+killed at the 580 s tool timeout, so 30,000 files were used, 10 snapshots, 1 file
+changed per snapshot, release `velo.exe`, wall clock of the whole process. Seed save
+157 s; second save 4.9 s (a one-off, not explained here); saves 3 to 10 median
+**0.45 s** (0.39 to 0.51 s). That is flat from save 3 on and is the dirty scan plus
+the one put. It does not pay a per-file object-existence cost: at 30,000 files the
+old `objects` stage would have been about 1.5 s alone. The CLI has no `timing`
+feature, so there is no stage split; whether the 0.45 s is mostly the scan was not
+measured. The scale harness's closing `velo gc` was interrupted by hand and
+`scale.py` wrote no summary, so only the per-save lines are recorded. The
+100,000-file CLI figure is a follow-up for the owner.
+
 ### Commands for the owner
 
-Windows, 100,000 files (about 50 minutes for K = 128 with three keyframes; run one K at a time, and give VELO_PROFILE_OUT as an absolute path because the test runs from crates/velo-core):
+Full-length run after 22.3 (400 saves, keyframes as in the 20.10 run), Windows:
+
+```
+VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_KEYFRAMES=3 VELO_PROFILE_OUT=$PWD/bench/results/<date>-storage-v4-windows-22.3-full.json cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1
+```
+
+Linux in WSL, 100,000 files, K = 128 (ext4 path, as section 1 describes):
+
+```
+wsl -e bash -lc 'mkdir -p $HOME/velo-prof && VELO_PROFILE_DIR=$HOME/velo-prof VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_SAVES=40 VELO_PROFILE_KEYFRAMES=0 VELO_PROFILE_OUT=$PWD/bench/results/<date>-storage-v4-linux-22.3.json CARGO_TARGET_DIR=$HOME/velo-target cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1'
+```
+
+CLI save at 100,000 files (run outside a tool timeout; the seed save is the long part):
+
+```
+cargo build --release -p velo-cli && python bench/scale/scale.py --files 100000 --snapshots 10 --change 1 --velo target/release/velo.exe --out bench/results/<date>-cli-save-100k-windows.json
+```
+
+Earlier invocations (pre-22.3): Windows, 100,000 files (about 50 minutes for K = 128 with three keyframes; run one K at a time, and give VELO_PROFILE_OUT as an absolute path because the test runs from crates/velo-core):
 
 ```
 VELO_PROFILE_FILES=100000 VELO_PROFILE_KS=128 VELO_PROFILE_KEYFRAMES=3 VELO_PROFILE_OUT=$PWD/bench/results/2026-10-20-storage-v4-windows.json cargo test -p velo-core --release --features timing storage_v4_profile -- --ignored --nocapture --test-threads=1
@@ -936,6 +1006,42 @@ numbers. The gain would show where the objects check is not paid (a
 `save_changes` loop that puts bytes, or a caller that skips the check), which the
 section 9 harness does not exercise and this run did not measure. The p95 column
 is dominated by the same noise and is not evidence either way.
+
+#### 22.3 repeat
+
+Repeated on 2026-10-22 now that `objects` is small (22.3-a). Same harness
+(`storage_v4_profile`, release, `timing`), **100,000 files**, K = 128, **40 saves, no
+keyframe**, one file changed per save, Windows, Defender on. "Cleared" sets
+`VELO_PROFILE_CLEAR_TREE_CACHE`, which empties the cache before every save; "on" leaves
+it. The four runs alternated on and cleared, nothing else heavy running on purpose.
+Raw lines (in run order: on, cleared, on, cleared):
+`bench/results/2026-10-22-last-tree-cache-windows.json`. The cache is keyed by
+snapshot id alone, held in `Repo`, and used by both `save_tree` and `save_changes`.
+
+| run | cache | median (ms) | p95 (ms) | `load_parent` (ms) | `insert_file_map` (ms) | `remember` (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | on | 254.6 | 290.2 | 0.0 | 54.9 | 7.3 |
+| 1 | cleared | 281.0 | 412.0 | 83.7 | 40.7 | 7.0 |
+| 2 | on | 242.4 | 275.8 | 0.0 | 52.1 | 6.4 |
+| 2 | cleared | 324.3 | 409.2 | 96.5 | 44.0 | 7.3 |
+
+The cache removes the parent read (`load_parent` 84 to 97 ms goes to 0) and the
+whole-save median drops 26 ms in pair 1 and 82 ms in pair 2 (10% and 25%); p95 drops
+122 to 133 ms. Two stages grow when it is on: `insert_file_map` rises by about 12 ms
+(the cached tree is a fresh allocation the next save's delta diff walks cold) and
+`remember` costs 6 to 7 ms to build the map (it ran in the cleared runs too, so it is
+in both columns). The other stages (`objects`, `snapshot_id`, `validate`) wander by
+10 to 25 ms between runs; the pair-1 gap is of that order, so it is the weaker pair,
+but the sign agrees in both and `load_parent` is the largest stage now, which is the
+condition the 22.3 spec set.
+
+Verdict: **kept.** The median drops by more than the run-to-run noise in both pairs,
+and the parent-tree read was the largest stage. At 10,000 files the first attempt
+could not show this because `objects` was 95% of the save; it is about 25% now. The
+cache is a `RefCell` on `Repo`, so the handle stays `Send` and not `Sync`. It needs no
+`head_token`: a snapshot's tree is fixed by its id, so compact and repack change how
+rows are stored, not what the tree is, and a second handle's snapshot has a different
+id and misses. Tests are in `tests/last_tree_cache.rs`. Linux was not run.
 
 ### Group commit for an agent loop (20.10)
 
@@ -1248,3 +1354,141 @@ snapshots). Keep the losses.
 | push 50 snapshots | | | 1.5 s |
 | pull 50 snapshots | | | 0.8 s |
 | parallel 4 writers, 10 saves each | | | no budget |
+
+## 11. Phase 22.4: who-wrote after the blame skip
+
+Measured on 2026-10-22, Windows 11, Defender real-time scanning on, tip
+`9eadba2` (which includes 22.4-a, `6514e98`, the blame skip and the decoded-text
+cache). The agent benchmark ran at full size, 1,000 files by 500 steps, seed 1,
+`--only "velo,shadow git"`; the script checks every answer against the known
+last writer and aborts on a mismatch. Raw results:
+`bench/results/2026-10-22-windows-agent-who-wrote.json`.
+
+```text
+python bench/agent/agent_bench.py --steps 500 --files 1000 \
+    --only "velo,shadow git" --out bench/results/2026-10-22-windows-agent-who-wrote.json
+```
+
+### Who wrote this line, 20 queries
+
+| system | who wrote x20 (s) | against shadow git |
+|---|---:|---:|
+| shadow git (`git blame -L`, one line each) | 3.77 | 1.00x |
+| velo (blame of the whole file, one line read) | 3.29 | 0.87x |
+| velo, before 22.4-a (Phase 20 re-run, same harness) | 9.30 | 3.1x (git 3.01) |
+
+Verdict: **met**. Velo is at 0.87x of shadow git against the 1.5x budget. The
+Phase 20 figure was 3.1x. Velo's number is noisy on this machine: a second
+velo-only run of the same repository gave 1.32 s for the 20 queries (0.35x), so
+the first run, which is the one committed, is the conservative one. No
+remaining-cost-by-stage table is needed since the target is met.
+
+### Blame output, before against after
+
+The same repository (velo-only agent run, seed 1, 1,000 files, 500 steps) was
+opened by a build of `dd100bb` (the parent of 22.4-a) and by a build of the
+tip. For 20 files, spread evenly over the sorted paths, the full per-line
+origin (the step number in the origin snapshot's message) was dumped for every
+line and the two dumps compared byte for byte: **identical**. Whole-file blame
+of those 20 files took 6.25 s before and 3.02 s after on that repository.
+
+### Depth against plain decode
+
+The same repository, medians of repeated reads through the Python binding
+(`bindings/python`, release build). A path is read from a snapshot at a given
+depth in the delta chain (the keyframe interval is 128, so snapshot 128 is a
+keyframe again):
+
+| operation | ms |
+|---|---:|
+| `read_object` of one text (the store read) | 0.107 |
+| `read_object` plus UTF-8 decode | 0.073 |
+| `read_file_at`, depth 0 (keyframe) | 0.20 |
+| `read_file_at`, depth 1 | 0.27 |
+| `read_file_at`, depth 64 | 2.26 |
+| `read_file_at`, depth 127 | 4.48 |
+| `tree_at`, depth 0 / depth 127 | 0.88 / 5.62 |
+
+The engine harness (`storage_v4_profile`, 1,000 files, K = 128, 140 saves)
+agrees: `read_file_at` 0.118 ms at depth 0, 1.17 ms at depth 64, 2.52 ms at
+depth 127.
+
+Conclusion: plain decode of a stored text costs about 0.1 ms, so the 0.35 ms
+per read seen in the Phase 20 profile was not decode alone; the delta-chain
+depth is what grows, roughly 0.035 ms per level of chain, and a depth-127 read
+costs 20 to 40 times a depth-0 read. Blame reads objects (a flat store read, no
+chain), but its per-visit tree lookups walk the chain, which is why skipping
+visits whose object equals a parent's (22.4-a) is what paid off. Nothing beyond
+that cache is justified by these numbers, now that the 1.5x budget is met.
+
+## 12. Where the 11 MB go (22.5)
+
+Section 6 target 3 (at most 3x git on disk after 500 steps) read 11.03 MB
+against git's 3.27 MB, 3.37x. This section breaks that down. Raw numbers:
+`bench/results/2026-10-22-agent-disk-breakdown.txt`. Workload: the agent
+benchmark's 1,000 files and 500 `save_changes` steps (seed 0), stopped after
+step 500, before branches and restores, by a throwaway harness (the benchmark
+has no flag for that point). Windows, Python binding 6.2.0, K = 128, page size
+4096. `dbstat` was read from a copy of the database, in WSL, because Windows
+Python's sqlite3 lacks it.
+
+**The WAL is 38% of the 11.2 MB.** The benchmark counts the directory while the
+repository handle is still open, so `velo.db-wal` is in the figure:
+
+| part | bytes | share |
+|---|---|---|
+| `velo.db-wal` (live, high-water of the 1000-page autocheckpoint) | 4,280,712 | 38% |
+| objects (6,352 files) | 3,109,785 | 28% |
+| `velo.db` (3.69 MB; 3.77 MB once the WAL is folded in) | 3,772,416 | 34% |
+| `-shm` and small files | 33,000 | 0.3% |
+| **open handle** | 11,155,312 | 3.41x git |
+| **handle dropped (WAL checkpointed, removed)** | 6,882,552 | **2.10x git** |
+
+**Inside `velo.db`** (3,784,704 bytes after a checkpoint):
+
+| role | table / index | bytes |
+|---|---|---|
+| delta rows | `tree_delta_rows` (5,300 rows) | 995,328 |
+| delta rows | `idx_delta_rows_path` | 544,768 |
+| keyframe rows | `file_map` (4,000 rows, 4 keyframes) | 659,456 |
+| file_map index 1 | `idx_filemap_snap` | 339,968 |
+| file_map index 2 | `idx_filemap_path` | 114,688 |
+| metadata | `snapshot_meta` and its 3 indexes | 655,360 |
+| snapshots | `snapshots`, autoindex, `idx_snap_branch` | 147,456 |
+| delta headers | `tree_deltas`, autoindex, `idx_tree_deltas_base` | 167,936 |
+| empty tables, schema | 4 KB each | 159,744 |
+
+**Verdict.** The disk target is met at rest and was missed only by the way it
+was measured. A repository whose last handle is closed (every CLI invocation,
+and a Python `Repo` that has been dropped) has its WAL checkpointed and deleted
+by SQLite: 6.88 MB, 2.10x git's 3.27 MB. With the handle held open, as the
+benchmark does, 4.28 MB of WAL sits in the directory and the ratio is 3.41x.
+Section 6's 3.37x stands as the open-handle figure and is not rewritten. No
+code change was made: the WAL is bounded (the autocheckpoint is 1000 pages), it
+is not stored data, and shrinking it with a lower `wal_autocheckpoint` or a
+`journal_size_limit` would trade save latency for a number that disappears when
+the handle closes. That is a possible follow-up, not a format matter.
+
+**Keyframe interval K** (a writer-side constant, changed by a local edit and
+not committed; handle dropped, same workload):
+
+| K | keyframes | disk at rest | `velo.db` | `tree_at` median / max |
+|---|---|---|---|---|
+| 64 | 8 | 7.97 MB (2.44x) | 4.86 MB | 3.5 / 5.6 ms |
+| 128 (default) | 4 | 6.88 MB (2.10x) | 3.77 MB | 5.7 / 10.0 ms |
+| 256 | 2 | 6.37 MB (1.95x) | 3.26 MB | 11.2 / 26.4 ms |
+
+Each doubling of K saves 0.5 to 1.1 MB and about doubles the read cost
+(roughly linear in depth, consistent with section 11). 128 stays: it is already
+under 3x, and 256 saves 0.5 MB for twice the read time.
+
+**Schema-level levers, recorded, not taken** (they change the schema and
+FORMAT.md, which this task does not). Keyframes and their two indexes are
+1.11 MB (16% of the at-rest total); the delta rows and their path index are
+1.54 MB (22%); metadata 0.66 MB (10%). FORMAT.md 11.5 option C (32-byte blob
+hashes, `WITHOUT ROWID`) would roughly halve the hash bytes in `file_map`,
+`tree_delta_rows` and their indexes: an estimate, not measured, of 0.6 to 0.9
+MB (9 to 13% of 6.88 MB), taking the ratio from 2.10x to about 1.85x. The
+objects (3.11 MB, 45% of the at-rest total) are the content itself, about the
+size of git's whole store, so what remains is the price of keeping every
+snapshot's tree queryable in SQLite.

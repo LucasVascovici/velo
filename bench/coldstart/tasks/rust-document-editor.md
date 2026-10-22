@@ -1,8 +1,8 @@
 # Task: Rust document editor
 
-Documentation given: `README.md`, `docs/cookbook/document-editor.md`.
+Documentation given: `README.md`, `docs/LIBRARY.md`, `docs/cookbook/document-editor.md`.
 Installed from: the crate the agent adds to its own `Cargo.toml`, as the
-README says; the agent is not given a checkout.
+`docs/LIBRARY.md` says; the agent is not given a checkout.
 
 ## Task (give the agent only this sentence)
 

@@ -46,3 +46,8 @@ strip = true
 # further ~10% gzip; see the Size section of README.md.
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
+
+# Used by the code `#[wasm_bindgen]` generates for `async fn` exports, so no
+# source line names it and cargo-machete cannot see the use.
+[package.metadata.cargo-machete]
+ignored = ["wasm-bindgen-futures"]

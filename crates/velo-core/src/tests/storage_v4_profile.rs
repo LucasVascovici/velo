@@ -200,6 +200,10 @@ fn run_k(files: usize, saves: Option<usize>, k: u32) -> Value {
         let path = entries[at].path.clone();
         entries[at] = TreeEntry::file(path, format!("edit {n} {}\n", rng.next_u64()).into_bytes());
         // The clone is the caller's cost, not the save's: it is outside the timer.
+        // `VELO_PROFILE_CLEAR_TREE_CACHE` measures the save without the last-tree cache.
+        if std::env::var_os("VELO_PROFILE_CLEAR_TREE_CACHE").is_some() {
+            repo.clear_last_tree();
+        }
         let input = entries.clone();
         let t = Instant::now();
         let id = save(&repo, ids.last(), input, 1 + n as i64);

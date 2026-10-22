@@ -1,0 +1,44 @@
+{
+  "env": {
+    "date": "2026-10-22",
+    "platform": "Windows-11-10.0.22621-SP0",
+    "system": "Windows",
+    "machine": "AMD64",
+    "python": "3.12.8",
+    "git": "git version 2.42.0.windows.2",
+    "sqlite": "3.45.3",
+    "velo_binding": "unversioned binding",
+    "repo_commit": "9eadba2",
+    "workdir": "C:\\Users\\lvi\\AppData\\Local\\Temp\\velo-agent-bench-2qjli8fb",
+    "steps": 500,
+    "files": 1000,
+    "restores": 100,
+    "seed": 1,
+    "quick": false,
+    "defender_note": "not provided: assume real-time scanning is ON"
+  },
+  "results": [
+    {
+      "system": "velo",
+      "provenance": "ids recompute from content; author and metadata are hashed into each snapshot id; signatures can be attached",
+      "steps_s": 9.714303499997186,
+      "disk_after_steps": 11072827,
+      "restore_total_s": 29.3275843000265,
+      "restore_median_s": 0.2398998999997275,
+      "who_wrote_s": 3.2913243000002694,
+      "branches_s": 1.8329597000083595,
+      "disk_final": 11882850
+    },
+    {
+      "system": "shadow git",
+      "provenance": "object hashes verify content; author and message per commit only by discipline, nothing binds them to a run",
+      "steps_s": 202.31407779999427,
+      "disk_after_steps": 3690090,
+      "restore_total_s": 56.14273920001506,
+      "restore_median_s": 0.5380126000018208,
+      "who_wrote_s": 3.7719171999997343,
+      "branches_s": 37.761842399984744,
+      "disk_final": 4959728
+    }
+  ]
+}

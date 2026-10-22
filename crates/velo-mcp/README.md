@@ -15,9 +15,85 @@ not a language binding, so it is not limited to the embeddable half.
 
 ## Client configuration
 
-```json
-{"command": "velo-mcp", "args": ["--repo", "/path", "--lock-wait", "5"]}
+Download the `velo-mcp` archive for your platform from the latest release and
+extract it:
+
+```sh
+curl -L -o velo-mcp.tar.gz https://github.com/LucasVascovici/velo/releases/latest/download/velo-mcp-x86_64-linux.tar.gz && tar -xzf velo-mcp.tar.gz
 ```
+
+Assets are `velo-mcp-<arch>-<os>.tar.gz` (`x86_64-linux`, `aarch64-linux`,
+`x86_64-macos`, `aarch64-macos`) and `velo-mcp-x86_64-windows.zip`. In every
+config below, replace `/path/to/velo-mcp` with the extracted binary and
+`/path/to/project` with the project directory (run `velo init` in it first).
+Other flags: `--run <id>`, `--lock-wait <secs>`, and `--store <file> --create`
+for store-only mode.
+
+Claude Desktop (`claude_desktop_config.json`):
+
+<!-- config: claude-desktop.json -->
+```json
+{
+  "mcpServers": {
+    "velo": {
+      "command": "/path/to/velo-mcp",
+      "args": ["--repo", "/path/to/project"]
+    }
+  }
+}
+```
+
+Cursor (`.cursor/mcp.json`):
+
+<!-- config: cursor.json -->
+```json
+{
+  "mcpServers": {
+    "velo": {
+      "command": "/path/to/velo-mcp",
+      "args": ["--repo", "/path/to/project"]
+    }
+  }
+}
+```
+
+Claude Code (`.mcp.json`, or on one line
+`claude mcp add velo -- /path/to/velo-mcp --repo /path/to/project`):
+
+<!-- config: claude-code.json -->
+```json
+{
+  "mcpServers": {
+    "velo": {
+      "type": "stdio",
+      "command": "/path/to/velo-mcp",
+      "args": ["--repo", "/path/to/project"]
+    }
+  }
+}
+```
+
+VS Code (`.vscode/mcp.json`):
+
+<!-- config: vscode.json -->
+```json
+{
+  "servers": {
+    "velo": {
+      "type": "stdio",
+      "command": "/path/to/velo-mcp",
+      "args": ["--repo", "/path/to/project"]
+    }
+  }
+}
+```
+
+`uvx` and `npx` forms will be added when a registry package ships `velo-mcp`;
+none does today. [`server.json`](server.json) is a prepared entry for the MCP
+registry; submitting it is the owner's to do. Every config above is launched
+against the built binary by `conformance/check_configs.py` (run in
+`.github/workflows/mcp.yml`), which also checks these snippets equal the files
+in `conformance/configs/`.
 
 ## Run identity
 

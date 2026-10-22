@@ -1,0 +1,10 @@
+[book]
+title = "velo documentation"
+src = "."
+language = "en"
+
+[build]
+# Outside the source tree: with src = "." the output would otherwise land
+# inside the book's own sources.
+build-dir = "../book"
+create-missing = false

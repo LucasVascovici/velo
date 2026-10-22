@@ -180,3 +180,123 @@ fn extractor_flags_a_bad_example() {
     assert!(check(&found[0]).is_err());
     assert!(check(&found[1]).is_ok());
 }
+
+/// Placeholders that only the docs use, applied before the shared ones.
+const DOC_PLACEHOLDERS: &[(&str, &str)] = &[
+    ("<path>", "p"),
+    ("<dir>", "d"),
+    ("<remote>", "origin"),
+    ("<tag>", "v1"),
+    ("<version>", "1"),
+];
+
+/// Doc lines that are intentionally not valid commands, as
+/// `(file suffix, exact line, reason)`.
+const DOC_ALLOWLIST: &[(&str, &str, &str)] = &[(
+    "COLLABORATION.md",
+    "velo sync   (or by hand: velo fetch, velo merge origin/main, velo save \"Merge origin/main\", velo push)",
+    "sample `velo status` output, a hint line rather than a command",
+)];
+
+/// Fence info strings whose blocks hold shell sessions.
+const SHELL_INFO: &[&str] = &["", "sh", "bash", "shell", "console", "text"];
+
+/// Finds `velo ...` invocations in shell-like fenced blocks of a markdown
+/// document, returning `(line number, invocation)`.
+fn extract_markdown(md: &str) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let mut in_block = false;
+    let mut shell = false;
+    for (i, line) in md.lines().enumerate() {
+        let t = line.trim();
+        if let Some(info) = t.strip_prefix("```") {
+            if in_block {
+                in_block = false;
+            } else {
+                in_block = true;
+                shell = SHELL_INFO.contains(&info.trim());
+            }
+            continue;
+        }
+        if !in_block || !shell {
+            continue;
+        }
+        let t = t
+            .strip_prefix("$ ")
+            .or_else(|| t.strip_prefix("> "))
+            .unwrap_or(t);
+        if t.starts_with("velo ") {
+            found.push((i + 1, t.to_string()));
+        }
+    }
+    found
+}
+
+fn collect_md(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            collect_md(&p, out);
+        } else if p.extension().is_some_and(|x| x == "md") {
+            out.push(p);
+        }
+    }
+}
+
+#[test]
+fn every_velo_command_in_docs_parses() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let mut files = Vec::new();
+    let readme = root.join("README.md");
+    if readme.is_file() {
+        files.push(readme);
+    }
+    collect_md(&root.join("docs"), &mut files);
+    if files.is_empty() {
+        return; // a packaged crate has no docs beside it
+    }
+    files.sort();
+    let mut total = 0;
+    let mut failures = Vec::new();
+    for f in &files {
+        let Ok(text) = std::fs::read_to_string(f) else {
+            continue;
+        };
+        let name = f.to_string_lossy().replace('\\', "/");
+        for (n, inv) in extract_markdown(&text) {
+            if DOC_ALLOWLIST
+                .iter()
+                .any(|(suffix, line, _)| name.ends_with(suffix) && inv == *line)
+            {
+                continue;
+            }
+            total += 1;
+            let mut s = inv.clone();
+            for (from, to) in DOC_PLACEHOLDERS {
+                s = s.replace(from, to);
+            }
+            if let Err(kind) = check(&s) {
+                failures.push(format!("{name}:{n}: `{inv}` -> {kind:?}"));
+            }
+        }
+    }
+    assert!(total > 50, "only found {total} documented invocations");
+    assert!(
+        failures.is_empty(),
+        "docs quote unparseable commands:\n{}",
+        failures.join("\n")
+    );
+}
+
+#[test]
+fn markdown_extractor_handles_prompts_comments_and_other_blocks() {
+    let md = "text\n```sh\n$ velo save \"x\"  # note\n> velo log\nvelo: output\nls\n```\n```rust\nvelo nope\n```\n```\nvelo status\n```\n";
+    let got = extract_markdown(md);
+    let invs: Vec<&str> = got.iter().map(|(_, s)| s.as_str()).collect();
+    assert_eq!(invs, ["velo save \"x\"  # note", "velo log", "velo status"]);
+    assert_eq!(got[0].0, 3);
+    assert!(check(&got[0].1).is_ok());
+}

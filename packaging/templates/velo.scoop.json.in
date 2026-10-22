@@ -1,0 +1,21 @@
+{
+    "version": "@@VERSION@@",
+    "description": "@@DESCRIPTION@@",
+    "homepage": "@@HOMEPAGE@@",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "@@URL_X86_64_WINDOWS@@",
+            "hash": "@@SHA_X86_64_WINDOWS@@"
+        }
+    },
+    "bin": "velo.exe",
+    "checkver": "github",
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "@@REPO_URL@@/releases/download/v$version/velo-x86_64-windows.zip"
+            }
+        }
+    }
+}

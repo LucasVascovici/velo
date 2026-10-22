@@ -1,8 +1,8 @@
 # Task: MCP client
 
-Documentation given: `README.md` only. Its "MCP server" section is the
-documentation for this wedge; there is no cookbook.
-Installed from: `velo-mcp` built from the release tag, as the README says.
+Documentation given: `README.md` and `docs/LIBRARY.md`. The "MCP server"
+section of `docs/LIBRARY.md` is the documentation for this wedge; there is no cookbook.
+Installed from: `velo-mcp` built from the release tag, as `docs/LIBRARY.md` says.
 
 ## Task (give the agent only this sentence)
 
@@ -26,5 +26,5 @@ sentence.)
 python ../check.py <repo-dir> --actor <actor-for-run> --file <saved file>
 ```
 
-Source of the sentence: the README's "MCP server" section ("makes velo the
+Source of the sentence: `docs/LIBRARY.md`'s "MCP server" section ("makes velo the
 checkpoint layer for an agent ... with every write recorded against a run id").

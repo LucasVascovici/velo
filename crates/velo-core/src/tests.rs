@@ -12373,8 +12373,14 @@ mod team_rows_profile;
 mod blame_attribution;
 
 #[cfg(test)]
+mod blame_skip;
+#[cfg(test)]
 mod fsck_orphan_chain;
+#[cfg(test)]
+mod last_tree_cache;
 #[cfg(test)]
 mod message_fixes;
 #[cfg(test)]
 mod orphan_delta_repro;
+#[cfg(test)]
+mod save_existence;

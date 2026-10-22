@@ -8,13 +8,13 @@
 //   mkdir /tmp/try && cd /tmp/try && npm init -y && npm install <path to the .tgz>
 //   node <path to velo>/bindings/node/examples/config_registry.mjs
 //
-// Node resolves `@velo/core` from the directory of the script, so copy the
+// Node resolves `velo-core` from the directory of the script, so copy the
 // script next to the install (or into it) when it is run from elsewhere.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import velo from '@velo/core';
+import velo from 'velo-core';
 
 const { Repo } = velo;
 

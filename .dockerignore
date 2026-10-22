@@ -1,0 +1,14 @@
+target/
+target-*/
+bench/results/
+.git/
+.claude/
+sim/
+CLAUDE.md
+DEVELOPING.md
+ARCHITECTURE.md
+V3_SYNC_PLAN.md
+workflow_sim.sh
+bindings/*/target/
+bindings/*/node_modules/
+node_modules/

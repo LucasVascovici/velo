@@ -63,6 +63,7 @@ fn save_tree_records_its_stages() {
             "save_tree.insert_file_map",
             "save_tree.insert_rest",
             "save_tree.commit",
+            "save_tree.remember",
         ]
     );
 }
@@ -95,6 +96,7 @@ fn save_changes_records_its_stages() {
             "save_tree.insert_file_map",
             "save_tree.insert_rest",
             "save_tree.commit",
+            "save_tree.remember",
         ]
     );
 }

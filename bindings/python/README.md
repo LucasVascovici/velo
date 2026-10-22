@@ -1,4 +1,4 @@
-# velo (Python)
+# velo-core (Python)
 
 PyO3 binding over `velo-core`'s embedder API. It is its own Cargo workspace so
 the Python toolchain stays out of the main build.

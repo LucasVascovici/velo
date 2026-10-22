@@ -1,0 +1,14 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.@@SCHEMA@@.schema.json
+PackageIdentifier: @@WINGET_ID@@
+PackageVersion: @@VERSION@@
+InstallerType: zip
+NestedInstallerType: portable
+NestedInstallerFiles:
+- RelativeFilePath: velo.exe
+  PortableCommandAlias: velo
+Installers:
+- Architecture: x64
+  InstallerUrl: @@URL_X86_64_WINDOWS@@
+  InstallerSha256: @@SHA_X86_64_WINDOWS_UPPER@@
+ManifestType: installer
+ManifestVersion: @@SCHEMA@@

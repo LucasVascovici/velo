@@ -210,7 +210,8 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
             ))
         })?;
 
-    let tip_text = read_text(&objects, &tip_object)?;
+    let mut tracked = TrackedHashes::default();
+    let tip_text = tracked.text(&objects, &tip_object)?;
     let driver = repo.drivers().for_path(&rel);
     let tip_units = driver.units(&tip_text);
     let tip_unit_texts = unit_texts(&tip_text, &tip_units);
@@ -257,13 +258,12 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
         queue.push(v);
     }
 
-    let mut tracked = TrackedHashes::default();
     while remaining > 0 {
         progress.check()?;
         let Some(visit) = queue.pop() else { break };
         progress.tick();
 
-        let our_text = tracked.read(conn, &objects, &visit.hash, &visit.path)?;
+        let our_object = tracked.object_at(conn, &visit.hash, &visit.path)?;
 
         // The path each parent knew the file by. A rename recorded on this
         // snapshot means the parents held the old name; without this the parent
@@ -277,20 +277,36 @@ pub fn run(repo: &Repo, file: &Path, options: Options<'_>) -> Result<Blame> {
             .map(|p| (p.clone(), parent_path.clone()))
             .collect();
 
+        let mut parent_objects = Vec::with_capacity(parents.len());
+        for (parent, parent_path) in &parents {
+            parent_objects.push(tracked.object_at(conn, parent, parent_path)?);
+        }
+        // A parent holding the very same object had every line this snapshot
+        // has, so nothing here is new: no read and no diff. For a merge that is
+        // the intersection rule below with one empty set, which empties the
+        // result whatever the other parent says.
+        let unchanged = our_object.is_some() && parent_objects.contains(&our_object);
+
         // A line is this snapshot's own only when no parent had it. Against one
         // parent that is the old rule; against two it is what separates a
         // conflict resolution, which the merge really did write, from the
         // absorbed branch's work, which it did not.
         let mut introduced: Option<HashSet<usize>> = None;
-        for (parent, parent_path) in &parents {
-            let parent_text = tracked.read(conn, &objects, parent, parent_path)?;
-            let against: HashSet<usize> = introduced_lines(driver, &parent_text, &our_text)
-                .into_iter()
-                .collect();
-            introduced = Some(match introduced {
-                Some(so_far) => &so_far & &against,
-                None => against,
-            });
+        let mut our_text: std::rc::Rc<str> = std::rc::Rc::from("");
+        if unchanged {
+            introduced = Some(HashSet::new());
+        } else {
+            our_text = tracked.text_of(&objects, our_object.as_deref())?;
+            for parent_object in &parent_objects {
+                let parent_text = tracked.text_of(&objects, parent_object.as_deref())?;
+                let against: HashSet<usize> = introduced_lines(driver, &parent_text, &our_text)
+                    .into_iter()
+                    .collect();
+                introduced = Some(match introduced {
+                    Some(so_far) => &so_far & &against,
+                    None => against,
+                });
+            }
         }
         // No parents: the file starts here, so everything in it is its own.
         let introduced = introduced
@@ -443,25 +459,66 @@ fn default_start(repo: &Repo) -> Result<String> {
 #[derive(Default)]
 struct TrackedHashes {
     by_path: HashMap<String, crate::tree_store::PathVersions>,
+    /// Decoded texts by object hash, for the length of one blame run. A walk
+    /// reads each snapshot's text and its parent's, so most texts are asked for
+    /// twice; and a file reverted to earlier content asks for the same object
+    /// again much later.
+    texts: HashMap<String, std::rc::Rc<str>>,
+    cached_bytes: usize,
 }
 
+/// Upper bound on the decoded text one blame run keeps. When a new text would
+/// pass it the cache is dropped whole: simple, and the walk soon refills it
+/// with the texts it is still using.
+const TEXT_CACHE_LIMIT: usize = 64 * 1024 * 1024;
+
 impl TrackedHashes {
-    /// Content of `path` at `snapshot`, or empty when it isn't tracked there.
-    fn read(
+    /// Object hash of `path` at `snapshot`, or `None` when it isn't tracked there.
+    fn object_at(
         &mut self,
         conn: &rusqlite::Connection,
-        objects: &crate::storage::ObjectStore,
         snapshot: &str,
         path: &str,
-    ) -> Result<String> {
+    ) -> Result<Option<String>> {
         if !self.by_path.contains_key(path) {
             let versions = crate::tree_store::PathVersions::load(conn, path)?;
             self.by_path.insert(path.to_string(), versions);
         }
-        match self.by_path[path].at(snapshot)? {
-            Some((h, _)) => read_text(objects, &h),
-            None => Ok(String::new()),
+        Ok(self.by_path[path].at(snapshot)?.map(|(h, _)| h))
+    }
+
+    /// Text of an object, empty for `None` (not tracked there). The empty text
+    /// is never cached: it has no hash to key it by.
+    fn text_of(
+        &mut self,
+        objects: &crate::storage::ObjectStore,
+        object: Option<&str>,
+    ) -> Result<std::rc::Rc<str>> {
+        match object {
+            Some(h) => self.text(objects, h),
+            None => Ok(std::rc::Rc::from("")),
         }
+    }
+
+    /// Decoded text of `object`, read through the cache.
+    fn text(
+        &mut self,
+        objects: &crate::storage::ObjectStore,
+        object: &str,
+    ) -> Result<std::rc::Rc<str>> {
+        if let Some(t) = self.texts.get(object) {
+            return Ok(t.clone());
+        }
+        let text: std::rc::Rc<str> = std::rc::Rc::from(read_text(objects, object)?);
+        if self.cached_bytes + text.len() > TEXT_CACHE_LIMIT {
+            self.texts.clear();
+            self.cached_bytes = 0;
+        }
+        if text.len() <= TEXT_CACHE_LIMIT {
+            self.cached_bytes += text.len();
+            self.texts.insert(object.to_string(), text.clone());
+        }
+        Ok(text)
     }
 }
 

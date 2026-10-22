@@ -46,6 +46,14 @@ pub struct Repo {
     /// How many links a stored delta chain may reach before a save writes a
     /// keyframe; see [`crate::tree_store::KEYFRAME_INTERVAL`].
     keyframe_interval: u32,
+    /// The tree this handle last committed, keyed by its snapshot id, so the next
+    /// save on top of it need not read that tree back. A snapshot's tree is
+    /// immutable (the id commits to it), so the id alone is a sound key: a
+    /// repack, compaction or a second handle's write can change how rows are
+    /// stored but not what the tree is, and a snapshot that is gone is refused
+    /// by the parent check before the cache is consulted. `RefCell`, so the
+    /// handle stays `Send` and not `Sync`.
+    last_tree: std::cell::RefCell<Option<(String, std::sync::Arc<crate::tree_store::StoredTree>)>>,
     /// Where bearer tokens for HTTP remotes come from, given a remote's URL.
     /// `None` sends no credentials. Set via [`Repo::credentials`].
     credentials: Option<Credentials>,
@@ -221,6 +229,7 @@ impl Repo {
             lock_label: None,
             limits: crate::Limits::default(),
             keyframe_interval: initial_keyframe_interval(),
+            last_tree: std::cell::RefCell::new(None),
             #[cfg(test)]
             test_now_ms: std::cell::Cell::new(None),
         })
@@ -275,6 +284,7 @@ impl Repo {
             lock_label: None,
             limits: crate::Limits::default(),
             keyframe_interval: initial_keyframe_interval(),
+            last_tree: std::cell::RefCell::new(None),
             #[cfg(test)]
             test_now_ms: std::cell::Cell::new(None),
         })
@@ -375,6 +385,7 @@ impl Repo {
             lock_label: None,
             limits: crate::Limits::default(),
             keyframe_interval: initial_keyframe_interval(),
+            last_tree: std::cell::RefCell::new(None),
             #[cfg(test)]
             test_now_ms: std::cell::Cell::new(None),
         })
@@ -653,6 +664,29 @@ impl Repo {
     pub fn limited(mut self, limits: crate::Limits) -> Self {
         self.limits = limits;
         self
+    }
+
+    /// The cached tree of `snapshot`, when it is the one this handle last wrote.
+    pub(crate) fn cached_tree(
+        &self,
+        snapshot: &str,
+    ) -> Option<std::sync::Arc<crate::tree_store::StoredTree>> {
+        match &*self.last_tree.borrow() {
+            Some((id, tree)) if id == snapshot => Some(std::sync::Arc::clone(tree)),
+            _ => None,
+        }
+    }
+
+    /// Remember `tree` as the tree of the snapshot just committed.
+    pub(crate) fn remember_tree(&self, snapshot: &str, tree: crate::tree_store::StoredTree) {
+        *self.last_tree.borrow_mut() = Some((snapshot.to_string(), std::sync::Arc::new(tree)));
+    }
+
+    /// Forget the cached tree. Tests and the profile harness use it to measure a save
+    /// without the cache.
+    #[cfg(test)]
+    pub(crate) fn clear_last_tree(&self) {
+        *self.last_tree.borrow_mut() = None;
     }
 
     /// The handle's keyframe interval K, at least 1; 1 stores every tree whole.

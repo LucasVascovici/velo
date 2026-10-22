@@ -1,0 +1,74 @@
+# The quickstarts, run from built packages.
+#
+# Each page in docs/quickstart/ marks its runnable blocks. This workflow builds
+# the wheel and the Node tarball with the reusable Packages workflow, builds
+# velo-mcp, and runs every marked block through docs/quickstart/run.py in an
+# empty directory: the wheel in a fresh venv, the tarball with `npm install`,
+# the Rust page against this checkout's crates. A quickstart that rots fails
+# the build.
+name: Quickstarts
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/quickstart/**"
+      - "bindings/**"
+      - "crates/**"
+      - ".github/workflows/quickstarts.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "docs/quickstart/**"
+      - "bindings/**"
+      - "crates/**"
+      - ".github/workflows/quickstarts.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  packages:
+    uses: ./.github/workflows/packages.yml
+
+  quickstarts:
+    name: Run the quickstart pages
+    needs: packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: The extractor catches a broken block
+        run: python docs/quickstart/run.py --self-test
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: artifacts
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: node-*
+          path: artifacts
+          merge-multiple: true
+      - name: Build velo-mcp
+        run: cargo build --locked -p velo-mcp
+      - name: Run every page
+        run: |
+          set -euo pipefail
+          ls artifacts
+          # The linux wheel and tarball: the other platforms' files are in the
+          # same directory and would not install here.
+          wheel=$(ls artifacts/*manylinux*x86_64*.whl | head -n 1)
+          tgz=$(ls artifacts/velo-core-*-linux.tgz | head -n 1)
+          python docs/quickstart/run.py \
+            --wheel "$wheel" \
+            --tgz "$tgz" \
+            --velo-mcp target/debug/velo-mcp

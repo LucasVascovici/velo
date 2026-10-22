@@ -3,8 +3,8 @@ requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
-name = "velo"
-version = "0.1.0"
+name = "velo-core"
+dynamic = ["version"]
 description = "Python binding for the velo timeline engine"
 requires-python = ">=3.9"
 

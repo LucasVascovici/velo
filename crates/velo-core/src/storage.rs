@@ -504,10 +504,48 @@ impl ObjectStore<'_> {
         }
     }
 
+    /// Whether one object is present. Producers use [`missing`](Self::missing)
+    /// instead; this is kept for tests.
+    #[cfg(test)]
     pub(crate) fn contains(&self, hash: &str) -> bool {
         match self {
             ObjectStore::Files(f) => f.contains(hash),
             ObjectStore::Database(c) => db_contains(c, hash).unwrap_or(false),
+        }
+    }
+
+    /// The members of `hashes` the store does not hold, in input order.
+    ///
+    /// The files store asks the filesystem once per hash. The database store
+    /// asks once per chunk of at most [`MISSING_CHUNK`] hashes, so a large set
+    /// is a handful of queries rather than one round trip each.
+    pub(crate) fn missing(&self, hashes: &[&str]) -> Result<Vec<String>> {
+        match self {
+            ObjectStore::Files(f) => Ok(hashes
+                .iter()
+                .filter(|h| !f.contains(h))
+                .map(|h| (*h).to_string())
+                .collect()),
+            ObjectStore::Database(c) => {
+                let mut present = std::collections::HashSet::new();
+                for chunk in hashes.chunks(MISSING_CHUNK) {
+                    let marks = vec!["?"; chunk.len()].join(",");
+                    let mut stmt = c.prepare_cached(&format!(
+                        "SELECT hash FROM objects WHERE hash IN ({marks})"
+                    ))?;
+                    let rows = stmt.query_map(rusqlite::params_from_iter(chunk.iter()), |r| {
+                        r.get::<_, String>(0)
+                    })?;
+                    for row in rows {
+                        present.insert(row?);
+                    }
+                }
+                Ok(hashes
+                    .iter()
+                    .filter(|h| !present.contains(**h))
+                    .map(|h| (*h).to_string())
+                    .collect())
+            }
         }
     }
 
@@ -773,6 +811,10 @@ fn verify_frame(hash: &str, frame: &[u8], max: u64) -> Result<()> {
     }
     Ok(())
 }
+
+/// Most hashes bound in one statement by [`ObjectStore::missing`], matching
+/// SQLite's customary limit used elsewhere.
+const MISSING_CHUNK: usize = 500;
 
 fn db_contains(conn: &rusqlite::Connection, hash: &str) -> Result<bool> {
     Ok(conn.query_row(

@@ -12,13 +12,23 @@ private vulnerability reporting:
 
 <https://github.com/LucasVascovici/velo/security/advisories/new>
 
-What to expect:
+What to expect, and when: see [Disclosure and fix timeline](#disclosure-and-fix-timeline).
 
-- an acknowledgement within 7 days;
-- a fix or a written mitigation plan within 90 days;
-- coordinated disclosure: please do not publish details until a fix is
-  released or the 90 days have passed, whichever comes first. Reporters are
-  credited in the release notes unless they ask not to be.
+## Disclosure and fix timeline
+
+Days count from the day the report is received.
+
+- **7 days**: acknowledgement.
+- **14 days**: initial assessment (accepted or not, and a severity).
+- **30 days**: a fix or a written mitigation for high-severity issues. Lower
+  severities are fixed on a best-effort schedule, inside the 90 days.
+- **90 days at most**: coordinated disclosure. Please do not publish details
+  until a fix is released or 90 days have passed, whichever comes first.
+- **Credit**: reporters are credited in the release notes by default, unless
+  they ask not to be.
+
+Fixes ship as a patch release of the latest minor, per the Supported versions
+section, together with a GitHub Security Advisory.
 
 ## What velo defends against, and what it does not
 

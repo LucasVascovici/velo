@@ -471,6 +471,51 @@ impl WriteGuard<'_> {
         }
         crate::timing::lap("save_tree.validate");
 
+        // Which `Stored` objects need proving present. The first parent's tree
+        // is read once (and handed to `write_tree` below); an object it names
+        // is trusted, so only the rest are asked of the store.
+        let has_stored = spec
+            .entries
+            .iter()
+            .any(|e| matches!(e.content, Content::Stored(_)));
+        let parent_tree = match spec.parent {
+            Some(parent) if has_stored => {
+                let t = match self.repo().cached_tree(parent.as_str()) {
+                    Some(t) => t,
+                    None => std::sync::Arc::new(crate::tree_store::tree_of(
+                        self.conn(),
+                        parent.as_str(),
+                    )?),
+                };
+                crate::timing::lap("save_tree.load_parent");
+                Some(t)
+            }
+            _ => None,
+        };
+        if has_stored {
+            let known: std::collections::HashSet<&str> = parent_tree
+                .iter()
+                .flat_map(|t| t.values().map(|(h, _)| h.as_str()))
+                .collect();
+            let mut queued = std::collections::HashSet::new();
+            let unseen: Vec<&str> = spec
+                .entries
+                .iter()
+                .filter_map(|e| match &e.content {
+                    Content::Stored(o) => Some(o.as_str()),
+                    _ => None,
+                })
+                .filter(|o| !known.contains(o) && queued.insert(*o))
+                .collect();
+            crate::timing::count("save_tree.checked", unseen.len() as u64);
+            if !unseen.is_empty() {
+                let missing = objects.missing(&unseen)?;
+                if let Some(first) = missing.into_iter().next() {
+                    return Err(VeloError::MissingObject { hash: first });
+                }
+            }
+        }
+
         for (entry, path) in spec.entries.into_iter().zip(normalised) {
             if !seen.insert(path.clone()) {
                 return Err(VeloError::invalid(format!(
@@ -496,15 +541,12 @@ impl WriteGuard<'_> {
                 }
                 Content::Stored(object) => {
                     // Already-stored content is already normalised, so it is
-                    // taken as-is. But it must actually be there: recording a
-                    // snapshot that names a missing object would manufacture
-                    // corruption through the public API, discoverable only later
-                    // by `fsck`.
-                    if !objects.contains(object.as_str()) {
-                        return Err(VeloError::MissingObject {
-                            hash: object.into_string(),
-                        });
-                    }
+                    // taken as-is. It must actually be there, or the snapshot
+                    // would manufacture corruption through the public API; that
+                    // was proved above, before anything was written, for every
+                    // object the first parent does not reference. An object the
+                    // parent does reference is trusted: an intact repository
+                    // holds it, and one that does not is `fsck`'s to report.
                     object.into_string()
                 }
             };
@@ -534,6 +576,7 @@ impl WriteGuard<'_> {
                 author: spec.author,
                 timestamp_ms: spec.timestamp_ms,
             },
+            parent_tree.as_deref(),
         )
     }
 }
@@ -584,10 +627,17 @@ impl WriteGuard<'_> {
 
         let mut working: std::collections::BTreeMap<String, Slot> =
             std::collections::BTreeMap::new();
-        if let Some(parent) = spec.parent {
-            for (path, (hash, mode)) in crate::tree_store::tree_of(self.conn(), parent)? {
-                working.insert(path, Slot::Parent(hash, mode));
-            }
+        // Kept whole rather than consumed: its object hashes are the trusted
+        // set below, and `write_tree` reuses it instead of reading it again.
+        let parent_tree = match spec.parent {
+            Some(parent) => Some(match self.repo().cached_tree(parent) {
+                Some(t) => t,
+                None => std::sync::Arc::new(crate::tree_store::tree_of(self.conn(), parent)?),
+            }),
+            None => None,
+        };
+        for (path, (hash, mode)) in parent_tree.iter().flat_map(|t| t.iter()) {
+            working.insert(path.clone(), Slot::Parent(hash.clone(), *mode));
         }
         let in_parent: std::collections::HashSet<String> = working.keys().cloned().collect();
         crate::timing::lap("save_changes.load_parent");
@@ -660,6 +710,35 @@ impl WriteGuard<'_> {
         crate::timing::lap("save_changes.apply");
 
         let objects = self.repo().objects();
+        // Prove every `Stored` put before anything is written. An object the
+        // parent's tree names is trusted (taken from the tree as loaded, so a
+        // deleted or replaced path still counts); the rest are asked of the
+        // store in one batch.
+        {
+            let known: std::collections::HashSet<&str> = parent_tree
+                .iter()
+                .flat_map(|t| t.values().map(|(h, _)| h.as_str()))
+                .collect();
+            let mut queued = std::collections::HashSet::new();
+            let unseen: Vec<&str> = working
+                .values()
+                .filter_map(|slot| match slot {
+                    Slot::Put(TreeEntry {
+                        content: Content::Stored(o),
+                        ..
+                    }) => Some(o.as_str()),
+                    _ => None,
+                })
+                .filter(|o| !known.contains(o) && queued.insert(*o))
+                .collect();
+            crate::timing::count("save_changes.checked", unseen.len() as u64);
+            if !unseen.is_empty() {
+                let missing = objects.missing(&unseen)?;
+                if let Some(first) = missing.into_iter().next() {
+                    return Err(VeloError::MissingObject { hash: first });
+                }
+            }
+        }
         let mut tree: Vec<(String, String, i64)> = Vec::with_capacity(working.len());
         let mut written: Vec<(String, ObjectHash)> = Vec::new();
         for (path, slot) in working {
@@ -678,14 +757,8 @@ impl WriteGuard<'_> {
                             };
                             objects.put(&content)?
                         }
-                        Content::Stored(object) => {
-                            if !objects.contains(object.as_str()) {
-                                return Err(VeloError::MissingObject {
-                                    hash: object.into_string(),
-                                });
-                            }
-                            object.into_string()
-                        }
+                        // Proved above, or named by the parent's tree.
+                        Content::Stored(object) => object.into_string(),
                     };
                     written.push((path.clone(), ObjectHash::from_stored(object.clone())));
                     tree.push((path, object, mode));
@@ -706,6 +779,7 @@ impl WriteGuard<'_> {
                 author: spec.author,
                 timestamp_ms: spec.timestamp_ms,
             },
+            parent_tree.as_deref(),
         )?;
         Ok(Saved { snapshot, written })
     }
@@ -733,6 +807,7 @@ impl WriteGuard<'_> {
         tree: Vec<(String, String, i64)>,
         renames: &[(String, String)],
         id: Identity<'_>,
+        parent_tree: Option<&crate::tree_store::StoredTree>,
     ) -> Result<SnapshotId> {
         // The author joins the metadata *before* the id is computed, because
         // that is the point: it is part of identity, not a column beside it.
@@ -813,7 +888,7 @@ impl WriteGuard<'_> {
                     &tx,
                     snapshot.as_str(),
                     crate::tree_store::first_parent(parent),
-                    None,
+                    parent_tree,
                     &rows,
                     self.repo().keyframe_interval(),
                 )?;
@@ -865,6 +940,14 @@ impl WriteGuard<'_> {
         crate::timing::lap("save_tree.insert_rest");
         tx.commit()?;
         crate::timing::lap("save_tree.commit");
+
+        // The next save on top of this snapshot reads the tree from here rather
+        // than back out of the rows.
+        self.repo().remember_tree(
+            snapshot.as_str(),
+            tree.into_iter().map(|(p, o, m)| (p, (o, m))).collect(),
+        );
+        crate::timing::lap("save_tree.remember");
 
         // After the commit, and only for a row this call inserted: an idempotent
         // re-save changed nothing, so there is nothing to announce.

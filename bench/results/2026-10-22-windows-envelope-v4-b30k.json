@@ -1,0 +1,26 @@
+{
+ "note": "PARTIAL. 30,000 files x 20 snapshots, 1 file changed per snapshot, Windows 11, velo 6.2.0, Defender on. The harness's 590 s timeout killed the run at its gc step, so the first three saves (the first is the slow scan-and-hash), restore, fsck and sizes were not recorded. Only saves 4-20 (seconds) were captured from the console. The 100,000 x 20 attempt did not finish its first save inside 590 s.",
+ "date": "2026-10-22",
+ "files": 30000,
+ "snapshots": 20,
+ "saves_4_to_20_s": [
+  0.386,
+  0.396,
+  0.39,
+  0.412,
+  0.518,
+  0.426,
+  0.408,
+  0.385,
+  0.42,
+  0.413,
+  0.478,
+  0.407,
+  0.384,
+  0.384,
+  0.4,
+  0.467,
+  0.415
+ ],
+ "saves_median_s": 0.408
+}

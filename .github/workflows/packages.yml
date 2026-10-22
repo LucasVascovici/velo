@@ -47,6 +47,17 @@ jobs:
           command: build
           args: --release --out dist
           manylinux: ${{ matrix.manylinux }}
+      - name: Check the wheel version equals the workspace version
+        shell: bash
+        run: |
+          want=$(tr -d '\r' < Cargo.toml | sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p')
+          test -n "$want"
+          for w in bindings/python/dist/*.whl; do
+            case "$(basename "$w")" in
+              velo_core-"$want"-*) ;;
+              *) echo "wheel $w is not version $want"; exit 1 ;;
+            esac
+          done
       - uses: actions/upload-artifact@v4
         with:
           name: wheel-${{ matrix.name }}
@@ -134,6 +145,10 @@ jobs:
           version=$(node -p "require('./package.json').version")
           mv "velo-core-${version}.tgz" "velo-core-${version}-${{ matrix.name }}.tgz"
           ls velo-core-*.tgz
+          # The tarball must carry the workspace version, not a stale one.
+          want=$(tr -d '\r' < ../../Cargo.toml | sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p')
+          test -n "$want"
+          test "$version" = "$want" || { echo "tarball version $version != workspace $want"; exit 1; }
       - uses: actions/upload-artifact@v4
         with:
           name: node-${{ matrix.name }}
@@ -170,6 +185,6 @@ jobs:
           cd "$work"
           npm init -y
           npm install "$tgz"
-          # Copy the script in so `@velo/core` resolves from this directory.
+          # Copy the script in so `velo-core` resolves from this directory.
           cp "$GITHUB_WORKSPACE/bindings/node/examples/config_registry.mjs" .
           node config_registry.mjs

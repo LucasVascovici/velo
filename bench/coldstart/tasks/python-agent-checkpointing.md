@@ -1,6 +1,6 @@
 # Task: Python agent checkpointing
 
-Documentation given: `README.md`, `docs/cookbook/agent-checkpointing.md`.
+Documentation given: `README.md`, `docs/LIBRARY.md`, `docs/cookbook/agent-checkpointing.md`.
 Installed from: the Python wheel from the release.
 
 ## Task (give the agent only this sentence)

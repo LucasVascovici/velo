@@ -1,6 +1,6 @@
 # Task: Node config registry
 
-Documentation given: `README.md`, `docs/cookbook/config-registry.md`.
+Documentation given: `README.md`, `docs/LIBRARY.md`, `docs/cookbook/config-registry.md`.
 Installed from: the Node tarball from the release.
 
 ## Task (give the agent only this sentence)

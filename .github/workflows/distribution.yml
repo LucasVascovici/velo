@@ -1,0 +1,131 @@
+name: Distribution manifests
+
+# Generates the Homebrew formula, scoop manifest and winget manifests from a
+# published release and installs from each of them. Nothing is submitted: the
+# manifests are artifacts, and handing them to a tap, bucket or winget-pkgs is
+# the owner's (see packaging/README.md).
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build manifests for, for example v6.1.0
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download the release archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
+            --pattern 'velo-aarch64-*' --pattern 'velo-x86_64-*'
+          ls -l assets
+      - name: Unit-test the generator
+        working-directory: packaging
+        run: python3 -m unittest test_generate_manifests
+      - name: Generate the manifests
+        run: python3 packaging/generate_manifests.py --tag "$TAG" --assets assets --out manifests
+      - uses: actions/upload-artifact@v4
+        with:
+          name: manifests
+          path: manifests
+
+  brew:
+    needs: generate
+    runs-on: macos-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifests
+          path: manifests
+      - name: Install from the formula
+        run: |
+          brew tap-new local/velo
+          tap_dir="$(brew --repository local/velo)"
+          mkdir -p "$tap_dir/Formula"
+          cp manifests/homebrew/velo.rb "$tap_dir/Formula/velo.rb"
+          brew install local/velo/velo
+      - name: The installed binary reports the tag version
+        run: |
+          out="$(velo --version)"
+          echo "$out"
+          case "$out" in *"${TAG#v}"*) ;; *) echo "version mismatch for $TAG"; exit 1;; esac
+      - name: brew test
+        run: brew test local/velo/velo
+
+  scoop:
+    needs: generate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifests
+          path: manifests
+      - name: Install scoop
+        shell: pwsh
+        run: |
+          Invoke-RestMethod -Uri https://get.scoop.sh -OutFile install-scoop.ps1
+          .\install-scoop.ps1
+          "$HOME\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Install from the manifest
+        shell: pwsh
+        run: scoop install (Resolve-Path manifests/scoop/velo.json).Path
+      - name: The installed binary reports the tag version
+        shell: bash
+        run: |
+          out="$(velo --version)"
+          echo "$out"
+          case "$out" in *"${TAG#v}"*) ;; *) echo "version mismatch for $TAG"; exit 1;; esac
+
+  winget:
+    needs: generate
+    runs-on: windows-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: manifests
+          path: manifests
+      # Hosted runners often have no winget (it is not part of Windows Server),
+      # so the schema check below always runs and is the check that counts;
+      # `winget validate` runs in addition when the tool exists.
+      - name: winget validate, when winget exists
+        shell: pwsh
+        run: |
+          $dir = (Get-ChildItem -Directory manifests/winget/manifests/l/LucasVascovici/Velo/*).FullName
+          if (Get-Command winget -ErrorAction SilentlyContinue) {
+            winget validate --manifest $dir
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          } else {
+            Write-Host "winget is not on this runner; relying on the schema check"
+          }
+      - name: Check the manifests against the published winget schemas
+        shell: bash
+        run: |
+          python -m pip install --quiet pyyaml jsonschema
+          python - <<'EOF'
+          import glob, json, urllib.request, yaml, jsonschema
+          base = "https://raw.githubusercontent.com/microsoft/winget-cli/master/schemas/JSON/manifests"
+          files = glob.glob("manifests/winget/manifests/l/LucasVascovici/Velo/*/*.yaml")
+          assert len(files) == 3, files
+          for path in sorted(files):
+              doc = yaml.safe_load(open(path, encoding="utf-8"))
+              ver = doc["ManifestVersion"]
+              kind = {"version": "version", "installer": "installer",
+                      "defaultLocale": "defaultLocale"}[doc["ManifestType"]]
+              url = f"{base}/v{ver}/manifest.{kind}.{ver}.json"
+              schema = json.load(urllib.request.urlopen(url))
+              jsonschema.validate(doc, schema)
+              print("valid:", path, "against", url)
+          EOF
