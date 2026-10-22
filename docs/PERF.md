@@ -1007,6 +1007,42 @@ numbers. The gain would show where the objects check is not paid (a
 section 9 harness does not exercise and this run did not measure. The p95 column
 is dominated by the same noise and is not evidence either way.
 
+#### 22.3 repeat
+
+Repeated on 2026-10-22 now that `objects` is small (22.3-a). Same harness
+(`storage_v4_profile`, release, `timing`), **100,000 files**, K = 128, **40 saves, no
+keyframe**, one file changed per save, Windows, Defender on. "Cleared" sets
+`VELO_PROFILE_CLEAR_TREE_CACHE`, which empties the cache before every save; "on" leaves
+it. The four runs alternated on and cleared, nothing else heavy running on purpose.
+Raw lines (in run order: on, cleared, on, cleared):
+`bench/results/2026-10-22-last-tree-cache-windows.json`. The cache is keyed by
+snapshot id alone, held in `Repo`, and used by both `save_tree` and `save_changes`.
+
+| run | cache | median (ms) | p95 (ms) | `load_parent` (ms) | `insert_file_map` (ms) | `remember` (ms) |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 1 | on | 254.6 | 290.2 | 0.0 | 54.9 | 7.3 |
+| 1 | cleared | 281.0 | 412.0 | 83.7 | 40.7 | 7.0 |
+| 2 | on | 242.4 | 275.8 | 0.0 | 52.1 | 6.4 |
+| 2 | cleared | 324.3 | 409.2 | 96.5 | 44.0 | 7.3 |
+
+The cache removes the parent read (`load_parent` 84 to 97 ms goes to 0) and the
+whole-save median drops 26 ms in pair 1 and 82 ms in pair 2 (10% and 25%); p95 drops
+122 to 133 ms. Two stages grow when it is on: `insert_file_map` rises by about 12 ms
+(the cached tree is a fresh allocation the next save's delta diff walks cold) and
+`remember` costs 6 to 7 ms to build the map (it ran in the cleared runs too, so it is
+in both columns). The other stages (`objects`, `snapshot_id`, `validate`) wander by
+10 to 25 ms between runs; the pair-1 gap is of that order, so it is the weaker pair,
+but the sign agrees in both and `load_parent` is the largest stage now, which is the
+condition the 22.3 spec set.
+
+Verdict: **kept.** The median drops by more than the run-to-run noise in both pairs,
+and the parent-tree read was the largest stage. At 10,000 files the first attempt
+could not show this because `objects` was 95% of the save; it is about 25% now. The
+cache is a `RefCell` on `Repo`, so the handle stays `Send` and not `Sync`. It needs no
+`head_token`: a snapshot's tree is fixed by its id, so compact and repack change how
+rows are stored, not what the tree is, and a second handle's snapshot has a different
+id and misses. Tests are in `tests/last_tree_cache.rs`. Linux was not run.
+
 ### Group commit for an agent loop (20.10)
 
 Question: would an opt-in batch (`begin_batch` ... `commit`, N snapshots in one

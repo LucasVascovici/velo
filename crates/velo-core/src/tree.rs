@@ -480,7 +480,13 @@ impl WriteGuard<'_> {
             .any(|e| matches!(e.content, Content::Stored(_)));
         let parent_tree = match spec.parent {
             Some(parent) if has_stored => {
-                let t = crate::tree_store::tree_of(self.conn(), parent.as_str())?;
+                let t = match self.repo().cached_tree(parent.as_str()) {
+                    Some(t) => t,
+                    None => std::sync::Arc::new(crate::tree_store::tree_of(
+                        self.conn(),
+                        parent.as_str(),
+                    )?),
+                };
                 crate::timing::lap("save_tree.load_parent");
                 Some(t)
             }
@@ -570,7 +576,7 @@ impl WriteGuard<'_> {
                 author: spec.author,
                 timestamp_ms: spec.timestamp_ms,
             },
-            parent_tree.as_ref(),
+            parent_tree.as_deref(),
         )
     }
 }
@@ -624,10 +630,13 @@ impl WriteGuard<'_> {
         // Kept whole rather than consumed: its object hashes are the trusted
         // set below, and `write_tree` reuses it instead of reading it again.
         let parent_tree = match spec.parent {
-            Some(parent) => Some(crate::tree_store::tree_of(self.conn(), parent)?),
+            Some(parent) => Some(match self.repo().cached_tree(parent) {
+                Some(t) => t,
+                None => std::sync::Arc::new(crate::tree_store::tree_of(self.conn(), parent)?),
+            }),
             None => None,
         };
-        for (path, (hash, mode)) in parent_tree.iter().flatten() {
+        for (path, (hash, mode)) in parent_tree.iter().flat_map(|t| t.iter()) {
             working.insert(path.clone(), Slot::Parent(hash.clone(), *mode));
         }
         let in_parent: std::collections::HashSet<String> = working.keys().cloned().collect();
@@ -770,7 +779,7 @@ impl WriteGuard<'_> {
                 author: spec.author,
                 timestamp_ms: spec.timestamp_ms,
             },
-            parent_tree.as_ref(),
+            parent_tree.as_deref(),
         )?;
         Ok(Saved { snapshot, written })
     }
@@ -931,6 +940,14 @@ impl WriteGuard<'_> {
         crate::timing::lap("save_tree.insert_rest");
         tx.commit()?;
         crate::timing::lap("save_tree.commit");
+
+        // The next save on top of this snapshot reads the tree from here rather
+        // than back out of the rows.
+        self.repo().remember_tree(
+            snapshot.as_str(),
+            tree.into_iter().map(|(p, o, m)| (p, (o, m))).collect(),
+        );
+        crate::timing::lap("save_tree.remember");
 
         // After the commit, and only for a row this call inserted: an idempotent
         // re-save changed nothing, so there is nothing to announce.

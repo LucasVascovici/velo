@@ -12377,6 +12377,8 @@ mod blame_skip;
 #[cfg(test)]
 mod fsck_orphan_chain;
 #[cfg(test)]
+mod last_tree_cache;
+#[cfg(test)]
 mod message_fixes;
 #[cfg(test)]
 mod orphan_delta_repro;
