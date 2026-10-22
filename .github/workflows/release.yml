@@ -404,3 +404,14 @@ jobs:
     uses: ./.github/workflows/setup-velo.yml
     permissions:
       contents: read
+
+  release-verify:
+    name: Release verify
+    needs: publish
+    uses: ./.github/workflows/release-verify.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: read
+      id-token: write
+      attestations: read

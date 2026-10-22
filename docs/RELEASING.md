@@ -38,6 +38,18 @@ release with assets missing. A release made with `GITHUB_TOKEN` fires no
 run on tag pushes. If a run fails before `publish`, the draft stays; rerun the
 failed jobs (uploads use `--clobber`) or delete the draft and the tag.
 
+## Verify a release
+
+`release.yml` calls `release-verify.yml` after `publish`. It checks that every
+expected asset is attached (the list lives in `packaging/release_assets.py`),
+that the checksums and attestations verify with the commands in
+[INSTALL.md](INSTALL.md), and that each asset class installs and runs on a
+runner with no Rust toolchain. To check any release by hand:
+
+```bash
+gh workflow run release-verify.yml -f tag=vX.Y.Z
+```
+
 ## Channels
 
 ### crates.io
