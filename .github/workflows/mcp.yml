@@ -58,3 +58,6 @@ jobs:
             --method tools/call --tool-name velo_save_tree \
             --tool-arg branch=main --tool-arg message=inspector \
             --tool-arg 'files={"a.txt":"one\n"}'
+
+      - name: Documented host configs
+        run: python crates/velo-mcp/conformance/check_configs.py target/debug/velo-mcp target/debug/velo

@@ -44,6 +44,8 @@ jobs:
             target: x86_64-unknown-linux-musl
             artifact: velo
             package: velo-x86_64-linux.tar.gz
+            mcp_artifact: velo-mcp
+            mcp_package: velo-mcp-x86_64-linux.tar.gz
             musl_cc: musl-gcc
             apt_packages: musl-tools
 
@@ -54,6 +56,8 @@ jobs:
             target: aarch64-unknown-linux-musl
             artifact: velo
             package: velo-aarch64-linux.tar.gz
+            mcp_artifact: velo-mcp
+            mcp_package: velo-mcp-aarch64-linux.tar.gz
             musl_cc: musl-gcc
             apt_packages: musl-tools
 
@@ -62,6 +66,8 @@ jobs:
             target: aarch64-apple-darwin
             artifact: velo
             package: velo-aarch64-macos.tar.gz
+            mcp_artifact: velo-mcp
+            mcp_package: velo-mcp-aarch64-macos.tar.gz
 
           # ── macOS Intel (cross-compiled from the Apple Silicon runner) ────
           # Apple's own Clang ships both targets; no extra toolchain needed.
@@ -70,12 +76,16 @@ jobs:
             target: x86_64-apple-darwin
             artifact: velo
             package: velo-x86_64-macos.tar.gz
+            mcp_artifact: velo-mcp
+            mcp_package: velo-mcp-x86_64-macos.tar.gz
 
           # ── Windows x86-64 ────────────────────────────────────────────────
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: velo.exe
             package: velo-x86_64-windows.zip
+            mcp_artifact: velo-mcp.exe
+            mcp_package: velo-mcp-x86_64-windows.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -134,7 +144,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }} -p velo-cli -p velo-mcp
 
       # ── Package ────────────────────────────────────────────────────────────
       - name: Package (Unix)
@@ -144,6 +154,9 @@ jobs:
           test -f "$BINARY" || (echo "Binary not found at $BINARY" && exit 1)
           tar -czf "${{ matrix.package }}" \
             -C "target/${{ matrix.target }}/release" "${{ matrix.artifact }}"
+          MCP="target/${{ matrix.target }}/release/${{ matrix.mcp_artifact }}"
+          test -f "$MCP" || (echo "Binary not found at $MCP" && exit 1)
+          tar -czf "${{ matrix.mcp_package }}"             -C "target/${{ matrix.target }}/release" "${{ matrix.mcp_artifact }}"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -152,11 +165,16 @@ jobs:
           $binary = "target/${{ matrix.target }}/release/${{ matrix.artifact }}"
           if (-not (Test-Path $binary)) { throw "Binary not found: $binary" }
           Compress-Archive -Path $binary -DestinationPath "${{ matrix.package }}"
+          $mcp = "target/${{ matrix.target }}/release/${{ matrix.mcp_artifact }}"
+          if (-not (Test-Path $mcp)) { throw "Binary not found: $mcp" }
+          Compress-Archive -Path $mcp -DestinationPath "${{ matrix.mcp_package }}"
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.package }}
+          files: |
+            ${{ matrix.package }}
+            ${{ matrix.mcp_package }}
           fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

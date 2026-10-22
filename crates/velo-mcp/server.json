@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.LucasVascovici/velo-mcp",
+  "title": "velo",
+  "description": "Checkpoint layer for agents: save, restore, diff and inspect a velo repository over MCP.",
+  "version": "6.2.0",
+  "websiteUrl": "https://github.com/LucasVascovici/velo/releases/latest",
+  "repository": {
+    "url": "https://github.com/LucasVascovici/velo",
+    "source": "github",
+    "subfolder": "crates/velo-mcp"
+  }
+}
