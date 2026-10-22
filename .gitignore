@@ -10,5 +10,6 @@
 !bench/coldstart/*.py
 !tests/compat/*.py
 !crates/velo-mcp/conformance/*.py
+!docs/quickstart/*.py
 /target-lane*
 
