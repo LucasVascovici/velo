@@ -38,4 +38,5 @@ Every page in this directory, by who it is for. The front page is the
 - [CONTRIBUTING.md](../CONTRIBUTING.md), [SUPPORT.md](../SUPPORT.md) and [CODE_OF_CONDUCT.md](../CODE_OF_CONDUCT.md).
 - [INTERNALS.md](INTERNALS.md): what velo is, where it fits, the architecture and the repository layout.
 - [ROADMAP.md](ROADMAP.md): what is planned and what was decided.
+- [REVIEW_KIT.md](REVIEW_KIT.md): the external-review kit.
 - [CHANGELOG.md](../CHANGELOG.md): what changed, release by release.
