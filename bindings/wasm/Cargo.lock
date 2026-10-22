@@ -1252,7 +1252,6 @@ dependencies = [
  "sqlite-wasm-vfs",
  "velo-core",
  "wasm-bindgen",
- "wasm-bindgen-futures",
  "wasm-bindgen-test",
 ]
 

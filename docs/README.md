@@ -12,13 +12,13 @@ Every page in this directory, by who it is for. The front page is the
 
 - [LIBRARY.md](LIBRARY.md): the Rust library and the Python, Node, C and WebAssembly bindings, and the MCP server.
 - Five-minute quickstarts, each run in CI from the built packages: [Python agent checkpointing](quickstart/python-agent-checkpointing.md), [Node config registry](quickstart/node-config-registry.md), [Rust document editor](quickstart/rust-document-editor.md) and [MCP](quickstart/mcp.md).
-- [cookbook/](cookbook/README.md): worked recipes, starting with [agent checkpointing](cookbook/agent-checkpointing.md).
+- [cookbook/](cookbook/): worked recipes, starting with [agent checkpointing](cookbook/agent-checkpointing.md).
 - [report-sample.html](report-sample.html): a sample `velo report` of an agent run; a static page that works offline.
 
 ## App builders
 
 - [LIBRARY.md](LIBRARY.md): the per-language guides.
-- [cookbook/](cookbook/README.md): [config registry](cookbook/config-registry.md), [document editor](cookbook/document-editor.md).
+- [cookbook/](cookbook/): [config registry](cookbook/config-registry.md), [document editor](cookbook/document-editor.md).
 - [STABILITY.md](STABILITY.md): what is promised to stay stable.
 - [FORMAT.md](FORMAT.md): the on-disk and bundle formats.
 - [NAMES.md](NAMES.md): the naming rules for branches, tags and paths.
@@ -29,7 +29,7 @@ Every page in this directory, by who it is for. The front page is the
 - [COLLABORATION.md](COLLABORATION.md): clone, push, pull, diverging, bundles and hosting a remote.
 - [INTEGRITY.md](INTEGRITY.md): integrity checks, signing, and leaving velo and coming back.
 - [WINDOWS.md](WINDOWS.md): notes for Windows.
-- [demo/README.md](demo/README.md): the scripted demo, with its [transcript](demo/transcript.md).
+- [demo/](demo/): the scripted demo, with its [transcript](demo/transcript.md).
 
 ## Operators
 

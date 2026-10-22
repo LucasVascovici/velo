@@ -25,7 +25,6 @@ clap.workspace = true
 console.workspace = true
 getrandom.workspace = true
 serde_json.workspace = true
-similar.workspace = true
 tiny_http.workspace = true
 
 [dev-dependencies]
