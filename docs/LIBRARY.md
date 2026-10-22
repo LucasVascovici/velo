@@ -45,8 +45,7 @@ use velo_core::tree::{Change, SaveChanges};
 
 let mut save = SaveChanges::new(&branch, Some(&id), "edit notes");
 save.changes = vec![
-    Change::Put(TreeEntry::file("notes.md", b"hello again
-".to_vec())),
+    Change::Put(TreeEntry::file("notes.md", b"hello again\n".to_vec())),
     Change::Delete("old.md".to_string()),
 ];
 let next = repo.write()?.save_changes(save)?;
@@ -74,8 +73,7 @@ c = repo.save_tree(branch="main", message="c", parent=a, entries={"n.txt": "two\
 repo.history(from_=c, limit=5)
 # Only the changed files; the rest of the tree carries forward from `parent`.
 d = repo.save_changes(branch="main", message="d", parent=c,
-                      changes=[velo.Change.put("n.txt", "three
-"),
+                      changes=[velo.Change.put("n.txt", "three\n"),
                                velo.Change.delete("old.txt")]).snapshot
 repo.blame("n.txt", at=c).lines[0].origin.author.name
 ```
@@ -104,8 +102,7 @@ const next = await repo.saveChanges({
   branch: 'main',
   message: 'edit',
   parent: id,
-  changes: [{ op: 'put', path: 'a.txt', data: 'hello again
-' }],
+  changes: [{ op: 'put', path: 'a.txt', data: 'hello again\n' }],
 })
 await repo.history({ from: id, limit: 5 })
 await repo.blame('a.txt', { at: id })
