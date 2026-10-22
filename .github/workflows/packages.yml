@@ -50,7 +50,7 @@ jobs:
       - name: Check the wheel version equals the workspace version
         shell: bash
         run: |
-          want=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' Cargo.toml)
+          want=$(tr -d '\r' < Cargo.toml | sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p')
           test -n "$want"
           for w in bindings/python/dist/*.whl; do
             case "$(basename "$w")" in
@@ -146,7 +146,7 @@ jobs:
           mv "velo-core-${version}.tgz" "velo-core-${version}-${{ matrix.name }}.tgz"
           ls velo-core-*.tgz
           # The tarball must carry the workspace version, not a stale one.
-          want=$(sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\(.*\)"/\1/p' ../../Cargo.toml)
+          want=$(tr -d '\r' < ../../Cargo.toml | sed -n '/^\[workspace.package\]/,/^\[/s/^version *= *"\([^"]*\)".*/\1/p')
           test -n "$want"
           test "$version" = "$want" || { echo "tarball version $version != workspace $want"; exit 1; }
       - uses: actions/upload-artifact@v4
