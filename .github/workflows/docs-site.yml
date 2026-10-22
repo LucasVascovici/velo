@@ -1,0 +1,171 @@
+name: Docs site
+
+# The docs/ pages and the generated Python and Node API reference, built into
+# one static site on every PR and push, link-checked offline, and uploaded as a
+# Pages artifact. Deploying is a separate job that stays off until the owner
+# turns on Pages (source: GitHub Actions) and sets the repository variable
+# DOCS_PAGES=true; see docs/README.md.
+#
+# Links that leave docs/ (../README.md, ../CHANGELOG.md, ../bench/...) cannot
+# resolve inside the book, so the build rewrites them to GitHub blob URLs on a
+# staged copy of docs/. Non-markdown files (report-sample.html, demo/demo.sh,
+# quickstart/run.py) are copied into the built site, so those links resolve
+# and are checked too. The API reference is added after the link check: it is
+# generated HTML that is not ours to check.
+
+on:
+  push:
+    branches: ["**"]
+    paths:
+      - "docs/**"
+      - "bindings/**"
+      - ".github/workflows/docs-site.yml"
+  pull_request:
+    paths:
+      - "docs/**"
+      - "bindings/**"
+      - ".github/workflows/docs-site.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  MDBOOK_VERSION: "0.4.52"
+  BLOB_BASE: https://github.com/LucasVascovici/velo/blob/main
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build the extension and generate the site
+        shell: bash
+        working-directory: bindings/python
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install maturin pdoc
+          .venv/bin/maturin develop --release
+          .venv/bin/python -m pdoc velo -o ../../site/python
+          grep -q "save_tree" ../../site/python/velo.html
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-api-python
+          path: site/python
+
+  node:
+    name: Node reference
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and build
+        working-directory: bindings/node
+        run: |
+          npm ci
+          npm run build
+      - name: Generate the site
+        working-directory: bindings/node
+        run: npx typedoc
+      - uses: actions/upload-artifact@v4
+        with:
+          name: docs-api-node
+          path: site/node
+
+  build:
+    name: Build and check the site
+    needs: [python, node]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdbook
+        shell: bash
+        run: |
+          url="https://github.com/rust-lang/mdBook/releases/download/v${MDBOOK_VERSION}/mdbook-v${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          curl -fsSL "$url" | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP" >> "$GITHUB_PATH"
+
+      # mdbook only renders pages named in SUMMARY.md and silently drops the
+      # rest, so fail when a page is missing from it.
+      - name: Every page is in SUMMARY.md
+        shell: bash
+        run: |
+          status=0
+          while IFS= read -r f; do
+            [ "$f" = SUMMARY.md ] && continue
+            if ! grep -qF "($f)" docs/SUMMARY.md; then
+              echo "docs/$f is not listed in docs/SUMMARY.md"
+              status=1
+            fi
+          done < <(cd docs && find . -name '*.md' | sed 's|^\./||' | sort)
+          exit $status
+
+      - name: Stage docs and rewrite links that leave docs/
+        shell: bash
+        run: |
+          rm -rf site-src
+          cp -r docs site-src
+          # A page d directories below docs/ leaves it through d+1 "../".
+          find site-src -name '*.md' | while IFS= read -r f; do
+            rel="${f#site-src/}"
+            depth=$(printf '%s' "$rel" | tr -cd '/' | wc -c)
+            up=""
+            for _ in $(seq 0 "$depth"); do up="$up\.\./"; done
+            sed -i -E "s#\]\(${up}#](${BLOB_BASE}/#g" -- "$f"
+          done
+
+      - name: Build the book
+        run: mdbook build site-src
+
+      - name: Copy the non-markdown assets
+        shell: bash
+        run: |
+          (cd docs && find . -type f ! -name '*.md' ! -name book.toml | while IFS= read -r f; do
+            mkdir -p "../book/$(dirname "$f")"
+            cp "$f" "../book/$f"
+          done)
+
+      - name: Check links offline
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --offline --no-progress --root-dir "${{ github.workspace }}/book" book
+          fail: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs-api-python
+          path: book/api/python
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: docs-api-node
+          path: book/api/node
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: book
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && vars.DOCS_PAGES == 'true'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

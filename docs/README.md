@@ -47,3 +47,7 @@ Every page in this directory, by who it is for. The front page is the
 - [ROADMAP.md](ROADMAP.md): what is planned and what was decided.
 - [REVIEW_KIT.md](REVIEW_KIT.md): the external-review kit.
 - [CHANGELOG.md](../CHANGELOG.md): what changed, release by release.
+
+## This site
+
+These pages and the generated Python and Node API reference are built into a static site by `.github/workflows/docs-site.yml` on every pull request, with an offline link check. Links that leave `docs/` (the front README, CHANGELOG, `bench/`, `examples/`) are rewritten to GitHub URLs in the built site; the non-markdown files here are copied in unchanged. Publishing is the owner's switch: turn on Pages (Settings, Pages, source: GitHub Actions) and set the repository variable `DOCS_PAGES` to `true`; the next push to `main` deploys.
