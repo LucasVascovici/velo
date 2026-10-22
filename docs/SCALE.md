@@ -5,9 +5,60 @@ metadata grows as files x snapshots even when one file changes per snapshot
 (see [FORMAT.md](FORMAT.md) section 11.4). This page says how far that has been
 measured, how fast velo is there, where it degrades, and what to do about it.
 
-## The envelope
+## Measured on 6.x (format v4)
 
-**Tested to 10,000 files x 2,000 snapshots and to 100,000 files x 200
+These are the current numbers. Everything below the "5.x" headings is history
+from the v3 storage and is kept, losses included.
+
+Measured on **Windows 11 only** (Intel Core i7-1370P, Defender real-time
+scanning on, no exclusions), velo 6.2.0, the real release CLI through
+`bench/scale/scale.py`, one run, one file changed per snapshot, 2026-10-22.
+Raw data: `bench/results/2026-10-22-windows-envelope-v4-a.json` and
+`...-v4-b30k.json`. The full-size shapes were **not** re-run on 6.x, and no
+Linux run was made; the commands for both are under "Commands for the owner".
+
+| Metric | 10,000 files x 200 snapshots |
+| --- | --- |
+| first save (every file new) | 55.5 s |
+| save, first 10% median / p95 | 234 / 329 ms |
+| save, last 10% median / p95 | 231 / 324 ms |
+| save growth, last / first median | 0.99x |
+| `status` (clean) | 170 ms |
+| `history` / `history --file` | 50 / 63 ms |
+| `restore` to snapshot 100 / back to tip | 263 / 203 ms |
+| `gc` / `fsck` | 0.56 s / 0.93 s |
+| open (`velo branches`) | 42 ms |
+| `.velo` / `velo.db` | 8.6 MiB / 7.0 MiB |
+| `file_map` rows | 20,002 |
+
+What this shows: at 200 snapshots the save time does not grow with history
+(0.99x, against 1.60x on 5.3.0 at 2,000 snapshots), and a save of 10,000 files
+with one change is about 0.23 s, against 1.4 s on 5.3.0 at the same file count.
+The sizes are not comparable with the envelope's 5.3 GiB: that was 2,000
+snapshots, this is 200, and v4 no longer writes a full `file_map` row set per
+snapshot. The 0.99x is over a history ten times shorter than the 5.x one, so
+it does not prove the 2,000-snapshot curve is flat. The first save was slower
+than 5.3.0's 31.5 s (55.5 s here); it is one run under Defender, which moved
+that number by a factor of two between 5.2.0 and 5.3.0 as well, so it is not
+a regression finding either way.
+
+**100,000 files x 20 snapshots did not complete.** The first save did not
+finish inside the 590 s limit on this machine (Defender scanning; see
+[WINDOWS.md](WINDOWS.md)), so nothing is reported for that size. A reduced
+**30,000 files x 20 snapshots** run did finish its saves: saves 4-20 had a
+median of 0.41 s (range 0.38-0.52 s, flat). The harness timeout killed that
+run at its `gc` step, so its first-save time, restore, `fsck` and sizes were
+not recorded (the JSON is marked partial). Treat the 30,000-file row as a
+save-latency observation only; the 100,000-file claim is untested on 6.x.
+
+The retention run (`default_policy_at_a_reduced_18_10_shape`) was not re-run in
+the time available; the 19.4 figures (416 s apply, 165 s `gc`, 193 s vacuum)
+remain pre-v4 and are unconfirmed for 6.x.
+
+## 5.x (format v3): the envelope
+
+
+**On 5.x, tested to 10,000 files x 2,000 snapshots and to 100,000 files x 200
 snapshots: 20 million `file_map` rows (a 5.3 GiB `velo.db`) in both cases, on
 Windows 11 and on Linux, one file changed per snapshot.**
 
@@ -15,7 +66,7 @@ Inside that envelope every command completed. Beyond it nothing is claimed:
 velo has not been measured above 20 million rows, 100,000 files or 2,000
 snapshots. The limits that show up inside it are below.
 
-## Results
+## 5.x (format v3): results
 
 Every number is a run of the real release CLI, so it includes process start,
 database open and disk I/O. Each cell has two runs side by side: **5.2.0**
@@ -37,7 +88,7 @@ The two days are not a controlled comparison of code: the same machine gave
 shadow git a different time on the two days with no code change (see the
 cookbook), and no repeat was run to separate the code from the day.
 
-### 10,000 files x 2,000 snapshots (`envelope-a`)
+### 5.x (format v3): 10,000 files x 2,000 snapshots (`envelope-a`)
 
 | Metric | Win 5.2.0 | Win 5.3.0 | Linux 5.2.0 | Linux 5.3.0 |
 | --- | --- | --- | --- | --- |
@@ -55,7 +106,7 @@ cookbook), and no repeat was run to separate the code from the day.
 | `velo.db` | 5,338.6 MiB | 5,343.7 MiB | 5,353.9 MiB | 5,354.8 MiB |
 | `file_map` rows | 20,002,000 | 20,002,000 | 20,002,000 | 20,002,000 |
 
-### 100,000 files x 200 snapshots (`envelope-b`)
+### 5.x (format v3): 100,000 files x 200 snapshots (`envelope-b`)
 
 | Metric | Win 5.2.0 | Win 5.3.0 | Linux 5.2.0 | Linux 5.3.0 |
 | --- | --- | --- | --- | --- |
@@ -253,6 +304,49 @@ by path (1,500,150 entries), and `velo fsck` is healthy on both
 ([`2026-10-20-windows-repack.json`](../bench/results/2026-10-20-windows-repack.json)).
 This is a reduced shape; the 5.18 GiB envelope repository (10,000 by 2,000) was
 not repacked in this run.
+
+## Commands for the owner
+
+Run from the repository root with `cargo build --release -p velo-cli` done.
+Each full run takes hours on Windows; run it in a terminal, not under a
+time-limited tool.
+
+```text
+# Full envelope, Windows (Defender on; say so with --defender-note if excluded)
+python bench/scale/scale.py --preset envelope-a --out bench/results/<date>-windows-envelope-v4-a-full.json
+python bench/scale/scale.py --preset envelope-b --out bench/results/<date>-windows-envelope-v4-b-full.json
+
+# Full envelope, Linux (WSL2 from an ext4 path, or a Linux box)
+python3 bench/scale/scale.py --velo target/release/velo --preset envelope-a --out bench/results/<date>-linux-envelope-v4-a-full.json
+python3 bench/scale/scale.py --velo target/release/velo --preset envelope-b --out bench/results/<date>-linux-envelope-v4-b-full.json
+
+# Reduced 100,000-file shape that did not finish here (run with no 590 s limit)
+python bench/scale/scale.py --files 100000 --snapshots 20 --out bench/results/<date>-windows-envelope-v4-b-reduced.json
+
+# Full retention run (the ignored test, default K, at its full size)
+cargo test --release -p velo-core --lib default_policy_at_a_reduced_18_10_shape -- --ignored --nocapture
+```
+
+The test lives in `crates/velo-core/src/tests/retention_scale.rs`.
+
+Migrate and repack the 5.18 GiB envelope repository, then compare ids and
+trees with a copy taken before (copy first; this is the 5.x-written
+repository from the 2026-10-16 retention run):
+
+```text
+cp -r <envelope repo> <envelope repo>-copy
+cd <envelope repo>
+time velo branches            # first open by the new engine: the migration
+time velo repack --dry-run
+time velo repack
+velo fsck
+cd <envelope repo>-copy && velo fsck
+```
+
+Then open both with the Python binding and compare `history(branch="main")`
+ids and `tree_at(id)` for every snapshot; they must be identical. Record the
+migration time, the repack time and the `.velo` size before and after. The same
+steps are in `bench/README.md`.
 
 ## Method
 
