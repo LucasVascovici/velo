@@ -80,7 +80,10 @@ def launch(server, binary, repo):
 
 
 def main():
-    binary, velo = sys.argv[1], sys.argv[2]
+    # Absolute, because both programs are started with a temporary repository
+    # as their working directory, where a relative path no longer resolves.
+    binary = str(pathlib.Path(sys.argv[1]).resolve())
+    velo = str(pathlib.Path(sys.argv[2]).resolve())
     docs = readme_blocks()
     files = sorted(CONFIGS.glob("*.json"))
     assert files, "no configs"
