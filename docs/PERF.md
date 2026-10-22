@@ -1354,3 +1354,69 @@ snapshots). Keep the losses.
 | push 50 snapshots | | | 1.5 s |
 | pull 50 snapshots | | | 0.8 s |
 | parallel 4 writers, 10 saves each | | | no budget |
+
+## 11. Phase 22.4: who-wrote after the blame skip
+
+Measured on 2026-10-22, Windows 11, Defender real-time scanning on, tip
+`9eadba2` (which includes 22.4-a, `6514e98`, the blame skip and the decoded-text
+cache). The agent benchmark ran at full size, 1,000 files by 500 steps, seed 1,
+`--only "velo,shadow git"`; the script checks every answer against the known
+last writer and aborts on a mismatch. Raw results:
+`bench/results/2026-10-22-windows-agent-who-wrote.json`.
+
+```text
+python bench/agent/agent_bench.py --steps 500 --files 1000 \
+    --only "velo,shadow git" --out bench/results/2026-10-22-windows-agent-who-wrote.json
+```
+
+### Who wrote this line, 20 queries
+
+| system | who wrote x20 (s) | against shadow git |
+|---|---:|---:|
+| shadow git (`git blame -L`, one line each) | 3.77 | 1.00x |
+| velo (blame of the whole file, one line read) | 3.29 | 0.87x |
+| velo, before 22.4-a (Phase 20 re-run, same harness) | 9.30 | 3.1x (git 3.01) |
+
+Verdict: **met**. Velo is at 0.87x of shadow git against the 1.5x budget. The
+Phase 20 figure was 3.1x. Velo's number is noisy on this machine: a second
+velo-only run of the same repository gave 1.32 s for the 20 queries (0.35x), so
+the first run, which is the one committed, is the conservative one. No
+remaining-cost-by-stage table is needed since the target is met.
+
+### Blame output, before against after
+
+The same repository (velo-only agent run, seed 1, 1,000 files, 500 steps) was
+opened by a build of `dd100bb` (the parent of 22.4-a) and by a build of the
+tip. For 20 files, spread evenly over the sorted paths, the full per-line
+origin (the step number in the origin snapshot's message) was dumped for every
+line and the two dumps compared byte for byte: **identical**. Whole-file blame
+of those 20 files took 6.25 s before and 3.02 s after on that repository.
+
+### Depth against plain decode
+
+The same repository, medians of repeated reads through the Python binding
+(`bindings/python`, release build). A path is read from a snapshot at a given
+depth in the delta chain (the keyframe interval is 128, so snapshot 128 is a
+keyframe again):
+
+| operation | ms |
+|---|---:|
+| `read_object` of one text (the store read) | 0.107 |
+| `read_object` plus UTF-8 decode | 0.073 |
+| `read_file_at`, depth 0 (keyframe) | 0.20 |
+| `read_file_at`, depth 1 | 0.27 |
+| `read_file_at`, depth 64 | 2.26 |
+| `read_file_at`, depth 127 | 4.48 |
+| `tree_at`, depth 0 / depth 127 | 0.88 / 5.62 |
+
+The engine harness (`storage_v4_profile`, 1,000 files, K = 128, 140 saves)
+agrees: `read_file_at` 0.118 ms at depth 0, 1.17 ms at depth 64, 2.52 ms at
+depth 127.
+
+Conclusion: plain decode of a stored text costs about 0.1 ms, so the 0.35 ms
+per read seen in the Phase 20 profile was not decode alone; the delta-chain
+depth is what grows, roughly 0.035 ms per level of chain, and a depth-127 read
+costs 20 to 40 times a depth-0 read. Blame reads objects (a flat store read, no
+chain), but its per-visit tree lookups walk the chain, which is why skipping
+visits whose object equals a parent's (22.4-a) is what paid off. Nothing beyond
+that cache is justified by these numbers, now that the 1.5x budget is met.
