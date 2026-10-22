@@ -50,3 +50,13 @@ npx -y @modelcontextprotocol/inspector --cli target/debug/velo-mcp \
 ```
 
 Both must exit 0.
+
+## Against a release archive
+
+`.github/workflows/release-smoke.yml` runs the Python and TypeScript clients,
+the Inspector calls and `check_configs.py` against the `velo-mcp` extracted
+from the release archive (Linux and Windows, an empty directory, no Rust
+toolchain). `release.yml` calls it with the run's own artifacts before
+publishing; `quickstarts.yml` can be dispatched with `release_tag` to run it
+against a published release. The `uvx` and `npx` forms are not tested: no
+registry package exists yet.

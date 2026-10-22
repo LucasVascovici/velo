@@ -371,11 +371,23 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
             cli-dist/SHA256SUMS.txt cli-dist/SHA256SUMS.txt.sigstore.json
 
+  # -- Run velo-mcp and the quickstarts from this run's own archives ---------
+  # Before publish, so a broken archive is caught before users see it. The
+  # archives come from the `cli-*`, `wheel-*` and `node-*` run artifacts.
+  release-smoke:
+    name: Release smoke
+    needs: [build, bindings]
+    uses: ./.github/workflows/release-smoke.yml
+    with:
+      source: artifacts
+    permissions:
+      contents: read
+
   # -- Make the release public: the only place draft turns false -------------
   # Add every job that attaches or checks something to this `needs:` list.
   publish:
     name: Publish release
-    needs: [build, sbom, attach-bindings, checksums]
+    needs: [build, sbom, attach-bindings, checksums, release-smoke]
     runs-on: ubuntu-latest
     permissions:
       contents: write
