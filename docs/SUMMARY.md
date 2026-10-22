@@ -36,6 +36,8 @@
 - [Windows](WINDOWS.md)
 - [Scale](SCALE.md)
 - [Performance](PERF.md)
+- [Production checklist](PRODUCTION.md)
+- [Releasing](RELEASING.md)
 
 # Reference
 

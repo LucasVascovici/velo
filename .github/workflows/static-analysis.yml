@@ -70,7 +70,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-geiger --locked
       - name: Unsafe inventory
-        run: cargo geiger --forbid-only
+        # geiger needs a package, not the virtual workspace manifest.
+        run: |
+          for m in crates/*/Cargo.toml; do
+            echo "== $m"
+            cargo geiger --forbid-only --manifest-path "$m"
+          done
 
   # Miri is not used: velo-ffi's tests call into bundled C SQLite, which Miri
   # cannot execute. AddressSanitizer covers the same memory errors natively.
