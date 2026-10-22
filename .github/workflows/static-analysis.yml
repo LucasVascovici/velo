@@ -74,7 +74,7 @@ jobs:
         run: |
           for m in crates/*/Cargo.toml; do
             echo "== $m"
-            cargo geiger --forbid-only --manifest-path "$m"
+            cargo geiger --forbid-only --manifest-path "$PWD/$m"
           done
 
   # Miri is not used: velo-ffi's tests call into bundled C SQLite, which Miri
