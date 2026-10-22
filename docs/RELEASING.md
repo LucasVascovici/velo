@@ -29,6 +29,15 @@ platform, the `velo-mcp` archives, the wheels and Node tarballs from
 `packages.yml`, the SBOM, and the checksum files (CLI assets only). Verify them
 as described in [INSTALL.md](INSTALL.md).
 
+The release is created as a **draft** first, and every job attaches to that
+draft. Only the final `publish` job, which needs `build`, `sbom`,
+`attach-bindings` and `checksums`, sets `draft=false`, so users never see a
+release with assets missing. A release made with `GITHUB_TOKEN` fires no
+`release: published` event, so `release.yml` itself calls `distribution.yml`
+(with the tag) and `setup-velo.yml` after `publish`. `setup-velo.yml` does not
+run on tag pushes. If a run fails before `publish`, the draft stays; rerun the
+failed jobs (uploads use `--clobber`) or delete the draft and the tag.
+
 ## Channels
 
 ### crates.io

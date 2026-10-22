@@ -27,10 +27,34 @@ jobs:
           fi
           echo "✔ Version $CARGO_VERSION matches tag"
 
+  # ── Create the release as a draft, once ────────────────────────────────────
+  # Every job below attaches to this draft. It stays invisible to users (and
+  # fires no `release` event) until the final `publish` job flips it, so nobody
+  # ever sees a release with some of its assets missing.
+  draft:
+    name: Create draft release
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create the draft release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A rerun finds the draft from the first attempt: keep it.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists"
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+
   # ── Build and publish binaries for every supported platform ───────────────
   build:
     name: Build · ${{ matrix.target }}
-    needs: verify
+    needs: draft
     runs-on: ${{ matrix.os }}
     permissions:
       contents: write
@@ -180,19 +204,28 @@ jobs:
             ${{ matrix.mcp_package }}
 
       - name: Upload release asset
-        uses: softprops/action-gh-release@v2
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            "${{ matrix.package }}" "${{ matrix.mcp_package }}"
+
+      # The checksums job reads these, not the draft release: `gh release
+      # download` is not relied on to find a draft.
+      - name: Keep the archives for the checksums job
+        uses: actions/upload-artifact@v4
         with:
-          files: |
+          name: cli-${{ matrix.target }}
+          path: |
             ${{ matrix.package }}
             ${{ matrix.mcp_package }}
-          fail_on_unmatched_files: true
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if-no-files-found: error
 
   # ── Software bill of materials (CycloneDX JSON) for velo-cli ──────────────
   sbom:
     name: SBOM
-    needs: verify
+    needs: draft
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -222,17 +255,22 @@ jobs:
           subject-path: ${{ env.SBOM_FILE }}
 
       - name: Attach SBOM to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: ${{ env.SBOM_FILE }}
-          fail_on_unmatched_files: true
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber "$SBOM_FILE"
+
+      - name: Keep the SBOM for the checksums job
+        uses: actions/upload-artifact@v4
+        with:
+          name: cli-sbom
+          path: ${{ env.SBOM_FILE }}
+          if-no-files-found: error
 
   # -- Wheels and Node tarballs: built and install-tested by packages.yml ----
   bindings:
     name: Bindings
-    needs: verify
+    needs: draft
     uses: ./.github/workflows/packages.yml
 
   # -- Attach the bindings, with checksums, to the release -------------------
@@ -240,7 +278,7 @@ jobs:
   # Nothing is published to a registry.
   attach-bindings:
     name: Attach bindings
-    needs: bindings
+    needs: [draft, bindings]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -283,16 +321,14 @@ jobs:
         run: cosign sign-blob --yes --bundle SHA256SUMS-bindings.txt.sigstore.json SHA256SUMS-bindings.txt
 
       - name: Attach to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            bindings-dist/*.whl
-            bindings-dist/*.tgz
-            bindings-dist/SHA256SUMS-bindings.txt
-            bindings-dist/SHA256SUMS-bindings.txt.sigstore.json
-          fail_on_unmatched_files: true
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            bindings-dist/*.whl bindings-dist/*.tgz \
+            bindings-dist/SHA256SUMS-bindings.txt \
+            bindings-dist/SHA256SUMS-bindings.txt.sigstore.json
 
   # -- Checksums over the CLI and MCP archives and the SBOM, signed ----------
   checksums:
@@ -304,14 +340,11 @@ jobs:
       id-token: write
     steps:
       - name: Download the CLI assets
-        shell: bash
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          mkdir cli-dist
-          gh release download "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" \
-            --pattern 'velo-*.tar.gz' --pattern 'velo-*.zip' \
-            --pattern 'velo-*.cdx.json' --dir cli-dist
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: cli-dist
+          merge-multiple: true
       - name: Write checksums
         shell: bash
         working-directory: cli-dist
@@ -331,11 +364,43 @@ jobs:
         working-directory: cli-dist
         run: cosign sign-blob --yes --bundle SHA256SUMS.txt.sigstore.json SHA256SUMS.txt
       - name: Attach to the release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            cli-dist/SHA256SUMS.txt
-            cli-dist/SHA256SUMS.txt.sigstore.json
-          fail_on_unmatched_files: true
+        shell: bash
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
+            cli-dist/SHA256SUMS.txt cli-dist/SHA256SUMS.txt.sigstore.json
+
+  # -- Make the release public: the only place draft turns false -------------
+  # Add every job that attaches or checks something to this `needs:` list.
+  publish:
+    name: Publish release
+    needs: [build, sbom, attach-bindings, checksums]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false
+
+  # -- Jobs that consume the published release --------------------------------
+  # A release made with GITHUB_TOKEN triggers no other workflow, so the
+  # `release: published` trigger never fires; call them from here instead.
+  distribution:
+    name: Distribution manifests
+    needs: publish
+    uses: ./.github/workflows/distribution.yml
+    with:
+      tag: ${{ github.ref_name }}
+    permissions:
+      contents: read
+
+  setup-velo:
+    name: setup-velo
+    needs: publish
+    uses: ./.github/workflows/setup-velo.yml
+    permissions:
+      contents: read
