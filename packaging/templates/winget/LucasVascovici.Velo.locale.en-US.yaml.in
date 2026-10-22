@@ -1,0 +1,13 @@
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.defaultLocale.@@SCHEMA@@.schema.json
+PackageIdentifier: @@WINGET_ID@@
+PackageVersion: @@VERSION@@
+PackageLocale: en-US
+Publisher: Lucas Vascovici
+PublisherUrl: https://github.com/LucasVascovici
+PackageName: Velo
+PackageUrl: @@HOMEPAGE@@
+License: MIT
+LicenseUrl: @@REPO_URL@@/blob/main/LICENSE
+ShortDescription: @@DESCRIPTION@@
+ManifestType: defaultLocale
+ManifestVersion: @@SCHEMA@@
