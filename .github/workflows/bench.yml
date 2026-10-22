@@ -55,6 +55,7 @@ jobs:
           PRESET: ${{ inputs.preset }}
           FILES: ${{ inputs.files }}
           SNAPSHOTS: ${{ inputs.snapshots }}
+        shell: bash
         run: |
           args=(--preset "$PRESET")
           if [ -n "$FILES" ]; then args+=(--files "$FILES"); fi
@@ -90,6 +91,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run the retention test
+        shell: bash
         run: |
           cargo test --release -p velo-core --features timing --lib \
             default_policy_at_ten_thousand_files_and_two_thousand_snapshots \
@@ -132,6 +134,7 @@ jobs:
           .venv/bin/pip install maturin
           .venv/bin/maturin develop --release --manifest-path bindings/python/Cargo.toml
       - name: Run agent benchmark
+        shell: bash
         run: |
           .venv/bin/python bench/agent/agent_bench.py --workdir "$RUNNER_TEMP/velo-agent-bench" --out agent-results.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
