@@ -1,0 +1,35 @@
+name: Feature request
+description: Suggest a change or ask a question about direction.
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: The problem first, before the solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would you like velo to do?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What do you do today, or what else did you consider?
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where would it show up?
+      options:
+        - CLI
+        - Rust library
+        - Python
+        - Node
+        - MCP server
+        - On-disk format or bundles
+        - Documentation
+    validations:
+      required: true

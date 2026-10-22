@@ -1,0 +1,57 @@
+name: Bug report
+description: Something velo did that it should not have, or failed to do.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security vulnerabilities do not belong here; see SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: velo version
+      description: Output of `velo --version`, or the package version for a binding.
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system, architecture and file system if unusual (network share, WSL, container).
+    validations:
+      required: true
+  - type: dropdown
+    id: binding
+    attributes:
+      label: How you use velo
+      options:
+        - CLI
+        - Rust library (velo-core)
+        - Python (velo-core)
+        - Node (velo-core)
+        - MCP server
+        - WASM
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Commands or code, starting from an empty directory if you can.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: fsck
+    attributes:
+      label: Output of `velo fsck`
+      description: Run it in the affected repository.
+      render: text
+    validations:
+      required: true

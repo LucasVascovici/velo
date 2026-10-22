@@ -1175,19 +1175,7 @@ Remote-tracking history is stored on internal branches named
 
 ## Development
 
-Build with `cargo build --workspace` and test with `cargo test --workspace`; the CI jobs in `.github/workflows/ci.yml` are the full gate.
-
-```bash
-cargo build --release       # binary at target/release/velo
-cargo test                  # unit + integration tests
-./workflow_sim.sh           # end-to-end, two-developer workflow simulation
-```
-
-The test suite has three layers: unit and property tests (including randomised
-3-way-merge and object-store round-trip properties), CLI integration tests that
-drive the real binary and assert its output, and `workflow_sim.sh` — a scripted
-simulation of a long-lived project that exercises every command in sequence and
-ends by verifying the repository with `fsck`.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ---
 
