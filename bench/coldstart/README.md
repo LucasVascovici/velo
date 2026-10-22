@@ -15,10 +15,10 @@ Four wedges, one card each in [`tasks/`](tasks):
 
 | Wedge | Card | Documentation given besides README.md |
 | --- | --- | --- |
-| Agent checkpointing, Python | [`python-agent-checkpointing.md`](tasks/python-agent-checkpointing.md) | `docs/cookbook/agent-checkpointing.md` |
-| Config registry, Node | [`node-config-registry.md`](tasks/node-config-registry.md) | `docs/cookbook/config-registry.md` |
-| Document editor, Rust | [`rust-document-editor.md`](tasks/rust-document-editor.md) | `docs/cookbook/document-editor.md` |
-| MCP client | [`mcp-client.md`](tasks/mcp-client.md) | the README's "MCP server" section only |
+| Agent checkpointing, Python | [`python-agent-checkpointing.md`](tasks/python-agent-checkpointing.md) | `docs/LIBRARY.md`, `docs/cookbook/agent-checkpointing.md` |
+| Config registry, Node | [`node-config-registry.md`](tasks/node-config-registry.md) | `docs/LIBRARY.md`, `docs/cookbook/config-registry.md` |
+| Document editor, Rust | [`rust-document-editor.md`](tasks/rust-document-editor.md) | `docs/LIBRARY.md`, `docs/cookbook/document-editor.md` |
+| MCP client | [`mcp-client.md`](tasks/mcp-client.md) | `docs/LIBRARY.md`'s "MCP server" section only |
 
 The task is done from an installed wheel or tarball, not from a checkout. The
 documents the agent receives must show `save_changes`, `velo report` and
@@ -27,10 +27,11 @@ documents the agent receives must show `save_changes`, `velo report` and
 ## Before you start
 
 1. Pick the release tag to test (`vX.Y.Z`).
-2. Confirm the README and cookbooks at that tag mention `save_changes`,
+2. Confirm the pages handed over at that tag (`README.md`, `docs/LIBRARY.md`,
+   `docs/CLI.md`, `docs/COLLABORATION.md` and the cookbooks) mention `save_changes`,
    `velo report` and `velo sync`:
-   `git show vX.Y.Z:README.md | grep -c -E "save_changes|velo report|velo sync"`
-   and the same for the cookbook the wedge uses. A missing term is itself a
+   `for f in README.md docs/LIBRARY.md docs/CLI.md docs/COLLABORATION.md docs/cookbook/*.md; do git show vX.Y.Z:$f | grep -c -E "save_changes|velo report|velo sync"; done`
+   and check that the pages the wedge uses are among those that match. A missing term is itself a
    finding: write it in the friction log as a doc defect.
 3. Make one fresh directory per wedge, outside any checkout, for example
    `~/coldstart/<wedge>/work`. Do not run an agent inside a clone of this
@@ -64,10 +65,10 @@ npm install ~/coldstart/assets/velo-core-<version>-<platform>.tgz
 ```
 
 The Rust wedge uses the crate the agent adds to its own `Cargo.toml`, as the
-README says to; do not hand it a path into a checkout. The CLI the checker
+README and `docs/INSTALL.md` say to; do not hand it a path into a checkout. The CLI the checker
 needs comes from `cargo install --git https://github.com/LucasVascovici/velo
 --tag vX.Y.Z velo-cli`, or the release binary. The MCP wedge needs `velo-mcp`
-built from the same tag, as the README says.
+built from the same tag, as `docs/LIBRARY.md` says.
 
 Install the checker's `velo` outside the agent's reach if you can, so the agent
 is not helped by `--help` on a binary it was not given. If the agent was given
@@ -77,15 +78,15 @@ the CLI (the Rust and MCP wedges may need it), say so in the friction log.
 
 Exactly these, copied into its empty working directory:
 
-- `README.md` at the tag,
+- `README.md` and `docs/LIBRARY.md` at the tag,
 - the one cookbook for its wedge (the MCP wedge gets no cookbook; it gets only
-  the README, whose MCP section is the documentation),
+  README.md and docs/LIBRARY.md, whose MCP section is the documentation),
 - the task card's one-sentence task, pasted as the prompt. The card's
   acceptance section is for the checker and is not shown to the agent.
 
-It does not receive: the source tree, `docs/` other than its cookbook,
+It does not receive: the source tree, `docs/` other than `docs/LIBRARY.md` and its cookbook,
 `ARCHITECTURE.md`, example scripts, or any hint beyond the sentence. Linked
-pages in the README are not available to it; if it asks for one, that is a
+pages beyond those are not available to it; if it asks for one, that is a
 finding. Let it use the web only if you are testing that on purpose, and record
 it.
 

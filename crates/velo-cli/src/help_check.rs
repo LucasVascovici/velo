@@ -193,7 +193,7 @@ const DOC_PLACEHOLDERS: &[(&str, &str)] = &[
 /// Doc lines that are intentionally not valid commands, as
 /// `(file suffix, exact line, reason)`.
 const DOC_ALLOWLIST: &[(&str, &str, &str)] = &[(
-    "README.md",
+    "COLLABORATION.md",
     "velo sync   (or by hand: velo fetch, velo merge origin/main, velo save \"Merge origin/main\", velo push)",
     "sample `velo status` output, a hint line rather than a command",
 )];

@@ -10,7 +10,7 @@ promise checkable instead of aspirational.
 | The `velo-core` and `velo-merge` public API follows semver. | The `semver` CI job runs `cargo-semver-checks` against the previous release tag. One known exception, `Bundle.signatures`, is described under "Not stable". |
 | The repository format: a build refuses a repository written by a newer format, migrates older ones forward only, and [FORMAT.md](FORMAT.md) is normative. | The `corpus` CI job and `tests/corpus/`. |
 | Bundle wire versions 2, 3 and 4 are read forever. | The `corpus` job: `tests/corpus/bundles/` holds a v2 bundle, v3 bundles written by v4.0.0, v5.0.0, v5.1.0 and v5.1.2, and signed, bad-signature and unknown-algorithm v4 bundles. |
-| Exit codes (see the [Exit codes table](../README.md#exit-codes)). | The CLI black-box tests in `crates/velo-cli/tests/cli.rs`. |
+| Exit codes (see the [Exit codes table](CLI.md#exit-codes)). | The CLI black-box tests in `crates/velo-cli/tests/cli.rs`. |
 
 The golden repositories cover formats 2 and 3 (`repos/v4.0.0`, `v5.0.0`,
 `v5.1.0`, `v5.1.2`). Each is opened by the current build, its contents compared
