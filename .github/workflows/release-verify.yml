@@ -150,6 +150,16 @@ jobs:
           # Hide any preinstalled toolchain so nothing can build from source.
           sudo rm -f /usr/local/bin/cargo /usr/local/bin/rustc 2>/dev/null || true
           rm -rf "$HOME/.cargo/bin"
+          # Runner images ship more than one toolchain (macOS also has Homebrew's
+          # rustup under /opt/homebrew/opt/rustup/bin), so remove every copy left
+          # on PATH rather than a fixed list of locations.
+          for tool in cargo rustc; do
+            while p=$(command -v "$tool"); do
+              sudo rm -f "$p" 2>/dev/null || rm -f "$p" || true
+              hash -r
+              if [ "$(command -v "$tool")" = "$p" ]; then echo "cannot remove $p"; exit 1; fi
+            done
+          done
           if command -v cargo; then echo "cargo is still on PATH"; exit 1; fi
       - name: Download and extract
         shell: bash
@@ -314,7 +324,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bin=$(ls "$PWD"/bin/velo-mcp "$PWD"/bin/velo-mcp.exe 2>/dev/null | head -1)
+          # Not `ls a b`: the missing one makes ls exit 2, which pipefail turns
+          # into a failed step before the server is started.
+          bin="$PWD/bin/velo-mcp"
+          [ -f "$bin" ] || bin="$PWD/bin/velo-mcp.exe"
+          test -f "$bin"
           store="$(mktemp -d)/verify.velo"
           cat > client.py <<'PY'
           import json
