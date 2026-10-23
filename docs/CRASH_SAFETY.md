@@ -179,6 +179,21 @@ differs by filesystem and mount options), so it is documented here instead.
   that exists (for instance the branch tip). An empty `PARENT` reads as no
   position; a truncated one names an id that does not exist, as above.
 
+## The WAL bound
+
+A `Repo` held open for a long run would otherwise carry its WAL at the
+high-water mark of the 1000-page autocheckpoint, about 4 MB. Each connection
+sets `journal_size_limit` to 1 MiB, and when a write guard is released (after
+its transactions have committed, with the repository lock still held) the
+library truncates the WAL with `PRAGMA wal_checkpoint(TRUNCATE)` if the file
+has grown past 2 MiB. The checkpoint is never inside a transaction, gives up at
+once when a reader holds the log, and ignores any error: a WAL that is not
+truncated is only larger. A crash before the checkpoint leaves a WAL that
+SQLite replays on the next open; a crash during or after it leaves either that
+WAL or a database that already holds the pages. The crash scenarios above run
+unchanged and pass with the bound in place. Nothing is stored differently, so
+FORMAT.md is untouched.
+
 ## Running the harness
 
 ```bash

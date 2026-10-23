@@ -1595,3 +1595,29 @@ MB (9 to 13% of 6.88 MB), taking the ratio from 2.10x to about 1.85x. The
 objects (3.11 MB, 45% of the at-rest total) are the content itself, about the
 size of git's whole store, so what remains is the price of keeping every
 snapshot's tree queryable in SQLite.
+
+### After the WAL bound (23.5)
+
+Each connection now sets `journal_size_limit` to 1 MiB, and a released write
+guard truncates the WAL with `wal_checkpoint(TRUNCATE)` once the file passes
+2 MiB (it gives up at once if a reader holds the log). `wal_autocheckpoint`
+stays at 1000 pages. The agent benchmark, same Windows machine and binding
+build, same session, `--only "velo,shadow git"`, 500 steps, 1,000 files; the
+before run is the same tree with the bound switched off. Raw result:
+`bench/results/2026-10-windows-agent-wal-bound.json`.
+
+| | open handle | at rest | shadow git | open / git | at rest / git | 500 steps |
+|---|---|---|---|---|---|---|
+| 22.5 (section above, its own harness) | 11.16 MB | 6.88 MB | 3.27 MB | 3.41x | 2.10x | not measured |
+| 23.5 bound off (this harness) | 11.9 MB | 7.7 MB | 4.54 MB | 2.62x | 1.70x | 9.0 s |
+| 23.5 bound on | 9.2 MB (9,159,314 B) | 7.6 MB (7,638,954 B) | 4.54 MB | **2.02x** | 1.68x | 7.9 s |
+
+The harness's shadow git is larger than section 12's 3.27 MB (a different
+workload and seed), so compare the ratios within a row, not across the first
+row. With the bound the open-handle figure falls by 2.7 MB, the WAL's share of
+the directory, to 2.02x shadow git: inside the 3x target. The WAL no longer
+exceeds about 2 MiB plus one save; the new `wal_bound` tests check that after
+every one of 300 saves. Save time on the agent loop did not regress (7.9 s
+against 9.0 s; the difference is run-to-run noise on this machine, not a gain
+to claim). The perf baseline is not updated here. The crash harness
+(`--features failpoints --test crash`) passes unchanged.

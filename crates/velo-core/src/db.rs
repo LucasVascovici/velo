@@ -333,7 +333,50 @@ fn apply_pragmas(conn: &Connection) -> Result<()> {
     conn.pragma_update(None, "cache_size", -65_536_i64)?;
     conn.pragma_update(None, "mmap_size", 268_435_456_i64)?;
     conn.pragma_update(None, "temp_store", "MEMORY")?;
+    conn.pragma_update(None, "journal_size_limit", WAL_SIZE_LIMIT_BYTES)?;
     Ok(())
+}
+
+/// After a checkpoint SQLite resets the WAL and keeps the file at most this
+/// large, instead of at the high-water mark of the busiest transaction. It is
+/// a per-connection setting, not stored in the file, so it is not a format
+/// change.
+pub(crate) const WAL_SIZE_LIMIT_BYTES: i64 = 1 << 20;
+
+/// A WAL larger than this after a commit is checkpointed and truncated. The
+/// default autocheckpoint copies pages back but leaves the file at its
+/// high-water mark; on a handle held open for a whole agent run that is dead
+/// disk an embedder sees.
+pub(crate) const WAL_TRUNCATE_BYTES: u64 = 2 << 20;
+
+/// Truncate the WAL of a long-lived handle once it has grown past
+/// [`WAL_TRUNCATE_BYTES`]. Call it after a commit, never inside a transaction.
+///
+/// It is best effort: a reader holding the WAL makes the checkpoint report
+/// busy and nothing more happens; any other failure is ignored too, because
+/// the commit it follows is already durable and a WAL that is not truncated is
+/// merely larger, never wrong. A crash on either side of the checkpoint leaves
+/// a WAL that SQLite replays.
+pub(crate) fn bound_wal(conn: &Connection, db_path: &Path) {
+    if db_path.as_os_str().is_empty() {
+        return;
+    }
+    let mut wal = db_path.as_os_str().to_owned();
+    wal.push("-wal");
+    let big = std::fs::metadata(std::path::PathBuf::from(wal))
+        .map(|m| m.len() > WAL_TRUNCATE_BYTES)
+        .unwrap_or(false);
+    if !big {
+        return;
+    }
+    // A TRUNCATE checkpoint waits on the busy handler for readers to finish,
+    // which would stall every save behind a long read. Give up at once instead
+    // and restore rusqlite's default five seconds afterwards.
+    let _ = conn.busy_timeout(std::time::Duration::ZERO);
+    let _ = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+        r.get::<_, i64>(0)
+    });
+    let _ = conn.busy_timeout(std::time::Duration::from_millis(5000));
 }
 
 #[inline]
