@@ -8,6 +8,27 @@ This file starts at the format v2 break. Earlier releases are in the git history
 
 ## 6.2.1
 
+Phase 23: gather the evidence.
+
+### Added
+
+- **23.0-a Turn PRODUCTION.md line 6 red and audit every other green line.** PRODUCTION.md now counts 6 green, 5 red. Line 6 is red, with the four missing SCALE.md measurements listed. A new "How a line turns green" section has one audit bullet for each of lines 1-6 and 8. Line 7's 22.3 row is marked partial.
+- **23.0-b Open 6.2.1: versions, lockfiles, semver baseline v6.2.0.** Moved the workspace, bindings, lockfiles (velo-* lines only), index.js and server.json to 6.2.1. The semver baseline is now v6.2.0, STABILITY.md is updated, and CHANGELOG has an empty 6.2.1 heading. `cargo build --workspace --locked` passes.
+- **23.1-a Publish a release only when every asset is attached; run distribution from the release.** release.yml now creates a draft release in a new `draft` job. Every upload goes to it with `gh release upload --clobber`. A final `publish` job sets draft=false. `distribution.yml` and `setup-velo.yml` are called from `release.yml` after `publish`, and `setup-velo.yml` no longer runs on tag pushes.
+- **23.1-b A release-verify workflow that installs every asset class on clean runners.** Added `del history` and `del repo` at the end of the `with` block in check.py. Added `actions/setup-python@v5` (3.12) as the first step of the `wheel` and `mcp` jobs.
+- **23.1-c Check v6.2.0: assets, checksums, attestations, generated manifests.** v6.2.0 has all 23 assets, and both SHA256SUMS files and three attestations (CLI linux, velo-mcp linux, CLI windows) verify with the INSTALL.md commands as written. The distribution dispatch was refused by the permission classifier, so the manifest rows are recorded as not run. The result file is pushed.
+- **23.2-a Cold-start kit: threshold written first, sandbox preparation, transcript audit, ranked friction log.** The audit now expands `~/` paths and runs them through the sandbox and checkout checks. `bindings/<x>/tests/` is added to INVALID_PATTERNS. Three tests cover an absolute path under a fake checkout, the `~` form, and a bindings tests path.
+- **23.2-b Make the pages handed to cold-start agents show save_changes, velo report and velo sync.** Restored the backslash-n escapes in the Rust, Python and Node snippets in docs/LIBRARY.md. I checked the new snippets in the two cookbook pages and found no stray line breaks.
+- **23.3-a docs/SIMULATION.md: a tracked findings record of every simulation run.** Added docs/SIMULATION.md with a summary table, one section per run (runs 1-3 from the 5.1.x changelog, 6.0.1 pilot and full), and a planned Run six section. Indexed it in docs/README.md and docs/SUMMARY.md.
+- **23.4-a Scale and agent harness: partial results survive, a 100k x 500 ratio preset, runner identity, at-rest disk.** Added `shell: bash` to the scale, retention and agent steps in bench.yml, so GitHub runs them with pipefail and a failure upstream of `tee` fails the job.
+- **23.4-b Linux 500-step agent run on a GitHub runner; dispatch the Linux scale envelope.** I dispatched bench.yml for suite=scale on main with presets envelope-a and envelope-b, without waiting for them. I recorded run ids 39868500578 and 39868510865 with preset, ref, commit and dispatch time.
+- **23.4-d Windows: CLI one-file save at 100,000 files over 500 snapshots, ratio to history-0.** I ran the 100,000-file, 500-snapshot preset detached in the background, and it finished with partial: false. I committed its JSON and rewrote the PERF.md section 6 subsection from that run.
+- **23.4-c Collect the Linux scale runs and rewrite the SCALE.md headline, every cell labelled.** Added a "Detached full runs" block to docs/SCALE.md. It has Start-Process commands for Windows envelope-a, envelope-b and the full retention test, and a nohup form for Linux retention. The "Not run on 6.x" entries now point to that block.
+- **23.5-b Bound the WAL on a long-lived handle, and measure open-handle against at-rest disk.** Connections set journal_size_limit to 1 MiB, and a released WriteGuard truncates the WAL past 2 MiB with a zero busy timeout. Agent-bench open-handle disk went from 2.62x to 2.02x shadow git with no save-time regression. The failpoints crash suite passes.
+- **23.6-a Run velo-mcp and the quickstarts from release assets in CI, before a release is published.** Added a reusable release-smoke.yml that runs the MCP clients, host configs and the mcp, python and node quickstart pages against extracted release archives on Linux and Windows with no toolchain. release.yml calls it with run artifacts before publish, and publish needs it. quickstarts.yml has a release_tag dispatch input that runs it against a published release.
+- **23.7-a Record the adapter and git-mirror decisions in the roadmap.** In docs/ROADMAP.md, the git-mirroring row is now "Deferred until asked", with the reason and trigger. A new agent-framework adapter row states the build rule. Both rows are dated 2026-10-23.
+- **23.8-a Prepare the ask: brief and note forms for an outside reader and an outside consumer.** Added bench/outside/ with a copy-paste brief (about 150 words), the release pointer to docs/INSTALL.md, reader and consumer notes forms, and a findings file saying no outside person has used velo yet, with comparison columns against the cold-start friction logs. Docs only.
+
 ## 6.2.0
 
 Phase 22: put it in front of a stranger.
