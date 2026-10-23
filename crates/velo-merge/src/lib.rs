@@ -58,9 +58,13 @@ pub struct ConflictHunk {
     /// First line in ancestor covered by this conflict (0-indexed, exclusive end).
     pub ancestor_start: usize,
     pub ancestor_end: usize,
+    /// Up to three lines before the hunk that both sides agree on, as the
+    /// merge would write them. Not the ancestor's lines: those may have been
+    /// moved or deleted by both sides. Never crosses another conflict.
     pub context_before: Vec<String>,
     pub ours: Vec<String>,
     pub theirs: Vec<String>,
+    /// Up to three agreed lines after the hunk, as for `context_before`.
     pub context_after: Vec<String>,
     pub decision: Option<Decision>,
 }
@@ -373,11 +377,23 @@ pub fn clean_changes_theirs(ancestor: &str, ours: &str, theirs: &str) -> Vec<Cle
 /// Compute the conflicting hunks — the regions both sides changed differently.
 /// Non-overlapping changes are auto-merged and never surface here.
 pub fn compute_conflict_hunks(ancestor: &str, ours: &str, theirs: &str) -> Vec<ConflictHunk> {
-    let anc: Vec<&str> = ancestor.lines().collect();
+    const CONTEXT: usize = 3;
     let segments = diff3_segments(ancestor, ours, theirs);
 
+    // The text both sides agree on: what a non-conflicting segment merges to.
+    // Context is taken from it rather than from the ancestor, because a line
+    // the ancestor has next to a conflict may be one both sides moved or
+    // deleted, and shown beside each side it would read as part of that side.
+    let agreed = |seg: &Segment| -> Option<Vec<String>> {
+        match seg {
+            Segment::Stable(lines) | Segment::OursOnly(lines) => Some(lines.clone()),
+            Segment::TheirsOnly { lines, .. } => Some(lines.clone()),
+            Segment::Conflict { .. } => None,
+        }
+    };
+
     let mut hunks = Vec::new();
-    for seg in &segments {
+    for (i, seg) in segments.iter().enumerate() {
         if let Segment::Conflict {
             anc_start,
             anc_end,
@@ -385,23 +401,38 @@ pub fn compute_conflict_hunks(ancestor: &str, ours: &str, theirs: &str) -> Vec<C
             theirs,
         } = seg
         {
-            let id = hunks.len();
-            let ctx_start = anc_start.saturating_sub(3);
-            let ctx_end = (anc_end + 3).min(anc.len());
+            // Agreed lines up to the previous conflict, nearest last.
+            let mut before: Vec<String> = Vec::new();
+            for s in segments[..i].iter().rev() {
+                let Some(lines) = agreed(s) else { break };
+                for l in lines.into_iter().rev() {
+                    before.push(l);
+                    if before.len() == CONTEXT {
+                        break;
+                    }
+                }
+                if before.len() == CONTEXT {
+                    break;
+                }
+            }
+            before.reverse();
+            // Agreed lines up to the next conflict.
+            let mut after: Vec<String> = Vec::new();
+            for s in &segments[i + 1..] {
+                let Some(lines) = agreed(s) else { break };
+                after.extend(lines.into_iter().take(CONTEXT - after.len()));
+                if after.len() == CONTEXT {
+                    break;
+                }
+            }
             hunks.push(ConflictHunk {
-                id,
+                id: hunks.len(),
                 ancestor_start: *anc_start,
                 ancestor_end: *anc_end,
-                context_before: anc[ctx_start..*anc_start]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
+                context_before: before,
                 ours: ours.clone(),
                 theirs: theirs.clone(),
-                context_after: anc[*anc_end..ctx_end]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect(),
+                context_after: after,
                 decision: None,
             });
         }
