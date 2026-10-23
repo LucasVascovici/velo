@@ -1,0 +1,4 @@
+# Linux scale envelope runs (bench.yml, suite=scale), dispatched without waiting.
+# run id | preset | ref | commit | dispatch time
+39868500578 | envelope-a | main | dd15186951b811b3dea173f702dad34d8731d1de | 2026-10-22T22:56:46Z
+39868510865 | envelope-b | main | dd15186951b811b3dea173f702dad34d8731d1de | 2026-10-22T22:56:52Z

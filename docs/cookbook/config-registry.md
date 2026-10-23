@@ -40,10 +40,22 @@ No file content is read or copied; the new snapshot points at the same objects.
 History stays append-only: the bad 1.2.0 is still there, and the script asserts
 both that the rolled-back content equals 1.1.0 and that 1.2.0 is intact.
 
+To change one file of a large config tree, `save_changes` sends only that file
+and carries the rest forward from the parent:
+
+```python
+repo.save_changes(branch="registry", message="publish 1.1.1", parent=parent,
+                  changes=[velo.Change.put(PATH, body)],
+                  meta={"registry": {"version": "1.1.1", "approved_by": "alice"}})
+```
+
 ## Audit
 
 `repo.history(branch="registry")` plus `snapshot_meta` gives the full trail:
 1.0.0 and 1.1.0 and 1.2.0 approved by alice, then the rollback approved by bob.
+
+For a reviewer without code, `velo report --branch registry -o registry.html`
+writes the same trail as a self-contained HTML page.
 
 ## Tamper evidence
 

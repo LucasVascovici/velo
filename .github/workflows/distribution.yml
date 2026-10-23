@@ -7,6 +7,14 @@ name: Distribution manifests
 on:
   release:
     types: [published]
+  # Called by release.yml after `publish`: a release made with GITHUB_TOKEN
+  # does not fire `release: published`.
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build manifests for, for example v6.2.0
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -17,7 +25,7 @@ permissions:
   contents: read
 
 env:
-  TAG: ${{ github.event.inputs.tag || github.event.release.tag_name }}
+  TAG: ${{ inputs.tag || github.event.release.tag_name }}
 
 jobs:
   generate:

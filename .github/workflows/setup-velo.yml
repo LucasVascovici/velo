@@ -3,8 +3,13 @@ name: setup-velo
 on:
   pull_request:
     paths: ["setup-velo/**", ".github/workflows/setup-velo.yml"]
+  # Branches only: a tag push races the release workflow and found no asset.
+  # release.yml calls this after `publish`, which runs the `latest` check.
   push:
+    branches: ["**"]
     paths: ["setup-velo/**", ".github/workflows/setup-velo.yml"]
+
+  workflow_call:
 
 permissions:
   contents: read

@@ -39,6 +39,7 @@ Every page in this directory, by who it is for. The front page is the
 - [SCALE.md](SCALE.md): the measured scale envelope.
 - [PERF.md](PERF.md): where the time goes.
 - [PRODUCTION.md](PRODUCTION.md): the production checklist, each line green with its evidence or red with its reason.
+- [SIMULATION.md](SIMULATION.md): what each team simulation run exercised, found and fixed, and the plan for the next one.
 - [SECURITY.md](../SECURITY.md): reporting a vulnerability.
 
 ## Contributors

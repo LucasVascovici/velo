@@ -13,6 +13,7 @@ on:
     branches: [main]
     paths:
       - "docs/quickstart/**"
+      - "bench/coldstart/**"
       - "bindings/**"
       - "crates/**"
       - ".github/workflows/quickstarts.yml"
@@ -20,10 +21,17 @@ on:
     branches: [main]
     paths:
       - "docs/quickstart/**"
+      - "bench/coldstart/**"
       - "bindings/**"
       - "crates/**"
       - ".github/workflows/quickstarts.yml"
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Also run velo-mcp and the pages from this published release's assets, for example v6.2.0"
+        required: false
+        type: string
+        default: ""
 
 env:
   CARGO_TERM_COLOR: always
@@ -46,6 +54,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: The cold-start kit's own tests
+        run: python -m unittest discover -s bench/coldstart -p 'test_*.py'
       - name: The extractor catches a broken block
         run: python docs/quickstart/run.py --self-test
       - uses: actions/download-artifact@v4
@@ -72,3 +82,15 @@ jobs:
             --wheel "$wheel" \
             --tgz "$tgz" \
             --velo-mcp target/debug/velo-mcp
+
+  # The same pages and MCP checks, from a published release's archives instead
+  # of CI builds. Runs only when a tag is given at dispatch.
+  release-assets:
+    name: From the release assets
+    if: github.event_name == 'workflow_dispatch' && inputs.release_tag != ''
+    uses: ./.github/workflows/release-smoke.yml
+    with:
+      source: release
+      tag: ${{ inputs.release_tag }}
+    permissions:
+      contents: read

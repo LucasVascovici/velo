@@ -103,7 +103,7 @@ GitHub identity. No key is involved.
 ```bash
 # Checksums: SHA256SUMS.txt covers the CLI and MCP archives and the SBOM,
 # SHA256SUMS-bindings.txt covers the wheels and Node tarballs.
-sha256sum -c --ignore-missing SHA256SUMS.txt
+sha256sum -c --ignore-missing SHA256SUMS.txt   # shasum -a 256 -c on macOS, with every named file present
 # PowerShell
 (Get-FileHash velo-x86_64-windows.zip -Algorithm SHA256).Hash.ToLower()  # compare with SHA256SUMS.txt
 

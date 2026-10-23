@@ -37,6 +37,7 @@
 - [Scale](SCALE.md)
 - [Performance](PERF.md)
 - [Production checklist](PRODUCTION.md)
+- [Simulation runs](SIMULATION.md)
 - [Releasing](RELEASING.md)
 
 # Reference

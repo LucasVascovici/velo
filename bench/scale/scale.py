@@ -23,17 +23,25 @@ PRESETS = {
     "small": (1_000, 50),
     "envelope-a": (10_000, 2_000),
     "envelope-b": (100_000, 200),
+    "ratio-100k": (100_000, 500),
 }
 FILES_PER_DIR = 100
 FILE_BYTES = 200
 EXE = ".exe" if os.name == "nt" else ""
+# Per-command wall-clock limit in seconds; None means no limit. Set by
+# --command-timeout so a hung velo process cannot stall a detached run.
+COMMAND_TIMEOUT = None
 
 
 def run(velo, args, cwd, check=True):
     """Run one velo command; return (seconds, stdout)."""
     t0 = time.perf_counter()
-    p = subprocess.run([str(velo), *args], cwd=cwd, capture_output=True,
-                       text=True, encoding="utf-8", errors="replace")
+    try:
+        p = subprocess.run([str(velo), *args], cwd=cwd, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace",
+                           timeout=COMMAND_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        sys.exit(f"velo {' '.join(args)} exceeded --command-timeout {COMMAND_TIMEOUT}s")
     dt = time.perf_counter() - t0
     if check and p.returncode != 0:
         sys.exit(f"velo {' '.join(args)} failed ({p.returncode}):\n{p.stdout}\n{p.stderr}")
@@ -80,7 +88,52 @@ def cpu_name():
     return platform.processor() or "unknown"
 
 
+def history0_ratio(saves):
+    """One-file-save ratio against the first one-file saves.
+
+    saves[0] is the initial full save and is excluded. history-0 is the
+    median of the next 10 saves; the tail is the median of the last 10% of
+    saves. Returns (history0_median_s, ratio), or (None, None) when there
+    are too few saves to separate the two.
+    """
+    one_file = saves[1:]
+    if len(one_file) < 2:
+        return None, None
+    base = statistics.median(one_file[:10])
+    k = max(1, len(saves) // 10)
+    return base, statistics.median(saves[-k:]) / base
+
+
+def machine_info(defender_note=None):
+    """Identify the machine that produced a result."""
+    m = {
+        "os": platform.system(),
+        "platform": platform.platform(),
+        "cpu": cpu_name(),
+        "logical_cores": os.cpu_count(),
+    }
+    if os.name == "nt":
+        m["defender_note"] = defender_note or "not provided: assume real-time scanning is ON"
+    elif defender_note:
+        m["defender_note"] = defender_note
+    return m
+
+
+def write_partial(out, res, phases, partial):
+    """Rewrite `out` atomically with what has been measured so far.
+
+    A killed run therefore leaves valid JSON naming the finished phases.
+    """
+    doc = dict(res)
+    doc["partial"] = partial
+    doc["completed_phases"] = list(phases)
+    tmp = f"{out}.tmp"
+    Path(tmp).write_text(json.dumps(doc, indent=2))
+    os.replace(tmp, out)
+
+
 def main():
+    global COMMAND_TIMEOUT
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--velo", default=f"target/release/velo{EXE}")
     ap.add_argument("--files", type=int)
@@ -95,7 +148,10 @@ def main():
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--defender-note", default=None,
                     help="Windows: free text, e.g. 'workdir excluded from real-time scanning'")
+    ap.add_argument("--command-timeout", type=float, default=None, metavar="SECONDS",
+                    help="kill any single velo command after this long (default: no limit)")
     a = ap.parse_args()
+    COMMAND_TIMEOUT = a.command_timeout
 
     files, snaps = PRESETS[a.preset or "small"]
     files = a.files or files
@@ -132,6 +188,13 @@ def main():
         f.write_bytes(content(rng, p, 0))
 
     run(velo, ["init", "--objects", a.objects], work)
+    res = {"machine": machine_info(a.defender_note)}
+    phases = []
+
+    def phase(name):
+        phases.append(name)
+        write_partial(a.out, res, phases, True)
+
     saves, hashes = [], []
     for s in range(snaps):
         if s:
@@ -145,16 +208,20 @@ def main():
         hashes.append(m.group(1))
         if s % max(1, snaps // 20) == 0:
             log(f"save {s + 1}/{snaps}: {dt:.3f}s")
+            res["save_all_s"] = saves
+            phase("first_save" if s == 0 else f"saves_{s + 1}")
 
     k = max(1, snaps // 10)
-    res = {
+    res.update({
         "save_first_10pct": summarize(saves[:k]),
         "save_last_10pct": summarize(saves[-k:]),
         "save_first_s": saves[0],
         "save_all_s": saves,
-    }
+    })
+    res["save_history0_median_s"], res["save_ratio_vs_history0"] = history0_ratio(saves)
     res["save_growth_median_ratio"] = (
         res["save_last_10pct"]["median_s"] / res["save_first_10pct"]["median_s"])
+    phase("saves")
 
     velo_dir = work / ".velo"
     db = velo_dir / "velo.db"
@@ -163,12 +230,15 @@ def main():
     con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
     res["file_map_rows"] = con.execute("SELECT COUNT(*) FROM file_map").fetchone()[0]
     con.close()
+    phase("sizes")
 
     hist_file = paths[files // 2]
     mid = hashes[snaps // 2 - 1]
     res["status_clean_s"] = median_of(3, velo, ["status"], work)
+    phase("status")
     res["history_full_s"] = median_of(3, velo, ["history", "--oneline", "--limit", str(snaps)], work)
     res["history_file_s"] = median_of(3, velo, ["history", "--file", hist_file, "--oneline"], work)
+    phase("history")
     ts = []
     for _ in range(3):
         t1 = run(velo, ["restore", mid, "--force"], work)[0]
@@ -176,8 +246,11 @@ def main():
         ts.append((t1, t2))
     res["restore_mid_s"] = statistics.median(t[0] for t in ts)
     res["restore_tip_s"] = statistics.median(t[1] for t in ts)
+    phase("restore")
     res["gc_s"] = median_of(3, velo, ["gc"], work)
+    phase("gc")
     res["fsck_s"] = median_of(3, velo, ["fsck"], work)
+    phase("fsck")
     res["open_s"] = median_of(5, velo, ["branches"], work)
     res["velo_dir_bytes_after_gc"] = dir_size(velo_dir)
 
@@ -193,7 +266,7 @@ def main():
     if os.name == "nt":
         res["env"]["defender_note"] = a.defender_note or "not provided: assume real-time scanning is ON"
 
-    Path(a.out).write_text(json.dumps(res, indent=2))
+    write_partial(a.out, res, phases + ["done"], False)
 
     def mb(b):
         return f"{b / 1048576:.1f} MiB"
@@ -207,6 +280,8 @@ def main():
         ("save, first 10% median / p95", f"{ms(f['median_s'])} / {ms(f['p95_s'])}"),
         ("save, last 10% median / p95", f"{ms(l['median_s'])} / {ms(l['p95_s'])}"),
         ("save growth (last/first median)", f"{res['save_growth_median_ratio']:.2f}x"),
+        ("one-file save, history-0 median", "n/a" if res["save_ratio_vs_history0"] is None
+         else f"{ms(res['save_history0_median_s'])} (tail {res['save_ratio_vs_history0']:.2f}x)"),
         (".velo size", mb(res["velo_dir_bytes"])),
         ("velo.db size", mb(res["db_bytes"])),
         ("file_map rows", str(res["file_map_rows"])),

@@ -84,8 +84,8 @@ fixes follow the same rule: they ship in the latest minor, as a patch release.
 
 ## Release policy
 
-- The workspace follows semver; 6.1.0 is the latest release and the baseline the
-  `semver` job compares against. 6.2.0 is in progress.
+- The workspace follows semver; 6.2.0 is the latest release and the baseline the
+  `semver` job compares against. 6.2.1 is in progress.
 - A patch release carries fixes only. A minor release may add API, add a format
   feature that older builds read, and raise the MSRV. A major release may remove
   deprecated API and change the repository format.

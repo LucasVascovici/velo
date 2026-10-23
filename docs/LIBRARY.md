@@ -36,6 +36,21 @@ let who = blame::run(&repo, Path::new("notes.md"), blame::Options {
 })?;
 ```
 
+`save_tree` takes the whole tree. To change a few files of a large tree, use
+`save_changes`: the parent's tree is loaded inside the database and only the
+changed entries cross the API.
+
+```rust
+use velo_core::tree::{Change, SaveChanges};
+
+let mut save = SaveChanges::new(&branch, Some(&id), "edit notes");
+save.changes = vec![
+    Change::Put(TreeEntry::file("notes.md", b"hello again\n".to_vec())),
+    Change::Delete("old.md".to_string()),
+];
+let next = repo.write()?.save_changes(save)?;
+```
+
 See [`crates/velo-core`](../crates/velo-core) and the runnable
 [`examples/prompt-registry`](../examples/prompt-registry).
 
@@ -56,6 +71,10 @@ a = repo.save_tree(branch="main", message="a", entries={"n.txt": "one\n"},
                    author=velo.Author("ada"))
 c = repo.save_tree(branch="main", message="c", parent=a, entries={"n.txt": "two\n"})
 repo.history(from_=c, limit=5)
+# Only the changed files; the rest of the tree carries forward from `parent`.
+d = repo.save_changes(branch="main", message="d", parent=c,
+                      changes=[velo.Change.put("n.txt", "three\n"),
+                               velo.Change.delete("old.txt")]).snapshot
 repo.blame("n.txt", at=c).lines[0].origin.author.name
 ```
 
@@ -77,6 +96,13 @@ const id = await repo.saveTree({
   branch: 'main',
   message: 'hi',
   entries: [{ path: 'a.txt', data: 'hello\n' }],
+})
+// saveChanges (camelCase) sends only the changed files, not the whole tree.
+const next = await repo.saveChanges({
+  branch: 'main',
+  message: 'edit',
+  parent: id,
+  changes: [{ op: 'put', path: 'a.txt', data: 'hello again\n' }],
 })
 await repo.history({ from: id, limit: 5 })
 await repo.blame('a.txt', { at: id })
@@ -145,9 +171,21 @@ that makes velo the checkpoint layer for an agent: `velo_save`, `velo_restore`,
 `velo_history`, `velo_branch`, `velo_merge_plan`, `velo_merge_apply`,
 `velo_blame` and more, with every write recorded against a run id.
 
+Install the `velo-mcp` archive for your platform from the latest release
+(assets `velo-mcp-<arch>-<os>.tar.gz`, and `velo-mcp-x86_64-windows.zip`):
+
+```bash
+curl -L -o velo-mcp.tar.gz https://github.com/LucasVascovici/velo/releases/latest/download/velo-mcp-x86_64-linux.tar.gz && tar -xzf velo-mcp.tar.gz
+```
+
+Or build it from source:
+
 ```bash
 cargo build -p velo-mcp --release     # target/release/velo-mcp
 ```
+
+Run `velo init` in the project first. The tools are listed in the
+[velo-mcp README](../crates/velo-mcp/README.md#tools).
 
 Client configuration (the surrounding file format depends on the client):
 
@@ -157,6 +195,15 @@ Client configuration (the surrounding file format depends on the client):
 
 Which real clients were tried, and what broke, is in the
 [tried clients table](../crates/velo-mcp/README.md#tried-clients).
+
+### From the command line
+
+The CLI reads the same repository. `velo report -o run.html` writes a
+self-contained HTML audit report (fsck verdict, a timeline per branch, line
+provenance; flags `--branch`, `--since`, `--json`, `--trust FILE`, `--no-fsck`).
+`velo sync [remote] [branch]` fetches, then fast-forwards, pushes, or merges and
+pushes in one step; a conflict stops with exit 3 and never pushes. See
+[CLI.md](CLI.md).
 
 ### Further reading
 

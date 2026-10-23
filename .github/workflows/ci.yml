@@ -210,7 +210,7 @@ jobs:
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: velo-core,velo-merge
-          baseline-rev: v6.1.0
+          baseline-rev: v6.2.0
           feature-group: all-features
 
   # Licences, bans, sources and advisories against deny.toml for the root
@@ -248,10 +248,9 @@ jobs:
   perf:
     name: Perf · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # Windows is advisory until its baseline is calibrated on the runner: the
-    # full workload takes over 30 minutes there and measured 6x the local baseline.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 30 }}
+    # Both legs block. Baselines are runner medians (bench/perf/README.md);
+    # the guard took 2 minutes on Ubuntu and 4-11 minutes on Windows.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -278,6 +277,9 @@ jobs:
         shell: bash
         env:
           VELO_PERF_AGENT_STEPS: ${{ matrix.os == 'windows-latest' && '100' || '' }}
+          # 100,000 files of setup is too slow on the Windows runner; its baseline
+          # must be taken with the same value (bench/perf/README.md).
+          VELO_PERF_SAVE_TREE_FILES: ${{ matrix.os == 'windows-latest' && '10000' || '' }}
         run: |
           set -o pipefail
           cargo test -p velo-core --release --locked perf_guard -- --ignored --nocapture --test-threads=1 2>&1 | tee perf.log

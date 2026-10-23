@@ -1,0 +1,181 @@
+name: Release smoke
+
+# Does what a user does with a release archive: take velo-mcp and velo for the
+# runner's platform, extract them into an empty directory on a runner with no
+# Rust toolchain, then run the MCP conformance clients, the documented host
+# configs and the quickstart pages against those binaries.
+#
+# On a tag run release.yml calls this with `source: artifacts`, before the
+# draft release is published, so a broken archive is caught before users see
+# it. `source: release` runs the same checks against a published release.
+# The uvx and npx registry forms are not tested: no package exists yet.
+on:
+  workflow_call:
+    inputs:
+      source:
+        description: "artifacts (this run's own build artifacts) or release (a published release)"
+        required: true
+        type: string
+      tag:
+        description: Release tag, needed when source is release
+        required: false
+        type: string
+        default: ""
+  workflow_dispatch:
+    inputs:
+      source:
+        description: artifacts needs a calling run, so from here use release
+        required: true
+        type: choice
+        options: [release]
+        default: release
+      tag:
+        description: Release tag, for example v6.2.0
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: LucasVascovici/velo
+
+jobs:
+  smoke:
+    name: Smoke · ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            cli: velo-x86_64-linux.tar.gz
+            mcp: velo-mcp-x86_64-linux.tar.gz
+            wheel: "*manylinux*x86_64*.whl"
+            tgz: "velo-core-*-linux.tgz"
+          - name: windows
+            os: windows-latest
+            target: x86_64-pc-windows-msvc
+            cli: velo-x86_64-windows.zip
+            mcp: velo-mcp-x86_64-windows.zip
+            wheel: "*win_amd64*.whl"
+            tgz: "velo-core-*-windows.tgz"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assert no cargo is used
+        shell: bash
+        run: |
+          # Hide any preinstalled toolchain so nothing can build from source.
+          sudo rm -f /usr/local/bin/cargo /usr/local/bin/rustc 2>/dev/null || true
+          rm -rf "$HOME/.cargo/bin"
+          if command -v cargo; then echo "cargo is still on PATH"; exit 1; fi
+
+      - name: Get the assets from this run's artifacts
+        if: inputs.source == 'artifacts'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: cli-${{ matrix.target }}
+          path: dist
+          merge-multiple: true
+      - name: Get the wheel from this run's artifacts
+        if: inputs.source == 'artifacts'
+        uses: actions/download-artifact@v4
+        with:
+          name: wheel-${{ matrix.name }}
+          path: dist
+      - name: Get the Node tarball from this run's artifacts
+        if: inputs.source == 'artifacts'
+        uses: actions/download-artifact@v4
+        with:
+          name: node-${{ matrix.name }}
+          path: dist
+
+      - name: Get the assets from the published release
+        if: inputs.source == 'release'
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          test -n "$TAG"
+          mkdir dist
+          gh release download "$TAG" --repo "$REPO" --dir dist \
+            --pattern "${{ matrix.cli }}" --pattern "${{ matrix.mcp }}" \
+            --pattern "${{ matrix.wheel }}" --pattern "${{ matrix.tgz }}"
+
+      - name: Extract the archives into an empty directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls dist
+          bin=$(mktemp -d)
+          test -z "$(ls -A "$bin")"
+          for a in "${{ matrix.cli }}" "${{ matrix.mcp }}"; do
+            test -f "dist/$a"
+            if [ "$RUNNER_OS" = Windows ]; then
+              python -c "import sys,zipfile; zipfile.ZipFile(sys.argv[1]).extractall(sys.argv[2])" "dist/$a" "$bin"
+            else
+              tar -xzf "dist/$a" -C "$bin"
+            fi
+          done
+          ls -l "$bin"
+          ext=""
+          [ "$RUNNER_OS" = Windows ] && ext=".exe"
+          # Mixed-style paths (D:/a/...) work for Python, Node and bash alike.
+          if [ "$RUNNER_OS" = Windows ]; then bin=$(cygpath -m "$bin"); fi
+          echo "VELO_MCP=$bin/velo-mcp$ext" >> "$GITHUB_ENV"
+          echo "VELO=$bin/velo$ext" >> "$GITHUB_ENV"
+          "$bin/velo$ext" --version
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Python SDK client
+        working-directory: crates/velo-mcp/conformance
+        shell: bash
+        run: |
+          pip install mcp jsonschema
+          python python_sdk_client.py --velo-mcp "$VELO_MCP" --velo "$VELO"
+
+      - name: TypeScript SDK client
+        working-directory: crates/velo-mcp/conformance
+        shell: bash
+        run: |
+          npm ci --no-audit --no-fund
+          node ts_sdk_client.mjs "$VELO_MCP"
+
+      - name: MCP Inspector CLI
+        shell: bash
+        run: |
+          db="$(mktemp -d)/repo.db"
+          if [ "$RUNNER_OS" = Windows ]; then db=$(cygpath -m "$db"); fi
+          npx -y @modelcontextprotocol/inspector --cli "$VELO_MCP" --store "$db" --create --method tools/list
+          npx -y @modelcontextprotocol/inspector --cli "$VELO_MCP" --store "$db" --create \
+            --method tools/call --tool-name velo_save_tree \
+            --tool-arg branch=main --tool-arg message=inspector \
+            --tool-arg 'files={"a.txt":"one\n"}'
+
+      - name: Documented host configs
+        shell: bash
+        run: python crates/velo-mcp/conformance/check_configs.py "$VELO_MCP" "$VELO"
+
+      # The Rust page is left out: this runner has no toolchain.
+      - name: Quickstart pages from the release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          wheel=$(ls dist/${{ matrix.wheel }} | head -n 1)
+          tgz=$(ls dist/${{ matrix.tgz }} | head -n 1)
+          python docs/quickstart/run.py \
+            --page mcp.md \
+            --page python-agent-checkpointing.md \
+            --page node-config-registry.md \
+            --wheel "$wheel" --tgz "$tgz" --velo-mcp "$VELO_MCP"

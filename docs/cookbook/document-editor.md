@@ -22,6 +22,13 @@ repo.save_tree(branch="main", message="rename draft to essay", parent=base,
 The script asserts that blame of line 1 of `essay.txt` resolves to the original
 snapshot and to the path `draft.txt`.
 
+When an edit touches one document of many, `save_changes` sends just that file:
+
+```python
+repo.save_changes(branch="main", message="fix typo", parent=base,
+                  changes=[velo.Change.put("essay.txt", TEXT)])
+```
+
 ## Drafts as branches
 
 A collaborator forks a draft branch (`repo.create_branch("draft-grace", at=...)`)
@@ -38,6 +45,11 @@ repo.merge_commit(branch="main", ours=m1, theirs=g, message="merge",
 Without a resolution, `merge_commit` raises `velo.Conflicts` with the paths. A
 resolution is the exact bytes of the merged file, or `"ours"` / `"theirs"`. The
 result is a two-parent snapshot.
+
+## Sharing the history
+
+Between machines, `velo sync` fetches, merges and pushes in one step. For a
+reader, `velo report -o essay.html` writes per-line provenance as one HTML file.
 
 ## Blame per line
 

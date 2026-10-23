@@ -49,7 +49,7 @@ pub fn bundle_decode(data: &[u8]) {
     });
     if let Ok(guard) = repo.write() {
         let _ = bundle::import(&guard, &parsed);
-    }
+    };
 }
 
 /// Read a ref advertisement, then length-prefixed strings until the end.

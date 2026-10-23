@@ -1,0 +1,364 @@
+name: Release verify
+
+# Checks a published release the way a user meets it: every expected asset is
+# attached, the checksums and attestations verify with the commands in
+# docs/INSTALL.md, and each asset class installs and runs on a runner that has
+# no Rust toolchain. Nothing here builds anything. Full MCP conformance is a
+# separate workflow; this one only starts velo-mcp and lists its tools.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to verify, for example v6.2.0
+        required: true
+        type: string
+  # Called by release.yml after `publish`.
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to verify, for example v6.2.0
+        required: true
+        type: string
+  # Changing the workflow or the asset list re-checks the latest release.
+  push:
+    paths:
+      - .github/workflows/release-verify.yml
+      - packaging/release_assets.py
+
+permissions:
+  contents: read
+  id-token: write
+  attestations: read
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  REPO: LucasVascovici/velo
+
+jobs:
+  assets:
+    name: Assets are complete
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the tag
+        id: tag
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            tag=$(gh release view --repo "$REPO" --json tagName --jq .tagName)
+          fi
+          echo "Verifying $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+      - name: Compare the attached assets with the expected list
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release view "${{ steps.tag.outputs.tag }}" --repo "$REPO" --json assets > assets.json
+          python3 packaging/release_assets.py --tag "${{ steps.tag.outputs.tag }}" --assets-json assets.json
+
+  verify:
+    name: Checksums and attestations · ${{ matrix.os }}
+    needs: assets
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    env:
+      TAG: ${{ needs.assets.outputs.tag }}
+    steps:
+      - name: Download the release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir dl
+          gh release download "$TAG" --repo "$REPO" --dir dl
+          ls dl
+      - name: Verify the checksums (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        working-directory: dl
+        run: |
+          set -euo pipefail
+          sha256sum -c --ignore-missing SHA256SUMS.txt
+          sha256sum --check --ignore-missing SHA256SUMS-bindings.txt
+      - name: Verify the checksums (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        working-directory: dl
+        run: |
+          set -euo pipefail
+          # Every file the sums name was downloaded, so no --ignore-missing.
+          shasum -a 256 -c SHA256SUMS.txt
+          shasum -a 256 -c SHA256SUMS-bindings.txt
+      - name: Verify the checksums (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: dl
+        run: |
+          # docs/INSTALL.md: Get-FileHash, compared with the checksum file.
+          foreach ($sums in 'SHA256SUMS.txt', 'SHA256SUMS-bindings.txt') {
+            foreach ($line in Get-Content $sums) {
+              $hash, $name = $line -split '\s+', 2
+              $name = $name.TrimStart('*').Trim()
+              if (-not (Test-Path $name)) { continue }
+              $got = (Get-FileHash $name -Algorithm SHA256).Hash.ToLower()
+              if ($got -ne $hash) { throw "checksum mismatch: $name" }
+              Write-Host "ok: $name"
+            }
+          }
+      - name: Verify the build provenance of every asset
+        shell: bash
+        working-directory: dl
+        run: |
+          set -euo pipefail
+          for f in velo-* velo_core-*; do
+            case "$f" in *.sigstore.json) continue ;; esac
+            echo "::group::$f"
+            gh attestation verify "$f" --repo "$REPO"
+            echo "::endgroup::"
+          done
+
+  cli:
+    name: CLI · ${{ matrix.os }}
+    needs: assets
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: velo-x86_64-linux.tar.gz
+          - os: ubuntu-24.04-arm
+            asset: velo-aarch64-linux.tar.gz
+          - os: macos-latest
+            asset: velo-aarch64-macos.tar.gz
+          - os: windows-latest
+            asset: velo-x86_64-windows.zip
+    env:
+      TAG: ${{ needs.assets.outputs.tag }}
+    steps:
+      - name: Assert no cargo is used
+        shell: bash
+        run: |
+          # Hide any preinstalled toolchain so nothing can build from source.
+          sudo rm -f /usr/local/bin/cargo /usr/local/bin/rustc 2>/dev/null || true
+          rm -rf "$HOME/.cargo/bin"
+          if command -v cargo; then echo "cargo is still on PATH"; exit 1; fi
+      - name: Download and extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir bin
+          gh release download "$TAG" --repo "$REPO" --pattern "${{ matrix.asset }}" --dir bin
+          cd bin
+          if [ "$RUNNER_OS" = Windows ]; then
+            powershell -NoProfile -Command "Expand-Archive '${{ matrix.asset }}' -DestinationPath ."
+          else
+            tar -xzf "${{ matrix.asset }}"
+          fi
+          ls
+      - name: The version equals the tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          got=$(./bin/velo --version | awk '{print $NF}')
+          echo "velo --version: $got, tag: $TAG"
+          [ "$got" = "${TAG#v}" ]
+      - name: Init, save and read history
+        shell: bash
+        run: |
+          set -euo pipefail
+          velo="$PWD/bin/velo"
+          work=$(mktemp -d)
+          cd "$work"
+          "$velo" init
+          echo "hello" > hello.txt
+          "$velo" save "Verify the release"
+          "$velo" history | tee history.txt
+          grep -q "Verify the release" history.txt
+
+  wheel:
+    name: Wheel · ${{ matrix.name }}
+    needs: assets
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest, tag: manylinux_2_17_x86_64.manylinux2014_x86_64 }
+          - { name: macos, os: macos-latest, tag: macosx_11_0_arm64 }
+          - { name: windows, os: windows-latest, tag: win_amd64 }
+    env:
+      TAG: ${{ needs.assets.outputs.tag }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download, install into a fresh venv, save and read history
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          work=$(mktemp -d)
+          cd "$work"
+          gh release download "$TAG" --repo "$REPO" --pattern "velo_core-${version}-cp39-abi3-${{ matrix.tag }}.whl"
+          python -m venv venv
+          if [ -d venv/Scripts ]; then py=venv/Scripts/python; else py=venv/bin/python; fi
+          "$py" -m pip install --only-binary=:all: ./velo_core-*.whl
+          cat > check.py <<'PY'
+          import tempfile
+          import velo
+
+          with tempfile.TemporaryDirectory() as tmp:
+              repo = velo.Repo.init(tmp)
+              repo.save_tree(
+                  branch="main",
+                  message="verify the wheel",
+                  entries={"a.txt": "hello\n"},
+                  author=velo.Author("release-verify"),
+              )
+              history = repo.history(branch="main")
+              assert len(history) == 1, history
+              print("ok:", history[0])
+              # Release the database before the directory is removed (Windows).
+              del history
+              del repo
+          PY
+          "$py" check.py
+
+  node:
+    name: Node tarball · ${{ matrix.name }}
+    needs: assets
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux, os: ubuntu-latest }
+          - { name: macos, os: macos-latest }
+          - { name: windows, os: windows-latest }
+    env:
+      TAG: ${{ needs.assets.outputs.tag }}
+    steps:
+      - name: Download, install into an empty npm project, require and save
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          work=$(mktemp -d)
+          cd "$work"
+          gh release download "$TAG" --repo "$REPO" --pattern "velo-core-${version}-${{ matrix.name }}.tgz"
+          npm init -y
+          npm install ./velo-core-*.tgz
+          cat > check.cjs <<'JS'
+          const fs = require('node:fs');
+          const os = require('node:os');
+          const path = require('node:path');
+          const { Repo } = require('velo-core');
+
+          (async () => {
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'velo-'));
+            const repo = await Repo.init(dir);
+            await repo.saveTree({
+              branch: 'main',
+              message: 'verify the tarball',
+              entries: [{ path: 'a.txt', data: 'hello\n' }],
+              author: { name: 'release-verify' },
+            });
+            const history = await repo.history({ branch: 'main' });
+            if (history.length !== 1) throw new Error('unexpected history');
+            console.log('ok:', history[0]);
+          })();
+          JS
+          node check.cjs
+
+  mcp:
+    name: velo-mcp · ${{ matrix.os }}
+    needs: assets
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: velo-mcp-x86_64-linux.tar.gz
+          - os: windows-latest
+            asset: velo-mcp-x86_64-windows.zip
+    env:
+      TAG: ${{ needs.assets.outputs.tag }}
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download and extract
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir bin
+          gh release download "$TAG" --repo "$REPO" --pattern "${{ matrix.asset }}" --dir bin
+          cd bin
+          if [ "$RUNNER_OS" = Windows ]; then
+            powershell -NoProfile -Command "Expand-Archive '${{ matrix.asset }}' -DestinationPath ."
+          else
+            tar -xzf "${{ matrix.asset }}"
+          fi
+          ls
+      - name: Initialize and list tools over stdio
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin=$(ls "$PWD"/bin/velo-mcp "$PWD"/bin/velo-mcp.exe 2>/dev/null | head -1)
+          store="$(mktemp -d)/verify.velo"
+          cat > client.py <<'PY'
+          import json
+          import subprocess
+          import sys
+
+          proc = subprocess.Popen(
+              [sys.argv[1], "--store", sys.argv[2], "--create"],
+              stdin=subprocess.PIPE,
+              stdout=subprocess.PIPE,
+              stderr=subprocess.DEVNULL,
+              text=True,
+          )
+
+
+          def rpc(msg):
+              proc.stdin.write(json.dumps(msg) + "\n")
+              proc.stdin.flush()
+              if "id" not in msg:
+                  return None
+              line = proc.stdout.readline()
+              assert line, "server closed stdout"
+              resp = json.loads(line)
+              assert resp.get("id") == msg["id"] and "error" not in resp, resp
+              return resp["result"]
+
+
+          try:
+              init = rpc({
+                  "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                  "params": {
+                      "protocolVersion": "2025-11-25",
+                      "capabilities": {},
+                      "clientInfo": {"name": "release-verify", "version": "0"},
+                  },
+              })
+              assert init["serverInfo"]["name"], init
+              rpc({"jsonrpc": "2.0", "method": "notifications/initialized"})
+              tools = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+              names = [t["name"] for t in tools["tools"]]
+              assert names, "no tools listed"
+              print("ok:", len(names), "tools,", init["serverInfo"])
+          finally:
+              proc.stdin.close()
+              proc.wait(timeout=10)
+          PY
+          python client.py "$bin" "$store"

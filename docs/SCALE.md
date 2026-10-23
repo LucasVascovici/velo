@@ -8,16 +8,34 @@ measured, how fast velo is there, where it degrades, and what to do about it.
 ## Measured on 6.x (format v4)
 
 These are the current numbers. Everything below the "5.x" headings is history
-from the v3 storage and is kept, losses included.
+from the v3 storage and is kept, losses included. Every table says its
+platform, its velo version and whether the shape is **full** (one of the
+envelope shapes, 10,000 files x 2,000 snapshots or 100,000 files x 200, or the
+100,000 x 500 ratio shape) or **reduced** (smaller than any of them). Nothing
+here is extrapolated from another shape: a shape that has no table was not run.
 
-Measured on **Windows 11 only** (Intel Core i7-1370P, Defender real-time
-scanning on, no exclusions), velo 6.2.0, the real release CLI through
-`bench/scale/scale.py`, one run, one file changed per snapshot, 2026-10-22.
-Raw data: `bench/results/2026-10-22-windows-envelope-v4-a.json` and
-`...-v4-b30k.json`. The full-size shapes were **not** re-run on 6.x, and no
-Linux run was made; the commands for both are under "Commands for the owner".
+All runs are one run, one file changed per snapshot, the real release CLI
+through `bench/scale/scale.py`.
 
-| Metric | 10,000 files x 200 snapshots |
+| Shape | Size | Platform | velo | Date | Raw data |
+| --- | --- | --- | --- | --- | --- |
+| 10,000 x 200 | reduced | Windows 11 | 6.2.0 | 2026-10-22 | `2026-10-22-windows-envelope-v4-a.json` |
+| 30,000 x 20 | reduced, partial | Windows 11 | 6.2.0 | 2026-10-22 | `2026-10-22-windows-envelope-v4-b30k.json` |
+| 50,000 x 40 | reduced | Windows 11 | 6.2.1 | 2026-10 | `2026-10-windows-ratio-50k-40.json` |
+| 100,000 x 500 | full (ratio shape) | Windows 11 | 6.2.1 | 2026-10 | `2026-10-windows-ratio-100k-500.json` |
+| 10,000 x 2,000 (`envelope-a`) | full | Linux, GitHub runner | 6.2.0 | 2026-10-22 | `2026-10-linux-runner-envelope-v4-a.json` |
+| 100,000 x 200 (`envelope-b`) | full | Linux, GitHub runner | 6.2.0 | 2026-10-22 | `2026-10-linux-runner-envelope-v4-b.json` |
+
+Raw data lives under `bench/results/`. Windows machine: Intel Core i7-1370P,
+Defender real-time scanning on, no exclusions. Linux runner: a hosted
+`ubuntu-latest` runner (kernel 6.17 azure; AMD EPYC 9V45 for `envelope-a`,
+EPYC 7763 for `envelope-b`, so the two Linux columns were on different CPUs),
+dispatched from `main` at commit `dd15186` (GitHub Actions runs 39868500578
+and 39868510865; both succeeded, in 3 m 38 s and 5 m 19 s).
+
+### Windows 11, velo 6.2.0: reduced shapes
+
+| Metric | 10,000 files x 200 snapshots (reduced) |
 | --- | --- |
 | first save (every file new) | 55.5 s |
 | save, first 10% median / p95 | 234 / 329 ms |
@@ -37,23 +55,115 @@ with one change is about 0.23 s, against 1.4 s on 5.3.0 at the same file count.
 The sizes are not comparable with the envelope's 5.3 GiB: that was 2,000
 snapshots, this is 200, and v4 no longer writes a full `file_map` row set per
 snapshot. The 0.99x is over a history ten times shorter than the 5.x one, so
-it does not prove the 2,000-snapshot curve is flat. The first save was slower
-than 5.3.0's 31.5 s (55.5 s here); it is one run under Defender, which moved
-that number by a factor of two between 5.2.0 and 5.3.0 as well, so it is not
-a regression finding either way.
+it does not prove the 2,000-snapshot curve is flat on Windows (the Linux
+`envelope-a` table below does cover 2,000 snapshots). The first save was
+slower than 5.3.0's 31.5 s (55.5 s here); it is one run under Defender, which
+moved that number by a factor of two between 5.2.0 and 5.3.0 as well, so it is
+not a regression finding either way.
 
-**100,000 files x 20 snapshots did not complete.** The first save did not
-finish inside the 590 s limit on this machine (Defender scanning; see
-[WINDOWS.md](WINDOWS.md)), so nothing is reported for that size. A reduced
-**30,000 files x 20 snapshots** run did finish its saves: saves 4-20 had a
-median of 0.41 s (range 0.38-0.52 s, flat). The harness timeout killed that
-run at its `gc` step, so its first-save time, restore, `fsck` and sizes were
-not recorded (the JSON is marked partial). Treat the 30,000-file row as a
-save-latency observation only; the 100,000-file claim is untested on 6.x.
+**30,000 files x 20 snapshots (reduced, partial).** The run finished its
+saves: saves 4-20 had a median of 0.41 s (range 0.38-0.52 s, flat). The
+harness timeout killed it at its `gc` step, so its first-save time, restore,
+`fsck` and sizes were not recorded (the JSON is marked partial). Treat it as a
+save-latency observation only.
 
-The retention run (`default_policy_at_a_reduced_18_10_shape`) was not re-run in
-the time available; the 19.4 figures (416 s apply, 165 s `gc`, 193 s vacuum)
-remain pre-v4 and are unconfirmed for 6.x.
+**100,000 files x 20 snapshots did not complete** on 6.2.0: the first save did
+not finish inside the 590 s limit (Defender scanning; see
+[WINDOWS.md](WINDOWS.md)), so nothing is reported for that size from that
+run. The later 100,000 x 500 run below, with no time limit, did finish.
+
+| Metric | 50,000 files x 40 snapshots (reduced), 6.2.1 |
+| --- | --- |
+| first save (every file new) | 352.8 s |
+| save, first 10% median / last 10% median | 1.66 s / 0.86 s |
+| save, median / history-0 save | 0.93x |
+| `status` (clean) | 0.70 s |
+| `restore` to mid / back to tip | 0.97 s / 1.14 s |
+| `gc` / `fsck` | 2.7 s / 3.7 s |
+| `.velo` / `velo.db` | 28.3 MiB / 20.1 MiB |
+| `file_map` rows | 50,001 |
+
+The first-10% median is over 4 saves and its p95 is the first save itself, so
+the 0.52x growth figure in the JSON is not a speed-up finding; the ratio to
+history-0 (0.93x) is the figure to read.
+
+### Windows 11, velo 6.2.1: 100,000 files x 500 snapshots (full, ratio shape)
+
+| Metric | 100,000 files x 500 snapshots |
+| --- | --- |
+| first save (every file new) | 589 s |
+| save, history-0 median | 1.94 s |
+| save, first 10% median / p95 | 2.06 / 5.20 s |
+| save, last 10% median / p95 | 1.98 / 3.65 s |
+| **save, median / history-0 save** | **1.02x** (target 1.5x) |
+| save growth, last / first median | 0.96x |
+| `status` (clean) | 2.15 s |
+| `history` / `history --file` | 30 / 41 ms |
+| `restore` to mid / back to tip | 3.3 s / 2.3 s |
+| `gc` / `fsck` | 6.3 s / 17.6 s |
+| open (`velo branches`) | 38 ms |
+| `.velo` / `velo.db` | 137 MiB / 120 MiB |
+| `file_map` rows | 400,004 |
+
+This is the one 6.x measurement of a 100,000-file repository over hundreds of
+snapshots on Windows: the one-file save is flat against history-0 over 500
+snapshots. It is one run under Defender.
+
+### Linux (GitHub runner), velo 6.2.0: `envelope-a`, 10,000 files x 2,000 snapshots (full)
+
+| Metric | 10,000 files x 2,000 snapshots |
+| --- | --- |
+| first save (every file new) | 0.52 s |
+| save, first 10% median / p95 | 47 / 72 ms |
+| save, last 10% median / p95 | 44 / 50 ms |
+| save growth, last / first median | 0.94x |
+| `status` (clean) | 35 ms |
+| `history` / `history --file` | 13 / 37 ms |
+| `restore` to snapshot 1,000 / back to tip | 109 / 113 ms |
+| `gc` / `fsck` | 0.17 s / 3.2 s |
+| open (`velo branches`) | 2.9 ms |
+| `.velo` / `velo.db` | 47.5 MiB / 45.6 MiB |
+| `file_map` rows | 160,016 |
+
+### Linux (GitHub runner), velo 6.2.0: `envelope-b`, 100,000 files x 200 snapshots (full)
+
+| Metric | 100,000 files x 200 snapshots |
+| --- | --- |
+| first save (every file new) | 8.2 s |
+| save, first 10% median / p95 | 0.61 / 0.68 s |
+| save, last 10% median / p95 | 0.56 / 0.57 s |
+| save growth, last / first median | 0.91x |
+| `status` (clean) | 0.39 s |
+| `history` / `history --file` | 4 / 8 ms |
+| `restore` to snapshot 100 / back to tip | 0.78 / 0.82 s |
+| `gc` / `fsck` | 1.3 s / 5.7 s |
+| open (`velo branches`) | 2.9 ms |
+| `.velo` / `velo.db` | 83.0 MiB / 66.7 MiB |
+| `file_map` rows | 200,002 |
+
+These are not comparable cell for cell with the Windows tables: the
+platforms, filesystems and scanning differ, and the Linux first saves (0.5 s,
+8 s) against Windows (55 s, 589 s) mostly show what Defender costs, not what
+velo costs. The saves stay flat over both full envelope shapes on Linux.
+
+### Not run on 6.x
+
+Every full shape and platform below has no 6.x number and none is implied.
+The detached commands are under "Detached full runs" in "Commands for the owner".
+
+- **Windows, `envelope-a` full (10,000 x 2,000)**: not run. Detached
+  `Start-Process ... --preset envelope-a` command under "Detached full runs".
+- **Windows, `envelope-b` full (100,000 x 200)**: not run. Detached
+  `Start-Process ... --preset envelope-b` command under "Detached full runs".
+- **Linux, 100,000 x 500 ratio shape (`ratio-100k`)**: not run. The Linux
+  `nohup python3 bench/scale/scale.py --preset ratio-100k` command.
+- **Full retention run (10,000 x 2,000, 18.10/19.4 shape)**: not run on 6.x;
+  the detached `default_policy_at_ten_thousand_files_and_two_thousand_snapshots`
+  test command under "Detached full runs". The reduced retention run (`default_policy_at_a_reduced_18_10_shape`)
+  was also not re-run; the 19.4 figures (416 s apply, 165 s `gc`, 193 s
+  vacuum) remain pre-v4 and are unconfirmed for 6.x.
+- **Linux on a local machine or WSL2** (as opposed to a hosted runner): not
+  run; the runner tables above are the only Linux data.
 
 ## 5.x (format v3): the envelope
 
@@ -308,8 +418,38 @@ not repacked in this run.
 ## Commands for the owner
 
 Run from the repository root with `cargo build --release -p velo-cli` done.
-Each full run takes hours on Windows; run it in a terminal, not under a
-time-limited tool.
+Each full run takes hours on Windows. `scale.py` has no time limit of its own
+(`--command-timeout SECONDS` is optional and bounds one velo command), and it
+rewrites `--out` after every phase with `"partial": true` and the
+`completed_phases`, so a killed run keeps what it measured. Run it detached,
+not under a time-limited tool:
+
+```text
+# Windows: a separate terminal, or detached from this one
+Start-Process -NoNewWindow -FilePath python -ArgumentList 'bench/scale/scale.py','--preset','ratio-100k','--out','bench/results/<date>-windows-ratio-100k.json' -RedirectStandardError scale.log
+
+# Linux
+nohup python3 bench/scale/scale.py --preset ratio-100k --out bench/results/<date>-linux-ratio-100k.json > scale.out 2> scale.log &
+```
+
+### Detached full runs
+
+```text
+# Windows, envelope-a (10,000 x 2,000)
+Start-Process -NoNewWindow -FilePath python -ArgumentList 'bench/scale/scale.py','--preset','envelope-a','--out','bench/results/<date>-windows-envelope-v4-a-full.json' -RedirectStandardError scale-a.log
+
+# Windows, envelope-b (100,000 x 200)
+Start-Process -NoNewWindow -FilePath python -ArgumentList 'bench/scale/scale.py','--preset','envelope-b','--out','bench/results/<date>-windows-envelope-v4-b-full.json' -RedirectStandardError scale-b.log
+
+# Windows, full retention run
+Start-Process -NoNewWindow -FilePath cargo -ArgumentList 'test','--release','-p','velo-core','--features','timing','--lib','default_policy_at_ten_thousand_files_and_two_thousand_snapshots','--','--ignored','--nocapture' -RedirectStandardOutput retention.out -RedirectStandardError retention.log
+
+# Linux, full retention run
+nohup cargo test --release -p velo-core --features timing --lib default_policy_at_ten_thousand_files_and_two_thousand_snapshots -- --ignored --nocapture > retention.out 2> retention.log &
+```
+
+The foreground forms below are for reference; do not run the full shapes
+under a time-limited tool.
 
 ```text
 # Full envelope, Windows (Defender on; say so with --defender-note if excluded)
@@ -320,7 +460,10 @@ python bench/scale/scale.py --preset envelope-b --out bench/results/<date>-windo
 python3 bench/scale/scale.py --velo target/release/velo --preset envelope-a --out bench/results/<date>-linux-envelope-v4-a-full.json
 python3 bench/scale/scale.py --velo target/release/velo --preset envelope-b --out bench/results/<date>-linux-envelope-v4-b-full.json
 
-# Reduced 100,000-file shape that did not finish here (run with no 590 s limit)
+# 100,000 files x 500 snapshots: reports save_ratio_vs_history0 (target 1.5x)
+python bench/scale/scale.py --preset ratio-100k --out bench/results/<date>-windows-ratio-100k.json
+
+# Reduced 100,000-file shape that did not finish here; run it detached
 python bench/scale/scale.py --files 100000 --snapshots 20 --out bench/results/<date>-windows-envelope-v4-b-reduced.json
 
 # Full retention run (10,000 files x 2,000 snapshots, the 18.10/19.4 shape)

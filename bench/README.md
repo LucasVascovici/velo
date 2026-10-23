@@ -35,9 +35,20 @@ Build first: `cargo build --release -p velo-cli --locked`.
 | `small` | 1,000 files x 50 | `python bench/scale/scale.py --preset small` | under a minute |
 | `envelope-a` | 10,000 files x 2,000 | `python bench/scale/scale.py --preset envelope-a` | hours (2,000 saves) |
 | `envelope-b` | 100,000 files x 200 | `python bench/scale/scale.py --preset envelope-b` | hours (each save scans 100,000 files) |
+| `ratio-100k` | 100,000 files x 500 | `python bench/scale/scale.py --preset ratio-100k` | many hours; reports `save_ratio_vs_history0` |
 
 Other options: `--velo PATH`, `--files`, `--snapshots`, `--change`, `--workdir DIR`
-(never inside the checkout), `--keep`, `--out`.
+(never inside the checkout), `--keep`, `--out`, `--command-timeout SECONDS`
+(default: no limit).
+
+`scale.py` rewrites `--out` after every phase with `"partial": true` and
+`completed_phases`, and `"partial": false` at the end, so a killed run keeps
+what it measured. Run long presets detached: on Windows in a separate terminal
+or with `Start-Process -NoNewWindow`, on Linux with `nohup python3 ... &`.
+The result carries a `machine` block (OS, platform, CPU, logical cores,
+Defender note), `save_history0_median_s` (median of the first 10 one-file saves
+after the initial full save) and `save_ratio_vs_history0` (median of the last
+10% of saves over that; the target is 1.5x).
 
 On GitHub, run the `bench` workflow (manual dispatch, Ubuntu) with a `preset`
 input; it uploads `results.json` as an artifact. It never runs on push or PR.
@@ -114,7 +125,7 @@ lines, one per op, as printed).
 ## For the owner
 
 Runs the Phase 20 re-run (task 20.9-b) did not make, because they take hours.
-Build first: `cargo build --release -p velo-cli --locked`. Say whether Defender
+Run each one detached (see above); none needs a time limit. Build first: `cargo build --release -p velo-cli --locked`. Say whether Defender
 was excluded (`--defender-note`), and publish the JSON under `bench/results/`.
 
 1. Envelope A (10,000 files x 2,000 snapshots, hours), Windows and then Linux:
@@ -127,6 +138,18 @@ was excluded (`--defender-note`), and publish the JSON under `bench/results/`.
 
    ```text
    python bench/scale/scale.py --preset envelope-b --out bench/results/<date>-windows-envelope-b.json
+   ```
+
+   The 100,000 x 500 ratio run:
+
+   ```text
+   python bench/scale/scale.py --preset ratio-100k --out bench/results/<date>-windows-ratio-100k.json
+   ```
+
+   The full retention test (10,000 files x 2,000 snapshots):
+
+   ```text
+   cargo test --release -p velo-core --features timing --lib default_policy_at_ten_thousand_files_and_two_thousand_snapshots -- --ignored --nocapture
    ```
 
 3. Migrate and repack the real 5.18 GiB envelope repository (the 2026-10-16 retention

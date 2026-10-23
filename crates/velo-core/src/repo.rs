@@ -975,6 +975,18 @@ pub struct WriteGuard<'a> {
     repo: &'a Repo,
 }
 
+impl Drop for WriteGuard<'_> {
+    /// Bound the WAL once the writes made under this guard have committed.
+    /// The lock is still held (fields drop after this), so the checkpoint
+    /// cannot race another writer.
+    fn drop(&mut self) {
+        #[cfg(not(target_family = "wasm"))]
+        if let Some(path) = self.repo.conn().path().filter(|p| !p.is_empty()) {
+            db::bound_wal(self.repo.conn(), Path::new(path));
+        }
+    }
+}
+
 impl WriteGuard<'_> {
     /// The repository this guard grants write access to.
     pub fn repo(&self) -> &Repo {

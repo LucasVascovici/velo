@@ -93,7 +93,12 @@ none does today. [`server.json`](server.json) is a prepared entry for the MCP
 registry; submitting it is the owner's to do. Every config above is launched
 against the built binary by `conformance/check_configs.py` (run in
 `.github/workflows/mcp.yml`), which also checks these snippets equal the files
-in `conformance/configs/`.
+in `conformance/configs/`. The same check, the conformance clients and the
+quickstart pages also run in CI against the release archive for Linux and
+Windows (`.github/workflows/release-smoke.yml`), extracted into an empty
+directory on a runner with no Rust toolchain; on a tag run that happens before
+the release is published. The `uvx` and `npx` forms stay untested until a
+registry package exists.
 
 ## Run identity
 

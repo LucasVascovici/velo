@@ -123,12 +123,12 @@ fn conflicts_appear_as_data_after_a_merge() {
     ok(&call(
         &mut s,
         "velo_branch",
-        json!({"action": "create", "name": "a1"}),
+        json!({"action": "create", "name": "agent-1"}),
     ));
     ok(&call(
         &mut s,
         "velo_branch",
-        json!({"action": "switch", "name": "a1"}),
+        json!({"action": "switch", "name": "agent-1"}),
     ));
     std::fs::write(&f, "one\ntwo-a1\nthree\n").unwrap();
     ok(&call(&mut s, "velo_save", json!({"message": "a1"})));
@@ -147,7 +147,7 @@ fn conflicts_appear_as_data_after_a_merge() {
         let guard = repo.write().unwrap();
         let out = velo_core::commands::merge::run(
             &guard,
-            velo_core::commands::merge::Mode::Bring { source: "a1" },
+            velo_core::commands::merge::Mode::Bring { source: "agent-1" },
         );
         assert!(out.is_ok(), "{out:?}");
     }

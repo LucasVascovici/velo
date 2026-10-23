@@ -12384,3 +12384,5 @@ mod message_fixes;
 mod orphan_delta_repro;
 #[cfg(test)]
 mod save_existence;
+#[cfg(test)]
+mod wal_bound;

@@ -1,0 +1,112 @@
+{
+ "env": {
+  "date": "2026-10-22",
+  "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "system": "Linux",
+  "machine": "x86_64",
+  "python": "3.12.15",
+  "git": "git version 2.55.0",
+  "sqlite": "3.45.1",
+  "velo_binding": "unversioned binding",
+  "repo_commit": "dd15186",
+  "workdir": "/home/runner/work/_temp/velo-agent-bench",
+  "steps": 500,
+  "files": 1000,
+  "restores": 100,
+  "seed": 1,
+  "quick": false
+ },
+ "results": [
+  {
+   "system": "velo (5.2 API)",
+   "provenance": "as velo",
+   "steps_s": 2.500377365000105,
+   "disk_after_steps": 11183875,
+   "restore_total_s": 166.91884030399967,
+   "restore_median_s": 1.6645313280000096,
+   "who_wrote_s": 0.25636569900001405,
+   "branches_s": 0.577121027999965,
+   "disk_final": 11952938
+  },
+  {
+   "system": "velo",
+   "provenance": "ids recompute from content; author and metadata are hashed into each snapshot id; signatures can be attached",
+   "steps_s": 1.2576560610003753,
+   "disk_after_steps": 11105643,
+   "restore_total_s": 2.434937578999609,
+   "restore_median_s": 0.02390378799998416,
+   "who_wrote_s": 0.25568433699999105,
+   "branches_s": 0.28410353399988253,
+   "disk_final": 11919762
+  },
+  {
+   "system": "shadow git",
+   "provenance": "object hashes verify content; author and message per commit only by discipline, nothing binds them to a run",
+   "steps_s": 12.14829830800113,
+   "disk_after_steps": 3471066,
+   "restore_total_s": 4.628605511999979,
+   "restore_median_s": 0.04610385899997027,
+   "who_wrote_s": 0.17214802000000873,
+   "branches_s": 3.1763973859999055,
+   "disk_final": 3825466
+  },
+  {
+   "system": "git worktree",
+   "provenance": "as shadow git",
+   "steps_s": 11.766063045000521,
+   "disk_after_steps": 3200301,
+   "restore_total_s": 4.652739222999799,
+   "restore_median_s": 0.04642714899995326,
+   "who_wrote_s": 0.16768187899998566,
+   "branches_s": 3.3363506280001047,
+   "disk_final": 11950318
+  },
+  {
+   "system": "dir copy",
+   "provenance": "none",
+   "steps_s": 51.800122552999085,
+   "disk_after_steps": 488490652,
+   "restore_total_s": 10.496561468000323,
+   "restore_median_s": 0.10124593500000856,
+   "who_wrote_s": 0.41974453800003175,
+   "branches_s": 9.404270170999894,
+   "disk_final": 570822676
+  },
+  {
+   "system": "jsonl log",
+   "provenance": "none",
+   "steps_s": 0.24739115400018363,
+   "disk_after_steps": 6352196,
+   "restore_total_s": 9.584208565999973,
+   "restore_median_s": 0.09561793300002819,
+   "who_wrote_s": 0.3647921639999936,
+   "branches_s": 0.04315544500065016,
+   "disk_final": 7284942
+  },
+  {
+   "system": "sqlite blobs",
+   "provenance": "none",
+   "steps_s": 1.4984706039998628,
+   "disk_after_steps": 28520448,
+   "restore_total_s": 8.380391640000255,
+   "restore_median_s": 0.08347403499999473,
+   "who_wrote_s": 0.0007431580000343274,
+   "branches_s": 0.2554623679997121,
+   "disk_final": 32997376
+  }
+ ],
+ "runner": {
+  "provider": "GitHub Actions hosted runner",
+  "image": "ubuntu-24.04",
+  "image_version": "20261012.334.1",
+  "runner_version": "2.338.0",
+  "kernel": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+  "cpu": "not recorded by the harness or printed in the job log (standard GitHub-hosted ubuntu-24.04 runner)",
+  "run_id": 39866892547,
+  "workflow": "bench.yml suite=agent",
+  "ref": "main",
+  "commit": "dd15186951b811b3dea173f702dad34d8731d1de",
+  "dispatched": "2026-10-22T22:42:34Z",
+  "note": "runner key added by hand after download; the 23.4-a harness (at-rest disk) was not on origin/phase-23 so main was measured"
+ }
+}

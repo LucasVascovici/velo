@@ -17,7 +17,7 @@ members = [
 default-members = ["crates/velo-cli"]
 
 [workspace.package]
-version = "6.2.0"
+version = "6.2.1"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/LucasVascovici/velo"
@@ -29,10 +29,10 @@ rust-version = "1.88"
 
 # Single source of truth for dependency versions across the workspace.
 [workspace.dependencies]
-velo-core = { path = "crates/velo-core", version = "6.2.0" }
-velo-merge = { path = "crates/velo-merge", version = "6.2.0" }
-velo-tui = { path = "crates/velo-tui", version = "6.2.0" }
-velo-testkit = { path = "crates/velo-testkit", version = "6.2.0" }
+velo-core = { path = "crates/velo-core", version = "6.2.1" }
+velo-merge = { path = "crates/velo-merge", version = "6.2.1" }
+velo-tui = { path = "crates/velo-tui", version = "6.2.1" }
+velo-testkit = { path = "crates/velo-testkit", version = "6.2.1" }
 
 blake3 = { version = "1.8", features = ["rayon"] }
 chrono = "0.4"
