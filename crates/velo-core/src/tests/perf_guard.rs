@@ -63,6 +63,8 @@ fn tree_files_count() -> usize {
         .unwrap_or(TREE_FILES)
 }
 const SAVE_SAMPLES: usize = 5;
+/// Each `save_tree_100k` sample rewrites the whole tree, so it takes fewer.
+const TREE_SAMPLES: usize = 3;
 
 fn median(values: &mut [f64]) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -258,7 +260,7 @@ fn save_tree_100k() -> Duration {
 
     let mut files = files;
     let mut samples = Vec::new();
-    for n in 0..SAVE_SAMPLES {
+    for n in 0..TREE_SAMPLES {
         let at = (n * 997) % files.len();
         files[at].1.extend_from_slice(
             format!(

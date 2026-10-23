@@ -251,7 +251,7 @@ jobs:
     # Windows is advisory until its baseline is calibrated on the runner: the
     # full workload takes over 30 minutes there and measured 6x the local baseline.
     continue-on-error: ${{ matrix.os == 'windows-latest' }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 30 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 60 }}
     strategy:
       fail-fast: false
       matrix:

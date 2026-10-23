@@ -17,14 +17,19 @@ Environment overrides, for runners too slow for the full size:
   10000 on Windows. A shortened run is not comparable to a full-size baseline, so
   the Windows baseline must be taken with the same value set.
 
-Measured runtime (developer Windows machine, release build): with the Windows CI
-values (`VELO_PERF_AGENT_STEPS=100`, `VELO_PERF_SAVE_TREE_FILES=10000`) the guard
-takes about 230 s, well inside the Windows leg's 20 minute limit. At the full
-100,000-file size it did not finish within 590 s on that machine, which is why
-the Windows leg shrinks the tree. The `save_tree_100k` workload runs in one of
-the three rounds, because its 100,000-file setup dominates and it already takes
-the median of its own samples. The full-size Linux runtime has not been measured
-locally; the first Ubuntu CI run (30 minute limit) records it.
+Measured runtime (developer Windows machine, release build, a busy machine so
+timings vary by tens of percent): with the Windows CI values
+(`VELO_PERF_AGENT_STEPS=100`, `VELO_PERF_SAVE_TREE_FILES=10000`) the guard takes
+about 255 s of test time, well inside the Windows leg's 20 minute limit. With
+30,000 files it took 480 s, so the tree adds roughly 10 s per 1,000 files on
+Windows and the full 100,000 files would take about 20 minutes there; that is why
+the Windows leg shrinks the tree. The `save_tree_100k` workload runs in the first
+round only (its 100,000-file setup dominates) and takes the median of its own
+three samples. No full-size run has been measured: WSL was not available to the
+agent that wrote this, and Windows does not finish it within the 590 s a single
+foreground call allows. Because that is unmeasured, the Ubuntu leg has a 60
+minute limit rather than risking a timeout; the first Ubuntu CI run should be
+read for the real figure and the limit tightened afterwards.
 
 The two newest workloads have no baseline entry yet: they are reported and pass
 until a baseline is calibrated on the runner.
