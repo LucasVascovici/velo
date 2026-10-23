@@ -152,19 +152,17 @@ The verdicts below are as [PERF.md](PERF.md) records them, misses included.
 | One-file save at 100,000 files, at most 1.5x the history-0 save | met on Windows, 1.02x at 100,000 files x 500 snapshots through the CLI; not measured on Linux | [PERF.md](PERF.md) section 6, [raw](../bench/results/2026-10-windows-ratio-100k-500.json) |
 
 What changed since the last judgement: the Linux 500-step ratio now exists and
-passes, and the 100,000 x 500 ratio is measured and passes on Windows. Red
-because three things are still open:
+passes, and the 100,000 x 500 ratio is measured and passes on Windows. The CI
+guard now covers all four workloads on both runners: the `perf` job in
+[`ci.yml`](../.github/workflows/ci.yml) blocks on Linux and Windows, against
+baselines in [`baseline.json`](../bench/perf/baseline.json) taken as medians of
+three CI runs ([`bench/perf/README.md`](../bench/perf/README.md), "CI
+calibration"). Red
+because two things are still open:
 
 - The disk target misses on the only Linux measurement (3.20x, open handle).
   The WAL bound that brings Windows to 2.02x was measured on Windows only, and
   the Linux at-rest disk was not measured.
-- The CI guard does not yet cover everything above. The `perf` job in
-  [`ci.yml`](../.github/workflows/ci.yml) fails a regression on Linux, but its
-  Windows leg is advisory (`continue-on-error` for `windows-latest`), and
-  `save_tree_100k` and `blame_walk` have no baseline entry in
-  [`baseline.json`](../bench/perf/baseline.json) yet, so they are reported and
-  pass. [`bench/perf/README.md`](../bench/perf/README.md) holds the steps to
-  calibrate them on the runners; that was not done.
 - The benchmark workflow [`bench.yml`](../.github/workflows/bench.yml) is
   manual.
 
@@ -281,9 +279,7 @@ Each red line, and what turns it green. This list is the next phase's input.
   `bench/results`, and label the cells in [SCALE.md](SCALE.md).
 - **Line 7** (headline workload): bring the Linux disk ratio under 3x on a
   runner, or have the owner restate that target; measure the at-rest Linux
-  disk; calibrate the `save_tree_100k` and `blame_walk` baselines from a
-  finished CI run and make the Windows leg of `perf` blocking
-  ([`bench/perf/README.md`](../bench/perf/README.md)).
+  disk.
 - **Line 9** (a stranger): run the cold-start protocol in
   [`bench/coldstart`](../bench/coldstart) on a release, commit
   `friction-log-<tag>.md` and apply the threshold; record at least one outside

@@ -248,10 +248,9 @@ jobs:
   perf:
     name: Perf · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
-    # Windows is advisory until its baseline is calibrated on the runner: the
-    # full workload takes over 30 minutes there and measured 6x the local baseline.
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 20 || 60 }}
+    # Both legs block. Baselines are runner medians (bench/perf/README.md);
+    # the guard took 2 minutes on Ubuntu and 4-11 minutes on Windows.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
