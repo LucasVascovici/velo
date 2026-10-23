@@ -68,3 +68,26 @@ The Windows entry was re-baselined for the v4 engine (agent_steps 53.17 -> 8.23,
 save_10k 0.2045 -> 0.0860). No metric got worse. The Linux entry is unchanged
 because it was not measured here; copy it from the CI artifact of the first
 green run on this branch.
+
+## Calibrating the CI baselines (phase 23, not yet done)
+
+`save_tree_100k` and `blame_walk` have no baseline entry, and the Windows leg
+of the `perf` job is still advisory (`continue-on-error` in `ci.yml`). The
+workload only reached its final form (save_tree_100k timed as a one-file
+change, tree workload in the first round only) in the last commits of the
+`phase-23` branch, so no finished CI run measured it yet. Baselines are never
+taken from a developer machine, so none were invented. To finish:
+
+1. Let `ci.yml` finish twice on `phase-23` after the last workload commit,
+   with both `Perf` legs green.
+2. For each run id: `gh run download <id> -n perf-Linux` and
+   `gh run download <id> -n perf-Windows`.
+3. Per OS and workload (`agent_steps`, `save_10k`, `save_tree_100k`,
+   `blame_walk`), take the median as the baseline and compute max/min.
+4. If every Windows spread is under 1.6x, write the medians into
+   `baseline.json` (per-OS maps, see `write_entry` in `perf_guard.rs`), remove
+   `continue-on-error` from the `perf` job and keep the Windows
+   `VELO_PERF_AGENT_STEPS` and `VELO_PERF_SAVE_TREE_FILES` overrides. If a
+   workload is at or above 1.6x, drop it from the Windows leg (or the leg) and
+   record the measured spread here.
+5. List the run ids and spreads in this section, in the same commit.
