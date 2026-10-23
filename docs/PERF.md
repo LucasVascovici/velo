@@ -677,45 +677,49 @@ ref. A single run, single seed; no variance estimate.
 
 ### One-file save at 100,000 files, 500 snapshots (CLI, Windows)
 
-**The 100,000 x 500 run was not made; this is a 50,000-file, 40-snapshot run,
-and the target at 100,000 files stays unrestated.** The measurement budget
-allowed foreground calls of at most 590 s. A first attempt at 100,000 files was
-killed (exit 143) during its first full save, after file generation plus 590 s,
-so that save takes longer than the limit on this machine. The step was then
-repeated at 50,000 files and 40 snapshots (`scale.py --files 50000 --snapshots
-40`, one file changed per snapshot, seed 1, release build of 6.2.1, CLI `velo
-save`). Raw:
-[`2026-10-windows-ratio-50k-40.json`](../bench/results/2026-10-windows-ratio-50k-40.json).
+One complete run: `scale.py --preset ratio-100k` (100,000 files, 500
+snapshots, one file changed per snapshot, seed 1), release build of 6.2.1, CLI
+`velo save`, run detached and waited on to the end (`partial: false`, every
+phase through `fsck` completed). Raw:
+[`2026-10-windows-ratio-100k-500.json`](../bench/results/2026-10-windows-ratio-100k-500.json).
 
-Machine: the same Intel Core i7-1370P laptop (20 logical CPUs), Windows 11
-Enterprise 10.0.22621, NTFS. **Defender real-time protection was on and the
-work directory was not excluded** (the exclusion list is not readable without
-admin), so every small-file figure is inflated and has a heavy tail.
+Machine: Intel Core i7-1370P laptop (20 logical CPUs), Windows 11 Enterprise
+10.0.22621, NTFS. **Defender real-time protection was on and the work
+directory was not excluded** (the exclusion list is not readable without
+admin), so small-file figures are inflated and have a heavy tail.
 
 | measure | value |
 |---|---|
-| first save (50,000 files) | 352.8 s |
-| `save_history0_median_s` (median of saves 2 to 11) | 0.928 s |
-| last-10% median / p95 (4 saves) | 0.862 s / 3.32 s |
-| `save_ratio_vs_history0` | 0.93x |
-| target | at most 1.5x: **met, at this size and 40 snapshots only** |
+| first save (100,000 files) | 589.3 s |
+| `save_history0_median_s` (median of saves 2 to 11) | 1.94 s |
+| median of saves 2 to 500 | 1.82 s |
+| last-10% median / p95 (50 saves) | 1.98 s / 3.65 s |
+| `save_ratio_vs_history0` | 1.02x |
+| `save_growth_median_ratio` (last 10% against first 10%) | 0.96x |
+| target | at most 1.5x: **met** |
+| `status` clean / restore tip / fsck | 2.1 s / 2.3 s / 17.6 s |
 
-What this does and does not settle:
+What this settles:
 
-- The CLI one-file save median is now measured at 50,000 files (about 0.9 s).
-  The gap between 30,000 and 100,000 files through the CLI is **narrowed, not
-  closed**: 100,000 files has no CLI figure from this task.
-- The ratio is not comparable with the "about 2.5x" miss in target row 4
-  above. That row is 100,000 files and 400 saves at K = 128 against a 2.1 s
-  floor from another build; this one is half the files and 40 snapshots, so the
-  history has barely grown. It does **not supersede** the 2.5x row; it only
-  shows the save does not slow down over the first 40 snapshots at 50,000
-  files. Row 4 stays "missed" until the 100,000 x 500 run is made.
-- The last-10% p95 (3.3 s) is a Defender or disk stall among 4 samples, not a
-  trend. One run, one seed.
+- **The 30,000-to-100,000 gap through the CLI is closed.** The CLI one-file
+  save median at 100,000 files is 1.8 to 1.9 s with Defender on (22.3 reached
+  only 30,000 files through the CLI). The 246 ms of 22.3 was an in-process
+  figure; through the CLI at 100,000 files the fastest runs of the series
+  take about 1.2 s and the typical save 1.8 s, dominated by walking 100,000
+  files under Defender, not by history growth.
+- **The ratio target is met at 100,000 files and 500 snapshots:** 1.02x
+  against 1.5x. The save does not slow down as history grows (last 10%
+  median 1.98 s against 2.06 s for the first 10%).
+- **This supersedes the "about 2.5x" miss in target row 4 above.** That row
+  compared 400 saves at K = 128 against a 2.1 s floor from another build; this
+  run is the same size (100,000 files) restated as a ratio to its own
+  history-0 save, and the ratio is met. The absolute time is not the 246 ms of
+  22.3 and should not be read as such; the first save (589 s) remains the
+  largest cost at this size.
+- Tail: p95 is 3.65 s and the worst save is 20 s, Defender or disk stalls
+  scattered through the run, not a trend. One run, one seed.
 
-Command for the owner (the first save alone exceeds 10 minutes, so run it
-detached; expect about an hour in total):
+Command (about 40 minutes in total; run it detached):
 
 ```
 python bench/scale/scale.py --preset ratio-100k --workdir <scratch outside the checkout> \
