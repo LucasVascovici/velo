@@ -6,7 +6,7 @@ CI runs a small guard on every pull request (`perf` job in
 - `agent_steps`: 500 `WriteGuard::save_changes` steps over a 1,000-file project.
 - `save_10k`: a one-file `save` in a 10,000-file working tree (median of 5).
 - `save_tree_100k`: a one-file-change `WriteGuard::save_tree` on a 100,000-entry
-  tree, previous snapshot as parent (median of 5; setup untimed).
+  tree, previous snapshot as parent (median of 3; setup untimed; first round only).
 - `blame_walk`: `blame` of a 200-line file at the tip of a 200-snapshot,
   two-author history (median of 5; setup untimed).
 
@@ -20,17 +20,14 @@ Environment overrides, for runners too slow for the full size:
 Measured runtime (developer Windows machine, release build, a busy machine so
 timings vary by tens of percent): with the Windows CI values
 (`VELO_PERF_AGENT_STEPS=100`, `VELO_PERF_SAVE_TREE_FILES=10000`) the local
-release run of the guard took 199 s, well inside the Windows leg's 20 minute
-limit. With 30,000 files it took 352 s, so the tree adds roughly 7.6 s per 1,000
-files on Windows and the full 100,000 files would take about 13 minutes for the
-tree alone, plus the other workloads; that is why the Windows leg shrinks the
-tree. The `save_tree_100k` workload runs in the first round only (its
-100,000-file setup dominates) and is a single sample, not a median.
-No full-size run has been measured: WSL was not available to the agent that
-wrote this, and Windows does not finish it within the 590 s a single
-foreground call allows. Because that is unmeasured, the Ubuntu leg has a 60
-minute limit rather than risking a timeout; the first Ubuntu CI run should be
-read for the real figure and the limit tightened afterwards.
+release run of the guard took 158 s of test time, well inside the Windows leg's
+20 minute limit. With 30,000 files it took 203 s, so the tree adds roughly 2.3 s
+per 1,000 files on Windows, and a full 100,000-file run would take about 6
+minutes there. The `save_tree_100k` workload runs in the first round only (its
+100,000-file setup dominates); within that one run it takes the median of 3
+one-file-change saves. No full-size run has been measured, on Windows or Linux,
+so the Ubuntu leg keeps a 60 minute limit for now; the first Ubuntu CI run
+should be read for the real figure and the limit tightened afterwards.
 
 The two newest workloads have no baseline entry yet: they are reported and pass
 until a baseline is calibrated on the runner.

@@ -14,7 +14,7 @@
 //! The measuring test is `#[ignore]`d; the judging and the baseline file
 //! handling are plain functions with ordinary tests.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -236,7 +236,7 @@ fn tree_spec<'a>(
     }
 }
 
-/// A 100,000-entry `save_tree`, saved once untimed; then the median of five
+/// A 100,000-entry `save_tree`, saved once untimed; then the median of `TREE_SAMPLES`
 /// one-file-change `save_tree` calls, each with the previous snapshot as parent.
 /// This is the path that skips the existence check for objects the parent
 /// already references, so it must cost the change, not the tree.
@@ -262,13 +262,9 @@ fn save_tree_100k() -> Duration {
     let mut samples = Vec::new();
     for n in 0..TREE_SAMPLES {
         let at = (n * 997) % files.len();
-        files[at].1.extend_from_slice(
-            format!(
-                "edit {n}
-"
-            )
-            .as_bytes(),
-        );
+        files[at]
+            .1
+            .extend_from_slice(format!("edit {n}\n").as_bytes());
         // Building the whole-tree entry list is the caller's cost, not the
         // engine's, so it stays outside the timer.
         let all = entries(&files);
@@ -296,17 +292,7 @@ fn blame_walk() -> Duration {
     let authors = [Author::new("alice").unwrap(), Author::new("bob").unwrap()];
     let branch = main_branch();
     let guard = repo.write().unwrap();
-    let render = |lines: &[String]| {
-        format!(
-            "{}
-",
-            lines.join(
-                "
-"
-            )
-        )
-        .into_bytes()
-    };
+    let render = |lines: &[String]| format!("{}\n", lines.join("\n")).into_bytes();
 
     let mut spec = SaveChanges::new(&branch, None, "first");
     spec.author = Some(&authors[0]);
@@ -428,19 +414,25 @@ fn write_entry(path: &Path, os: &str, ratios: &BTreeMap<String, f64>) {
 
 fn measure() -> BTreeMap<String, f64> {
     let (mut cal, mut agent, mut save) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut tree, mut blame) = (Vec::new(), Vec::new());
-    for _ in 0..ROUNDS {
+    let mut blame = Vec::new();
+    // The 100,000-file setup dominates the guard, so the tree workload runs in
+    // the first round only; it already takes the median of its own samples.
+    let mut tree = None;
+    for round in 0..ROUNDS {
         cal.push(calibrate().as_secs_f64());
         agent.push(agent_steps().as_secs_f64());
         save.push(save_10k().as_secs_f64());
-        tree.push(save_tree_100k().as_secs_f64());
+        if round == 0 {
+            tree = Some(save_tree_100k().as_secs_f64());
+        }
         blame.push(blame_walk().as_secs_f64());
     }
+    let tree = tree.expect("ROUNDS is at least 1");
     let cal = median(&mut cal);
     let mut out = BTreeMap::new();
     out.insert("agent_steps".to_string(), median(&mut agent) / cal);
     out.insert("save_10k".to_string(), median(&mut save) / cal);
-    out.insert("save_tree_100k".to_string(), median(&mut tree) / cal);
+    out.insert("save_tree_100k".to_string(), tree / cal);
     out.insert("blame_walk".to_string(), median(&mut blame) / cal);
     debug_assert!(WORKLOADS.iter().all(|w| out.contains_key(*w)));
     out
@@ -537,7 +529,18 @@ fn the_committed_baseline_parses() {
 
 #[test]
 fn every_workload_name_is_a_valid_baseline_key() {
-    assert_eq!(WORKLOADS.len(), 4);
+    let unique: BTreeSet<&str> = WORKLOADS.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        WORKLOADS.len(),
+        "workload names must be unique"
+    );
+    for name in ["agent_steps", "save_10k"] {
+        assert!(
+            WORKLOADS.contains(&name),
+            "{name} is missing from WORKLOADS"
+        );
+    }
     let all = read_file(&baseline_path());
     // A baseline entry, once present, must be keyed by one of the names.
     for ratios in all.values() {
