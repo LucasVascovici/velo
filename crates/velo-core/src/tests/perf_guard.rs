@@ -63,8 +63,6 @@ fn tree_files_count() -> usize {
         .unwrap_or(TREE_FILES)
 }
 const SAVE_SAMPLES: usize = 5;
-/// Each `save_tree_100k` sample rewrites the whole tree, so it takes fewer.
-const TREE_SAMPLES: usize = 3;
 
 fn median(values: &mut [f64]) -> f64 {
     values.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -236,38 +234,48 @@ fn tree_spec<'a>(
     }
 }
 
-/// A 100,000-entry `save_tree`, saved once untimed; then the median of `TREE_SAMPLES`
+/// A 100,000-entry `save_tree`, saved once untimed; then the median of `SAVE_SAMPLES`
 /// one-file-change `save_tree` calls, each with the previous snapshot as parent.
-/// This is the path that skips the existence check for objects the parent
-/// already references, so it must cost the change, not the tree.
+/// The entry list is rebuilt outside the timer from the parent's own tree, so
+/// every unchanged file is a `Content::Stored` entry and only the edited path
+/// carries bytes. This is the path that skips the existence check for objects
+/// the parent already references, so it must cost the change, not the tree.
 fn save_tree_100k() -> Duration {
     let tmp = TempDir::new().unwrap();
     crate::commands::init::run(tmp.path()).unwrap();
     let repo = Repo::open_and_migrate(tmp.path()).unwrap();
     let mut rng = Rng::new(1);
     let files = project(Layout::Scale, tree_files_count(), &mut rng);
-    let entries = |files: &[(String, Vec<u8>)]| -> Vec<TreeEntry> {
-        files
-            .iter()
-            .map(|(p, b)| TreeEntry::file(p.clone(), b.clone()))
-            .collect()
-    };
+    let first: Vec<TreeEntry> = files
+        .iter()
+        .map(|(p, b)| TreeEntry::file(p.clone(), b.clone()))
+        .collect();
     let branch = main_branch();
     let guard = repo.write().unwrap();
     let mut parent = guard
-        .save_tree(tree_spec(&branch, None, "first", entries(&files)))
+        .save_tree(tree_spec(&branch, None, "first", first))
         .unwrap();
 
-    let mut files = files;
     let mut samples = Vec::new();
-    for n in 0..TREE_SAMPLES {
+    for n in 0..SAVE_SAMPLES {
         let at = (n * 997) % files.len();
-        files[at]
-            .1
-            .extend_from_slice(format!("edit {n}\n").as_bytes());
-        // Building the whole-tree entry list is the caller's cost, not the
-        // engine's, so it stays outside the timer.
-        let all = entries(&files);
+        let (path, bytes) = &files[at];
+        let mut edited = bytes.clone();
+        edited.extend_from_slice(format!("edit {n}\n").as_bytes());
+        // Building the entry list is the caller's cost, not the engine's, so
+        // it stays outside the timer.
+        let all: Vec<TreeEntry> = repo
+            .tree_at(&parent)
+            .unwrap()
+            .into_iter()
+            .map(|f| {
+                if f.path == *path {
+                    TreeEntry::file(f.path, edited.clone())
+                } else {
+                    TreeEntry::stored(f.path, f.object, f.kind)
+                }
+            })
+            .collect();
         let t = Instant::now();
         let next = guard
             .save_tree(tree_spec(&branch, Some(&parent), "one file", all))
