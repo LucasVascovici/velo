@@ -149,17 +149,17 @@ velo costs. The saves stay flat over both full envelope shapes on Linux.
 ### Not run on 6.x
 
 Every full shape and platform below has no 6.x number and none is implied.
-Commands are under "Commands for the owner", which run them detached.
+The detached commands are under "Detached full runs" in "Commands for the owner".
 
 - **Windows, `envelope-a` full (10,000 x 2,000)**: not run. Detached
-  `scale.py --preset envelope-a` command under "Full envelope, Windows".
+  `Start-Process ... --preset envelope-a` command under "Detached full runs".
 - **Windows, `envelope-b` full (100,000 x 200)**: not run. Detached
-  `scale.py --preset envelope-b` command under "Full envelope, Windows".
+  `Start-Process ... --preset envelope-b` command under "Detached full runs".
 - **Linux, 100,000 x 500 ratio shape (`ratio-100k`)**: not run. The Linux
   `nohup python3 bench/scale/scale.py --preset ratio-100k` command.
 - **Full retention run (10,000 x 2,000, 18.10/19.4 shape)**: not run on 6.x;
-  the `default_policy_at_ten_thousand_files_and_two_thousand_snapshots` test
-  command. The reduced retention run (`default_policy_at_a_reduced_18_10_shape`)
+  the detached `default_policy_at_ten_thousand_files_and_two_thousand_snapshots`
+  test command under "Detached full runs". The reduced retention run (`default_policy_at_a_reduced_18_10_shape`)
   was also not re-run; the 19.4 figures (416 s apply, 165 s `gc`, 193 s
   vacuum) remain pre-v4 and are unconfirmed for 6.x.
 - **Linux on a local machine or WSL2** (as opposed to a hosted runner): not
@@ -431,6 +431,25 @@ Start-Process -NoNewWindow -FilePath python -ArgumentList 'bench/scale/scale.py'
 # Linux
 nohup python3 bench/scale/scale.py --preset ratio-100k --out bench/results/<date>-linux-ratio-100k.json > scale.out 2> scale.log &
 ```
+
+### Detached full runs
+
+```text
+# Windows, envelope-a (10,000 x 2,000)
+Start-Process -NoNewWindow -FilePath python -ArgumentList 'bench/scale/scale.py','--preset','envelope-a','--out','bench/results/<date>-windows-envelope-v4-a-full.json' -RedirectStandardError scale-a.log
+
+# Windows, envelope-b (100,000 x 200)
+Start-Process -NoNewWindow -FilePath python -ArgumentList 'bench/scale/scale.py','--preset','envelope-b','--out','bench/results/<date>-windows-envelope-v4-b-full.json' -RedirectStandardError scale-b.log
+
+# Windows, full retention run
+Start-Process -NoNewWindow -FilePath cargo -ArgumentList 'test','--release','-p','velo-core','--features','timing','--lib','default_policy_at_ten_thousand_files_and_two_thousand_snapshots','--','--ignored','--nocapture' -RedirectStandardOutput retention.out -RedirectStandardError retention.log
+
+# Linux, full retention run
+nohup cargo test --release -p velo-core --features timing --lib default_policy_at_ten_thousand_files_and_two_thousand_snapshots -- --ignored --nocapture > retention.out 2> retention.log &
+```
+
+The foreground forms below are for reference; do not run the full shapes
+under a time-limited tool.
 
 ```text
 # Full envelope, Windows (Defender on; say so with --defender-note if excluded)
