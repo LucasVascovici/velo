@@ -481,13 +481,13 @@ mod tests {
         let r = call(
             &mut s1,
             "velo_branch",
-            json!({"action": "create", "name": "a1"}),
+            json!({"action": "create", "name": "agent-1"}),
         );
         assert_eq!(r["result"]["isError"], false, "{r}");
         let r = call(
             &mut s1,
             "velo_branch",
-            json!({"action": "switch", "name": "a1"}),
+            json!({"action": "switch", "name": "agent-1"}),
         );
         assert_eq!(sc(&r)["result"], "started_unborn", "{r}");
         std::fs::write(&f, "top\nmid-a1\nend\nadded by a1\n").unwrap();
@@ -507,7 +507,7 @@ mod tests {
     #[test]
     fn agent_branch_plan_apply() {
         let (d, _s1, mut s2) = conflicted();
-        let r = call(&mut s2, "velo_merge_plan", json!({"source": "a1"}));
+        let r = call(&mut s2, "velo_merge_plan", json!({"source": "agent-1"}));
         let p = sc(&r);
         assert_eq!(p["clean"], false, "{r}");
         assert_eq!(
@@ -526,7 +526,7 @@ mod tests {
         let r = call(
             &mut s2,
             "velo_merge_apply",
-            json!({"source": "a1", "message": "m"}),
+            json!({"source": "agent-1", "message": "m"}),
         );
         assert_eq!(r["result"]["isError"], true);
         let t = r["result"]["content"][0]["text"].as_str().unwrap();
@@ -537,7 +537,7 @@ mod tests {
         let r = call(
             &mut s2,
             "velo_merge_apply",
-            json!({"source": "a1", "message": "merge a1", "tool_call_id": "t9",
+            json!({"source": "agent-1", "message": "merge a1", "tool_call_id": "t9",
                    "resolutions": {"f.txt": {"content": "resolved\n"}}}),
         );
         assert_eq!(r["result"]["isError"], false, "{r}");
@@ -563,7 +563,7 @@ mod tests {
         let r = call(
             &mut s2,
             "velo_merge_apply",
-            json!({"source": "a1", "message": "merge",
+            json!({"source": "agent-1", "message": "merge",
                    "resolutions": {"f.txt": {"content": "top\nmid-main\nend\nadded by a1\n"}}}),
         );
         assert_eq!(r["result"]["isError"], false, "{r}");
@@ -588,7 +588,7 @@ mod tests {
         let r = call(
             &mut s2,
             "velo_merge_apply",
-            json!({"source": "a1", "message": "m",
+            json!({"source": "agent-1", "message": "m",
                    "resolutions": {"f.txt": "theirs"}}),
         );
         assert_eq!(r["result"]["isError"], true);
@@ -597,7 +597,7 @@ mod tests {
         let r = call(
             &mut s2,
             "velo_branch",
-            json!({"action": "switch", "name": "a1", "force": true}),
+            json!({"action": "switch", "name": "agent-1", "force": true}),
         );
         assert_eq!(r["result"]["isError"], true);
         let t = r["result"]["content"][0]["text"].as_str().unwrap();
@@ -613,7 +613,7 @@ mod tests {
         let (d, _s1, mut s2) = conflicted();
         let before = s2.repo.head_token().unwrap();
         let file = std::fs::read_to_string(d.path().join("f.txt")).unwrap();
-        call(&mut s2, "velo_merge_plan", json!({"source": "a1"}));
+        call(&mut s2, "velo_merge_plan", json!({"source": "agent-1"}));
         assert_eq!(s2.repo.head_token().unwrap(), before);
         assert_eq!(
             std::fs::read_to_string(d.path().join("f.txt")).unwrap(),
