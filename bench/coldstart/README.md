@@ -3,8 +3,8 @@
 Can an agent that has never seen this repository finish a real task using only
 the README and one cookbook? This directory is the kit for finding out. It
 holds the protocol, one task card per wedge, an independent checker and a
-friction log template. It holds no results: nothing here has been run, and
-every table is empty until the owner fills it in.
+friction log template. The first run's results, against v6.2.1, are in
+[`friction-log-v6.2.1.md`](friction-log-v6.2.1.md).
 
 The run needs fresh agents with no memory of the repository, so it cannot be
 done by whoever implements velo. The owner runs it, once per release.

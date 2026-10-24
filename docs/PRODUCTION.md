@@ -6,9 +6,10 @@ here as **green**, with a link to its proof, or **red**, with the reason. This
 page records the evidence; it does not make the decision. Removing or keeping
 the note is the owner's call.
 
-Current count: **8 green, 3 red** (lines 6, 7 and 9). Judged again on
-2026-10-23 after simulation run six, the v6.2.1 release check and the Linux
-benchmark runs: lines 10 and 11 turned green, and lines 6 and 7 narrowed (each
+Current count: **9 green, 2 red** (lines 6 and 7). Judged again on
+2026-10-24 after simulation run six, the v6.2.1 release check, the Linux
+benchmark runs and the cold-start test: lines 9, 10 and 11 turned green (line 9
+on agent runs alone, with that limit stated), and lines 6 and 7 narrowed (each
 section says to what). The README note stays. The inputs to the decision are in
 "Decisions for the owner" and "Still red" at the end of this page.
 
@@ -51,7 +52,7 @@ Each line that was green was re-read against that rule:
 | 6 | The documented sizes are measured sizes, on the current format | **red (partial)** |
 | 7 | The headline workload is within its stated factor, and a regression fails CI | **red (partial)** |
 | 8 | The API and format promises are enforced by CI | green |
-| 9 | A stranger can follow the README to a working result | **red** |
+| 9 | A stranger can follow the README to a working result | green (agents only) |
 | 10 | A simulation converges with no open bug above green | green |
 | 11 | The bindings and the MCP server work from an install, not a checkout | green |
 
@@ -189,28 +190,35 @@ should demand, which is the owner's:
 - One recorded exception, `Bundle.signatures`, is described in
   [STABILITY.md](STABILITY.md) under "Not stable".
 
-## 9. A stranger follows the README: red
+## 9. A stranger follows the README: green, on agent runs alone
 
-- **No agent run has been done.** There is no `friction-log-<tag>.md` in
-  [`bench/coldstart`](../bench/coldstart);
-  [`friction-log.md`](../bench/coldstart/friction-log.md) is still the empty
-  template, so the pre-written threshold in
-  [`README.md`](../bench/coldstart/README.md) was not applied to any wedge. The
-  kit (tasks, `prepare.py`, `audit.py`, `check.py`, `rank.py`) is committed and
-  ready to run.
-- **No outside person has used velo.**
-  [`bench/outside/findings.md`](../bench/outside/findings.md) says so and has
-  no rows: no reader and no consumer. Finding someone is the owner's task (see
-  [`bench/outside/README.md`](../bench/outside/README.md)).
-- **The limit, stated.** Even when the agent runs are done, agents are the only
-  evidence this line would have. An agent that reads the README and succeeds
-  shows that the steps are findable and followable by a model; it does not show
-  that a person who has never seen velo understands what it is for or gets to a
-  result without help. Until an outside reader or consumer is recorded, the line
-  is judged on the agent runs alone and that limit goes with the verdict.
-- The five-minute quickstarts run in CI
-  ([`quickstarts.yml`](../.github/workflows/quickstarts.yml)), which shows the
-  steps work, not that anyone can find and follow them.
+- **The cold-start test ran on v6.2.1** (2026-10-24): four wedges, two runs
+  each, every run a fresh session in its own sandbox outside any checkout, with
+  the release assets installed and only `README.md`, `docs/LIBRARY.md` and the
+  wedge's cookbook handed over. All eight runs reached a green `check.py`, each
+  in under five minutes against the 45-minute limit, so **all four wedges pass
+  the threshold written before the runs**. The log, the audit reading and the
+  ranked defects are in
+  [`friction-log-v6.2.1.md`](../bench/coldstart/friction-log-v6.2.1.md).
+- **What it found.** No run hit a velo error. The friction is documentation:
+  the API reference the pages link to is not reachable (four runs), API shapes
+  had to be read from type stubs (four runs), the Rust page shows little beyond
+  save, history and blame, and the MCP section does not say how to set the run
+  id, which tools exist, how messages are framed, or that the author is the
+  client's name. The checker also found a velo bug the agents did not run into:
+  `velo history` showed nothing in a repository written through the library,
+  fixed in 6.2.2.
+- **Not done yet, from the protocol:** fixing the doc defects and running round
+  two at the fixed tag. Until then the friction log is the documentation
+  backlog.
+- **The limit, stated.** Agents are the only evidence this line has. An agent
+  that reads the README and succeeds shows that the steps are findable and
+  followable by a model; it does not show that a person who has never seen velo
+  understands what it is for or gets to a result without help. No outside
+  reader or consumer is recorded in
+  [`bench/outside/findings.md`](../bench/outside/findings.md). The line is green
+  on the agent runs alone, as this page's earlier verdict allowed, and the limit
+  goes with it.
 
 ## 10. A simulation converges: green
 
@@ -321,17 +329,6 @@ Each red line, and what turns it green. This list is the next phase's input.
   against "under 1 s"), and whether the manual `bench.yml` counts against a
   line whose regression guard is the blocking `perf` job. Both are partly the
   owner's call on what the line demands.
-- **Line 9** (a stranger): run the cold-start protocol in
-  [`bench/coldstart`](../bench/coldstart) on a release, commit
-  `friction-log-<tag>.md` and apply the threshold; record at least one outside
-  reader or consumer in
-  [`bench/outside/findings.md`](../bench/outside/findings.md), or keep the line
-  judged on agent runs alone with that limit stated. On 2026-10-23 all eight
-  sandboxes were prepared against v6.2.1 (assets downloaded and verified), and
-  no run started: each run needs a fresh session opened in its sandbox folder.
-  Preparing them already found doc defects: `README.md` mentions neither
-  `save_changes` nor `velo sync`, and the agent-checkpointing and
-  config-registry cookbooks do not mention `velo sync`.
 
 Open UX findings from run six, not bugs and not counted by any line: the
 refused-push loop (above); an unborn branch forgets its start point after
