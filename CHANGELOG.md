@@ -6,6 +6,18 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## 6.2.2
+
+Fixes for what simulation run six found. No repository format change; the
+public API changes in `velo-core` are additive.
+
+### Fixed
+
+- **`velo conflicts` showed lines neither side has when both sides moved the same line.** The context printed around a hunk came from the ancestor, so a line both sides had moved or deleted appeared beside "ours" and beside "theirs" as if it were theirs, twice in the case run six hit. `ConflictHunk.context_before` and `context_after` (`velo-merge`) are now up to three lines both sides agree on, as the merge would write them, and never cross another conflict. The text view, `--json`, the TUI and the MCP `velo_conflicts` tool all read them. Only the display changed; resolution never used the context.
+- **A path restore answered for unsaved changes outside its paths.** `restore <snapshot> --force -- <path>` printed "Discarding N unsaved change(s)" counting every dirty file in the tree, and without `--force` it refused over files it would never write. Both now count only the unsaved changes under the requested paths; a whole-tree restore is unchanged.
+- **`velo history` showed no snapshots in a repository written through the library.** A directory repository built with `save_tree` or `save_changes` has no `.velo/PARENT`, and the default history read only that, so `velo history` printed "No snapshots yet on branch 'main'" while `velo branches` showed the tip (core reported the branch as unborn). The default now walks back from the checked-out branch's tip when there is no position, as it already did for single-file repositories. Found by the cold-start checker.
+- **`undo` of a local merge warned that it rewrote pushed history.** The warning compared the merge against its first parent only, so the merged branch's pushed history counted as rewritten. Undo and `save --amend` now exclude everything every parent reaches, through the new additive `commands::sync::published_except`; a merge that was itself pushed still warns.
+
 ## 6.2.1
 
 Phase 23: gather the evidence.

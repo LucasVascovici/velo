@@ -6,11 +6,12 @@ here as **green**, with a link to its proof, or **red**, with the reason. This
 page records the evidence; it does not make the decision. Removing or keeping
 the note is the owner's call.
 
-Current count: **6 green, 5 red** (lines 6, 7, 9, 10 and 11). Judged again at
-the end of phase 23 against the rule below; the count did not move, though the
-evidence for lines 6, 7 and 11 did (each section says how far). The README note
-stays. The inputs to the decision are in "Decisions for the owner" and "Still
-red" at the end of this page.
+Current count: **9 green, 2 red** (lines 6 and 7). Judged again on
+2026-10-24 after simulation run six, the v6.2.1 release check, the Linux
+benchmark runs and the cold-start test: lines 9, 10 and 11 turned green (line 9
+on agent runs alone, with that limit stated), and lines 6 and 7 narrowed (each
+section says to what). The README note stays. The inputs to the decision are in
+"Decisions for the owner" and "Still red" at the end of this page.
 
 ## How a line turns green
 
@@ -35,7 +36,7 @@ Each line that was green was re-read against that rule:
 - Line 6: **did not hold**, now red. Its evidence was a document that disclaims
   the work; see section 6.
 - Line 8: checked, holds. The `semver` job compares against the latest released
-  tag (`v6.2.0`, `baseline-rev` in `ci.yml`), and the `package`, `parity`, corpus and `old-release` jobs
+  tag (`v6.2.1`, `baseline-rev` in `ci.yml`), and the `package`, `parity`, corpus and `old-release` jobs
   exist as listed. The one recorded exception is stated.
 - Lines 6, 7, 9, 10 and 11 were judged again at the end of phase 23: all five
   stay red, each with what is now measured and what is still missing in its
@@ -51,9 +52,9 @@ Each line that was green was re-read against that rule:
 | 6 | The documented sizes are measured sizes, on the current format | **red (partial)** |
 | 7 | The headline workload is within its stated factor, and a regression fails CI | **red (partial)** |
 | 8 | The API and format promises are enforced by CI | green |
-| 9 | A stranger can follow the README to a working result | **red** |
-| 10 | A simulation converges with no open bug above green | **red** |
-| 11 | The bindings and the MCP server work from an install, not a checkout | **red (partial)** |
+| 9 | A stranger can follow the README to a working result | green (agents only) |
+| 10 | A simulation converges with no open bug above green | green |
+| 11 | The bindings and the MCP server work from an install, not a checkout | green |
 
 ## 1. Released formats open, newer ones are refused: green
 
@@ -126,18 +127,25 @@ Each line that was green was re-read against that rule:
   Now measured on Windows, full size (6.2.1): 100,000 files x 500 snapshots,
   the ratio shape
   ([result](../bench/results/2026-10-windows-ratio-100k-500.json)).
+- Measured on a Linux GitHub runner on 6.2.1 (2026-10-23), both complete:
+  - the 100,000 x 500 ratio shape: one-file save 0.69 s median over the last
+    10%, **0.92x** the history-0 save
+    ([result](../bench/results/2026-10-23-linux-runner-ratio-100k-500.json));
+  - the full retention run, 10,000 files x 2,000 snapshots: `retention::apply`
+    175 s, `gc` 2.8 s, incremental vacuum 115 s, `velo.db` 5.56 GB to 2.21 GB
+    ([log](../bench/results/2026-10-23-linux-runner-retention-10k-2000.txt)).
+    The test builds its history with whole trees, the 18.10 shape, so it is
+    the worst case for the delete stage, not the K = 128 default.
 - Still missing, by SCALE.md's own list "Not run on 6.x":
   - Windows, `envelope-a` (10,000 x 2,000) and `envelope-b` (100,000 x 200):
     not run. Windows has only reduced shapes (10,000 x 200, 30,000 x 20 which
     is partial, 50,000 x 40) plus the one full ratio shape. SCALE.md claims
     both platforms, so the page is not fully measured.
-  - Linux, the 100,000 x 500 ratio shape: not run.
-  - The retention run on 6.x: not run; its 416 s / 165 s / 193 s figures are
-    from before format v4.
   - Linux is a hosted runner only, on two different CPUs; no local Linux.
-- It turns green when the four missing runs above exist, each committed as a
+- It turns green when the two Windows envelopes exist, each committed as a
   complete run (the detached commands are in SCALE.md under "Commands for the
-  owner"). The sentence does not change.
+  owner"), or when SCALE.md stops claiming those shapes on Windows. The
+  sentence does not change.
 
 ## 7. Headline workload against its stated factor: red (partial)
 
@@ -145,11 +153,11 @@ The verdicts below are as [PERF.md](PERF.md) records them, misses included.
 
 | Target | Verdict | Where |
 | --- | --- | --- |
-| One-file save at 100,000 files, under 1 s (22.3) | partial: median 246 ms, slowest 496 ms, through the library `save_tree` on Windows. Through the CLI at 100,000 files the save is 1.8 to 1.9 s with Defender on, so the sub-second figure is the library's, not the CLI's | [PERF.md](PERF.md), "After the parent-membership rule (22.3)" and section 6, "One-file save at 100,000 files, 500 snapshots (CLI, Windows)" |
-| Who wrote this line, within 1.5x shadow git (22.4) | met: 0.87x on Windows (22.4); 1.49x on the Linux runner, met by a hair | [PERF.md](PERF.md) section 11 and section 6, "Result on a Linux GitHub runner" |
-| Disk after 500 steps, at most 3x git (22.5) | Windows: met at rest (2.10x) and, after the WAL bound (23.5), 2.02x with the handle open. Linux runner: **missed**, 3.20x with the handle open (11.1 MB against 3.5 MB); the at-rest figure was not measured there | [PERF.md](PERF.md) section 12 and section 6 |
-| 500 steps, at most 3x shadow git on Linux | **met on a Linux runner**: 1.26 s against 12.15 s, 0.10x, format v4, one run, one seed | [PERF.md](PERF.md) section 6, "Result on a Linux GitHub runner" ([raw](../bench/results/2026-10-linux-runner-agent-500-v4.json)) |
-| One-file save at 100,000 files, at most 1.5x the history-0 save | met on Windows, 1.02x at 100,000 files x 500 snapshots through the CLI; not measured on Linux | [PERF.md](PERF.md) section 6, [raw](../bench/results/2026-10-windows-ratio-100k-500.json) |
+| One-file save at 100,000 files, under 1 s (22.3) | partial: median 246 ms, slowest 496 ms, through the library `save_tree` on Windows. Through the CLI it is 0.69 s on the Linux runner (6.2.1, [raw](../bench/results/2026-10-23-linux-runner-ratio-100k-500.json)) and 1.8 to 1.9 s on Windows with Defender on, so the CLI misses on Windows only | [PERF.md](PERF.md), "After the parent-membership rule (22.3)" and section 6, "One-file save at 100,000 files, 500 snapshots (CLI, Windows)" |
+| Who wrote this line, within 1.5x shadow git (22.4) | met: 0.87x on Windows (22.4); 1.47x on the Linux runner with 6.2.1 (0.258 s against 0.175 s), met by a hair | [PERF.md](PERF.md) section 11, [raw](../bench/results/2026-10-23-linux-runner-agent-500-6.2.1.json) |
+| Disk after 500 steps, at most 3x git (22.5) | met on both platforms. Windows: 2.10x at rest, 2.02x with the handle open after the WAL bound (23.5). Linux runner, 6.2.1 with the WAL bound: **2.23x** with the handle open (6.86 MB against 3.08 MB) and 2.05x at rest (7.62 MB against 3.71 MB); it was 3.20x before the bound | [PERF.md](PERF.md) section 12, [raw](../bench/results/2026-10-23-linux-runner-agent-500-6.2.1.json) |
+| 500 steps, at most 3x shadow git on Linux | **met on a Linux runner**: 1.45 s against 13.15 s, 0.11x, 6.2.1, one run, one seed (1.26 s against 12.15 s on 6.2.0) | [raw](../bench/results/2026-10-23-linux-runner-agent-500-6.2.1.json), [6.2.0 raw](../bench/results/2026-10-linux-runner-agent-500-v4.json) |
+| One-file save at 100,000 files, at most 1.5x the history-0 save | met on both: 1.02x on Windows and 0.92x on the Linux runner, 100,000 files x 500 snapshots, through the CLI | [Windows raw](../bench/results/2026-10-windows-ratio-100k-500.json), [Linux raw](../bench/results/2026-10-23-linux-runner-ratio-100k-500.json) |
 
 What changed since the last judgement: the Linux 500-step ratio now exists and
 passes, and the 100,000 x 500 ratio is measured and passes on Windows. The CI
@@ -157,14 +165,19 @@ guard now covers all four workloads on both runners: the `perf` job in
 [`ci.yml`](../.github/workflows/ci.yml) blocks on Linux and Windows, against
 baselines in [`baseline.json`](../bench/perf/baseline.json) taken as medians of
 three CI runs ([`bench/perf/README.md`](../bench/perf/README.md), "CI
-calibration"). Red
-because two things are still open:
+calibration"). On 2026-10-23 the Linux disk target was met (2.23x with the
+handle open, 2.05x at rest), so every target is now met on Linux. Red because
+two things are still open, and both are partly a question of what the line
+should demand, which is the owner's:
 
-- The disk target misses on the only Linux measurement (3.20x, open handle).
-  The WAL bound that brings Windows to 2.02x was measured on Windows only, and
-  the Linux at-rest disk was not measured.
+- The CLI one-file save at 100,000 files is 1.8 to 1.9 s on Windows with
+  Defender scanning on, against "under 1 s". The target was set for the
+  library `save_tree` (22.3), which meets it on Windows, and the CLI meets it
+  on Linux; whether the CLI on a scanned Windows disk is part of the line is
+  not settled.
 - The benchmark workflow [`bench.yml`](../.github/workflows/bench.yml) is
-  manual.
+  manual. The regression guard is the `perf` job, which blocks on both
+  platforms; the manual workflow is the measurement, not the guard.
 
 ## 8. API and format promises enforced by CI: green
 
@@ -177,41 +190,74 @@ because two things are still open:
 - One recorded exception, `Bundle.signatures`, is described in
   [STABILITY.md](STABILITY.md) under "Not stable".
 
-## 9. A stranger follows the README: red
+## 9. A stranger follows the README: green, on agent runs alone
 
-- **No agent run has been done.** There is no `friction-log-<tag>.md` in
-  [`bench/coldstart`](../bench/coldstart);
-  [`friction-log.md`](../bench/coldstart/friction-log.md) is still the empty
-  template, so the pre-written threshold in
-  [`README.md`](../bench/coldstart/README.md) was not applied to any wedge. The
-  kit (tasks, `prepare.py`, `audit.py`, `check.py`, `rank.py`) is committed and
-  ready to run.
-- **No outside person has used velo.**
-  [`bench/outside/findings.md`](../bench/outside/findings.md) says so and has
-  no rows: no reader and no consumer. Finding someone is the owner's task (see
-  [`bench/outside/README.md`](../bench/outside/README.md)).
-- **The limit, stated.** Even when the agent runs are done, agents are the only
-  evidence this line would have. An agent that reads the README and succeeds
-  shows that the steps are findable and followable by a model; it does not show
-  that a person who has never seen velo understands what it is for or gets to a
-  result without help. Until an outside reader or consumer is recorded, the line
-  is judged on the agent runs alone and that limit goes with the verdict.
-- The five-minute quickstarts run in CI
-  ([`quickstarts.yml`](../.github/workflows/quickstarts.yml)), which shows the
-  steps work, not that anyone can find and follow them.
+- **The cold-start test ran on v6.2.1** (2026-10-24): four wedges, two runs
+  each, every run a fresh session in its own sandbox outside any checkout, with
+  the release assets installed and only `README.md`, `docs/LIBRARY.md` and the
+  wedge's cookbook handed over. All eight runs reached a green `check.py`, each
+  in under five minutes against the 45-minute limit, so **all four wedges pass
+  the threshold written before the runs**. The log, the audit reading and the
+  ranked defects are in
+  [`friction-log-v6.2.1.md`](../bench/coldstart/friction-log-v6.2.1.md).
+- **What it found.** No run hit a velo error. The friction is documentation:
+  the API reference the pages link to is not reachable (four runs), API shapes
+  had to be read from type stubs (four runs), the Rust page shows little beyond
+  save, history and blame, and the MCP section does not say how to set the run
+  id, which tools exist, how messages are framed, or that the author is the
+  client's name. The checker also found a velo bug the agents did not run into:
+  `velo history` showed nothing in a repository written through the library,
+  fixed in 6.2.2.
+- **Not done yet, from the protocol:** fixing the doc defects and running round
+  two at the fixed tag. Until then the friction log is the documentation
+  backlog.
+- **The limit, stated.** Agents are the only evidence this line has. An agent
+  that reads the README and succeeds shows that the steps are findable and
+  followable by a model; it does not show that a person who has never seen velo
+  understands what it is for or gets to a result without help. No outside
+  reader or consumer is recorded in
+  [`bench/outside/findings.md`](../bench/outside/findings.md). The line is green
+  on the agent runs alone, as this page's earlier verdict allowed, and the limit
+  goes with it.
 
-## 10. A simulation converges: red
+## 10. A simulation converges: green
 
-[`SIMULATION.md`](SIMULATION.md) records five runs and the run-six plan. Run
-six, the one meant for the 6.2.x release, is "planned, not yet run": its row in
-the summary table is "planned" throughout. Run five's findings are all fixed in
-6.1.0, and "Open after this run: none of the findings above", but that run was
-against 6.0.1 and left blind spots (`restore <path>`, `stash drop`, `mcp`, HTTP
-remotes, large files, `.veloignore` and others) unexercised, and the oracle's
-attribution warnings were unexplained when it ran. The line needs a run on the
-current release with nothing open above green; none is recorded.
+Run six ran against 6.2.1 on 2026-10-23 and is recorded in
+[`SIMULATION.md`](SIMULATION.md), "Run six".
 
-## 11. Bindings and the MCP server from an install: red (partial)
+- **Convergence.** Every clone ended at the remote's tip and `fsck` was clean
+  on the remote and on all nine clones. The full run (9 developers, 4 rounds,
+  2,354 commands) was reported "not converged" by the oracle over five work
+  markers missing from main; each was traced through the remote's history, and
+  none is a velo loss: four were removed when a developer rewrote the lines
+  that carried them (snapshot `3a97c25`, a mission to edit those lines), one
+  when a developer forced `resolve --mark --force` past velo's warning, which
+  named the line it dropped. The second pass (rounds 1 and 2 again, 933
+  commands) converged with no oracle problem.
+- **Blind spots.** The full run's blind-spot missions did not reach the
+  developers, so the second pass and a scripted check covered them: twelve
+  checks against 6.2.1, all passing
+  ([results](../bench/results/2026-10-23-run-six-blind-spots.json)): stash
+  `-m`, show and drop; remote add and remove; `.veloignore`; the exit-code
+  rule; the mid-merge refusals; the HTTP token message; a 32 MB file over HTTP;
+  tags reaching a fresh clone; a 5.3.0 client against a 6.2.1 remote; 5.3.0
+  refusing a v4 repository; a 6.2.1 bundle applied by 5.3.0; `velo-mcp` over
+  stdio.
+- **Bugs.** Three confirmed, none data-losing, all fixed in 6.2.2 with a
+  regression test each: `velo conflicts` showing lines when both sides moved
+  the same line (medium, display only), a path restore counting unsaved changes
+  outside its paths (low), and `undo` of a local merge warning about pushed
+  history (low). Nothing above green is open.
+- **Limits.** The blind spots were exercised by a script, not by simulated
+  developers, so they show the behaviour is right, not that a developer finds
+  it. UX findings remain open (below); they are not bugs, and the line is about
+  bugs.
+- **Not met, recorded:** commands per refused push were 38.6 in the second
+  pass against a target of under 4 (21.5). `velo sync` went from one use to 35
+  and worked whenever it was used; developers still read the manual recipe
+  printed after it as the instructions.
+
+## 11. Bindings and the MCP server from an install: green
 
 - The Python and Node packages are built, installed into a clean environment
   with no Rust toolchain, and exercised on every change:
@@ -224,19 +270,19 @@ current release with nothing open above green; none is recorded.
   `velo-mcp` and the quickstarts from the archives before publish. v6.2.0 is
   published with all 23 assets, and its checksums and three attestations verify
   ([record](../bench/results/2026-10-23-release-check-v6.2.0.md)).
-- It is not green because no `release-verify` or `release-smoke` run has
-  succeeded on a release. Both workflows exist on the `phase-23` branch only, so
-  `gh run list --workflow release-smoke.yml` finds nothing on `main` and
-  `release-verify` cannot be dispatched. The only runs are push runs on
-  `phase-23`, and both failed:
-  [run 39870618921](https://github.com/LucasVascovici/velo/actions/runs/39870618921)
-  and [run 39870976394](https://github.com/LucasVascovici/velo/actions/runs/39870976394).
-  In the second, every job passed except `velo-mcp` on `ubuntu-latest`
-  ("Initialize and list tools over stdio"); the first also failed the Windows
-  wheel, which the Python pin in the second appears to have fixed. The cause of
-  the MCP failure is not recorded.
-- It turns green when `velo-mcp` passes in `release-verify` on every runner and
-  a run on a published release succeeds end to end after the branch merges.
+- **Green on the published v6.2.1.** In the v6.2.1 release run,
+  `release-smoke` ran `velo-mcp` and the quickstarts from the archives on
+  Linux and Windows and passed before publish. `release-verify` then failed
+  two jobs, and both failures were the workflow's own: on macOS, a Homebrew
+  `cargo` left on `PATH` stopped the "no toolchain" step, and on Ubuntu the
+  `velo-mcp` binary was picked with an `ls` of a missing `.exe`, which failed
+  under `pipefail` before the server started. Both were fixed in the workflow
+  (pull request #15), and a dispatched `release-verify` of the published v6.2.1
+  passed every job: the CLI on four platforms, `velo-mcp` on Linux and Windows,
+  the wheels and Node tarballs on three platforms, checksums and attestations
+  ([run 39965842878](https://github.com/LucasVascovici/velo/actions/runs/39965842878)).
+- The release run itself still shows red, because it ran the workflow before
+  the fix. The next tagged release runs the fixed one end to end.
 
 ## Decisions for the owner
 
@@ -257,11 +303,11 @@ touched.
    and no independent review has been done; the fuzz targets and tests are not a
    proof. [`REVIEW_KIT.md`](REVIEW_KIT.md) is the pack for a reviewer and is
    ready. Act on `docs/REVIEW_KIT.md`.
-4. **Which distribution channels to switch on.** v6.2.0 is on GitHub releases
-   with checksums and attestations. crates.io, PyPI, npm, Homebrew, scoop,
-   winget, containers, the MCP directory and the GitHub Action are the owner's;
-   `distribution.yml` has never run on a release and the manifest generator has
-   not been run against the real release. Act on `docs/RELEASING.md`, under
+4. **Which distribution channels to switch on.** v6.2.1 is on GitHub releases
+   with checksums and attestations, and its release run generated the
+   Homebrew, scoop and winget manifests from the real release (none was
+   submitted). crates.io, PyPI, npm, Homebrew, scoop, winget, containers, the
+   MCP directory and the GitHub Action are the owner's. Act on `docs/RELEASING.md`, under
    "Channels", and settle the name decision above first, since the package
    names depend on it.
 5. **Whether to enable the Pages deploy.** The docs site builds, and the deploy
@@ -274,21 +320,18 @@ touched.
 
 Each red line, and what turns it green. This list is the next phase's input.
 
-- **Line 6** (sizes): run Windows `envelope-a` and `envelope-b`, Linux
-  `ratio-100k`, and the retention run on 6.x, each complete and committed to
-  `bench/results`, and label the cells in [SCALE.md](SCALE.md).
-- **Line 7** (headline workload): bring the Linux disk ratio under 3x on a
-  runner, or have the owner restate that target; measure the at-rest Linux
-  disk.
-- **Line 9** (a stranger): run the cold-start protocol in
-  [`bench/coldstart`](../bench/coldstart) on a release, commit
-  `friction-log-<tag>.md` and apply the threshold; record at least one outside
-  reader or consumer in
-  [`bench/outside/findings.md`](../bench/outside/findings.md), or keep the line
-  judged on agent runs alone with that limit stated.
-- **Line 10** (simulation): run six against the 6.2.x release with the blind
-  spots exercised, record it in [SIMULATION.md](SIMULATION.md), and repeat until
-  nothing above green is open.
-- **Line 11** (installs): merge the release workflows to `main`, find and fix
-  the `velo-mcp` stdio failure on ubuntu, and get a successful `release-verify`
-  (and `release-smoke`) run on a published release; link it here.
+- **Line 6** (sizes): run Windows `envelope-a` and `envelope-b` on 6.x, each
+  complete and committed to `bench/results`, and label the cells in
+  [SCALE.md](SCALE.md); or have SCALE.md stop claiming those shapes on Windows.
+  The Linux ratio shape and the full retention run were measured on 6.2.1.
+- **Line 7** (headline workload): every target is met on Linux. Open: the CLI
+  one-file save at 100,000 files on Windows with Defender on (1.8 to 1.9 s
+  against "under 1 s"), and whether the manual `bench.yml` counts against a
+  line whose regression guard is the blocking `perf` job. Both are partly the
+  owner's call on what the line demands.
+
+Open UX findings from run six, not bugs and not counted by any line: the
+refused-push loop (above); an unborn branch forgets its start point after
+switching away; `velo push <branch>` with no remote reads the branch as a
+remote; refs are positional in `show` and `diff` but flags in `blame`, `grep`
+and `history`; `push` and `sync` publish branches and tags nobody named.

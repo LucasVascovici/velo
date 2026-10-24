@@ -2465,7 +2465,19 @@ fn warn_if_rewriting_pushed(repo: &velo_core::Repo, root: &Path, cmd: &Commands)
             commands::resolve_snapshot_id(repo, position).ok()?
         };
         let base = match cmd {
-            Commands::Save { amend: true, .. } | Commands::Undo => parent_of(&tip),
+            // Amend and undo replace the tip alone: every parent's history,
+            // including a merge's second parent, stays as it is.
+            Commands::Save { amend: true, .. } | Commands::Undo => {
+                let detail = commands::show::run(repo, &tip, &[]).ok()?;
+                let parents: Vec<_> = detail
+                    .parent
+                    .into_iter()
+                    .chain(detail.merge_parent)
+                    .collect();
+                return commands::sync::published_except(repo, &tip, &parents)
+                    .ok()
+                    .flatten();
+            }
             Commands::Squash { count, .. } => {
                 let mut base = Some(tip.clone());
                 for _ in 0..*count {

@@ -1,0 +1,111 @@
+{
+  "env": {
+    "date": "2026-10-23",
+    "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "system": "Linux",
+    "machine": "x86_64",
+    "python": "3.12.15",
+    "git": "git version 2.55.0",
+    "sqlite": "3.45.1",
+    "velo_binding": "unversioned binding",
+    "repo_commit": "6114905",
+    "workdir": "/home/runner/work/_temp/velo-agent-bench",
+    "steps": 500,
+    "files": 1000,
+    "restores": 100,
+    "seed": 1,
+    "quick": false
+  },
+  "machine": {
+    "os": "Linux",
+    "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
+    "cpu": "AMD EPYC 7763 64-Core Processor",
+    "logical_cores": 4
+  },
+  "results": [
+    {
+      "system": "velo (5.2 API)",
+      "provenance": "as velo",
+      "steps_s": 2.893424221000174,
+      "disk_after_steps": 8547147,
+      "restore_total_s": 166.95224629399996,
+      "restore_median_s": 1.6688220679999972,
+      "who_wrote_s": 0.25635576299998775,
+      "branches_s": 0.8674504779999666,
+      "disk_final": 7684010,
+      "disk_at_rest_bytes": 7651242
+    },
+    {
+      "system": "velo",
+      "provenance": "ids recompute from content; author and metadata are hashed into each snapshot id; signatures can be attached",
+      "steps_s": 1.4457300439999017,
+      "disk_after_steps": 6857603,
+      "restore_total_s": 2.4511046819999365,
+      "restore_median_s": 0.024278222999953414,
+      "who_wrote_s": 0.25788980900000524,
+      "branches_s": 0.35703221399984386,
+      "disk_final": 7655338,
+      "disk_at_rest_bytes": 7622570
+    },
+    {
+      "system": "shadow git",
+      "provenance": "object hashes verify content; author and message per commit only by discipline, nothing binds them to a run",
+      "steps_s": 13.152509660000305,
+      "disk_after_steps": 3081522,
+      "restore_total_s": 4.678084899999931,
+      "restore_median_s": 0.046693388999983654,
+      "who_wrote_s": 0.17495565400002988,
+      "branches_s": 3.2104351249997194,
+      "disk_final": 3848618,
+      "disk_at_rest_bytes": 3709491
+    },
+    {
+      "system": "git worktree",
+      "provenance": "as shadow git",
+      "steps_s": 13.157527796999034,
+      "disk_after_steps": 2940449,
+      "restore_total_s": 4.726913570000306,
+      "restore_median_s": 0.047117291999995814,
+      "who_wrote_s": 0.1740325119999966,
+      "branches_s": 3.9821019419999857,
+      "disk_final": 11967117,
+      "disk_at_rest_bytes": 11967117
+    },
+    {
+      "system": "dir copy",
+      "provenance": "none",
+      "steps_s": 51.3270837229997,
+      "disk_after_steps": 488490652,
+      "restore_total_s": 10.32079678600013,
+      "restore_median_s": 0.10116080000000238,
+      "who_wrote_s": 0.548866071999953,
+      "branches_s": 9.53228984499998,
+      "disk_final": 570822676,
+      "disk_at_rest_bytes": 570822676
+    },
+    {
+      "system": "jsonl log",
+      "provenance": "none",
+      "steps_s": 0.22737148900012016,
+      "disk_after_steps": 6352196,
+      "restore_total_s": 9.691078302999813,
+      "restore_median_s": 0.0968614930000058,
+      "who_wrote_s": 0.38307255899997017,
+      "branches_s": 0.0401129300000207,
+      "disk_final": 7284942,
+      "disk_at_rest_bytes": 7284942
+    },
+    {
+      "system": "sqlite blobs",
+      "provenance": "none",
+      "steps_s": 1.519577501000299,
+      "disk_after_steps": 28520448,
+      "restore_total_s": 8.41210255299984,
+      "restore_median_s": 0.08352632200001153,
+      "who_wrote_s": 0.0008056859999783228,
+      "branches_s": 0.26974408300009145,
+      "disk_final": 32997376,
+      "disk_at_rest_bytes": 32997376
+    }
+  ]
+}

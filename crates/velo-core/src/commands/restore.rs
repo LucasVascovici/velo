@@ -145,12 +145,20 @@ pub(crate) fn run_with(
         }
     }
 
-    if !force && !dirty.is_empty() {
-        let mut paths: Vec<PathBuf> = dirty.keys().map(PathBuf::from).collect();
+    // A path restore writes only under its paths, so only unsaved changes
+    // there are at risk: it neither refuses over nor counts the others. The
+    // prefix test is the one the target tree is filtered with below.
+    let at_risk: Vec<&str> = dirty
+        .keys()
+        .map(|d| d.as_ref())
+        .filter(|d: &&str| !partial || paths.iter().any(|p| d.starts_with(p.as_str())))
+        .collect();
+    if !force && !at_risk.is_empty() {
+        let mut paths: Vec<PathBuf> = at_risk.iter().map(PathBuf::from).collect();
         paths.sort();
         return Err(VeloError::DirtyWorkingTree { paths });
     }
-    let discarded = dirty.len();
+    let discarded = at_risk.len();
 
     let conn = guard.conn();
     let exists: bool = conn.query_row(
