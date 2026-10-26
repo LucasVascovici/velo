@@ -1,0 +1,21 @@
+--- retention at scale: 10000 files x 2000 snapshots over 60 days ---
+build: 4490.4778666s
+retention::apply (default policy): 1322.9052324s, examined 2000, removed 1240
+gc: 396.4195818s
+gc::vacuum(Incremental): 425.422004s, auto_vacuum Incremental, 5559304192 -> 2211643392 bytes
+before: 2000 snapshots, 20000000 file_map rows, velo.db 5559304192 bytes on disk,              page_count*page_size 5559304192 bytes (0 bytes on the freelist)
+after retention: 760 snapshots, 7600000 file_map rows, velo.db 5559304192 bytes on disk,              page_count*page_size 5559304192 bytes (3343577088 bytes on the freelist)
+after gc: 760 snapshots, 7600000 file_map rows, velo.db 5559304192 bytes on disk,              page_count*page_size 5559304192 bytes (3343577088 bytes on the freelist)
+after vacuum: 760 snapshots, 7600000 file_map rows, velo.db 2211643392 bytes on disk,              page_count*page_size 2211643392 bytes (0 bytes on the freelist)
+--- stage laps: retention::apply ---
+lap retention.chain 40.7149ms
+lap retention.dependants 1.1298ms
+lap retention.classify 54.0844ms
+lap compact.chain 35.6541ms
+lap compact.eligibility 44.1397ms
+lap compact.plan 15.8727421s
+lap compact.delete 939.8065941s
+lap compact.insert 141.7539385s
+lap compact.refs 54.4737ms
+lap compact.commit 224.6584708s
+--- stage laps: gc ---

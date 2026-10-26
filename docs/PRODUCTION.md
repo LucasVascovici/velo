@@ -133,9 +133,14 @@ Each line that was green was re-read against that rule:
   ([result](../bench/results/2026-10-23-linux-runner-ratio-100k-500.json)). The
   full retention run, 10,000 x 2,000, ran on the Linux runner on 6.2.1
   ([log](../bench/results/2026-10-23-linux-runner-retention-10k-2000.txt)).
-- **What the sentence does not claim, and SCALE.md says so:** Windows has no
-  full retention run (only the reduced shape), Linux is a hosted runner and not
-  a local machine, the two Linux envelope runs were on different CPUs, and the
+- **The full retention run also ran on Windows** (2026-10-26, a build of the
+  6.2.2 branch;
+  [log](../bench/results/2026-10-26-windows-retention-10k-2000.txt)): the same
+  size outcome as Linux, and 1,323 s for the apply against 175 s on Linux and
+  416 s before format v4. The machine was busy with other work, so that figure
+  is a measurement and not a number to quote; the delete stage is 94% of it.
+- **What the sentence does not claim, and SCALE.md says so:** Linux is a hosted
+  runner and not a local machine, the two Linux envelope runs were on different CPUs, and the
   Linux envelope runs are on 6.2.0 and the rest on 6.2.1 (no format or save-path
   change between them). Every number is one run.
 
