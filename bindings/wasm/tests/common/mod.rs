@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use js_sys::{Array, Reflect};
-use velo_wasm::Repo;
+use velody_wasm::Repo;
 use wasm_bindgen::prelude::*;
 
 /// Build a JS value from an object-literal expression.

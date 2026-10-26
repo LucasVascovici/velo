@@ -1,6 +1,6 @@
-# velo (Node.js)
+# Velody (Node.js)
 
-napi-rs binding over `velo-core`'s embedder API. It is its own Cargo workspace
+napi-rs binding over `velody-core`'s embedder API. It is its own Cargo workspace
 so the Node toolchain stays out of the main build.
 
 ```
@@ -10,7 +10,7 @@ npm test
 ```
 
 ```js
-const { Repo } = require('velo-core')
+const { Repo } = require('velody-core')
 const repo = await Repo.init('work')
 const id = await repo.saveTree({
   branch: 'main',
@@ -42,10 +42,10 @@ const { snapshot, written } = await repo.saveChanges({
 Notes:
 
 - Every method returns a `Promise`. The call runs on the libuv thread pool, so
-  velo-core stays synchronous and the event loop is never blocked.
-- A `Repo` wraps `Arc<Mutex<velo_core::Repo>>`: concurrent calls on one `Repo`
-  serialise. That is the binding honouring velo's anti-goal on a `Sync` `Repo`.
-- Every rejection is an `Error` whose `code` is the `velo_core::Error` variant
+  velody-core stays synchronous and the event loop is never blocked.
+- A `Repo` wraps `Arc<Mutex<velody_core::Repo>>`: concurrent calls on one `Repo`
+  serialise. That is the binding honouring velody's anti-goal on a `Sync` `Repo`.
+- Every rejection is an `Error` whose `code` is the `velody_core::Error` variant
   name (`NotARepo`, `NotFound`, `Compacted`, ...; `Unknown` for a variant added
   later), with the variant's fields as camelCase properties (`err.kind`,
   `err.name`, `err.paths`, `err.id`, `err.into`, ...).

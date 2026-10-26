@@ -4,7 +4,7 @@
 #![cfg(target_arch = "wasm32")]
 
 use js_sys::{Array, Reflect, Uint8Array};
-use velo_wasm::Repo;
+use velody_wasm::Repo;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_test::*;
 
@@ -76,7 +76,7 @@ fn fixed_timestamp_gives_the_native_id() {
             {path: 'a.txt', data: 'hello\\n'},
             {path: 'src/b.txt', data: 'world\\n'}]}",
     );
-    // Computed natively with velo-core's `Repo::create_file` and `save_tree`
+    // Computed natively with velody-core's `Repo::create_file` and `save_tree`
     // for the same inputs, so the wasm build hashes exactly as the host does.
     assert_eq!(
         repo.save_tree(input).unwrap(),

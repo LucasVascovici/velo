@@ -1,27 +1,27 @@
-//! One exception class per `velo_core::Error` variant.
+//! One exception class per `velody_core::Error` variant.
 //!
-//! `to_py` is the only conversion, so the typed errors of velo-core are never
+//! `to_py` is the only conversion, so the typed errors of velody-core are never
 //! flattened into strings at the boundary.
 
 use pyo3::create_exception;
 use pyo3::exceptions::PyException;
 use pyo3::prelude::*;
-use velo_core::error::{InProgress, RefKind};
-use velo_core::Error;
+use velody_core::error::{InProgress, RefKind};
+use velody_core::Error;
 
 create_exception!(
-    _velo,
-    VeloError,
+    _velody,
+    VelodyError,
     PyException,
-    "Base class of every velo error."
+    "Base class of every velody error."
 );
 
 macro_rules! exceptions {
     ($($name:ident),* $(,)?) => {
-        $(create_exception!(_velo, $name, VeloError);)*
+        $(create_exception!(_velody, $name, VelodyError);)*
 
         pub fn register(m: &Bound<'_, PyModule>) -> PyResult<()> {
-            m.add("VeloError", m.py().get_type::<VeloError>())?;
+            m.add("VelodyError", m.py().get_type::<VelodyError>())?;
             $(m.add(stringify!($name), m.py().get_type::<$name>())?;)*
             m.add("ReentrantCall", m.py().get_type::<ReentrantCall>())?;
             m.add_function(wrap_pyfunction!(_error_mapping, m)?)?;
@@ -64,14 +64,14 @@ exceptions!(
     AccessDenied,
     InvalidInput,
     Unsupported,
-    VeloIOError,
+    VelodyIOError,
     DatabaseError,
 );
 
 create_exception!(
-    _velo,
+    _velody,
     ReentrantCall,
-    VeloError,
+    VelodyError,
     "A merge driver or event callback called back into the repository while it was busy."
 );
 
@@ -109,8 +109,8 @@ fn paths(paths: &[std::path::PathBuf]) -> Vec<String> {
         .collect()
 }
 
-fn limit(l: &velo_core::limits::Limit) -> &'static str {
-    use velo_core::limits::Limit;
+fn limit(l: &velody_core::limits::Limit) -> &'static str {
+    use velody_core::limits::Limit;
     match l {
         Limit::ObjectBytes => "object_bytes",
         Limit::PackBytes => "pack_bytes",
@@ -123,7 +123,7 @@ fn path(p: &std::path::Path) -> String {
     p.to_string_lossy().into_owned()
 }
 
-/// Convert a velo error to the matching Python exception, with the variant's
+/// Convert a velody error to the matching Python exception, with the variant's
 /// fields attached as attributes. This is the only conversion in the crate.
 pub fn to_py(err: Error) -> PyErr {
     let msg = err.to_string();
@@ -238,18 +238,18 @@ pub fn to_py(err: Error) -> PyErr {
             }
             Error::InvalidInput { detail } => raise!(InvalidInput, "detail" => detail.as_str()),
             Error::Unsupported { detail } => raise!(Unsupported, "detail" => detail.as_str()),
-            Error::Io(_) => raise!(VeloIOError),
+            Error::Io(_) => raise!(VelodyIOError),
             Error::Db(_) => raise!(DatabaseError),
             // `Error` is non_exhaustive: a variant added later still surfaces
-            // as a velo error rather than a panic.
-            _ => raise!(VeloError),
+            // as a velody error rather than a panic.
+            _ => raise!(VelodyError),
         }
     })
 }
 
 /// `(variant name, exception class name)` for one sample of every core error,
 /// converted through [`to_py`]. Hidden: it exists so a test can prove that no
-/// variant falls through to the generic `VeloError`.
+/// variant falls through to the generic `VelodyError`.
 #[pyfunction]
 pub fn _error_mapping(py: Python<'_>) -> PyResult<Vec<(String, String)>> {
     Error::samples()

@@ -1,7 +1,7 @@
 """Config registry: versioned configs, rollback by carry-forward, tamper evidence."""
 import tempfile
 
-import velo
+import velody
 
 PATH = "configs/service.yaml"
 VERSIONS = {
@@ -11,7 +11,7 @@ VERSIONS = {
 }
 
 with tempfile.TemporaryDirectory() as tmp:
-    repo = velo.Repo.init(tmp)
+    repo = velody.Repo.init(tmp)
 
     # Publish: one snapshot per version on the `registry` branch. The version
     # lives in metadata (the binding exposes branches, not tags).
@@ -22,7 +22,7 @@ with tempfile.TemporaryDirectory() as tmp:
             branch="registry", message=f"publish {version}",
             entries={PATH: body, "configs/limits.yaml": "cpu: 1\n"},
             parent=parent,
-            author=velo.Author("release-bot"),
+            author=velody.Author("release-bot"),
             meta={"registry": {"version": version, "approved_by": "alice"}},
         )
         ids[version] = parent
@@ -34,10 +34,10 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # Roll back to 1.1.0: carry forward the stored objects, no copying.
     old = repo.tree_at(ids["1.1.0"])
-    entries = [velo.TreeEntry.stored(f.path, f.object, f.kind) for f in old]
+    entries = [velody.TreeEntry.stored(f.path, f.object, f.kind) for f in old]
     rolled = repo.save_tree(
         branch="registry", message="rollback to 1.1.0", entries=entries,
-        parent=ids["1.2.0"], author=velo.Author("oncall"),
+        parent=ids["1.2.0"], author=velody.Author("oncall"),
         meta={"registry": {"version": "1.1.0", "approved_by": "bob",
                            "rollback_of": "1.2.0"}},
     )
@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory() as tmp:
     forged = repo.save_tree(
         branch="forged", message="publish 1.2.0",
         entries={PATH: VERSIONS["1.2.0"], "configs/limits.yaml": "cpu: 1\n"},
-        parent=ids["1.1.0"], author=velo.Author("release-bot"),
+        parent=ids["1.1.0"], author=velody.Author("release-bot"),
         meta={"registry": {"version": "1.2.0", "approved_by": "mallory"}},
     )
     assert forged != ids["1.2.0"]

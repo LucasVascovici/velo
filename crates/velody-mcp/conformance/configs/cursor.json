@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "velody": {
+      "command": "/path/to/velody-mcp",
+      "args": ["--repo", "/path/to/project"]
+    }
+  }
+}

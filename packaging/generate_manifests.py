@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render Homebrew, scoop and winget manifests from a velo release.
+"""Render Homebrew, scoop and winget manifests from a velody release.
 
 Usage: generate_manifests.py --tag vX.Y.Z --assets <dir> --out <dir>
 
@@ -14,20 +14,20 @@ import re
 import sys
 from pathlib import Path
 
-REPO_URL = "https://github.com/LucasVascovici/velo"
+REPO_URL = "https://github.com/LucasVascovici/velody"
 DESCRIPTION = "A fast, safe, intuitive version control system."
-WINGET_ID = "LucasVascovici.Velo"
+WINGET_ID = "LucasVascovici.Velody"
 # Current winget manifest schema version.
 WINGET_SCHEMA = "1.6.0"
 HERE = Path(__file__).resolve().parent
 
 # Placeholder key suffix -> release asset name.
 ASSETS = {
-    "AARCH64_MACOS": "velo-aarch64-macos.tar.gz",
-    "X86_64_MACOS": "velo-x86_64-macos.tar.gz",
-    "AARCH64_LINUX": "velo-aarch64-linux.tar.gz",
-    "X86_64_LINUX": "velo-x86_64-linux.tar.gz",
-    "X86_64_WINDOWS": "velo-x86_64-windows.zip",
+    "AARCH64_MACOS": "velody-aarch64-macos.tar.gz",
+    "X86_64_MACOS": "velody-x86_64-macos.tar.gz",
+    "AARCH64_LINUX": "velody-aarch64-linux.tar.gz",
+    "X86_64_LINUX": "velody-x86_64-linux.tar.gz",
+    "X86_64_WINDOWS": "velody-x86_64-windows.zip",
 }
 
 
@@ -76,10 +76,10 @@ def generate(tag, assets_dir, out_dir):
     values = values_for(tag, assets_dir)
     out = Path(out_dir)
     plan = [
-        (HERE / "templates/velo.rb.in", out / "homebrew/velo.rb"),
-        (HERE / "templates/velo.scoop.json.in", out / "scoop/velo.json"),
+        (HERE / "templates/velody.rb.in", out / "homebrew/velody.rb"),
+        (HERE / "templates/velody.scoop.json.in", out / "scoop/velody.json"),
     ]
-    wdir = out / "winget" / "manifests" / "l" / "LucasVascovici" / "Velo" / values["VERSION"]
+    wdir = out / "winget" / "manifests" / "l" / "LucasVascovici" / "Velody" / values["VERSION"]
     for tpl in sorted((HERE / "templates/winget").glob("*.yaml.in")):
         plan.append((tpl, wdir / tpl.name[: -len(".in")]))
     written = []

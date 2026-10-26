@@ -30,7 +30,7 @@ on:
 env:
   CARGO_TERM_COLOR: always
   MDBOOK_VERSION: "0.4.52"
-  BLOB_BASE: https://github.com/LucasVascovici/velo/blob/main
+  BLOB_BASE: https://github.com/LucasVascovici/velody/blob/main
 
 permissions:
   contents: read
@@ -52,8 +52,8 @@ jobs:
           python -m venv .venv
           .venv/bin/python -m pip install maturin pdoc
           .venv/bin/maturin develop --release
-          .venv/bin/python -m pdoc velo -o ../../site/python
-          grep -q "save_tree" ../../site/python/velo.html
+          .venv/bin/python -m pdoc velody -o ../../site/python
+          grep -q "save_tree" ../../site/python/velody.html
       - uses: actions/upload-artifact@v4
         with:
           name: docs-api-python

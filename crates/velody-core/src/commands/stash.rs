@@ -1,0 +1,492 @@
+//! `velody stash` — shelve and restore dirty working-tree state.
+//!
+//! Unlike Git's stash (a hidden ref with cryptic `stash@{N}` names), Velody's
+//! shelves are named explicitly and listed in their own table.
+//!
+//! ```text
+//! velody stash [<name>]      push the current dirty state onto a named shelf
+//! velody stash list          list all shelves
+//! velody stash pop [<name>]  restore the most recent shelf (or a named one)
+//! velody stash drop [<name>] delete a shelf without restoring it
+//! velody stash show [<name>] show what a shelf contains
+//! ```
+//!
+//! Returns what happened as data; wording lives in `velody-cli`.
+
+use chrono::{DateTime, Utc};
+use std::collections::HashMap;
+use std::fs;
+
+use rusqlite::params;
+
+use crate::commands::require_working_tree;
+use crate::commands::SnapshotIdentity;
+use crate::commands::{get_dirty_files, get_tracked_files, FileStatus};
+use crate::db;
+use crate::error::{RefKind, Result, VelodyError};
+use crate::progress::Phase;
+use crate::storage;
+use crate::Repo;
+use crate::SnapshotId;
+use crate::SnapshotMeta;
+use crate::WriteGuard;
+
+/// A shelf, as listed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Shelf {
+    pub name: String,
+    /// Branch the shelf was created on.
+    pub branch: String,
+    /// Raw stored timestamp_ms; formatting is the consumer's choice.
+    pub created_at: DateTime<Utc>,
+    /// The hidden snapshot holding the shelved tree.
+    pub snapshot: String,
+}
+
+/// What `push` did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Pushed {
+    /// Nothing was unsaved, so nothing was shelved.
+    NothingToStash,
+    Shelved {
+        name: String,
+        modified: usize,
+        new: usize,
+        deleted: usize,
+        /// The snapshot the working tree was returned to. `None` when the branch
+        /// had no snapshots, in which case tracked files were simply removed.
+        restored_to: Option<String>,
+    },
+}
+
+/// The shelf was made somewhere other than where it's being applied.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BranchMismatch {
+    /// Branch the shelf was created on.
+    pub shelf: String,
+    /// Branch currently checked out.
+    pub current: String,
+}
+
+/// What `pop` did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Popped {
+    pub name: String,
+    /// Set when the shelf came from a different branch — worth mentioning, not
+    /// worth refusing over.
+    pub branch_mismatch: Option<BranchMismatch>,
+    /// True when the position has moved since the shelf was created.
+    pub position_moved: bool,
+    /// Files actually written back onto the working tree: those the shelf holds
+    /// that differ from (or are absent in) the position's tree.
+    pub restored: usize,
+    /// Files removed because the shelf recorded them as deleted.
+    pub removed: usize,
+}
+
+// ─── push ────────────────────────────────────────────────────────────────────
+
+/// Shelve the current dirty state, returning the working tree to its last
+/// snapshot.
+pub fn push(guard: &WriteGuard, name: Option<String>) -> Result<Pushed> {
+    require_working_tree(guard.repo(), "stash")?;
+    let root = guard.root();
+    let dirty = get_dirty_files(guard.repo());
+    if dirty.is_empty() {
+        return Ok(Pushed::NothingToStash);
+    }
+
+    let conn = guard.conn();
+    let branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
+    let parent_hash = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let parent_hash = parent_hash.trim().to_string();
+
+    let shelf_name = name.unwrap_or_else(|| {
+        // The repository's clock, so a pinned clock gives a stable name.
+        let at = super::timestamp_from_ms(guard.repo().now_ms());
+        format!("stash-{}", at.format("%Y%m%d-%H%M%S"))
+    });
+
+    let taken: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM stash WHERE name = ?)",
+        [&shelf_name],
+        |r| r.get(0),
+    )?;
+    if taken {
+        return Err(VelodyError::invalid(format!(
+            "A shelf named '{}' already exists. Use a different name or drop it first.",
+            shelf_name
+        )));
+    }
+
+    // Hash and compress every dirty file that still exists, in parallel.
+    let objects = guard.repo().objects();
+    let to_hash: Vec<String> = dirty
+        .iter()
+        .filter(|(_, status)| **status != FileStatus::Deleted)
+        .map(|(path, _)| path.clone())
+        .collect();
+    let progress = guard.phase(Phase::Hashing, Some(to_hash.len() as u64));
+    let hashed: Vec<(String, String, i64)> =
+        objects.put_paths(root, to_hash, &progress, || Ok(()))?;
+
+    // The shelf's tree: unchanged files carried from the parent, plus the freshly
+    // hashed dirty ones. Deleted files are simply absent, which is what records
+    // the deletion.
+    let parent_tree = crate::tree_store::tree_of(conn, &parent_hash)?;
+    let mut tree: Vec<(String, String, i64)> = {
+        parent_tree
+            .iter()
+            .map(|(p, (h, m))| (p.clone(), h.clone(), *m))
+            .filter(|(p, _, _): &(String, String, i64)| {
+                dirty.get(p.as_str()) != Some(&FileStatus::Deleted)
+                    && !hashed.iter().any(|(hp, _, _)| hp == p)
+            })
+            .collect()
+    };
+    tree.extend(hashed.iter().cloned());
+
+    let message = format!("stash: {}", shelf_name);
+    let timestamp_ms = guard.repo().now_ms();
+    let snapshot = crate::commands::snapshot_id(SnapshotIdentity {
+        tree: &tree,
+        parent: &parent_hash,
+        merge_parent: "",
+        message: &message,
+        timestamp_ms,
+        meta: &SnapshotMeta::new(),
+    });
+
+    let tx = guard.transaction()?;
+    // The shelf's snapshot lives on a hidden '_stash' branch so it never shows
+    // up in history.
+    tx.execute(
+        "INSERT INTO snapshots (hash, message, branch, parent_hash, created_at_ms)
+         VALUES (?, ?, '_stash', ?, ?)",
+        params![snapshot, message, parent_hash, timestamp_ms],
+    )?;
+    {
+        let rows: Vec<(&str, &str, i64)> = tree
+            .iter()
+            .map(|(p, h, m)| (p.as_str(), h.as_str(), *m))
+            .collect();
+        crate::tree_store::write_tree(
+            &tx,
+            &snapshot,
+            crate::tree_store::first_parent(&parent_hash),
+            Some(&parent_tree),
+            &rows,
+            guard.repo().keyframe_interval(),
+        )?;
+    }
+    tx.execute(
+        "INSERT INTO stash (name, snapshot_hash, branch, parent_hash, created_at_ms)
+         VALUES (?, ?, ?, ?, ?)",
+        params![
+            shelf_name,
+            snapshot,
+            branch.trim(),
+            parent_hash,
+            timestamp_ms
+        ],
+    )?;
+    tx.commit()?;
+    // Deliberately no event: the shelf's snapshot lives on the internal
+    // '_stash' branch, which is bookkeeping rather than history.
+
+    // Clear the brand-new files just shelved. `restore` deliberately leaves
+    // untracked files alone — they exist in no snapshot, so removing them would
+    // be unrecoverable — but here they *are* safely stored in the shelf, which is
+    // exactly what "shelve my work" means.
+    for (rel, status) in &dirty {
+        if *status == FileStatus::New {
+            let full = root.join(db::db_to_path(rel));
+            let _ = fs::remove_file(&full);
+            if let Some(parent) = full.parent() {
+                crate::commands::remove_empty_parents(parent, root);
+            }
+        }
+    }
+
+    let restored_to = if parent_hash.is_empty() {
+        // Nothing to restore to: just clear what was tracked.
+        for path in get_tracked_files(root, guard.repo().scope()) {
+            let _ = fs::remove_file(&path);
+        }
+        None
+    } else {
+        crate::commands::restore::run(
+            guard,
+            &SnapshotId::from_stored(parent_hash.as_str()),
+            crate::commands::restore::Options {
+                force: true,
+                ..Default::default()
+            },
+        )?;
+        Some(parent_hash)
+    };
+
+    let count = |want: FileStatus| dirty.values().filter(|s| **s == want).count();
+    Ok(Pushed::Shelved {
+        name: shelf_name,
+        modified: count(FileStatus::Modified),
+        new: count(FileStatus::New),
+        deleted: count(FileStatus::Deleted),
+        restored_to,
+    })
+}
+
+// ─── list ─────────────────────────────────────────────────────────────────────
+
+/// Every shelf, newest first.
+pub fn list(repo: &Repo) -> Result<Vec<Shelf>> {
+    let conn = repo.conn();
+    // Shelves pushed before the column was written hold 0; their shelf snapshot
+    // carries the real time.
+    let mut stmt = conn.prepare(
+        "SELECT st.name, st.branch,
+                CASE WHEN st.created_at_ms = 0 THEN COALESCE(s.created_at_ms, 0)
+                     ELSE st.created_at_ms END,
+                st.snapshot_hash
+         FROM stash st LEFT JOIN snapshots s ON s.hash = st.snapshot_hash
+         ORDER BY st.id DESC",
+    )?;
+    let shelves: Vec<Shelf> = stmt
+        .query_map([], |r| {
+            Ok(Shelf {
+                name: r.get(0)?,
+                branch: r.get(1)?,
+                created_at: crate::commands::timestamp_from_ms(r.get(2)?),
+                snapshot: r.get(3)?,
+            })
+        })?
+        .filter_map(|r| r.ok())
+        .collect();
+    Ok(shelves)
+}
+
+// ─── pop / drop ───────────────────────────────────────────────────────────────
+
+/// Apply a shelf to the working tree and forget it.
+pub fn pop(guard: &WriteGuard, name: Option<String>) -> Result<Popped> {
+    require_working_tree(guard.repo(), "stash")?;
+    let root = guard.root();
+    // Popping rewrites the working tree and PARENT, which would strand a merge
+    // or rebase in progress. `push` and `drop` are left alone: push refuses a
+    // clean tree and a conflicted one is dirty, and drop only deletes a shelf.
+    crate::commands::refuse_in_progress(root)?;
+    let conn = guard.conn();
+    let shelf = find_shelf(conn, name)?;
+
+    let dirty = get_dirty_files(guard.repo());
+    if !dirty.is_empty() {
+        let mut paths: Vec<std::path::PathBuf> =
+            dirty.keys().map(std::path::PathBuf::from).collect();
+        paths.sort();
+        return Err(VelodyError::DirtyWorkingTree { paths });
+    }
+
+    let current_branch = fs::read_to_string(root.join(".velo/HEAD")).unwrap_or_default();
+    let current_branch = current_branch.trim().to_string();
+    let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+
+    let branch_mismatch = (current_branch != shelf.branch).then(|| BranchMismatch {
+        shelf: shelf.branch.clone(),
+        current: current_branch,
+    });
+    let position_moved = current_parent.trim() != shelf.parent;
+
+    let (restored, removed) = apply_tree(guard, &shelf)?;
+
+    let tx = guard.transaction()?;
+    forget(&tx, &shelf, guard.repo().keyframe_interval())?;
+    tx.commit()?;
+
+    Ok(Popped {
+        name: shelf.name,
+        branch_mismatch,
+        position_moved,
+        restored,
+        removed,
+    })
+}
+
+/// Forget a shelf without applying it. Returns the shelf's name.
+pub fn drop_shelf(guard: &WriteGuard, name: Option<String>) -> Result<String> {
+    let conn = guard.conn();
+    let shelf = find_shelf(conn, name)?;
+    let tx = guard.transaction()?;
+    forget(&tx, &shelf, guard.repo().keyframe_interval())?;
+    tx.commit()?;
+    Ok(shelf.name)
+}
+
+/// Write a shelf's files onto the working tree and remove what it recorded as
+/// deleted. Returns (written, removed).
+fn apply_tree(guard: &WriteGuard, shelf: &ShelfRow) -> Result<(usize, usize)> {
+    let root = guard.root();
+    let conn = guard.conn();
+    let objects = guard.repo().objects();
+
+    // The mode is read alongside the hash so exec bits and symlinks survive a
+    // round trip: this used to `fs::write` the bytes and drop the mode entirely.
+    let files: Vec<(String, String, i64)> = crate::tree_store::tree_of(conn, &shelf.snapshot)?
+        .into_iter()
+        .map(|(p, (h, m))| (p, h, m))
+        .collect();
+
+    // `pop` refused a dirty tree, so the working tree equals PARENT. Entries
+    // identical to PARENT's are already on disk and are not rewritten.
+    let current_parent = fs::read_to_string(root.join(".velo/PARENT")).unwrap_or_default();
+    let on_disk: HashMap<String, (String, i64)> =
+        crate::tree_store::tree_of(conn, current_parent.trim())?
+            .into_iter()
+            .collect();
+    let to_write: Vec<(String, String, i64)> = files
+        .iter()
+        .filter(|(p, h, m)| on_disk.get(p).map(|(oh, om)| (oh, om)) != Some((h, m)))
+        .cloned()
+        .collect();
+
+    // The shelf's tree is validated whole before anything is written, as a
+    // restore does: a shelf can arrive in a bundle like any other snapshot.
+    crate::safe_path::validate_write_set(
+        root,
+        files.iter().map(|(p, _, _)| p.as_str()),
+        to_write
+            .iter()
+            .map(|(p, h, m)| (p.as_str(), h.as_str(), *m)),
+        |h| objects.get(h),
+    )?;
+
+    let progress = guard.phase(Phase::Writing, Some(to_write.len() as u64));
+    let errors: Vec<String> = objects.par_with_content(
+        &to_write,
+        |(_, hash, _)| hash.as_str(),
+        |(rel, _, mode), content| {
+            progress.tick();
+            let full = match crate::safe_path::join_checked(root, rel) {
+                Ok(p) => p,
+                Err(e) => return Some(format!("{}: {}", rel, e)),
+            };
+            if let Some(parent) = full.parent() {
+                if let Err(e) = fs::create_dir_all(parent) {
+                    return Some(format!("{}: {}", rel, e));
+                }
+            }
+            match content {
+                Ok(data) => storage::apply_file(&full, *mode, &data)
+                    .err()
+                    .map(|e| format!("{}: {}", rel, e)),
+                Err(e) => Some(format!("{}: {}", rel, e)),
+            }
+        },
+    );
+    if !errors.is_empty() {
+        return Err(VelodyError::invalid(format!(
+            "{} file(s) could not be restored from the shelf: {}",
+            errors.len(),
+            errors.join("; ")
+        )));
+    }
+
+    // A file the shelf's parent tracked but the shelf itself omits was deleted
+    // before shelving, so popping has to delete it again. Without this the
+    // deletion was silently lost: pop only ever wrote files.
+    let shelved: HashMap<&str, ()> = files.iter().map(|(p, _, _)| (p.as_str(), ())).collect();
+    let parent_paths: Vec<String> = crate::tree_store::tree_of(conn, &shelf.parent)?
+        .into_keys()
+        .collect();
+
+    let mut removed = 0usize;
+    for path in parent_paths {
+        if shelved.contains_key(path.as_str()) {
+            continue;
+        }
+        let Ok(full) = crate::safe_path::join_checked(root, &path) else {
+            continue;
+        };
+        if full.exists() && fs::remove_file(&full).is_ok() {
+            removed += 1;
+            if let Some(parent) = full.parent() {
+                crate::commands::remove_empty_parents(parent, root);
+            }
+        }
+    }
+
+    Ok((to_write.len(), removed))
+}
+
+/// Delete a shelf's registration and the hidden snapshot behind it.
+fn forget(tx: &rusqlite::Transaction, shelf: &ShelfRow, k: u32) -> Result<()> {
+    tx.execute("DELETE FROM stash WHERE name = ?", [&shelf.name])?;
+    crate::tree_store::remove_trees_by_parent(tx, &[shelf.snapshot.as_str()], k)?;
+    tx.execute("DELETE FROM snapshots WHERE hash = ?", [&shelf.snapshot])?;
+    Ok(())
+}
+
+/// A shelf's stored row.
+struct ShelfRow {
+    name: String,
+    snapshot: String,
+    branch: String,
+    parent: String,
+}
+
+/// Look up a shelf by name, or take the most recent one.
+fn find_shelf(conn: &rusqlite::Connection, name: Option<String>) -> Result<ShelfRow> {
+    let row = |r: &rusqlite::Row| {
+        Ok(ShelfRow {
+            name: r.get(0)?,
+            snapshot: r.get(1)?,
+            branch: r.get(2)?,
+            parent: r.get(3)?,
+        })
+    };
+    match name {
+        Some(n) => conn
+            .query_row(
+                "SELECT name, snapshot_hash, branch, parent_hash FROM stash WHERE name = ?",
+                [&n],
+                row,
+            )
+            .map_err(|_| VelodyError::not_found(RefKind::Stash, &n)),
+        None => conn
+            .query_row(
+                "SELECT name, snapshot_hash, branch, parent_hash FROM stash
+                 ORDER BY id DESC LIMIT 1",
+                [],
+                row,
+            )
+            .map_err(|_| VelodyError::invalid("No shelves found.")),
+    }
+}
+
+// ─── show ─────────────────────────────────────────────────────────────────────
+
+/// A shelf's identity plus the changes it holds.
+#[derive(Clone, Debug)]
+pub struct ShelfDetail {
+    pub name: String,
+    /// Branch the shelf was created on.
+    pub branch: String,
+    /// Snapshot the shelf was taken against.
+    pub parent: String,
+    pub diff: crate::commands::diff::Diff,
+}
+
+/// Describe what a shelf contains, as a diff against the snapshot it was taken
+/// from.
+pub fn show_shelf(repo: &Repo, name: Option<String>) -> Result<ShelfDetail> {
+    let conn = repo.conn();
+    let shelf = find_shelf(conn, name)?;
+    let diff =
+        crate::commands::diff::snapshot_diff(repo, conn, &shelf.parent, &shelf.snapshot, &None)?;
+
+    Ok(ShelfDetail {
+        name: shelf.name,
+        branch: shelf.branch,
+        parent: shelf.parent,
+        diff,
+    })
+}

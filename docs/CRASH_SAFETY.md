@@ -1,6 +1,6 @@
 # Crash safety
 
-What velo promises when a process is killed part-way through a command, how
+What velody promises when a process is killed part-way through a command, how
 that is tested, and the windows that are known to leave something to clean up.
 
 The promise: after a kill at any durable step of any operation below, the
@@ -13,10 +13,10 @@ left held, and `undo`/`redo` still work or refuse with a typed error.
 - **Failpoints.** Every durable step of an operation (a transaction commit, a
   write of `.velo/PARENT` or `.velo/HEAD`, the first file of a multi-file
   working-tree write, the first object a `gc` deletes) is preceded or followed
-  by a call to `velo_core::failpoint::hit("<op>.<stage>")`. Without the
+  by a call to `velody_core::failpoint::hit("<op>.<stage>")`. Without the
   `failpoints` cargo feature the call is an empty inline function and compiles
   to nothing; no release build carries it.
-- **Self-exec abort.** The test (`crates/velo-core/tests/crash.rs`) builds a
+- **Self-exec abort.** The test (`crates/velody-core/tests/crash.rs`) builds a
   fixture repository, runs the operation once without a handler to learn the new
   state, and once with a handler that logs every point it hits (discovery). Then,
   for each point, it copies the fixture and spawns the same test binary as a
@@ -115,7 +115,7 @@ tables in `crash.rs`).
 - **`restore.after_first_file`.** A whole-tree restore writes its files one by
   one. A kill after the first leaves a mix of old and new files. `PARENT` still
   names the old snapshot and `status` lists the changed files as unsaved.
-  Recovery: `velo restore --force <target>` finishes it.
+  Recovery: `velody restore --force <target>` finishes it.
 - **`compact.after_commit` and `compact.before_parent`.** The rewrite
   transaction is committed (new snapshots, old rows deleted, `compactions` rows
   written) and then `.velo/PARENT` is rewritten as a separate file write. A kill
@@ -123,7 +123,7 @@ tables in `crash.rs`).
   and equals the new snapshot's tree. The old id resolves to
   `Compacted { into }`, `fsck` reports exactly one `DanglingPosition` for it, and
   `status` lists every file as unsaved because there is no snapshot to compare
-  against. Recovery: `velo restore --force <into>` (the id in the `Compacted`
+  against. Recovery: `velody restore --force <into>` (the id in the `Compacted`
   message; the tree is identical, so nothing is lost). Moving the `PARENT` write
   before the commit would only move the window: a kill then would leave `PARENT`
   naming an id that does not exist yet.
@@ -140,7 +140,7 @@ tables in `crash.rs`).
     the source's (files are written whole);
   - after the last file, before `PARENT`: all files, no position.
 
-  A second `velo clone` into the directory is refused ("already contains a Velo
+  A second `velody clone` into the directory is refused ("already contains a Velody
   repository"). Recovery: delete the directory and clone again.
 - **Objects without rows.** A kill between storing objects and committing the
   transaction (`save.objects_stored`, `bundle.after_objects`) leaves objects that
@@ -164,7 +164,7 @@ differs by filesystem and mount options), so it is documented here instead.
   commit time, so after power loss it may roll back, but the database remains
   consistent: it comes back at some earlier commit, never half-applied. Setting
   `synchronous=FULL` would make every commit durable at the cost of a sync per
-  commit; velo does not.
+  commit; velody does not.
 - Objects are written before the transaction that refers to them. A rolled-back
   import (or save) therefore leaves only objects nothing references, which `gc`
   removes. The reverse, rows pointing at objects that were lost, is the case
@@ -175,7 +175,7 @@ differs by filesystem and mount options), so it is documented here instead.
   names a snapshot that does not exist. That is the same state as the compact
   window above, minus a `Compacted` answer: `fsck` reports one `DanglingPosition`,
   `status` lists every file as unsaved, and the id resolves to nothing. No data is
-  lost: the working tree is intact. Recovery: `velo restore --force` to a snapshot
+  lost: the working tree is intact. Recovery: `velody restore --force` to a snapshot
   that exists (for instance the branch tip). An empty `PARENT` reads as no
   position; a truncated one names an id that does not exist, as above.
 
@@ -197,7 +197,7 @@ FORMAT.md is untouched.
 ## Running the harness
 
 ```bash
-cargo test -p velo-core --features failpoints --test crash
+cargo test -p velody-core --features failpoints --test crash
 ```
 
 The run spawns one child process per point, so it takes about a minute. Without
@@ -208,7 +208,7 @@ running it once, and the four checks run on each.
 
 ## Undo-heavy differential run
 
-The differential harness (`differential_long` in `crates/velo-core/src/tests/differential.rs`)
+The differential harness (`differential_long` in `crates/velody-core/src/tests/differential.rs`)
 also runs an undo-heavy mix, and the nightly run uses it too. The first measured run
 (Windows, release, commit 78afa7a, seed 1000000) started 18 sequences and stopped at
 the 18th: 17 were clean, and seed 1000002 from the `format-v4` start (subject K=3)
@@ -221,14 +221,14 @@ rather than corruption. The regression is `tests/orphan_delta_repro.rs`. The run
 recorded in `bench/results/2026-10-undo-heavy-differential.txt`. To reach 10,000
 sequences the owner (about 9 seconds per sequence
 at the rate seen here, so roughly 25 hours) by repeating the one-hour slice below
-about 25 times, each with a distinct `VELO_DIFF_SEED` so the runs do not overlap
+about 25 times, each with a distinct `VELODY_DIFF_SEED` so the runs do not overlap
 (each slice covers about 400 sequences). Run it across machines if you prefer:
 
 ```bash
 for run in $(seq 0 24); do
-  VELO_DIFF_SEED=$((1000000 + run*100000)) VELO_DIFF_MIX=undo VELO_DIFF_SECS=3600 \
-    VELO_DIFF_FAILURE_OUT=fail-$run.txt \
-    cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture \
+  VELODY_DIFF_SEED=$((1000000 + run*100000)) VELODY_DIFF_MIX=undo VELODY_DIFF_SECS=3600 \
+    VELODY_DIFF_FAILURE_OUT=fail-$run.txt \
+    cargo test -p velody-core --release --locked differential_long -- --ignored --nocapture \
     2>&1 | tee run-$run.log
 done
 cat run-*.log | grep -c 'differential_long: seed'   # total sequences

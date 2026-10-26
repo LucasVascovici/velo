@@ -1,10 +1,10 @@
-import velo
+import velody
 
 
 def make(tmp_path):
     d = tmp_path / "r"
     d.mkdir()
-    return velo.Repo.init(d)
+    return velody.Repo.init(d)
 
 
 def test_history_across_merge_includes_both_sides(tmp_path):
@@ -51,7 +51,7 @@ def test_find_snapshots(tmp_path):
 
 def test_blame_attribution_author_and_window(tmp_path):
     repo = make(tmp_path)
-    ada, bob = velo.Author("ada", "ada@x.org"), velo.Author("bob")
+    ada, bob = velody.Author("ada", "ada@x.org"), velody.Author("bob")
     a = repo.save_tree(branch="main", message="first", entries={"n": "one\ntwo\n"},
                        author=ada)
     b = repo.save_tree(branch="feat", message="second", parent=a,

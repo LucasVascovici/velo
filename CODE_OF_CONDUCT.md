@@ -61,7 +61,7 @@ appointed representative at an online or offline event.
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement by opening a
 private report at
-<https://github.com/LucasVascovici/velo/security/advisories/new>, or by
+<https://github.com/LucasVascovici/velody/security/advisories/new>, or by
 contacting the maintainer through the repository owner's GitHub profile. All
 complaints will be reviewed and investigated promptly and fairly.
 

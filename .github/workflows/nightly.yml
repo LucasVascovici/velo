@@ -23,20 +23,20 @@ jobs:
 
       - name: Differential long run
         run: |
-          export VELO_DIFF_SEED=$RANDOM$RANDOM
-          echo "VELO_DIFF_SEED=$VELO_DIFF_SEED"
-          export VELO_DIFF_SECS=3600
-          export VELO_DIFF_FAILURE_OUT=diff-failure.txt
-          cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture
+          export VELODY_DIFF_SEED=$RANDOM$RANDOM
+          echo "VELODY_DIFF_SEED=$VELODY_DIFF_SEED"
+          export VELODY_DIFF_SECS=3600
+          export VELODY_DIFF_FAILURE_OUT=diff-failure.txt
+          cargo test -p velody-core --release --locked differential_long -- --ignored --nocapture
 
       - name: Differential long run, undo-heavy mix
         run: |
-          export VELO_DIFF_SEED=$RANDOM$RANDOM
-          echo "VELO_DIFF_SEED=$VELO_DIFF_SEED"
-          export VELO_DIFF_MIX=undo
-          export VELO_DIFF_SECS=1800
-          export VELO_DIFF_FAILURE_OUT=diff-failure-undo.txt
-          cargo test -p velo-core --release --locked differential_long -- --ignored --nocapture
+          export VELODY_DIFF_SEED=$RANDOM$RANDOM
+          echo "VELODY_DIFF_SEED=$VELODY_DIFF_SEED"
+          export VELODY_DIFF_MIX=undo
+          export VELODY_DIFF_SECS=1800
+          export VELODY_DIFF_FAILURE_OUT=diff-failure-undo.txt
+          cargo test -p velody-core --release --locked differential_long -- --ignored --nocapture
 
       - name: Upload the failing seed
         if: failure()

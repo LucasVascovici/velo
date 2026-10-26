@@ -1,18 +1,18 @@
 //! Snapshot signing and one-step sync.
 //!
 //! A second `#[napi] impl Repo` block. The private key lives in a `SigningKey`
-//! the caller holds; velo never stores it. Trust is a list of public keys given
-//! per `verify` call: velo does not own that decision.
+//! the caller holds; velody never stores it. Trust is a list of public keys given
+//! per `verify` call: velody does not own that decision.
 
 use std::path::PathBuf;
 
 use napi::bindgen_prelude::*;
 use napi::Env;
 use napi_derive::napi;
-use velo_core::commands::sync::{self, BranchCreated, Pushed, SyncOptions, Synced};
-use velo_core::sign::{self, PublicKey, TrustedKeys};
-use velo_core::transport::Spawn;
-use velo_core::Error as CoreError;
+use velody_core::commands::sync::{self, BranchCreated, Pushed, SyncOptions, Synced};
+use velody_core::sign::{self, PublicKey, TrustedKeys};
+use velody_core::transport::Spawn;
+use velody_core::Error as CoreError;
 
 use crate::errors::to_js;
 use crate::repo::{build_author, snapshot_id, AuthorInput, CoreResult, Job, Repo};
@@ -233,10 +233,10 @@ pub struct SyncInput {
     pub author: Option<AuthorInput>,
     /// The merge snapshot's message.
     pub message: Option<String>,
-    /// The `velo` executable for `child:` and `ssh://` remotes, which a binding
-    /// does not have of its own. Defaults to `velo` on the path. HTTP and
+    /// The `velody` executable for `child:` and `ssh://` remotes, which a binding
+    /// does not have of its own. Defaults to `velody` on the path. HTTP and
     /// local-path remotes need none.
-    pub velo_bin: Option<String>,
+    pub velody_bin: Option<String>,
 }
 
 #[napi]
@@ -320,19 +320,19 @@ impl Repo {
             token,
             author,
             message,
-            velo_bin,
+            velody_bin,
         } = options.unwrap_or(SyncInput {
             remote: None,
             branch: None,
             token: None,
             author: None,
             message: None,
-            velo_bin: None,
+            velody_bin: None,
         });
         let hooks = self.hooks.clone();
         self.job(move |repo| {
             let remote = remote.as_deref().unwrap_or("origin");
-            let spawn = Spawn::new(velo_bin.map(PathBuf::from).unwrap_or_else(|| "velo".into()));
+            let spawn = Spawn::new(velody_bin.map(PathBuf::from).unwrap_or_else(|| "velody".into()));
             let author = build_author(author)?;
             let mut opts = SyncOptions::default();
             if let Some(a) = author.as_ref() {
@@ -345,10 +345,10 @@ impl Repo {
             // one opened like this one (same listener and merge drivers). The
             // shared handle is idle: the job holds its lock.
             let credentialed;
-            let target: &velo_core::Repo = match token {
+            let target: &velody_core::Repo = match token {
                 Some(token) => {
                     let (drivers, _) = hooks.drivers_with(None)?;
-                    credentialed = velo_core::Repo::open_and_migrate(&hooks.root)?
+                    credentialed = velody_core::Repo::open_and_migrate(&hooks.root)?
                         .listening(hooks.listener())
                         .merging(drivers)
                         .credentials(move |_url| Some(token.clone()));

@@ -1,7 +1,7 @@
-# What embedding `velo-core` was actually like
+# What embedding `velody-core` was actually like
 
 `prompt-registry` is a real consumer: a versioned prompt store with no working
-tree, written against nothing but `velo-core`'s public API. Its purpose was to
+tree, written against nothing but `velody-core`'s public API. Its purpose was to
 test a claim the test suite cannot — that the crate is pleasant to embed.
 
 The headline: **it works, and the shape is right.** A registry with publish,
@@ -26,7 +26,7 @@ matched on `Error::NotFound`:
 ```rust
 match commands::resolve_snapshot_id(&self.repo, BRANCH) {
     Ok(id) => Ok(Some(id)),
-    Err(velo_core::Error::NotFound { .. }) => Ok(None),
+    Err(velody_core::Error::NotFound { .. }) => Ok(None),
     Err(e) => Err(e.into()),
 }
 ```
@@ -53,7 +53,7 @@ let id: SnapshotId = entry.hash.parse()?;      // and this can fail, in theory
 let meta = self.repo.snapshot_meta(&id)?;
 ```
 
-The `parse()` cannot actually fail for a row Velo wrote, but the signature says it
+The `parse()` cannot actually fail for a row Velody wrote, but the signature says it
 can, so the consumer carries an error path that is dead. `Entry.branch`,
 `Entry.parent`, `Entry.merge_parent` and `Entry.tag` are likewise `String` where
 `BranchName`, `SnapshotId` and `TagName` exist.
@@ -168,7 +168,7 @@ find later.
   long-lived consumer touches on every write.
 - **Asking "does this branch exist?"** meant resolving its tip as a spec and
   interpreting the error, which conflates two different answers. `Repo::branch_tip`
-  and `Repo::branch_exists` ask directly, and they are genuinely distinct: `velo
+  and `Repo::branch_exists` ask directly, and they are genuinely distinct: `velody
   switch new` creates a branch that *exists* with *no tip*. The registry's `tip()`
   went from a three-arm match on an error to one line.
 - **`tag::create` took `Option<&str>`** while everything around it took
@@ -183,7 +183,7 @@ changes. Format v2 made stored ids 64 characters, and while most renderers had
 been converted to abbreviate, **eight had not**: `status`, `tag`, `undo`, `redo`,
 `show`'s parent line, `restore`, `switch`, `merge`, and `history --graph`. They
 printed the id verbatim, which under v1's 16-character ids had looked correct by
-accident. `velo tag`'s table blew out to a 64-wide column.
+accident. `velody tag`'s table blew out to a 64-wide column.
 
 The v4.0.0 release notes claimed ids were "abbreviated consistently wherever they
 are printed". That was true of the renderers that had been converted and false for

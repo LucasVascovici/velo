@@ -1,0 +1,990 @@
+//! Transport abstraction for sync (Phase 2 filesystem + Phase 3 network).
+//!
+//! A [`Remote`] is a source/sink of history. Three implementations:
+//!   * `HttpRemote` (feature `http`) — a repository served over `http(s)://`
+//!     by the handlers in [`crate::serve::http`].
+//!   * [`LocalRemote`] — a repo reachable by path; read/write its DB directly.
+//!   * [`StreamRemote`] — a repo reachable by spawning a subprocess that runs
+//!     `velody serve-upload`/`serve-receive` and speaking a small pack protocol
+//!     over its stdin/stdout. Used for `ssh://…` (via `ssh`) and `child:…` (a
+//!     local subprocess, used by tests and for local streaming).
+//!
+//! The sync verbs (`clone`/`fetch`/`push`/`pull`) are written against this
+//! trait, so they are transport-agnostic.
+//!
+//! ## Wire protocol (little-endian, length-prefixed)
+//! Strings are `u32 len + bytes`. A "refs" block is `u32 count` then that many
+//! `(branch, hash)` string pairs.
+//!
+//! **upload** (server serves a fetch):
+//!   `S→C` refs · `C→S` client's "have" hashes then EOF · `S→C` pack then EOF.
+//! **receive** (server accepts a push):
+//!   `S→C` refs · `C→S` branch, new_tip, pack then EOF · `S→C` status string.
+//!
+//! The pack is framed by EOF rather than a length prefix, which is why transfer
+//! progress is reported as a running byte count with no total: the reader cannot
+//! know the size in advance. Giving it one means length-prefixing the pack, and
+//! that is a wire-format break — `serve-upload` / `serve-receive` run on the far
+//! host, which may be an older build — so it would need a negotiated protocol
+//! version. Deliberately not done here.
+//!
+//! ## HTTP
+//! The same encodings carried over three endpoints under `<base>/velo/v1/`
+//! (the base URL may have a path prefix; slashes are joined, never doubled):
+//!
+//! * `GET  refs` — responds with a refs block.
+//! * `POST upload` — body: the client's "have" hashes as length-prefixed
+//!   strings (possibly none); responds with a refs block followed by the pack.
+//! * `POST receive` — body: branch, new_tip (length-prefixed) then the pack;
+//!   responds with the status string, length-prefixed.
+//!
+//! Status semantics: any 2xx is success. A push the server refuses (not a
+//! fast-forward) is still a `200` whose status string is `REJECT <reason>`,
+//! exactly as over ssh, so rejection is never confused with a failure. Any
+//! other status code is a failure and the client reports it as
+//! `remote returned HTTP <code>: <body>`. Fast-forward-only semantics are
+//! unchanged. There is no authentication in the protocol; a hosting service
+//! should put a reverse proxy in front.
+
+use std::collections::HashSet;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::process::{Child, Command, Stdio};
+
+use crate::commands::bundle::{self, Bundle};
+use crate::commands::{all_branch_tips, branch_tip};
+use crate::error::{Result, VelodyError};
+use crate::progress::PhaseGuard;
+
+pub struct RemoteRef {
+    pub branch: String,
+    pub hash: String,
+}
+
+pub enum PushOutcome {
+    Ok {
+        new_snapshots: usize,
+        new_objects: usize,
+    },
+    Rejected(String),
+}
+
+/// A place history can be fetched from and pushed to.
+pub trait Remote {
+    /// Return the remote's branch tips and a pack of everything reachable from
+    /// them that isn't already in `have`.
+    ///
+    /// `progress` is ticked as bytes move. A transport that doesn't touch a wire
+    /// ignores it.
+    fn fetch(
+        &mut self,
+        have: &HashSet<String>,
+        progress: &PhaseGuard,
+    ) -> Result<(Vec<RemoteRef>, Bundle)>;
+
+    /// Push `branch` at `new_tip`.
+    ///
+    /// `build` is called with the remote's advertised refs so the caller can
+    /// assemble a *minimal* pack (skipping history and objects the remote
+    /// already has) without an extra round-trip. The remote then performs the
+    /// fast-forward check and imports if it passes.
+    fn push(
+        &mut self,
+        branch: &str,
+        new_tip: &str,
+        build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
+        progress: &PhaseGuard,
+    ) -> Result<PushOutcome>;
+
+    /// Names of the tags the remote newly created in the last accepted
+    /// [`push`](Remote::push), or `None` when it did not say (an older server
+    /// replies with two numbers only, and a transport that never learns
+    /// returns the default).
+    ///
+    /// This travels beside [`PushOutcome`] rather than inside it so that the
+    /// published enum keeps the shape existing callers match on.
+    fn published_tags(&self) -> Option<Vec<String>> {
+        None
+    }
+}
+
+/// How much of a pack to move between progress ticks.
+///
+/// 64 KiB keeps the observer to roughly sixteen calls per megabyte — frequent
+/// enough to look live, rare enough that the reporting costs nothing next to the
+/// I/O.
+const CHUNK: usize = 64 * 1024;
+
+/// How to reach a remote that needs a subprocess.
+///
+/// None of this is discoverable from inside the library: locating the running
+/// binary and reading environment variables are both the caller's business, and
+/// a consumer that embeds Velody may have neither a `velody` executable nor an
+/// `ssh` on the path. So it is passed in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spawn {
+    /// The Velody binary to run for a `child:` URL. Normally the running
+    /// executable, which only the caller can locate.
+    pub local_bin: PathBuf,
+    /// The SSH client to invoke for an `ssh://` URL.
+    pub ssh: String,
+    /// The Velody binary to run on the far host.
+    pub remote_bin: String,
+}
+
+impl Spawn {
+    /// Defaults suitable for a normal command-line install: `ssh` on the path
+    /// here, `velody` on the path there.
+    pub fn new(local_bin: impl Into<PathBuf>) -> Self {
+        Spawn {
+            local_bin: local_bin.into(),
+            ssh: "ssh".into(),
+            remote_bin: "velody".into(),
+        }
+    }
+
+    /// Use a different SSH client.
+    pub fn ssh(mut self, program: impl Into<String>) -> Self {
+        self.ssh = program.into();
+        self
+    }
+
+    /// Use a different Velody binary on the far host.
+    pub fn remote_bin(mut self, program: impl Into<String>) -> Self {
+        self.remote_bin = program.into();
+        self
+    }
+}
+
+/// Dispatch a URL to a transport. `ssh://` and `child:` stream over a
+/// subprocess; `http://` and `https://` go over HTTP (feature `http`); anything
+/// else is treated as a local filesystem path.
+pub fn open(url: &str, spawn: &Spawn) -> Result<Box<dyn Remote>> {
+    open_with_token(url, spawn, None)
+}
+
+/// [`open`] with a bearer token for an HTTP(S) remote. The token is supplied by
+/// the caller and is ignored by every other transport. A URL that embeds
+/// credentials (`https://user:secret@host/...`) is refused: they would land in
+/// shell history and in `velody remote`'s output.
+pub fn open_with_token(url: &str, spawn: &Spawn, token: Option<&str>) -> Result<Box<dyn Remote>> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        if has_userinfo(url) {
+            return Err(VelodyError::invalid(
+                "An HTTP remote URL must not contain credentials. Supply a bearer token instead (VELODY_TOKEN or VELODY_TOKEN_<REMOTE> in the command line tool).",
+            ));
+        }
+        #[cfg(feature = "http")]
+        return Ok(Box::new(match token {
+            Some(t) => HttpRemote::new(url).with_token(t),
+            None => HttpRemote::new(url),
+        }));
+        #[cfg(not(feature = "http"))]
+        let _ = token;
+        #[cfg(not(feature = "http"))]
+        return Err(VelodyError::unsupported(
+            "HTTP remotes are not available: velody-core was built without the `http` feature.",
+        ));
+    }
+    if url.starts_with("ssh://") || url.starts_with("child:") {
+        Ok(Box::new(StreamRemote {
+            url: url.to_string(),
+            spawn: spawn.clone(),
+            tags: None,
+        }))
+    } else {
+        Ok(Box::new(LocalRemote {
+            root: crate::commands::remote::resolve_remote_root(url)?,
+            tags: None,
+        }))
+    }
+}
+
+/// Whether an http(s) URL carries `user[:password]@` before its host.
+fn has_userinfo(url: &str) -> bool {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    authority.contains('@')
+}
+
+// ─── Local (direct DB) transport ──────────────────────────────────────────────
+
+pub struct LocalRemote {
+    root: PathBuf,
+    tags: Option<Vec<String>>,
+}
+
+impl Remote for LocalRemote {
+    fn fetch(
+        &mut self,
+        have: &HashSet<String>,
+        _progress: &PhaseGuard,
+    ) -> Result<(Vec<RemoteRef>, Bundle)> {
+        // No wire: a local remote reads the other repository's database directly,
+        // so there is nothing to report moving.
+        // Reading the far repository goes through `Repo` so its schema version is
+        // checked too — a remote written by a newer Velody is refused, not misread.
+        let repo = crate::Repo::open_and_migrate(&self.root)?;
+        let conn = repo.conn();
+        let objects = repo.objects();
+        let tips = all_branch_tips(conn);
+
+        let mut snap_set: HashSet<String> = HashSet::new();
+        for (_b, tip) in &tips {
+            snap_set.extend(bundle::reachable_ancestry(conn, tip));
+        }
+        for h in have {
+            snap_set.remove(h);
+        }
+        // Skip objects the client already holds via the snapshots it reported.
+        let pack = bundle::build_pack_excluding(conn, &objects, &snap_set, have)?;
+        let refs = tips
+            .into_iter()
+            .map(|(branch, hash)| RemoteRef { branch, hash })
+            .collect();
+        Ok((refs, pack))
+    }
+
+    fn push(
+        &mut self,
+        branch: &str,
+        new_tip: &str,
+        build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
+        _progress: &PhaseGuard,
+    ) -> Result<PushOutcome> {
+        // A local push writes into *another* repository, so it opens that one and
+        // takes its lock. The guard is both the lock and the write permission.
+        let repo = crate::Repo::open_and_migrate(&self.root)?;
+        let guard = repo.write()?;
+        let conn = guard.conn();
+
+        let refs: Vec<RemoteRef> = all_branch_tips(conn)
+            .into_iter()
+            .map(|(branch, hash)| RemoteRef { branch, hash })
+            .collect();
+        let pack = build(&refs)?;
+
+        match fast_forward_check(conn, branch, new_tip, &pack) {
+            Some(reason) => Ok(PushOutcome::Rejected(reason)),
+            None => {
+                let (s, o, names) = bundle::import_pack_tags(&guard, &pack)?;
+                guard.repo().emit_imported(s);
+                self.tags = Some(names);
+                Ok(PushOutcome::Ok {
+                    new_snapshots: s,
+                    new_objects: o,
+                })
+            }
+        }
+    }
+
+    fn published_tags(&self) -> Option<Vec<String>> {
+        self.tags.clone()
+    }
+}
+
+/// Shared fast-forward gate for a push. Returns `Some(reason)` to reject.
+///
+/// A push is a fast-forward when the branch has no tip yet (new branch), the tip
+/// already equals `new_tip`, or the current tip is an **ancestor** of `new_tip`.
+/// Ancestry is walked over the pushed pack *unioned with* what the receiver
+/// already has — necessary because a minimal pack omits commits the receiver
+/// holds, including (usually) its own current tip.
+pub(crate) fn fast_forward_check(
+    conn: &rusqlite::Connection,
+    branch: &str,
+    new_tip: &str,
+    pack: &Bundle,
+) -> Option<String> {
+    // No tip yet → new branch on the remote → fast-forward trivially.
+    let old = branch_tip(conn, branch)?;
+    if old == new_tip {
+        return None; // already up to date
+    }
+
+    if reaches(conn, pack, new_tip, &old) {
+        return None; // reachable → fast-forward
+    }
+    Some(format!(
+        "'{}' has commits you don't have (non-fast-forward). Pull and reconcile first.",
+        branch
+    ))
+}
+
+/// Is `needle` an ancestor of `from`, walking parent links over `pack` **unioned
+/// with** the local database?
+///
+/// Both halves are required: a minimal pack omits commits the receiver already
+/// has (so the walk must fall through to the DB), while the DB lacks the commits
+/// still in flight (so the pack must be consulted first).
+pub(crate) fn reaches(
+    conn: &rusqlite::Connection,
+    pack: &Bundle,
+    from: &str,
+    needle: &str,
+) -> bool {
+    let pack_parents: std::collections::HashMap<&str, (&str, &str)> = pack
+        .snapshots
+        .iter()
+        .map(|s| {
+            (
+                s.hash.as_str(),
+                (s.parent_hash.as_str(), s.merge_parent.as_str()),
+            )
+        })
+        .collect();
+
+    let mut stack = vec![from.to_string()];
+    let mut seen: HashSet<String> = HashSet::new();
+    while let Some(h) = stack.pop() {
+        if h == needle {
+            return true;
+        }
+        if !seen.insert(h.clone()) {
+            continue;
+        }
+        // Prefer the pack (commits in flight), then fall back to local history.
+        let parents = if let Some((p, m)) = pack_parents.get(h.as_str()) {
+            Some((p.to_string(), m.to_string()))
+        } else {
+            conn.query_row(
+                "SELECT parent_hash, merge_parent FROM snapshots WHERE hash = ?",
+                [&h],
+                |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+            )
+            .ok()
+        };
+        if let Some((p, m)) = parents {
+            if !p.is_empty() {
+                stack.push(p);
+            }
+            if !m.is_empty() {
+                stack.push(m);
+            }
+        }
+    }
+    false
+}
+
+// ─── HTTP transport ────────────────────────────────────────────────────────────
+
+/// Join an endpoint onto a base URL without doubling or dropping a slash.
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
+fn join_url(base: &str, endpoint: &str) -> String {
+    format!(
+        "{}/{}",
+        base.trim_end_matches('/'),
+        endpoint.trim_start_matches('/')
+    )
+}
+
+/// A repository served over HTTP(S) by [`crate::serve::http`].
+#[cfg(feature = "http")]
+pub struct HttpRemote {
+    base: String,
+    token: Option<String>,
+    tags: Option<Vec<String>>,
+}
+
+#[cfg(feature = "http")]
+impl HttpRemote {
+    pub fn new(base: impl Into<String>) -> Self {
+        HttpRemote {
+            base: base.into(),
+            token: None,
+            tags: None,
+        }
+    }
+
+    /// Send `Authorization: Bearer <token>` on every request. The token is
+    /// held only in memory and is deliberately absent from `Debug` output and
+    /// errors.
+    pub fn with_token(mut self, token: impl Into<String>) -> Self {
+        self.token = Some(token.into());
+        self
+    }
+
+    /// The `Authorization` header value, if a token is set.
+    fn auth(&self) -> Option<String> {
+        self.token.as_ref().map(|t| format!("Bearer {t}"))
+    }
+
+    fn agent() -> ureq::Agent {
+        // Statuses are inspected by hand: with the default, ureq turns a 4xx into
+        // an error and throws the body away, and the body is the explanation.
+        ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .build()
+            .into()
+    }
+
+    /// Turn a response into its body, or into the error a non-2xx status means.
+    ///
+    /// The server's refusals arrive as typed errors: 401 and 403 become
+    /// `AccessDenied`, 404 `NotFound`, 503 an I/O error carrying its reason,
+    /// and 413 `LimitExceeded` with `max` 0, because the server's ceiling is
+    /// not known on this side.
+    fn checked(&self, resp: ureq::http::Response<ureq::Body>) -> Result<ureq::Body> {
+        let code = resp.status();
+        let mut body = resp.into_body();
+        if code.is_success() {
+            return Ok(body);
+        }
+        let text = body.read_to_string().unwrap_or_default();
+        let detail = text
+            .trim()
+            .strip_prefix("velody: ")
+            .map(|r| r.split_once(": ").map_or(r, |(_, d)| d))
+            .unwrap_or(text.trim())
+            .to_string();
+        match code.as_u16() {
+            401 | 403 => {
+                return Err(VelodyError::AccessDenied {
+                    remote: self.base.clone(),
+                    detail,
+                })
+            }
+            413 => {
+                return Err(VelodyError::LimitExceeded {
+                    limit: crate::limits::Limit::PackBytes,
+                    max: 0,
+                    found: None,
+                })
+            }
+            404 => {
+                return Err(VelodyError::not_found(
+                    crate::error::RefKind::Remote,
+                    self.base.clone(),
+                ))
+            }
+            503 => return Err(VelodyError::Io(std::io::Error::other(detail))),
+            _ => {}
+        }
+        Err(VelodyError::invalid(format!(
+            "remote returned HTTP {}: {}",
+            code.as_u16(),
+            text.trim()
+        )))
+    }
+
+    fn net(e: ureq::Error) -> VelodyError {
+        match e {
+            ureq::Error::Io(e) => VelodyError::Io(e),
+            other => VelodyError::Io(std::io::Error::other(other.to_string())),
+        }
+    }
+}
+
+/// A body reader that stops with an error once the operation is cancelled, so a
+/// cancelled push halts between chunks instead of after the whole upload.
+#[cfg(feature = "http")]
+struct CancelReader<'a> {
+    data: &'a [u8],
+    progress: &'a PhaseGuard<'a>,
+}
+
+#[cfg(feature = "http")]
+impl Read for CancelReader<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.progress.is_cancelled() {
+            return Err(std::io::Error::other("cancelled"));
+        }
+        let n = self.data.len().min(buf.len()).min(CHUNK);
+        buf[..n].copy_from_slice(&self.data[..n]);
+        self.data = &self.data[n..];
+        self.progress.advance(n as u64);
+        Ok(n)
+    }
+}
+
+#[cfg(feature = "http")]
+impl Remote for HttpRemote {
+    fn fetch(
+        &mut self,
+        have: &HashSet<String>,
+        progress: &PhaseGuard,
+    ) -> Result<(Vec<RemoteRef>, Bundle)> {
+        if progress.is_cancelled() {
+            return Err(VelodyError::Cancelled);
+        }
+        let limits = crate::Limits::default();
+        let mut body = Vec::new();
+        for h in have {
+            write_string(&mut body, h)?;
+        }
+        let mut req = Self::agent()
+            .post(&join_url(&self.base, "velo/v1/upload"))
+            .header("Content-Type", "application/octet-stream");
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let resp = req.send(&body[..]).map_err(Self::net)?;
+        let mut reader = self.checked(resp)?.into_reader();
+
+        let mut bytes = Vec::new();
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            if progress.is_cancelled() {
+                return Err(VelodyError::Cancelled);
+            }
+            let n = reader.read(&mut buf).map_err(VelodyError::Io)?;
+            if n == 0 {
+                break;
+            }
+            bytes.extend_from_slice(&buf[..n]);
+            if bytes.len() as u64 > limits.max_pack_bytes {
+                return Err(pack_overrun(limits.max_pack_bytes));
+            }
+            progress.advance(n as u64);
+        }
+        let mut cur = std::io::Cursor::new(&bytes[..]);
+        let refs = read_refs(&mut cur)?;
+        let at = cur.position() as usize;
+        Ok((refs, bundle::decode(&bytes[at..], &limits)?))
+    }
+
+    fn push(
+        &mut self,
+        branch: &str,
+        new_tip: &str,
+        build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
+        progress: &PhaseGuard,
+    ) -> Result<PushOutcome> {
+        let agent = Self::agent();
+        let mut req = agent.get(&join_url(&self.base, "velo/v1/refs"));
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let resp = req.call().map_err(Self::net)?;
+        let mut reader = self.checked(resp)?.into_reader();
+        let refs = read_refs(&mut reader)?;
+        let pack = build(&refs)?;
+
+        let mut payload = Vec::new();
+        write_string(&mut payload, branch)?;
+        write_string(&mut payload, new_tip)?;
+        payload.extend_from_slice(&bundle::encode(&pack));
+
+        let mut source = CancelReader {
+            data: &payload,
+            progress,
+        };
+        let mut req = agent
+            .post(&join_url(&self.base, "velo/v1/receive"))
+            .header("Content-Type", "application/octet-stream")
+            .header("Content-Length", payload.len().to_string());
+        if let Some(a) = self.auth() {
+            req = req.header("Authorization", a);
+        }
+        let sent = req.send(ureq::SendBody::from_reader(&mut source));
+        let resp = match sent {
+            Ok(r) => r,
+            Err(_) if progress.is_cancelled() => return Err(VelodyError::Cancelled),
+            Err(e) => return Err(Self::net(e)),
+        };
+        let mut reader = self.checked(resp)?.into_reader();
+        let status = read_string(&mut reader, crate::Limits::default().max_string_bytes)?;
+        let (outcome, tags) = parse_status(&status)?;
+        self.tags = tags;
+        Ok(outcome)
+    }
+
+    fn published_tags(&self) -> Option<Vec<String>> {
+        self.tags.clone()
+    }
+}
+
+// ─── Streaming (subprocess) transport ──────────────────────────────────────────
+
+pub struct StreamRemote {
+    url: String,
+    spawn: Spawn,
+    tags: Option<Vec<String>>,
+}
+
+impl Remote for StreamRemote {
+    fn fetch(
+        &mut self,
+        have: &HashSet<String>,
+        progress: &PhaseGuard,
+    ) -> Result<(Vec<RemoteRef>, Bundle)> {
+        let mut child = spawn_server(&self.url, "serve-upload", &self.spawn)?;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let mut stdout = child.stdout.take().expect("piped stdout");
+
+        // S→C refs
+        let refs = read_refs(&mut stdout)?;
+        // C→S haves, then EOF (drop stdin)
+        for h in have {
+            write_string(&mut stdin, h)?;
+        }
+        stdin.flush().ok();
+        drop(stdin);
+        // S→C pack, in chunks so the caller sees it arriving. Read to EOF: the
+        // sender does not announce a length, so there is no total to report.
+        let limits = crate::Limits::default();
+        let mut packbytes = Vec::new();
+        let mut buf = vec![0u8; CHUNK];
+        loop {
+            // Between chunks, so a cancelled clone stops at the next one rather
+            // than after the whole history has arrived. The child is killed
+            // explicitly: `Child` does not kill on drop, so returning through `?`
+            // would leave the server process running against a gone client.
+            if progress.is_cancelled() {
+                child.kill().ok();
+                child.wait().ok();
+                return Err(VelodyError::Cancelled);
+            }
+            let n = stdout.read(&mut buf).map_err(VelodyError::Io)?;
+            if n == 0 {
+                break;
+            }
+            packbytes.extend_from_slice(&buf[..n]);
+            if packbytes.len() as u64 > limits.max_pack_bytes {
+                child.kill().ok();
+                child.wait().ok();
+                return Err(pack_overrun(limits.max_pack_bytes));
+            }
+            progress.advance(n as u64);
+        }
+        finish(child)?;
+        let bundle = bundle::decode(&packbytes, &limits)?;
+        Ok((refs, bundle))
+    }
+
+    fn push(
+        &mut self,
+        branch: &str,
+        new_tip: &str,
+        build: &mut dyn FnMut(&[RemoteRef]) -> Result<Bundle>,
+        progress: &PhaseGuard,
+    ) -> Result<PushOutcome> {
+        let mut child = spawn_server(&self.url, "serve-receive", &self.spawn)?;
+        let mut stdin = child.stdin.take().expect("piped stdin");
+        let mut stdout = child.stdout.take().expect("piped stdout");
+
+        // S→C refs — used to build a minimal pack (no extra round-trip).
+        let refs = read_refs(&mut stdout)?;
+        let pack = build(&refs)?;
+        // C→S branch, new_tip, pack, then EOF
+        write_string(&mut stdin, branch)?;
+        write_string(&mut stdin, new_tip)?;
+        // Written in chunks for the same reason the read is: so a slow link looks
+        // alive rather than hung.
+        let encoded = bundle::encode(&pack);
+        for chunk in encoded.chunks(CHUNK) {
+            // Cancelling a push stops sending; the receiver sees a truncated
+            // stream and rejects it, which is the outcome a killed client would
+            // produce and the one `serve-receive` already handles.
+            if progress.is_cancelled() {
+                child.kill().ok();
+                child.wait().ok();
+                return Err(VelodyError::Cancelled);
+            }
+            stdin.write_all(chunk).map_err(VelodyError::Io)?;
+            progress.advance(chunk.len() as u64);
+        }
+        stdin.flush().ok();
+        drop(stdin);
+        // S→C status
+        let status = read_string(&mut stdout, crate::Limits::default().max_string_bytes)?;
+        finish(child)?;
+        let (outcome, tags) = parse_status(&status)?;
+        self.tags = tags;
+        Ok(outcome)
+    }
+
+    fn published_tags(&self) -> Option<Vec<String>> {
+        self.tags.clone()
+    }
+}
+
+fn parse_status(status: &str) -> Result<(PushOutcome, Option<Vec<String>>)> {
+    // "OK <snaps> <objs> [<tags> <name>...]" or "REJECT <reason…>"
+    if let Some(rest) = status.strip_prefix("OK ") {
+        let mut it = rest.split_whitespace();
+        let s = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+        let o = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+        // A trailing tag count is optional: 6.0.1 clients stop after two numbers.
+        // The names follow the count; tag names hold no whitespace.
+        let t = it
+            .next()
+            .and_then(|x| x.parse::<usize>().ok())
+            .map(|_| it.map(String::from).collect());
+        Ok((
+            PushOutcome::Ok {
+                new_snapshots: s,
+                new_objects: o,
+            },
+            t,
+        ))
+    } else if let Some(reason) = status.strip_prefix("REJECT ") {
+        Ok((PushOutcome::Rejected(reason.to_string()), None))
+    } else {
+        Err(VelodyError::invalid(format!(
+            "Unexpected response from remote: {}",
+            status
+        )))
+    }
+}
+
+/// Build and spawn the server subprocess for `url` running `op`
+/// (`serve-upload` / `serve-receive`).
+fn spawn_server(url: &str, op: &str, spawn: &Spawn) -> Result<Child> {
+    let (program, args) = command_for(url, op, spawn)?;
+    Command::new(&program)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .map_err(|e| VelodyError::invalid(format!("Failed to start '{}': {}", program, e)))
+}
+
+/// Translate a streaming URL into a command to spawn.
+///   `ssh://[user@]host[:port]/path` → `ssh [-p port] host velody <op> /path`
+///   `child:PATH`                    → `<this binary> <op> PATH`
+fn command_for(url: &str, op: &str, spawn: &Spawn) -> Result<(String, Vec<String>)> {
+    if let Some(path) = url.strip_prefix("child:") {
+        return Ok((
+            spawn.local_bin.to_string_lossy().into_owned(),
+            vec![op.to_string(), path.to_string()],
+        ));
+    }
+    if let Some(rest) = url.strip_prefix("ssh://") {
+        // Split host[:port] from the path at the first '/'.
+        let (hostport, path) = match rest.find('/') {
+            Some(i) => (&rest[..i], &rest[i..]), // keep the leading '/'
+            None => {
+                return Err(VelodyError::invalid(
+                    "ssh URL must include a path: ssh://host/path",
+                ))
+            }
+        };
+        let mut args: Vec<String> = Vec::new();
+        // Optional :port
+        let host = if let Some((h, port)) = split_port(hostport) {
+            args.push("-p".into());
+            args.push(port.to_string());
+            h.to_string()
+        } else {
+            hostport.to_string()
+        };
+        args.push(host);
+        args.push(spawn.remote_bin.clone());
+        args.push(op.to_string());
+        args.push(path.to_string());
+        return Ok((spawn.ssh.clone(), args));
+    }
+    Err(VelodyError::invalid(format!(
+        "Not a streaming URL: {}",
+        url
+    )))
+}
+
+/// Split a trailing `:port` off `[user@]host` if present and numeric.
+fn split_port(hostport: &str) -> Option<(&str, u16)> {
+    let idx = hostport.rfind(':')?;
+    let (host, port) = (&hostport[..idx], &hostport[idx + 1..]);
+    port.parse::<u16>().ok().map(|p| (host, p))
+}
+
+fn finish(mut child: Child) -> Result<()> {
+    let status = child.wait().map_err(VelodyError::Io)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(VelodyError::invalid(
+            "Remote velody process exited with an error (see messages above).",
+        ))
+    }
+}
+
+// ─── Protocol I/O primitives (shared with serve.rs) ─────────────────────────────
+
+pub(crate) fn write_string<W: Write>(w: &mut W, s: &str) -> Result<()> {
+    w.write_all(&(s.len() as u32).to_le_bytes())
+        .map_err(VelodyError::Io)?;
+    w.write_all(s.as_bytes()).map_err(VelodyError::Io)?;
+    Ok(())
+}
+
+/// Read exactly `buf.len()` bytes, or fewer only at a clean EOF. Returns the
+/// number of bytes actually read.
+fn fill<R: Read>(r: &mut R, buf: &mut [u8]) -> Result<usize> {
+    let mut n = 0;
+    while n < buf.len() {
+        match r.read(&mut buf[n..]).map_err(VelodyError::Io)? {
+            0 => break,
+            k => n += k,
+        }
+    }
+    Ok(n)
+}
+
+/// Read a length-prefixed string, or `None` at a clean stream EOF.
+///
+/// `max` bounds the length prefix, checked before anything is allocated: the
+/// prefix is the sender's claim, and four billion bytes is not a string.
+pub(crate) fn read_string_opt<R: Read>(r: &mut R, max: u32) -> Result<Option<String>> {
+    let mut lenb = [0u8; 4];
+    match fill(r, &mut lenb)? {
+        0 => return Ok(None),
+        4 => {}
+        _ => return Err(proto_err()),
+    }
+    let claimed = u32::from_le_bytes(lenb);
+    if claimed > max {
+        return Err(VelodyError::LimitExceeded {
+            limit: crate::limits::Limit::StringBytes,
+            max: u64::from(max),
+            found: Some(u64::from(claimed)),
+        });
+    }
+    let len = claimed as usize;
+    let mut buf = vec![0u8; len];
+    if fill(r, &mut buf)? != len {
+        return Err(proto_err());
+    }
+    Ok(Some(String::from_utf8(buf).map_err(|_| proto_err())?))
+}
+
+pub(crate) fn read_string<R: Read>(r: &mut R, max: u32) -> Result<String> {
+    read_string_opt(r, max)?.ok_or_else(proto_err)
+}
+
+pub(crate) fn write_refs<W: Write>(w: &mut W, refs: &[(String, String)]) -> Result<()> {
+    w.write_all(&(refs.len() as u32).to_le_bytes())
+        .map_err(VelodyError::Io)?;
+    for (branch, hash) in refs {
+        write_string(w, branch)?;
+        write_string(w, hash)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn read_refs<R: Read>(r: &mut R) -> Result<Vec<RemoteRef>> {
+    let mut lenb = [0u8; 4];
+    if fill(r, &mut lenb)? != 4 {
+        return Err(proto_err());
+    }
+    let count = u32::from_le_bytes(lenb);
+    // The count is the sender's claim too: reserve a little, and let the
+    // vector grow only as rows actually arrive.
+    let max = crate::Limits::default().max_string_bytes;
+    let mut out = Vec::with_capacity(count.min(1024) as usize);
+    for _ in 0..count {
+        let branch = read_string(r, max)?;
+        let hash = read_string(r, max)?;
+        out.push(RemoteRef { branch, hash });
+    }
+    Ok(out)
+}
+
+/// A pack that kept arriving past the ceiling; the overrun was found while
+/// streaming, so there is no total to report.
+fn pack_overrun(max: u64) -> VelodyError {
+    VelodyError::LimitExceeded {
+        limit: crate::limits::Limit::PackBytes,
+        max,
+        found: None,
+    }
+}
+
+fn proto_err() -> VelodyError {
+    VelodyError::invalid("Malformed data from remote (protocol error).")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn split_port_parses_trailing_numeric_port() {
+        assert_eq!(split_port("host:2222"), Some(("host", 2222)));
+        assert_eq!(split_port("user@host:22"), Some(("user@host", 22)));
+        assert_eq!(split_port("host"), None);
+        assert_eq!(split_port("user@host"), None);
+    }
+
+    #[test]
+    fn join_url_never_doubles_or_drops_a_slash() {
+        let want = "http://h/velo/v1/refs";
+        assert_eq!(join_url("http://h", "velo/v1/refs"), want);
+        assert_eq!(join_url("http://h/", "velo/v1/refs"), want);
+        assert_eq!(join_url("http://h/", "/velo/v1/refs"), want);
+        assert_eq!(
+            join_url("https://h/repos/proj", "velo/v1/refs"),
+            "https://h/repos/proj/velo/v1/refs"
+        );
+        assert_eq!(
+            join_url("https://h/repos/proj/", "velo/v1/refs"),
+            "https://h/repos/proj/velo/v1/refs"
+        );
+    }
+
+    #[test]
+    fn default_dir_strips_http_schemes() {
+        use crate::commands::sync::default_dir;
+        assert_eq!(default_dir("http://h/x/proj"), "proj");
+        assert_eq!(default_dir("https://h/repos/proj/"), "proj");
+    }
+
+    #[cfg(not(feature = "http"))]
+    #[test]
+    fn http_urls_are_unsupported_without_the_feature() {
+        let err = open("http://x", &spawn_cfg()).err().expect("must fail");
+        assert!(matches!(err, VelodyError::Unsupported { .. }), "{err:?}");
+        assert!(open("https://x/y", &spawn_cfg()).is_err());
+    }
+
+    fn spawn_cfg() -> Spawn {
+        Spawn::new("/usr/local/bin/velody")
+    }
+
+    #[test]
+    fn ssh_url_builds_expected_command() {
+        let (prog, args) =
+            command_for("ssh://user@host/srv/repo", "serve-upload", &spawn_cfg()).unwrap();
+        assert_eq!(prog, "ssh");
+        assert_eq!(
+            args,
+            vec!["user@host", "velody", "serve-upload", "/srv/repo"]
+        );
+    }
+
+    #[test]
+    fn ssh_url_with_port_uses_dash_p() {
+        let (prog, args) =
+            command_for("ssh://host:2222/repo", "serve-receive", &spawn_cfg()).unwrap();
+        assert_eq!(prog, "ssh");
+        assert_eq!(
+            args,
+            vec!["-p", "2222", "host", "velody", "serve-receive", "/repo"]
+        );
+    }
+
+    #[test]
+    fn ssh_url_without_path_is_error() {
+        assert!(command_for("ssh://host", "serve-upload", &spawn_cfg()).is_err());
+    }
+
+    #[test]
+    fn child_url_runs_the_configured_binary() {
+        // No `current_exe()` guesswork: the caller says which binary to run, so
+        // the test can assert the exact command.
+        let (prog, args) = command_for("child:/some/path", "serve-upload", &spawn_cfg()).unwrap();
+        assert_eq!(prog, "/usr/local/bin/velody");
+        assert_eq!(args, vec!["serve-upload", "/some/path"]);
+    }
+
+    #[test]
+    fn spawn_overrides_are_honoured() {
+        let cfg = Spawn::new("/bin/velody")
+            .ssh("/opt/bin/ssh")
+            .remote_bin("/srv/velody");
+        let (prog, args) = command_for("ssh://host/repo", "serve-upload", &cfg).unwrap();
+        assert_eq!(prog, "/opt/bin/ssh");
+        assert_eq!(args, vec!["host", "/srv/velody", "serve-upload", "/repo"]);
+    }
+}

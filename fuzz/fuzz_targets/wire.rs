@@ -3,5 +3,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    velo_core::fuzzing::wire(data);
+    velody_core::fuzzing::wire(data);
 });

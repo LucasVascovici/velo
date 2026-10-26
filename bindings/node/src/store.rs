@@ -5,13 +5,13 @@
 //! takes the write lock itself inside its job, like the rest of the binding.
 
 use napi_derive::napi;
-use velo_core::commands::compact::{self, Protected};
-use velo_core::commands::fsck::{self, Cruft};
-use velo_core::commands::gc::{self, AutoVacuum, Vacuum};
-use velo_core::commands::repack;
-use velo_core::commands::retention::{self, Policy, Tier};
-use velo_core::commands::tag;
-use velo_core::{SnapshotId, TagName};
+use velody_core::commands::compact::{self, Protected};
+use velody_core::commands::fsck::{self, Cruft};
+use velody_core::commands::gc::{self, AutoVacuum, Vacuum};
+use velody_core::commands::repack;
+use velody_core::commands::retention::{self, Policy, Tier};
+use velody_core::commands::tag;
+use velody_core::{SnapshotId, TagName};
 
 use crate::repo::{branch_name, snapshot_id, CoreResult, Job, Repo};
 
@@ -319,7 +319,7 @@ impl Repo {
             let name: TagName = name.parse()?;
             let at = at
                 .as_deref()
-                .map(|spec| velo_core::commands::resolve_snapshot_id(repo, spec))
+                .map(|spec| velody_core::commands::resolve_snapshot_id(repo, spec))
                 .transpose()?;
             let guard = repo.write()?;
             let made = tag::create(&guard, &name, at.as_ref(), force.unwrap_or(false))?;

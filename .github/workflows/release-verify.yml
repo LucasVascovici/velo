@@ -4,7 +4,7 @@ name: Release verify
 # attached, the checksums and attestations verify with the commands in
 # docs/INSTALL.md, and each asset class installs and runs on a runner that has
 # no Rust toolchain. Nothing here builds anything. Full MCP conformance is a
-# separate workflow; this one only starts velo-mcp and lists its tools.
+# separate workflow; this one only starts velody-mcp and lists its tools.
 on:
   workflow_dispatch:
     inputs:
@@ -32,7 +32,7 @@ permissions:
 
 env:
   GH_TOKEN: ${{ github.token }}
-  REPO: LucasVascovici/velo
+  REPO: LucasVascovici/velody
 
 jobs:
   assets:
@@ -118,7 +118,7 @@ jobs:
         working-directory: dl
         run: |
           set -euo pipefail
-          for f in velo-* velo_core-*; do
+          for f in velody-* velody_core-*; do
             case "$f" in *.sigstore.json) continue ;; esac
             echo "::group::$f"
             gh attestation verify "$f" --repo "$REPO"
@@ -134,13 +134,13 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            asset: velo-x86_64-linux.tar.gz
+            asset: velody-x86_64-linux.tar.gz
           - os: ubuntu-24.04-arm
-            asset: velo-aarch64-linux.tar.gz
+            asset: velody-aarch64-linux.tar.gz
           - os: macos-latest
-            asset: velo-aarch64-macos.tar.gz
+            asset: velody-aarch64-macos.tar.gz
           - os: windows-latest
-            asset: velo-x86_64-windows.zip
+            asset: velody-x86_64-windows.zip
     env:
       TAG: ${{ needs.assets.outputs.tag }}
     steps:
@@ -178,20 +178,20 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          got=$(./bin/velo --version | awk '{print $NF}')
-          echo "velo --version: $got, tag: $TAG"
+          got=$(./bin/velody --version | awk '{print $NF}')
+          echo "velody --version: $got, tag: $TAG"
           [ "$got" = "${TAG#v}" ]
       - name: Init, save and read history
         shell: bash
         run: |
           set -euo pipefail
-          velo="$PWD/bin/velo"
+          velody="$PWD/bin/velody"
           work=$(mktemp -d)
           cd "$work"
-          "$velo" init
+          "$velody" init
           echo "hello" > hello.txt
-          "$velo" save "Verify the release"
-          "$velo" history | tee history.txt
+          "$velody" save "Verify the release"
+          "$velody" history | tee history.txt
           grep -q "Verify the release" history.txt
 
   wheel:
@@ -218,21 +218,21 @@ jobs:
           version="${TAG#v}"
           work=$(mktemp -d)
           cd "$work"
-          gh release download "$TAG" --repo "$REPO" --pattern "velo_core-${version}-cp39-abi3-${{ matrix.tag }}.whl"
+          gh release download "$TAG" --repo "$REPO" --pattern "velody_core-${version}-cp39-abi3-${{ matrix.tag }}.whl"
           python -m venv venv
           if [ -d venv/Scripts ]; then py=venv/Scripts/python; else py=venv/bin/python; fi
-          "$py" -m pip install --only-binary=:all: ./velo_core-*.whl
+          "$py" -m pip install --only-binary=:all: ./velody_core-*.whl
           cat > check.py <<'PY'
           import tempfile
-          import velo
+          import velody
 
           with tempfile.TemporaryDirectory() as tmp:
-              repo = velo.Repo.init(tmp)
+              repo = velody.Repo.init(tmp)
               repo.save_tree(
                   branch="main",
                   message="verify the wheel",
                   entries={"a.txt": "hello\n"},
-                  author=velo.Author("release-verify"),
+                  author=velody.Author("release-verify"),
               )
               history = repo.history(branch="main")
               assert len(history) == 1, history
@@ -264,17 +264,17 @@ jobs:
           version="${TAG#v}"
           work=$(mktemp -d)
           cd "$work"
-          gh release download "$TAG" --repo "$REPO" --pattern "velo-core-${version}-${{ matrix.name }}.tgz"
+          gh release download "$TAG" --repo "$REPO" --pattern "velody-core-${version}-${{ matrix.name }}.tgz"
           npm init -y
-          npm install ./velo-core-*.tgz
+          npm install ./velody-core-*.tgz
           cat > check.cjs <<'JS'
           const fs = require('node:fs');
           const os = require('node:os');
           const path = require('node:path');
-          const { Repo } = require('velo-core');
+          const { Repo } = require('velody-core');
 
           (async () => {
-            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'velo-'));
+            const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'velody-'));
             const repo = await Repo.init(dir);
             await repo.saveTree({
               branch: 'main',
@@ -290,7 +290,7 @@ jobs:
           node check.cjs
 
   mcp:
-    name: velo-mcp · ${{ matrix.os }}
+    name: velody-mcp · ${{ matrix.os }}
     needs: assets
     runs-on: ${{ matrix.os }}
     strategy:
@@ -298,9 +298,9 @@ jobs:
       matrix:
         include:
           - os: ubuntu-latest
-            asset: velo-mcp-x86_64-linux.tar.gz
+            asset: velody-mcp-x86_64-linux.tar.gz
           - os: windows-latest
-            asset: velo-mcp-x86_64-windows.zip
+            asset: velody-mcp-x86_64-windows.zip
     env:
       TAG: ${{ needs.assets.outputs.tag }}
     steps:
@@ -326,8 +326,8 @@ jobs:
           set -euo pipefail
           # Not `ls a b`: the missing one makes ls exit 2, which pipefail turns
           # into a failed step before the server is started.
-          bin="$PWD/bin/velo-mcp"
-          [ -f "$bin" ] || bin="$PWD/bin/velo-mcp.exe"
+          bin="$PWD/bin/velody-mcp"
+          [ -f "$bin" ] || bin="$PWD/bin/velody-mcp.exe"
           test -f "$bin"
           store="$(mktemp -d)/verify.velo"
           cat > client.py <<'PY'

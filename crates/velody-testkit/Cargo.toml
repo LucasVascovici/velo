@@ -1,0 +1,16 @@
+[package]
+name = "velody-testkit"
+description = "Test fixtures for Velody: temporary repositories and helpers for downstream test suites."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["version-control", "testing", "fixtures", "velody"]
+categories = ["development-tools::testing"]
+
+[dependencies]
+velody-core = { workspace = true, features = ["bundle"] }
+tempfile.workspace = true

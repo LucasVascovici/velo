@@ -7,11 +7,11 @@ toolchain is needed.
 ## Install
 
 Each [release](../INSTALL.md) attaches one tarball per platform, named
-`velo-core-<version>-<platform>.tgz` (platform is `linux`, `macos` or
+`velody-core-<version>-<platform>.tgz` (platform is `linux`, `macos` or
 `windows`):
 
 ```sh
-npm install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/velo-core-<version>-<platform>.tgz
+npm install https://github.com/LucasVascovici/velody/releases/download/vX.Y.Z/velody-core-<version>-<platform>.tgz
 ```
 
 ## Publish, read the history, roll back
@@ -23,11 +23,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import velo from 'velo-core';
+import velody from 'velody-core';
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'velo-quickstart-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'velody-quickstart-'));
 try {
-  const repo = await velo.Repo.init(tmp);
+  const repo = await velody.Repo.init(tmp);
 
   const v1 = await repo.saveChanges({
     branch: 'registry',

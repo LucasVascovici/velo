@@ -15,7 +15,7 @@ Use the actor name `coldstart-node` for the author of every published version.
 
 - The repository holds at least two published versions of
   `configs/service.yaml`, saved through the installed Node package.
-- `velo fsck` is clean.
+- `velody fsck` is clean.
 - History is non-empty.
 - Blame of `configs/service.yaml` names `coldstart-node`.
 

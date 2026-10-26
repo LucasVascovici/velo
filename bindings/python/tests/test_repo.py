@@ -1,30 +1,30 @@
 import threading
 
 import pytest
-import velo
+import velody
 
 
 def make(tmp_path, name="r"):
     d = tmp_path / name
     d.mkdir()
-    return velo.Repo.init(d)
+    return velody.Repo.init(d)
 
 
 def test_init_then_open(tmp_path):
     make(tmp_path)
-    assert isinstance(velo.Repo.open(tmp_path / "r"), velo.Repo)
+    assert isinstance(velody.Repo.open(tmp_path / "r"), velody.Repo)
 
 
 def test_open_empty_dir_is_not_a_repo(tmp_path):
-    with pytest.raises(velo.NotARepo) as exc:
-        velo.Repo.open(tmp_path)
-    assert isinstance(exc.value, velo.VeloError)
+    with pytest.raises(velody.NotARepo) as exc:
+        velody.Repo.open(tmp_path)
+    assert isinstance(exc.value, velody.VelodyError)
 
 
 def test_init_twice(tmp_path):
     make(tmp_path)
-    with pytest.raises(velo.AlreadyInitialized):
-        velo.Repo.init(tmp_path / "r")
+    with pytest.raises(velody.AlreadyInitialized):
+        velody.Repo.init(tmp_path / "r")
 
 
 def test_save_tree_roundtrip(tmp_path):
@@ -55,9 +55,9 @@ def test_list_entries_and_kinds(tmp_path):
         branch="main",
         message="m",
         entries=[
-            velo.TreeEntry.file("a", b"1"),
-            velo.TreeEntry.executable("run.sh", b"#!/bin/sh\n"),
-            velo.TreeEntry.symlink("l", "a"),
+            velody.TreeEntry.file("a", b"1"),
+            velody.TreeEntry.executable("run.sh", b"#!/bin/sh\n"),
+            velody.TreeEntry.symlink("l", "a"),
         ],
     )
     kinds = {f.path: f.kind for f in repo.tree_at(sid)}
@@ -72,7 +72,7 @@ def test_stored_carries_file_forward(tmp_path):
         branch="main",
         message="2",
         parent=first,
-        entries=[velo.TreeEntry.stored("a.txt", obj), velo.TreeEntry.file("b", b"x")],
+        entries=[velody.TreeEntry.stored("a.txt", obj), velody.TreeEntry.file("b", b"x")],
     )
     assert repo.read_file_at(second, "a.txt") == b"keep"
     assert repo.snapshot(second).parent == first
@@ -85,7 +85,7 @@ def test_meta_and_author(tmp_path):
         message="m",
         entries={"a": b"1"},
         meta={"app": {"k": "v"}},
-        author=velo.Author("Ada", "ada@example.com"),
+        author=velody.Author("Ada", "ada@example.com"),
     )
     meta = repo.snapshot_meta(sid)
     assert meta["app"] == {"k": "v"}
@@ -127,7 +127,7 @@ def test_repo_is_unsendable(tmp_path):
 
 def test_unknown_parent_is_not_found(tmp_path):
     repo = make(tmp_path)
-    with pytest.raises(velo.NotFound) as exc:
+    with pytest.raises(velody.NotFound) as exc:
         repo.save_tree(
             branch="main", message="m", entries={"a": b"1"}, parent="a" * 64
         )
@@ -137,7 +137,7 @@ def test_unknown_parent_is_not_found(tmp_path):
 
 def test_bad_id_is_invalid_input(tmp_path):
     repo = make(tmp_path)
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.tree_at("not an id")
 
 
@@ -150,5 +150,5 @@ def test_head_token_is_int(tmp_path):
 
 
 def test_compacted_exception_exists():
-    assert issubclass(velo.Compacted, velo.VeloError)
-    assert issubclass(velo.VeloIOError, velo.VeloError)
+    assert issubclass(velody.Compacted, velody.VelodyError)
+    assert issubclass(velody.VelodyIOError, velody.VelodyError)

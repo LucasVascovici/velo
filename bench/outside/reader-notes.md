@@ -8,7 +8,7 @@ Copy this file per reader. Record answers verbatim, in the reader's words.
 - Minutes spent:
 - Where they stopped reading:
 
-## 1. What is velo for?
+## 1. What is Velody for?
 
 (verbatim)
 

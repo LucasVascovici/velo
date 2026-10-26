@@ -4,8 +4,8 @@ use std::collections::BTreeMap;
 
 use pyo3::prelude::*;
 use pyo3::types::PyBytes;
-use velo_core::commands::apply::FileAction;
-use velo_core::commands::merge::{self as core_merge, PlannedChange, Resolution};
+use velody_core::commands::apply::FileAction;
+use velody_core::commands::merge::{self as core_merge, PlannedChange, Resolution};
 
 use crate::errors::to_py;
 
@@ -38,7 +38,7 @@ pub fn parse_resolutions(
                             Some("ours") => Resolution::Ours,
                             Some("theirs") => Resolution::Theirs,
                             _ => {
-                                return Err(to_py(velo_core::Error::invalid(format!(
+                                return Err(to_py(velody_core::Error::invalid(format!(
                                     "resolution for '{}' must be 'ours', 'theirs', None or bytes.",
                                     path
                                 ))))
@@ -53,7 +53,7 @@ pub fn parse_resolutions(
 }
 
 /// One path a merge would touch.
-#[pyclass(frozen, skip_from_py_object, module = "velo")]
+#[pyclass(frozen, skip_from_py_object, module = "velody")]
 #[derive(Clone)]
 pub struct PlannedFile {
     path: String,
@@ -118,7 +118,7 @@ impl PlannedFile {
 }
 
 /// Everything a merge would do.
-#[pyclass(frozen, skip_from_py_object, module = "velo")]
+#[pyclass(frozen, skip_from_py_object, module = "velody")]
 pub struct MergePlan {
     base: Option<String>,
     files: Vec<PlannedFile>,
@@ -157,7 +157,7 @@ impl MergePlan {
 
 impl From<core_merge::MergePlan> for MergePlan {
     fn from(plan: core_merge::MergePlan) -> Self {
-        let id = |o: &velo_core::ObjectHash| o.as_str().to_string();
+        let id = |o: &velody_core::ObjectHash| o.as_str().to_string();
         let files = plan
             .files
             .into_iter()

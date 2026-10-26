@@ -1,9 +1,9 @@
 //! History, blame and branch result types, and the metadata-filter parser.
 
 use pyo3::prelude::*;
-use velo_core::commands::blame as core_blame;
-use velo_core::commands::branches as core_branches;
-use velo_core::commands::history::MetaFilter;
+use velody_core::commands::blame as core_blame;
+use velody_core::commands::branches as core_branches;
+use velody_core::commands::history::MetaFilter;
 
 use crate::errors::to_py;
 use crate::repo::{utc_datetime, Author};
@@ -14,7 +14,7 @@ pub fn meta_filters(meta: &[Vec<String>]) -> PyResult<Vec<MetaFilter<'_>>> {
         .map(|t| match t.as_slice() {
             [namespace, key, value] => Ok(MetaFilter::equals(namespace, key, value)),
             [namespace, key] => Ok(MetaFilter::has(namespace, key)),
-            _ => Err(to_py(velo_core::Error::invalid(
+            _ => Err(to_py(velody_core::Error::invalid(
                 "a meta filter is (namespace, key, value) or (namespace, key).",
             ))),
         })
@@ -22,7 +22,7 @@ pub fn meta_filters(meta: &[Vec<String>]) -> PyResult<Vec<MetaFilter<'_>>> {
 }
 
 /// The snapshot a line came from.
-#[pyclass(frozen, skip_from_py_object, module = "velo")]
+#[pyclass(frozen, skip_from_py_object, module = "velody")]
 #[derive(Clone)]
 pub struct LineOrigin {
     id: String,
@@ -81,7 +81,7 @@ impl LineOrigin {
 }
 
 /// One attributed unit of the file.
-#[pyclass(frozen, skip_from_py_object, get_all, module = "velo")]
+#[pyclass(frozen, skip_from_py_object, get_all, module = "velody")]
 #[derive(Clone)]
 pub struct BlameLine {
     line_no: usize,
@@ -98,7 +98,7 @@ impl BlameLine {
 }
 
 /// Attribution for a file.
-#[pyclass(frozen, skip_from_py_object, get_all, module = "velo")]
+#[pyclass(frozen, skip_from_py_object, get_all, module = "velody")]
 pub struct Blame {
     path: String,
     snapshot: String,
@@ -141,7 +141,7 @@ impl From<core_blame::Blame> for Blame {
 }
 
 /// A branch and where it stands.
-#[pyclass(frozen, skip_from_py_object, get_all, module = "velo")]
+#[pyclass(frozen, skip_from_py_object, get_all, module = "velody")]
 pub struct Branch {
     name: String,
     is_current: bool,

@@ -1,7 +1,7 @@
 name: MCP conformance
 
-# Real MCP clients drive the built velo-mcp end to end. See
-# crates/velo-mcp/conformance/README.md.
+# Real MCP clients drive the built velody-mcp end to end. See
+# crates/velody-mcp/conformance/README.md.
 
 on:
   push:
@@ -23,9 +23,9 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      # The CLI is only here to `velo init` the working-tree repository.
-      - name: Build velo-mcp
-        run: cargo build -p velo-mcp -p velo-cli --locked
+      # The CLI is only here to `velody init` the working-tree repository.
+      - name: Build velody-mcp
+        run: cargo build -p velody-mcp -p velody-cli --locked
 
       - uses: actions/setup-python@v5
         with:
@@ -36,28 +36,28 @@ jobs:
           node-version: 22
 
       - name: Python SDK client
-        working-directory: crates/velo-mcp/conformance
+        working-directory: crates/velody-mcp/conformance
         run: |
           pip install mcp jsonschema
           pip list 2>/dev/null | grep -E '^(mcp|jsonschema) '
-          python python_sdk_client.py --velo-mcp ../../../target/debug/velo-mcp --velo ../../../target/debug/velo
+          python python_sdk_client.py --velody-mcp ../../../target/debug/velody-mcp --velody ../../../target/debug/velody
 
       - name: TypeScript SDK client
-        working-directory: crates/velo-mcp/conformance
+        working-directory: crates/velody-mcp/conformance
         run: |
           npm ci --no-audit --no-fund
           npm ls @modelcontextprotocol/sdk
-          node ts_sdk_client.mjs ../../../target/debug/velo-mcp
+          node ts_sdk_client.mjs ../../../target/debug/velody-mcp
 
       - name: MCP Inspector CLI
         run: |
-          bin="$PWD/target/debug/velo-mcp"
+          bin="$PWD/target/debug/velody-mcp"
           db="$(mktemp -d)/repo.db"
           npx -y @modelcontextprotocol/inspector --cli "$bin" --store "$db" --create --method tools/list
           npx -y @modelcontextprotocol/inspector --cli "$bin" --store "$db" --create \
-            --method tools/call --tool-name velo_save_tree \
+            --method tools/call --tool-name velody_save_tree \
             --tool-arg branch=main --tool-arg message=inspector \
             --tool-arg 'files={"a.txt":"one\n"}'
 
       - name: Documented host configs
-        run: python crates/velo-mcp/conformance/check_configs.py target/debug/velo-mcp target/debug/velo
+        run: python crates/velody-mcp/conformance/check_configs.py target/debug/velody-mcp target/debug/velody

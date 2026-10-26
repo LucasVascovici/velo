@@ -1,16 +1,16 @@
 # Threat model
 
-What velo defends against, what it does not, and where the known gaps are.
+What velody defends against, what it does not, and where the known gaps are.
 To report a vulnerability see [SECURITY.md](../SECURITY.md).
 
 ## Assets
 
 - **History integrity**: snapshots, trees and objects are what they claim to be.
-- **Working-tree files**: nothing velo reads from outside writes outside the
+- **Working-tree files**: nothing velody reads from outside writes outside the
   repository's working tree.
 - **Credentials**: bearer tokens and signing keys are never put in URLs, logs
   or bundles.
-- **Availability of a hosted remote**: a `velo serve-http` listener keeps
+- **Availability of a hosted remote**: a `velody serve-http` listener keeps
   serving legitimate clients.
 
 ## Trust boundaries
@@ -23,11 +23,11 @@ To report a vulnerability see [SECURITY.md](../SECURITY.md).
 
 Everything that crosses one of these is untrusted bytes until validated.
 
-## What velo defends against
+## What Velody defends against
 
 | Threat | Defence | Evidence |
 |--------|---------|----------|
-| Tampered history | Snapshot ids are recomputed on import and never taken from the sender; `velo fsck` re-verifies objects, ids and refs | [FORMAT.md](FORMAT.md) section 8, README "Integrity & safety" |
+| Tampered history | Snapshot ids are recomputed on import and never taken from the sender; `velody fsck` re-verifies objects, ids and refs | [FORMAT.md](FORMAT.md) section 8, README "Integrity & safety" |
 | Malicious bundles and remotes: path escape | One path rule (`safe_path`) applied at ingestion and before any working-tree write | [FORMAT.md](FORMAT.md) section 3.1 |
 | Malicious bundles and remotes: resource exhaustion | Read limits on the handle (`Limits`), `LimitExceeded` instead of unbounded allocation | [FORMAT.md](FORMAT.md) section 9 |
 | Malformed input crashing a reader | cargo-fuzz targets for bundles, wire, HTTP service, git import, paths and ids, run in CI | `fuzz/`, [.github/workflows/fuzz.yml](../.github/workflows/fuzz.yml) |
@@ -35,7 +35,7 @@ Everything that crosses one of these is untrusted bytes until validated.
 | Forged authorship | Ed25519 signatures over the snapshot id. The author metadata alone is not authentication; only a verified signature by a key you trust is | [FORMAT.md](FORMAT.md) section 11.1 |
 | Interrupted operations (crash, kill, power loss) | Atomic writes and recoverable state, with every operation killed at every step in tests | [CRASH_SAFETY.md](CRASH_SAFETY.md) |
 
-## What velo does not defend against
+## What Velody does not defend against
 
 - **A compromised host.** Anyone who can write the repository directory or run
   as the user can do anything the user can.

@@ -49,7 +49,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Build release CLI
-        run: cargo build --release -p velo-cli --locked
+        run: cargo build --release -p velody-cli --locked
       - name: Run scale benchmark
         env:
           PRESET: ${{ inputs.preset }}
@@ -61,7 +61,7 @@ jobs:
           if [ -n "$FILES" ]; then args+=(--files "$FILES"); fi
           if [ -n "$SNAPSHOTS" ]; then args+=(--snapshots "$SNAPSHOTS"); fi
           python3 bench/scale/scale.py "${args[@]}" \
-            --workdir "$RUNNER_TEMP/velo-bench" --out results.json | tee -a "$GITHUB_STEP_SUMMARY"
+            --workdir "$RUNNER_TEMP/velody-bench" --out results.json | tee -a "$GITHUB_STEP_SUMMARY"
       # Upload even when the run is cut off: scale.py rewrites results.json
       # after every phase, so a partial file is still worth keeping.
       - uses: actions/upload-artifact@v4
@@ -93,7 +93,7 @@ jobs:
       - name: Run the retention test
         shell: bash
         run: |
-          cargo test --release -p velo-core --features timing --lib \
+          cargo test --release -p velody-core --features timing --lib \
             default_policy_at_ten_thousand_files_and_two_thousand_snapshots \
             -- --ignored --nocapture 2>&1 | tee retention.log
       - uses: actions/upload-artifact@v4
@@ -136,7 +136,7 @@ jobs:
       - name: Run agent benchmark
         shell: bash
         run: |
-          .venv/bin/python bench/agent/agent_bench.py --workdir "$RUNNER_TEMP/velo-agent-bench" --out agent-results.json | tee -a "$GITHUB_STEP_SUMMARY"
+          .venv/bin/python bench/agent/agent_bench.py --workdir "$RUNNER_TEMP/velody-agent-bench" --out agent-results.json | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: agent-results

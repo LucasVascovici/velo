@@ -1,0 +1,9 @@
+{
+  "name": "velody-mcp-conformance",
+  "private": true,
+  "type": "module",
+  "description": "Drives velody-mcp with the official MCP TypeScript SDK",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

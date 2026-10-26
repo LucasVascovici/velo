@@ -12,9 +12,9 @@ Use the actor name `coldstart-py` for the run and author of every snapshot.
 
 ## Acceptance (for the checker; not shown to the agent)
 
-- The agent's repository is a velo repository with at least one snapshot per
+- The agent's repository is a velody repository with at least one snapshot per
   edit it made, saved through the installed wheel.
-- `velo fsck` is clean.
+- `velody fsck` is clean.
 - History is non-empty.
 - Blame of a file the agent edited names `coldstart-py`.
 

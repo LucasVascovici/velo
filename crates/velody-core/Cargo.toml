@@ -1,0 +1,83 @@
+[package]
+name = "velody-core"
+description = "Embeddable core of Velody: repository, content-addressed object store, history, merge and sync. No terminal output."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+# Reads the golden corpus in the workspace's tests/corpus, outside the package.
+exclude = ["tests/corpus.rs"]
+keywords = ["version-control", "vcs", "snapshot", "history", "embeddable"]
+categories = ["development-tools", "filesystem"]
+
+# docs.rs builds with no features by default, which would hide `bundle` and
+# `ssh` — the two an embedder is most likely to be looking for.
+[package.metadata.docs.rs]
+all-features = true
+
+# `Bundle.signatures` is `#[doc(hidden)]` but cargo-semver-checks ignores that on
+# a constructible struct. The accepted exception is written up in
+# docs/STABILITY.md; remove this when `Bundle` becomes `#[non_exhaustive]` (6.0).
+[package.metadata.cargo-semver-checks.lints]
+constructible_struct_adds_field = "allow"
+
+[features]
+# Nothing on by default: an embedder should not pay for the CLI's dependencies.
+default = []
+# Offline history transfer (`bundle create` / `bundle apply`).
+bundle = []
+# Sync over a spawned server process (ssh:// and child:).
+ssh = []
+# Sync over HTTP(S) (http:// and https:// URLs) with a blocking client.
+http = ["dep:ureq"]
+# Key-aware merge drivers, forwarded from velody-merge.
+json = ["velody-merge/json"]
+yaml = ["velody-merge/yaml"]
+toml = ["velody-merge/toml"]
+# Test-only crash points (`failpoint::set_handler`); compiled out when off.
+failpoints = []
+# Test-only stage timers (timing::drain_laps); compiled out when off.
+timing = []
+# Entry points for the cargo-fuzz targets in `fuzz/`; not a supported API.
+# `tempfile` is a dev-dependency, so the fuzz crate gets it through this feature.
+fuzzing = ["dep:tempfile"]
+
+[dependencies]
+velody-merge.workspace = true
+
+blake3.workspace = true
+fastcdc.workspace = true
+chrono.workspace = true
+ed25519-dalek.workspace = true
+globset.workspace = true
+ignore.workspace = true
+parking_lot.workspace = true
+rayon.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+similar.workspace = true
+tempfile = { workspace = true, optional = true }
+ureq = { workspace = true, optional = true }
+zstd.workspace = true
+
+[[test]]
+name = "crash"
+required-features = ["failpoints"]
+
+[dev-dependencies]
+proptest.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+
+# File locking and mmap have no wasm equivalent; `RepoLock` is a no-op there and
+# storage falls back to `fs::read`.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+fs2.workspace = true
+memmap2.workspace = true
+
+# `Utc::now()` needs the JS clock on wasm32-unknown-unknown.
+[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies]
+chrono = { workspace = true, features = ["wasmbind"] }

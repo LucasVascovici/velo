@@ -1,5 +1,5 @@
 name: Bug report
-description: Something velo did that it should not have, or failed to do.
+description: Something velody did that it should not have, or failed to do.
 labels: [bug]
 body:
   - type: markdown
@@ -9,8 +9,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: velo version
-      description: Output of `velo --version`, or the package version for a binding.
+      label: velody version
+      description: Output of `velody --version`, or the package version for a binding.
     validations:
       required: true
   - type: input
@@ -23,12 +23,12 @@ body:
   - type: dropdown
     id: binding
     attributes:
-      label: How you use velo
+      label: How you use velody
       options:
         - CLI
-        - Rust library (velo-core)
-        - Python (velo-core)
-        - Node (velo-core)
+        - Rust library (velody-core)
+        - Python (velody-core)
+        - Node (velody-core)
         - MCP server
         - WASM
         - Other
@@ -50,7 +50,7 @@ body:
   - type: textarea
     id: fsck
     attributes:
-      label: Output of `velo fsck`
+      label: Output of `velody fsck`
       description: Run it in the affected repository.
       render: text
     validations:

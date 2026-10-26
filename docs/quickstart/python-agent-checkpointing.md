@@ -7,13 +7,13 @@ prebuilt abi3 wheel.
 ## Install
 
 Each [release](../INSTALL.md) attaches one wheel per platform, named
-`velo_core-<version>-cp39-abi3-<platform>.whl`:
+`velody_core-<version>-cp39-abi3-<platform>.whl`:
 
 ```sh
-pip install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/<wheel file>
+pip install https://github.com/LucasVascovici/velody/releases/download/vX.Y.Z/<wheel file>
 ```
 
-The distribution is `velo-core`; you import it as `velo`.
+The distribution is `velody-core`; you import it as `velody`.
 
 ## Save, read the history, restore
 
@@ -21,20 +21,20 @@ The distribution is `velo-core`; you import it as `velo`.
 import shutil
 import tempfile
 
-import velo
+import velody
 
 # On Windows the database file can stay locked until the handle is collected,
 # so cleaning up the scratch directory is best effort.
 tmp = tempfile.mkdtemp()
 try:
-    repo = velo.Repo.init(tmp)
+    repo = velody.Repo.init(tmp)
 
     # One snapshot per tool call; send only the files the call changed.
     first = repo.save_changes(
         branch="main",
         message="write the first draft",
         changes={"app.py": "print('v1')\n", "notes.md": "plan\n"},
-        author=velo.Author("agent-1"),
+        author=velody.Author("agent-1"),
         meta={"agent": {"run": "run-1", "tool_call_id": "call-1"}},
     ).snapshot
     second = repo.save_changes(
@@ -42,7 +42,7 @@ try:
         message="break it",
         changes={"app.py": "print('oops')\n"},
         parent=first,
-        author=velo.Author("agent-1"),
+        author=velody.Author("agent-1"),
         meta={"agent": {"run": "run-1", "tool_call_id": "call-2"}},
     ).snapshot
 
@@ -64,12 +64,12 @@ finally:
 
 ## See who wrote what
 
-When the run is done, `velo report` writes one self-contained HTML page: an
+When the run is done, `velody report` writes one self-contained HTML page: an
 integrity verdict, a timeline per branch and the origin of every line. It opens
 offline; see the [sample](../report-sample.html).
 
 ```sh
-velo report -o report.html
+velody report -o report.html
 ```
 
 The same recipe with a branch per attempt and a merge of the winner is in the

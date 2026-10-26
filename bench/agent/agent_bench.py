@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Agent-checkpointing benchmark: velo against the alternatives an agent author
+"""Agent-checkpointing benchmark: velody against the alternatives an agent author
 would actually reach for. See bench/agent/README.md for the method.
 
-Systems: velo, shadow git, git worktree per attempt, directory copy per step,
+Systems: velody, shadow git, git worktree per attempt, directory copy per step,
 append-only JSONL log, SQLite blobs. Workloads: N steps editing 1..20 files in
 a F-file project; a branch-per-attempt tree with 8 attempts and a merged
 winner; restore to step n 100 times; "who wrote this line" across the run.
@@ -32,8 +32,8 @@ WORDS = ("alpha beta gamma delta epsilon zeta eta theta iota kappa lambda mu "
          "nu xi omicron pi rho sigma tau upsilon phi chi psi omega").split()
 
 PROVENANCE = {
-    "velo (5.2 API)": "as velo",
-    "velo": "ids recompute from content; author and metadata are hashed into "
+    "velody (5.2 API)": "as velody",
+    "velody": "ids recompute from content; author and metadata are hashed into "
             "each snapshot id; signatures can be attached",
     "shadow git": "object hashes verify content; author and message per commit "
                   "only by discipline, nothing binds them to a run",
@@ -128,13 +128,13 @@ def scan_back(versions, line):
 
 class Velo52:
     """The 5.2 calling convention, kept unchanged as the baseline row."""
-    name = "velo (5.2 API)"
+    name = "velody (5.2 API)"
 
     def __init__(self, root):
-        import velo
-        self.velo = velo
+        import velody
+        self.velo = velody
         self.root = Path(root)
-        self.work_dir = self.root / "work"   # unused by velo: bytes go in directly
+        self.work_dir = self.root / "work"   # unused by velody: bytes go in directly
         self.work_dir.mkdir(parents=True)
         self.repo_dir = self.root / "repo"
         self.snap = {}        # step -> snapshot id
@@ -149,10 +149,10 @@ class Velo52:
         self.repo = self.velo.Repo.init(str(self.repo_dir))
 
     def checkpoint(self, step, changed):
-        velo = self.velo
+        velody = self.velo
         # Untouched files are carried forward by object id, without their bytes.
-        entries = [velo.TreeEntry.stored(p, o) for p, o in self.objs.items() if p not in changed]
-        entries += [velo.TreeEntry.file(p, t.encode()) for p, t in changed.items()]
+        entries = [velody.TreeEntry.stored(p, o) for p, o in self.objs.items() if p not in changed]
+        entries += [velody.TreeEntry.file(p, t.encode()) for p, t in changed.items()]
         sid = self.repo.save_tree(
             branch=self.branch_name, message=f"step {step}", entries=entries,
             parent=self.tip, author=self.velo.Author("agent-run-1"),
@@ -197,11 +197,11 @@ class Velo52:
         gc.collect()
 
 
-class Velo(Velo52):
+class Velody(Velo52):
     """The 5.3 calling convention: save_changes sends only the changed files and
     the core carries the parent's tree forward, so the harness neither re-reads
     the tree nor keeps an entry list; restore is one materialize call."""
-    name = "velo"
+    name = "velody"
 
     def checkpoint(self, step, changed):
         saved = self.repo.save_changes(
@@ -475,7 +475,7 @@ class SqliteBlobs:
         self.db.close()
 
 
-ADAPTERS = [Velo52, Velo, ShadowGit, GitWorktree, DirCopy, JsonlLog, SqliteBlobs]
+ADAPTERS = [Velo52, Velody, ShadowGit, GitWorktree, DirCopy, JsonlLog, SqliteBlobs]
 
 
 # ------------------------------------------------------------------ driver
@@ -611,10 +611,10 @@ def main():
     who_targets = rng.sample(sorted(last_writer), WHO_QUERIES)
     expect_who = [last_writer[t] for t in who_targets]
 
-    work = Path(args.workdir) if args.workdir else Path(tempfile.mkdtemp(prefix="velo-agent-bench-"))
+    work = Path(args.workdir) if args.workdir else Path(tempfile.mkdtemp(prefix="velody-agent-bench-"))
     work.mkdir(parents=True, exist_ok=True)
 
-    import velo
+    import velody
     env = {
         "date": datetime.date.today().isoformat(),
         "platform": platform.platform(),
@@ -623,7 +623,7 @@ def main():
         "python": sys.version.split()[0],
         "git": tool_version(["git", "--version"]),
         "sqlite": sqlite3.sqlite_version,
-        "velo_binding": getattr(velo, "__version__", None) or "unversioned binding",
+        "velody_binding": getattr(velody, "__version__", None) or "unversioned binding",
         "repo_commit": tool_version(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "--short", "HEAD"]),
         "workdir": str(work),
         "steps": args.steps, "files": args.files, "restores": args.restores, "seed": args.seed,

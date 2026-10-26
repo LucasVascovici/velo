@@ -1,10 +1,49 @@
 # Changelog
 
-Notable changes to Velo. Repository **format** changes are called out separately
+Notable changes to Velody (called Velo before 7.0.0). Repository **format** changes are called out separately
 from API changes, because they are the ones that can make existing data
 unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
+
+## 7.0.0
+
+**The project is renamed Velody** (it was Velo). The repository format and the wire are
+unchanged: a 6.x repository, bundle or remote works with 7.0.0 as it is, and the other way
+round. What changed is every name a program or a person types.
+
+### Changed: breaking
+
+- **The command is `velody`.** `velo` is built from the same source and shipped in every release
+  archive as an alias for one release (7.x); it prints the same output and takes the same
+  arguments. An ssh remote runs `velody serve` now, so a server that only has an old `velo`
+  needs `VELODY_REMOTE_BIN=velo` on the client, or the new release installed.
+- **The crates are `velody-core`, `velody-merge`, `velody-tui`, `velody-testkit`, `velody-cli`,
+  `velody-mcp`, `velody-ffi` and `velody-wasm`**, and Rust code imports `velody_core`,
+  `velody_merge` and the rest. The error type is `VelodyError`; the C API is `velody_*` with
+  `VELODY_ERR_*` codes and `velody.h`.
+- **Python is `velody-core` on a package index and `import velody`** (the native module is
+  `_velody`; the exception base is `velody.VelodyError`). **Node is `velody-core`.**
+- **The MCP tools are `velody_save`, `velody_history`, `velody_find` and so on** (they were
+  `velo_*`), and the server is `velody-mcp`.
+- **Environment variables begin `VELODY_`.** The documented ones are still read under their old
+  `VELO_` names (`VELO_AUTHOR_NAME`, `VELO_AUTHOR_EMAIL`, `VELO_TOKEN`, `VELO_TOKEN_<REMOTE>`,
+  `VELO_SERVE_TOKEN`, `VELO_MCP_TOKEN`, `VELO_MCP_RUN`, `VELO_LOCK_WAIT_MS`, `VELO_SSH`,
+  `VELO_REMOTE_BIN`); the new name wins when both are set. Test and profiling knobs
+  (`VELO_DIFF_*`, `VELO_PERF_*`, `VELO_PROFILE_*`, `VELO_CRASH_OP`) were renamed without a fallback.
+- **Release assets are `velody-<arch>-<os>`** (and `velody-mcp-...`, `velody-core-<version>-<platform>.tgz`,
+  `velody-<version>.cdx.json`); each CLI archive also holds the `velo` alias. `install.sh`,
+  `setup-velody` and the package-manager manifests use the new names, and the first two fall back to
+  `velo-<arch>-<os>` for a release that predates the rename.
+- **The repository moves to `LucasVascovici/velody`.** GitHub redirects the old address.
+
+### Unchanged on purpose
+
+The on-disk format and the wire, so nothing needs migrating: the `.velo/` folder and everything in it
+(`velo.db`, `HEAD`, `PARENT`, `MERGE_HEAD`, ...), `.veloignore`, the `.velo` single-file extension, the
+reserved metadata namespace `velo` (the author is hashed into snapshot ids under it, and `velody
+history --where velo:author.name=...` still addresses it), the snapshot-id and signature domain
+separators, the bundle magic, the git-export trailers, and the HTTP paths `/velo/v1/...`.
 
 ## 6.2.3
 

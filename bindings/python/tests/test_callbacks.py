@@ -2,7 +2,7 @@ import faulthandler
 import sys
 
 import pytest
-import velo
+import velody
 
 
 @pytest.fixture(autouse=True)
@@ -17,7 +17,7 @@ def deadlock_guard():
 def make(tmp_path):
     d = tmp_path / "r"
     d.mkdir()
-    return velo.Repo.init(d)
+    return velody.Repo.init(d)
 
 
 def fork(repo, path, base, ours, theirs):
@@ -91,9 +91,9 @@ def test_builtin_json_driver_merges_what_lines_cannot(tmp_path):
 
 def test_unknown_driver_and_pattern_are_refused(tmp_path):
     repo = make(tmp_path)
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.set_merge_driver("*.json", "xml")
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.set_merge_driver("[", "json")
     with pytest.raises(TypeError):
         repo.set_merge_driver("*.json", 3)
@@ -122,7 +122,7 @@ def test_custom_driver_merges_and_conflicts(tmp_path):
     repo.set_merge_driver("*.txt", lambda a, o, t: None)
     plan = repo.merge_plan(c, b)
     assert not plan.is_clean
-    with pytest.raises(velo.Conflicts):
+    with pytest.raises(velody.Conflicts):
         repo.merge_commit(branch="main", ours=c, theirs=b, message="merge")
 
 
@@ -163,15 +163,15 @@ def test_driver_calling_back_into_the_repo_is_refused_not_deadlocked(tmp_path):
     def reenter(a, o, t):
         try:
             repo.branches()
-        except velo.ReentrantCall as e:
+        except velody.ReentrantCall as e:
             caught.append(e)
             raise
         return "unreachable"
 
     repo.set_merge_driver("*.txt", reenter)
-    with pytest.raises(velo.ReentrantCall, match="must not call back"):
+    with pytest.raises(velody.ReentrantCall, match="must not call back"):
         repo.merge_plan(c, b)
-    assert len(caught) == 1 and isinstance(caught[0], velo.VeloError)
+    assert len(caught) == 1 and isinstance(caught[0], velody.VelodyError)
     # The handle is intact afterwards.
     repo.clear_merge_drivers()
     assert repo.branch_tip("main") == c

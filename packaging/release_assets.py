@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The list of assets a velo release must carry, and a checker for it.
+"""The list of assets a velody release must carry, and a checker for it.
 
 The names come from the `build` matrix in .github/workflows/release.yml
 (`package` and `mcp_package`), the wheel and tarball renames in
@@ -33,16 +33,16 @@ NODE_PLATFORMS = ["linux", "macos", "windows"]
 
 def expected(version):
     """Every asset name for `version` (no leading `v`)."""
-    names = {f"velo-{a}" for a in CLI_ARCHIVES}
-    names |= {f"velo-mcp-{a}" for a in CLI_ARCHIVES}
-    names |= {f"velo_core-{version}-cp39-abi3-{t}.whl" for t in WHEEL_TAGS}
-    names |= {f"velo-core-{version}-{p}.tgz" for p in NODE_PLATFORMS}
+    names = {f"velody-{a}" for a in CLI_ARCHIVES}
+    names |= {f"velody-mcp-{a}" for a in CLI_ARCHIVES}
+    names |= {f"velody_core-{version}-cp39-abi3-{t}.whl" for t in WHEEL_TAGS}
+    names |= {f"velody-core-{version}-{p}.tgz" for p in NODE_PLATFORMS}
     names |= {
         "SHA256SUMS.txt",
         "SHA256SUMS.txt.sigstore.json",
         "SHA256SUMS-bindings.txt",
         "SHA256SUMS-bindings.txt.sigstore.json",
-        f"velo-{version}.cdx.json",
+        f"velody-{version}.cdx.json",
         "api-node.zip",
         "api-python.zip",
     }

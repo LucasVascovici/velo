@@ -1,6 +1,6 @@
 import pytest
 
-import velo
+import velody
 
 DAY = 86_400_000
 NOW = 100 * DAY
@@ -9,7 +9,7 @@ NOW = 100 * DAY
 def make(tmp_path):
     d = tmp_path / "r"
     d.mkdir()
-    return velo.Repo.init(d)
+    return velody.Repo.init(d)
 
 
 def spread(repo, count=40):
@@ -52,7 +52,7 @@ def test_retention_run_squashes_and_old_ids_are_compacted(tmp_path):
     assert len(repo.history(branch="main")) == 40 - report["removed"]
     gone = report["squashed"][0]["removed"][0]
     into = report["squashed"][0]["into"]
-    with pytest.raises(velo.Compacted) as caught:
+    with pytest.raises(velody.Compacted) as caught:
         repo.snapshot(gone)
     assert caught.value.id == gone
     assert caught.value.into == into
@@ -114,7 +114,7 @@ def test_compact_range(tmp_path):
     assert done["squashed"][0]["removed"] == ids[1:4]
     assert done["rewritten"]  # ids[4] and ids[5] were re-minted
     old, new = done["rewritten"][0]
-    with pytest.raises(velo.Compacted) as caught:
+    with pytest.raises(velody.Compacted) as caught:
         repo.snapshot(old)
     assert caught.value.into == new
     assert repo.branch_tip("main") != ids[-1]
@@ -123,7 +123,7 @@ def test_compact_range(tmp_path):
 def test_bad_tiers_are_invalid_input(tmp_path):
     repo = make(tmp_path)
     spread(repo, 3)
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.retention("main", [(0, DAY)], now_ms=NOW)
 
 
@@ -135,13 +135,13 @@ def test_tags(tmp_path):
     repo.create_tag("v2", ids[1][:12])
     assert [(t.name, t.snapshot) for t in repo.tags()] == [("v1", ids[0]), ("v2", ids[1])]
     assert repo.tags()[0].message == "s0"
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.create_tag("v1", ids[2])
     repo.create_tag("v1", ids[2], force=True)
     assert repo.tags()[0].snapshot == ids[2]
     repo.delete_tag("v1")
     assert [t.name for t in repo.tags()] == ["v2"]
-    with pytest.raises(velo.NotFound):
+    with pytest.raises(velody.NotFound):
         repo.delete_tag("v1")
 
 

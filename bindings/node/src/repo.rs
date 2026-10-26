@@ -1,8 +1,8 @@
 //! The embedder API as a JavaScript class.
 //!
 //! Every method returns a `Promise`. The work runs in a napi `Task` on the
-//! libuv thread pool, where it locks the repository and calls velo-core, which
-//! stays synchronous. One `Repo` is one `Arc<Mutex<velo_core::Repo>>`, so
+//! libuv thread pool, where it locks the repository and calls velody-core, which
+//! stays synchronous. One `Repo` is one `Arc<Mutex<velody_core::Repo>>`, so
 //! concurrent calls on it serialise rather than share a connection.
 
 use std::collections::BTreeMap;
@@ -13,10 +13,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use napi::bindgen_prelude::*;
 use napi::{Env, JsDate, ScopedTask, Task};
 use napi_derive::napi;
-use velo_core::tree::{
+use velody_core::tree::{
     Change as CoreChange, Content, FileKind, SaveChanges, SaveTree, TreeEntry as CoreEntry,
 };
-use velo_core::{
+use velody_core::{
     Author as CoreAuthor, BranchName, Error as CoreError, ObjectHash, Repo as CoreRepo, SnapshotId,
     SnapshotMeta,
 };
@@ -77,11 +77,11 @@ impl Ticket {
         self.repo
             .lock()
             .map(Ok)
-            .map_err(|_| napi::Error::from_reason("velo Repo is poisoned by an earlier panic"))
+            .map_err(|_| napi::Error::from_reason("velody Repo is poisoned by an earlier panic"))
     }
 }
 
-/// A velo call that runs on a libuv worker and resolves to `T`.
+/// A velody call that runs on a libuv worker and resolves to `T`.
 pub struct Job<T> {
     ticket: Ticket,
     run: Option<Work<T>>,
@@ -95,7 +95,7 @@ impl<T: ToNapiValue + TypeName + Send + 'static> Task for Job<T> {
         let run = self
             .run
             .take()
-            .ok_or_else(|| napi::Error::from_reason("velo job already ran"))?;
+            .ok_or_else(|| napi::Error::from_reason("velody job already ran"))?;
         let repo = match self.ticket.lock()? {
             Ok(repo) => repo,
             Err(refused) => return Ok(Err(refused)),
@@ -210,7 +210,7 @@ pub struct SnapshotData {
 }
 
 impl SnapshotData {
-    pub(crate) fn from_entry(e: velo_core::commands::history::Entry) -> Self {
+    pub(crate) fn from_entry(e: velody_core::commands::history::Entry) -> Self {
         SnapshotData {
             id: e.hash.as_str().to_string(),
             message: e.message,
@@ -408,7 +408,7 @@ fn build_change(raw: RawChange) -> CoreResult<CoreChange> {
 
 /// An `EntryInput` with the JS-thread-only `Buffer` copied out, so it can
 /// cross to the worker. Validation waits for the worker too, so a bad entry
-/// rejects like any other velo error.
+/// rejects like any other velody error.
 struct RawEntry {
     path: String,
     data: Option<Vec<u8>>,
@@ -454,7 +454,7 @@ pub(crate) fn build_author(author: Option<AuthorInput>) -> CoreResult<Option<Cor
         .transpose()
 }
 
-/// An open velo repository.
+/// An open velody repository.
 #[napi]
 pub struct Repo {
     pub(crate) inner: Shared,
@@ -677,7 +677,7 @@ impl Repo {
         options: Option<MaterializeInput>,
     ) -> AsyncTask<Job<u32>> {
         self.job(move |repo| {
-            let mut scope = velo_core::Scope::new();
+            let mut scope = velody_core::Scope::new();
             if let Some(o) = &options {
                 for p in o.only.iter().flatten() {
                     scope = scope.only(p)?;
@@ -686,11 +686,11 @@ impl Repo {
                     scope = scope.ignore(p)?;
                 }
             }
-            let done = velo_core::commands::restore::materialize(
+            let done = velody_core::commands::restore::materialize(
                 repo,
                 &snapshot_id(&id)?,
                 std::path::Path::new(&dest),
-                velo_core::commands::restore::MaterializeOptions::default().scope(&scope),
+                velody_core::commands::restore::MaterializeOptions::default().scope(&scope),
             )?;
             Ok(done.files as u32)
         })
@@ -730,7 +730,7 @@ impl Repo {
     #[napi(ts_return_type = "Promise<string>")]
     pub fn resolve(&self, spec: String) -> AsyncTask<Job<String>> {
         self.job(move |repo| {
-            let id = velo_core::commands::resolve_snapshot_id(repo, &spec)?;
+            let id = velody_core::commands::resolve_snapshot_id(repo, &spec)?;
             Ok(id.as_str().to_string())
         })
     }
@@ -739,7 +739,7 @@ impl Repo {
     /// trash (an undo, a reset).
     #[napi(ts_return_type = "Promise<boolean>")]
     pub fn is_trashed(&self, id: String) -> AsyncTask<Job<bool>> {
-        self.job(move |repo| velo_core::commands::is_trashed(repo, &id))
+        self.job(move |repo| velody_core::commands::is_trashed(repo, &id))
     }
 
     #[napi(ts_return_type = "Promise<string | null>")]

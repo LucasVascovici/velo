@@ -7,14 +7,14 @@ on:
   push:
     paths:
       - "examples/serve-http/**"
-      - "crates/velo-cli/**"
-      - "crates/velo-core/src/serve.rs"
+      - "crates/velody-cli/**"
+      - "crates/velody-core/src/serve.rs"
       - ".github/workflows/deploy-example.yml"
   pull_request:
     paths:
       - "examples/serve-http/**"
-      - "crates/velo-cli/**"
-      - "crates/velo-core/src/serve.rs"
+      - "crates/velody-cli/**"
+      - "crates/velody-core/src/serve.rs"
       - ".github/workflows/deploy-example.yml"
 
 env:
@@ -32,11 +32,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build the release binary
         working-directory: .
-        run: cargo build --release -p velo-cli --locked
+        run: cargo build --release -p velody-cli --locked
       - name: Stage binary, tokens and repos
         run: |
           mkdir -p bin repos
-          cp ../../target/release/velo bin/velo
+          cp ../../target/release/velody bin/velody
           cp tokens.example tokens
       - name: Read-write stack
         run: |

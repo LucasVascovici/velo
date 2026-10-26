@@ -1,0 +1,36 @@
+class Velody < Formula
+  desc "@@DESCRIPTION@@"
+  homepage "@@HOMEPAGE@@"
+  version "@@VERSION@@"
+  license "MIT"
+
+  on_macos do
+    on_arm do
+      url "@@URL_AARCH64_MACOS@@"
+      sha256 "@@SHA_AARCH64_MACOS@@"
+    end
+    on_intel do
+      url "@@URL_X86_64_MACOS@@"
+      sha256 "@@SHA_X86_64_MACOS@@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "@@URL_AARCH64_LINUX@@"
+      sha256 "@@SHA_AARCH64_LINUX@@"
+    end
+    on_intel do
+      url "@@URL_X86_64_LINUX@@"
+      sha256 "@@SHA_X86_64_LINUX@@"
+    end
+  end
+
+  def install
+    bin.install "velody"
+  end
+
+  test do
+    system bin/"velody", "--version"
+  end
+end

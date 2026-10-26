@@ -2,7 +2,7 @@
 
 Signing needs only the binding. Sync needs a working tree, a remote and a
 clone, none of which the binding creates, so those scenarios set up their
-repositories with the `velo` CLI and skip when no binary is built.
+repositories with the `velody` CLI and skip when no binary is built.
 """
 
 import os
@@ -12,7 +12,7 @@ import subprocess
 
 import pytest
 
-import velo
+import velody
 
 SEED = bytes(range(32))
 OTHER = bytes(range(1, 33))
@@ -21,7 +21,7 @@ OTHER = bytes(range(1, 33))
 def make(tmp_path):
     d = tmp_path / "r"
     d.mkdir()
-    return velo.Repo.init(d)
+    return velody.Repo.init(d)
 
 
 def snapshot(repo):
@@ -29,25 +29,25 @@ def snapshot(repo):
 
 
 def test_signing_key_from_seed_and_hex():
-    key = velo.SigningKey.from_seed(SEED)
+    key = velody.SigningKey.from_seed(SEED)
     assert len(key.public_key) == 64
-    assert velo.SigningKey.from_hex(SEED.hex()).public_key == key.public_key
+    assert velody.SigningKey.from_hex(SEED.hex()).public_key == key.public_key
     assert key.public_key in repr(key)
     assert SEED.hex() not in repr(key)
 
 
 def test_bad_seed_is_refused():
-    with pytest.raises(velo.InvalidInput):
-        velo.SigningKey.from_seed(b"short")
-    with pytest.raises(velo.InvalidInput):
-        velo.SigningKey.from_hex("nothex")
+    with pytest.raises(velody.InvalidInput):
+        velody.SigningKey.from_seed(b"short")
+    with pytest.raises(velody.InvalidInput):
+        velody.SigningKey.from_hex("nothex")
 
 
 def test_sign_list_verify_trusted_and_untrusted(tmp_path):
     repo = make(tmp_path)
     snap = snapshot(repo)
-    key = velo.SigningKey.from_seed(SEED)
-    other = velo.SigningKey.from_seed(OTHER)
+    key = velody.SigningKey.from_seed(SEED)
+    other = velody.SigningKey.from_seed(OTHER)
     assert repo.signatures(snap) == []
     assert repo.signed_snapshots() == []
 
@@ -73,27 +73,27 @@ def test_sign_list_verify_trusted_and_untrusted(tmp_path):
 
 def test_verify_rejects_a_malformed_key(tmp_path):
     repo = make(tmp_path)
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.verify(snapshot(repo), ["zz"])
 
 
 # --- sync ---------------------------------------------------------------
 
-def find_velo():
-    env = os.environ.get("VELO_BIN")
+def find_velody():
+    env = os.environ.get("VELODY_BIN")
     if env:
         return env
     root = pathlib.Path(__file__).resolve().parents[3]
     for profile in ("debug", "release"):
-        for name in ("velo.exe", "velo"):
+        for name in ("velody.exe", "velody"):
             p = root / "target" / profile / name
             if p.exists():
                 return str(p)
-    return shutil.which("velo")
+    return shutil.which("velody")
 
 
-VELO = find_velo()
-needs_cli = pytest.mark.skipif(VELO is None, reason="no velo binary to set up repositories")
+VELO = find_velody()
+needs_cli = pytest.mark.skipif(VELO is None, reason="no velody binary to set up repositories")
 
 
 def cli(cwd, *args):
@@ -105,7 +105,7 @@ def put(root, name, text):
 
 
 def tip(root):
-    return velo.Repo.open(root).branch_tip("main")
+    return velody.Repo.open(root).branch_tip("main")
 
 
 @pytest.fixture
@@ -123,7 +123,7 @@ def pair(tmp_path):
 @needs_cli
 def test_sync_nothing(pair):
     _, copy = pair
-    out = velo.Repo.open(copy).sync()
+    out = velody.Repo.open(copy).sync()
     assert out.kind == "nothing"
     assert out.branch == "main" and out.remote == "origin"
 
@@ -131,7 +131,7 @@ def test_sync_nothing(pair):
 @needs_cli
 def test_sync_behind_fast_forwards(pair):
     origin, copy = pair
-    repo = velo.Repo.open(copy)
+    repo = velody.Repo.open(copy)
     put(origin, "b.txt", "new\n")
     cli(origin, "save", "theirs")
     out = repo.sync()
@@ -145,7 +145,7 @@ def test_sync_ahead_pushes(pair):
     origin, copy = pair
     put(copy, "b.txt", "mine\n")
     cli(copy, "save", "mine")
-    out = velo.Repo.open(copy).sync("origin", "main")
+    out = velody.Repo.open(copy).sync("origin", "main")
     assert out.kind == "pushed"
     assert out.report.outcome == "sent"
     assert out.report.snapshots == 1
@@ -159,8 +159,8 @@ def test_sync_diverged_clean_merges(pair):
     cli(origin, "save", "theirs")
     put(copy, "mine.txt", "m\n")
     cli(copy, "save", "mine")
-    out = velo.Repo.open(copy).sync(
-        author=velo.Author("Ann", "ann@example.com"), message="joined"
+    out = velody.Repo.open(copy).sync(
+        author=velody.Author("Ann", "ann@example.com"), message="joined"
     )
     assert out.kind == "merged"
     assert out.merge == tip(origin) == tip(copy)
@@ -176,7 +176,7 @@ def test_sync_diverged_conflict_stops(pair):
     put(copy, "a.txt", "mine\n")
     cli(copy, "save", "mine")
     before = tip(origin)
-    out = velo.Repo.open(copy).sync()
+    out = velody.Repo.open(copy).sync()
     assert out.kind == "conflicted"
     assert out.paths == ["a.txt"]
     assert tip(origin) == before
@@ -186,12 +186,12 @@ def test_sync_diverged_conflict_stops(pair):
 def test_sync_token_is_accepted_and_never_in_errors(pair):
     origin, copy = pair
     secret = "s3cr3t-bearer-token"
-    out = velo.Repo.open(copy).sync(token=secret)
+    out = velody.Repo.open(copy).sync(token=secret)
     assert out.kind == "nothing"
     put(copy, "dirty.txt", "unsaved\n")
-    with pytest.raises(velo.DirtyWorkingTree) as err:
-        velo.Repo.open(copy).sync(token=secret)
+    with pytest.raises(velody.DirtyWorkingTree) as err:
+        velody.Repo.open(copy).sync(token=secret)
     assert secret not in str(err.value)
-    with pytest.raises(velo.VeloError) as err:
-        velo.Repo.open(copy).sync("nowhere", token=secret)
+    with pytest.raises(velody.VelodyError) as err:
+        velody.Repo.open(copy).sync("nowhere", token=secret)
     assert secret not in str(err.value)

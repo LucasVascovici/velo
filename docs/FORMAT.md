@@ -1,9 +1,9 @@
-# Velo repository format
+# Velody repository format
 
-Normative specification of Velo's on-disk format: the object store, the snapshot
+Normative specification of Velody's on-disk format: the object store, the snapshot
 identity recipe, the SQLite schema, and the bundle wire format.
 
-Anything that reads or writes a `.velo` directory — the CLI, `velo-core`, or a
+Anything that reads or writes a `.velo` directory — the CLI, `velody-core`, or a
 third-party tool — must conform to this document.
 
 | | |
@@ -110,14 +110,14 @@ normalised to `/`. It is stored raw (no CRLF normalisation).
 
 For every object, `BLAKE3(content) == file_name`, where `content` is the
 decompressed frame (form a) or the concatenation of the manifest's chunks (form
-b). `velo fsck` verifies this, and any import (bundle or sync) must verify it
+b). `velody fsck` verifies this, and any import (bundle or sync) must verify it
 **before** trusting received data.
 
 For a chunked object, every chunk must additionally hash to its own name and
 have the length the manifest records, and the reassembled length must equal the
 manifest's total. A manifest that is truncated, has the wrong length for its
 count, or an unknown version is corrupt. A chunk the manifest names but that is
-absent is reported as a missing object carrying the chunk's hex name. `velo
+absent is reported as a missing object carrying the chunk's hex name. `velody
 fsck` checks each chunk of every referenced manifest (present, decodable,
 hashing to its name) and names a missing or corrupt one precisely, then checks
 the reassembled content as for any object.
@@ -147,8 +147,8 @@ the format; this implementation uses FastCDC (16 KiB / 64 KiB / 256 KiB) for
 objects of 1 MiB or more.
 
 A chunk is live only while some object's manifest names it. Unreferenced chunks
-are collectable: `velo gc` removes every chunk that no surviving manifest lists
-(a chunk shared with a surviving object always stays), and `velo fsck` reports
+are collectable: `velody gc` removes every chunk that no surviving manifest lists
+(a chunk shared with a surviving object always stays), and `velody fsck` reports
 them as cruft, not corruption, which `--repair` removes.
 
 ---
@@ -163,7 +163,7 @@ deduplication is a disk-layout optimisation, and in the database the unit of
 storage is the SQLite page. `.velo/objects/` and `.velo/chunks/` are unused.
 
 The integrity invariant (§2.3) is unchanged: `data` must decode and hash to its
-row's `hash`. `velo gc` deletes rows no snapshot references, `velo fsck`
+row's `hash`. `velody gc` deletes rows no snapshot references, `velody fsck`
 verifies them, and bundles and sync carry the same frames either way, so a
 bundle from one location applies into the other with identical snapshot ids.
 
@@ -182,7 +182,7 @@ A tree is the complete set of files in a snapshot — not a delta. Each entry is
 Storage is deduplicated at the object level: unchanged files across snapshots
 reference the same object. Trees themselves are stored row-per-entry in
 `file_map`, not as a separate hashed tree object. A snapshot has exactly one
-`file_map` row per path; `velo fsck --repair` removes exact duplicate rows (a data
+`file_map` row per path; `velody fsck --repair` removes exact duplicate rows (a data
 repair, not a format change).
 
 Mode semantics: the executable bit is only observable on Unix. On platforms that
@@ -300,7 +300,7 @@ Rules:
 
 - `namespace` must be non-empty and must not contain `\0`. The namespace `velo`
   is **reserved** for this project.
-- `key` and `value` are opaque UTF-8 to Velo. Consumers own their meaning.
+- `key` and `value` are opaque UTF-8 to Velody. Consumers own their meaning.
 - **Metadata is covered by the snapshot hash** and is therefore **immutable**.
   Changing metadata produces a new snapshot. There is no in-place edit.
 - Metadata travels with bundles and sync (it is part of snapshot identity, so it
@@ -417,13 +417,13 @@ and is the only place that fact exists.
 - **A consequence:** nothing about the id proves an edge is true. `fsck` checks
   them structurally instead — `to_path` must be in the snapshot, and `from_path`
   in one of its parents.
-- **Never inferred.** Velo does not guess at moves from content similarity. A
+- **Never inferred.** Velody does not guess at moves from content similarity. A
   file moved without an edge reads as a delete and an add, which is what the
   stored trees actually say.
 - **Optional throughout.** A repository with no edges is well-formed, and is
   what every repository written before this existed looks like.
 
-`pending_renames` is the working-tree half: `velo mv` writes it, the next `velo
+`pending_renames` is the working-tree half: `velody mv` writes it, the next `velody
 save` moves the applicable rows into `renames`, and any command that rewrites
 the tree wholesale clears it. Nothing in history depends on it, so a consumer
 may ignore or delete it.
@@ -438,7 +438,7 @@ first table exists, so freed pages can be handed back with
 `PRAGMA incremental_vacuum` (`gc::vacuum`). A repository created earlier stays
 `auto_vacuum=NONE` until a full `VACUUM` converts it, once. Opening never
 rewrites a repository, `user_version` does not change, and every SQLite build
-reads both modes, so older velo builds open new repositories unchanged. Any
+reads both modes, so older velody builds open new repositories unchanged. Any
 later schema migration needs no `VACUUM` for this reason.
 
 **Durability.** With `synchronous=NORMAL` in WAL mode a committed transaction is
@@ -528,7 +528,7 @@ Rules:
   in the data: a section count must fit in the bytes that remain (at least 28,
   20, 16, 8, 8 and 12 bytes per snapshot, file_map, meta, tag, object and rename
   row), a string length and a decompressed object size must stay under explicit
-  ceilings, and the whole bundle must too. `velo-core` defaults to 16 MiB per
+  ceilings, and the whole bundle must too. `velody-core` defaults to 16 MiB per
   string, 1 GiB per decompressed object and 16 GiB per bundle, all configurable
   on the handle (`Repo::limited`). Refusal is the typed `LimitExceeded` error
   (a count that cannot fit is reported as a truncated bundle). The ceilings are
@@ -574,7 +574,7 @@ and `upload`; a write token also permits `receive`. A host may replace this
 check with its own, deciding per repository and operation.
 
 **Refusals.** Every refusal is a one-line `text/plain` body,
-`velo: <kind>: <detail>\n`:
+`velody: <kind>: <detail>\n`:
 
 | Status | Kind | Meaning |
 | :--- | :--- | :--- |
@@ -623,7 +623,7 @@ branch tips, `PARENT`), must be recomputed.
 **Strategy A (re-init) is what shipped.** Opening a pre-v2 repository fails with
 `Error::FormatTooOld` from both `open()` and `open_and_migrate()`, and the
 refusal leaves `user_version` untouched, so a failed open is never a partial
-upgrade. `velo bundle create` cannot help — a v1 bundle carries v1 ids — so
+upgrade. `velody bundle create` cannot help — a v1 bundle carries v1 ids — so
 preserve work by copying the working tree into a fresh v2 repository and saving
 it there.
 
@@ -691,7 +691,7 @@ later. Later work implements them to the letter.
 - **Outside identity, like rename edges (§7.3).** A countersignature adds a row
   and never mints a new snapshot. The consequence is the same as for rename
   edges: a dropped signature cannot be detected from the id.
-- **Storage (implemented, `velo_core::sign`):**
+- **Storage (implemented, `velody_core::sign`):**
 
   ```sql
   signatures (
@@ -716,8 +716,8 @@ later. Later work implements them to the letter.
   import, and one invalid signature rejects the whole import (`UntrustedData`).
   Rows for snapshots the receiver does not hold are dropped, as for renames.
   Sync packs share the encoding.
-- **Trust:** velo verifies signatures; which keys to trust is the caller's
-  policy. Velo stores no private keys, and signing takes the key per call.
+- **Trust:** velody verifies signatures; which keys to trust is the caller's
+  policy. Velody stores no private keys, and signing takes the key per call.
 
 ### 11.2 Chunked objects, below object identity (D6) — implemented in v3
 
@@ -759,7 +759,7 @@ rewritten chain gets a new parent and therefore a new id (it is *re-minted*).
   the chain. It never fails with `NotFound`.
 - **Local only.** The record is not part of identity and is not carried in
   bundles or sync. Compaction refuses to rewrite anything reachable from a
-  remote-tracking ref, so a rewritten id has never travelled by velo sync. A
+  remote-tracking ref, so a rewritten id has never travelled by velody sync. A
   bundle made earlier may still carry old ids; the receiver simply holds them as
   live snapshots.
 - **Eligibility:**
@@ -793,7 +793,7 @@ rewritten chain gets a new parent and therefore a new id (it is *re-minted*).
 Every snapshot stores its whole tree in `file_map`, so rows grow as
 snapshots x files even when one file changed. Phase 15.9 measured this and
 changed nothing; the storage is as §7.2 describes. Reproduce with
-`cargo test -p velo-core metadata_growth -- --ignored --nocapture`.
+`cargo test -p velody-core metadata_growth -- --ignored --nocapture`.
 
 **Measured** (1000 files, 200 snapshots, one file changed per snapshot; Intel
 Core i7-1370P, Windows 11, release-less `cargo test` profile, SQLite via
@@ -913,7 +913,7 @@ format changed.
 
 **Round five (18.10): the format-compatible options at envelope sizes.**
 Measured with the `#[ignore]`d `round_five_options_at_*_rows` tests in
-`crates/velo-core/src/tests/metadata_growth.rs` (`cargo test -p velo-core
+`crates/velody-core/src/tests/metadata_growth.rs` (`cargo test -p velody-core
 --release metadata_growth -- --ignored --nocapture --test-threads=1`) and the
 `bench/scale/scale.py` harness. Machine: Intel Core i7-1370P (Family 6 Model
 186), Windows 11, NTFS with Defender real-time scanning on, release build,
@@ -972,7 +972,7 @@ each, on Windows 11 and on Linux (WSL2). What the numbers say:
   after) applied to 2,000 snapshots of a 10,000-file tree over 60 days cut
   snapshots, rows and live content by 62% (20.0 million to 7.6 million rows,
   5.17 GiB to 1.99 GiB live). The database file did not shrink, because SQLite
-  keeps the freed pages and velo has no `VACUUM`.
+  keeps the freed pages and velody has no `VACUUM`.
 
 **Decision.** Metadata growth is bounded by retention, not by a format change,
 for the agent-checkpointing workload that produces the long histories:
@@ -995,7 +995,7 @@ for the agent-checkpointing workload that produces the long histories:
    released format. It is the only option that removes the files x snapshots
    product itself, and the 100,000-file save latency above is the case for it.
    Until then the stated envelope in SCALE.md is the claim: beyond 20 million
-   rows or 100,000 files, velo has not been measured.
+   rows or 100,000 files, velody has not been measured.
 
 ### 11.5 Decided: what a snapshot stores (Phase 19.5)
 
@@ -1205,5 +1205,5 @@ refuses the repository with `SchemaTooNew`. The way back is `bundle create` on
   identity is decided as D6 (§11.2); it is not delta encoding and changes no id.
 - **No built-in trust.** Content addressing gives tamper-*evidence*, not
   authentication. Signatures (§11.1) are stored outside identity and verified
-  against keys the caller trusts; velo makes no trust decision of its own.
+  against keys the caller trusts; velody makes no trust decision of its own.
 - **No downgrade path.** Migrations are forward-only.

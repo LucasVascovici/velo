@@ -1,13 +1,13 @@
 #!/bin/sh
-# Velo installer
-# Usage: curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh | sh
-#        curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh | sh -s -- --dir ~/.local/bin
-#        curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velo/main/install.sh | sh -s -- --dry-run
+# Velody installer
+# Usage: curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velody/main/install.sh | sh
+#        curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velody/main/install.sh | sh -s -- --dir ~/.local/bin
+#        curl -fsSL https://raw.githubusercontent.com/LucasVascovici/velody/main/install.sh | sh -s -- --dry-run
 set -e
 
 OWNER="LucasVascovici"
-REPO="velo"
-BINARY="velo"
+REPO="velody"
+BINARY="velody"
 
 # ── Parse flags ───────────────────────────────────────────────────────────────
 INSTALL_DIR=""
@@ -36,11 +36,11 @@ done
 
 # ── Detect platform and map to release asset name ────────────────────────────
 # Release asset names (from .github/workflows/release.yml):
-#   velo-x86_64-linux.tar.gz
-#   velo-aarch64-linux.tar.gz
-#   velo-x86_64-macos.tar.gz
-#   velo-aarch64-macos.tar.gz
-#   velo-x86_64-windows.zip
+#   velody-x86_64-linux.tar.gz
+#   velody-aarch64-linux.tar.gz
+#   velody-x86_64-macos.tar.gz
+#   velody-aarch64-macos.tar.gz
+#   velody-x86_64-windows.zip
 
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -119,6 +119,16 @@ if [ -z "$RELEASE_URL" ]; then
 fi
 
 if [ -z "$RELEASE_URL" ]; then
+    # Releases before 7.0.0 were published as velo-<platform>, with the command named `velo`.
+    LEGACY_ASSET="velo-${ASSET#${BINARY}-}"
+    RELEASE_URL=$(printf '%s' "$RELEASE_JSON"         | grep "browser_download_url"         | grep "\"$LEGACY_ASSET\""         | cut -d '"' -f 4         | head -1)
+    if [ -n "$RELEASE_URL" ]; then
+        echo "  note     : the latest release predates the rename; installing $LEGACY_ASSET as $BINARY"
+        ASSET="$LEGACY_ASSET"
+    fi
+fi
+
+if [ -z "$RELEASE_URL" ]; then
     echo "error: no release asset found matching '$ASSET'"
     echo ""
     echo "Available assets:"
@@ -161,9 +171,10 @@ case "$EXT" in
         ;;
 esac
 
-# Find the extracted binary (handles both 'velo' and 'velo.exe')
+# Find the extracted binary (handles 'velody' and 'velody.exe'; an archive from before the
+# rename holds only 'velo' / 'velo.exe', which is installed under the new name)
 EXTRACTED=""
-for name in "$BINARY" "${BINARY}.exe"; do
+for name in "$BINARY" "${BINARY}.exe" velo velo.exe; do
     if [ -f "$WORK_DIR/$name" ]; then
         EXTRACTED="$WORK_DIR/$name"
         break
@@ -196,14 +207,32 @@ else
     sudo cp "$EXTRACTED" "$DEST"
 fi
 
+# `velo` is the previous name of the command; the archive carries it as an alias for one
+# release so that scripts and ssh servers that still run `velo` keep working.
+ALIAS_SRC=""
+for name in velo velo.exe; do
+    if [ -f "$WORK_DIR/$name" ]; then
+        ALIAS_SRC="$WORK_DIR/$name"
+        break
+    fi
+done
+if [ -n "$ALIAS_SRC" ]; then
+    chmod +x "$ALIAS_SRC" 2>/dev/null || true
+    if [ -w "$INSTALL_DIR" ]; then
+        cp "$ALIAS_SRC" "$INSTALL_DIR/velo"
+    else
+        sudo cp "$ALIAS_SRC" "$INSTALL_DIR/velo"
+    fi
+fi
+
 # ── Verify ────────────────────────────────────────────────────────────────────
 echo ""
 if command -v "$BINARY" >/dev/null 2>&1; then
-    INSTALLED=$("$BINARY" --version 2>/dev/null | head -1 || echo "velo $VERSION")
+    INSTALLED=$("$BINARY" --version 2>/dev/null | head -1 || echo "velody $VERSION")
     echo "  $INSTALLED"
     echo "  installed to $DEST"
     echo ""
-    echo "  Run 'velo --help' to get started."
+    echo "  Run 'velody --help' to get started."
 else
     echo "  Installed to $DEST"
     echo ""

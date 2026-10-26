@@ -1,0 +1,30 @@
+[package]
+name = "velody-mcp"
+description = "A stdio Model Context Protocol server that makes velody the checkpoint layer for any agent."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+# Shipped as a binary built from source, like velody-ffi.
+publish = false
+
+[lib]
+
+[[bin]]
+name = "velody-mcp"
+path = "src/main.rs"
+
+[dependencies]
+velody-core.workspace = true
+velody-merge.workspace = true
+base64.workspace = true
+clap.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

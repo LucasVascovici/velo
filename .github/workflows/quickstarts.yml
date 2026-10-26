@@ -2,7 +2,7 @@
 #
 # Each page in docs/quickstart/ marks its runnable blocks. This workflow builds
 # the wheel and the Node tarball with the reusable Packages workflow, builds
-# velo-mcp, and runs every marked block through docs/quickstart/run.py in an
+# velody-mcp, and runs every marked block through docs/quickstart/run.py in an
 # empty directory: the wheel in a fresh venv, the tarball with `npm install`,
 # the Rust page against this checkout's crates. A quickstart that rots fails
 # the build.
@@ -28,7 +28,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Also run velo-mcp and the pages from this published release's assets, for example v6.2.0"
+        description: "Also run velody-mcp and the pages from this published release's assets, for example v6.2.0"
         required: false
         type: string
         default: ""
@@ -68,8 +68,8 @@ jobs:
           pattern: node-*
           path: artifacts
           merge-multiple: true
-      - name: Build velo-mcp
-        run: cargo build --locked -p velo-mcp
+      - name: Build velody-mcp
+        run: cargo build --locked -p velody-mcp
       - name: Run every page
         run: |
           set -euo pipefail
@@ -77,11 +77,11 @@ jobs:
           # The linux wheel and tarball: the other platforms' files are in the
           # same directory and would not install here.
           wheel=$(ls artifacts/*manylinux*x86_64*.whl | head -n 1)
-          tgz=$(ls artifacts/velo-core-*-linux.tgz | head -n 1)
+          tgz=$(ls artifacts/velody-core-*-linux.tgz | head -n 1)
           python docs/quickstart/run.py \
             --wheel "$wheel" \
             --tgz "$tgz" \
-            --velo-mcp target/debug/velo-mcp
+            --velody-mcp target/debug/velody-mcp
 
   # The same pages and MCP checks, from a published release's archives instead
   # of CI builds. Runs only when a tag is given at dispatch.

@@ -1,8 +1,8 @@
 blank_issues_enabled: true
 contact_links:
   - name: Report a security vulnerability
-    url: https://github.com/LucasVascovici/velo/security/advisories/new
+    url: https://github.com/LucasVascovici/velody/security/advisories/new
     about: Report vulnerabilities privately; see SECURITY.md. Do not open a public issue.
   - name: Where to ask questions
-    url: https://github.com/LucasVascovici/velo/blob/main/SUPPORT.md
+    url: https://github.com/LucasVascovici/velody/blob/main/SUPPORT.md
     about: What to expect and where questions go.

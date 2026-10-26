@@ -14,7 +14,7 @@ const NOW = 100 * DAY;
 const TIERS = [{ olderThanMs: DAY, keepOnePerMs: 10 * DAY }];
 
 async function fresh() {
-  return Repo.init(fs.mkdtempSync(path.join(os.tmpdir(), 'velo-node-')));
+  return Repo.init(fs.mkdtempSync(path.join(os.tmpdir(), 'velody-node-')));
 }
 
 /** One snapshot a day for `count` days, oldest first. */

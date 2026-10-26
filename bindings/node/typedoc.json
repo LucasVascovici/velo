@@ -3,7 +3,7 @@
   "tsconfig": "tsconfig.typedoc.json",
   "entryPoints": ["index.d.ts"],
   "out": "../../site/node",
-  "name": "velo-core",
+  "name": "velody-core",
   "readme": "README.md",
   "treatWarningsAsErrors": true,
   "validation": { "notExported": true, "invalidLink": true, "notDocumented": false }

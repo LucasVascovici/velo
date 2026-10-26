@@ -12,7 +12,7 @@ const { Repo } = require('../index.js');
 const opts = { timeout: 30000 };
 
 async function fresh() {
-  return Repo.init(fs.mkdtempSync(path.join(os.tmpdir(), 'velo-node-')));
+  return Repo.init(fs.mkdtempSync(path.join(os.tmpdir(), 'velody-node-')));
 }
 
 function save(repo, branch, message, files, parent) {

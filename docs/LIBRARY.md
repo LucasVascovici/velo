@@ -1,25 +1,25 @@
 ## Use it from your language
 
-The engine is `velo-core`, a synchronous Rust library with no terminal output.
+The engine is `velody-core`, a synchronous Rust library with no terminal output.
 Every other surface below is a thin layer over it. **Nothing is published** to
 crates.io, PyPI or npm yet: install from the files attached to each GitHub
 release (replace `vX.Y.Z` with a release tag; `docs/INSTALL.md` has the full
 list and how to verify the checksums):
 
 ```bash
-# Python: the wheel for your platform; the import name is `velo`
-pip install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/<wheel file>
-# Node: the tarball for your platform; the package name is `velo-core`
-npm install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/velo-core-<version>-<platform>.tgz
+# Python: the wheel for your platform; the import name is `velody`
+pip install https://github.com/LucasVascovici/velody/releases/download/vX.Y.Z/<wheel file>
+# Node: the tarball for your platform; the package name is `velody-core`
+npm install https://github.com/LucasVascovici/velody/releases/download/vX.Y.Z/velody-core-<version>-<platform>.tgz
 ```
 
 ```toml
-# Rust: Cargo.toml (the crate is `velo-core`; `cargo install velo-cli` is the command-line tool)
+# Rust: Cargo.toml (the crate is `velody-core`; `cargo install velody-cli` is the command-line tool)
 # Use the newest release tag: the releases page, or `git ls-remote --tags <repo URL>`.
-velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "vX.Y.Z" }
+velody-core = { git = "https://github.com/LucasVascovici/velody", tag = "vX.Y.Z" }
 ```
 
-The installed Python package ships type stubs (`velo/__init__.pyi`) and the Node
+The installed Python package ships type stubs (`velody/__init__.pyi`) and the Node
 package ships `index.d.ts`; each lists every method with its types. Below, the
 parts people most often have to look up are written out.
 
@@ -27,9 +27,9 @@ parts people most often have to look up are written out.
 
 ```rust
 use std::path::Path;
-use velo_core::commands::{blame, history};
-use velo_core::tree::{SaveTree, TreeEntry};
-use velo_core::{BranchName, Repo};
+use velody_core::commands::{blame, history};
+use velody_core::tree::{SaveTree, TreeEntry};
+use velody_core::{BranchName, Repo};
 
 let repo = Repo::init(Path::new("work"))?;
 let branch: BranchName = "main".parse()?;
@@ -60,7 +60,7 @@ let who = blame::run(&repo, Path::new("notes.md"), blame::Options {
 changed entries cross the API.
 
 ```rust
-use velo_core::tree::{Change, SaveChanges};
+use velody_core::tree::{Change, SaveChanges};
 
 let mut save = SaveChanges::new(&branch, Some(&id), "edit notes");
 save.changes = vec![
@@ -70,12 +70,12 @@ save.changes = vec![
 let next = repo.write()?.save_changes(save)?;
 ```
 
-What the calls return and take (all in `velo_core`):
+What the calls return and take (all in `velody_core`):
 
 - **Imports.** `Repo`, `Author`, `BranchName`, `SnapshotId` and `TagName` are at the
   crate root; `SaveTree`, `SaveChanges`, `Change`, `TreeEntry` and `TreeFile` are in
-  `velo_core::tree`; the operations (`history`, `blame`, `branches`, `tag`, `merge`)
-  are in `velo_core::commands`.
+  `velody_core::tree`; the operations (`history`, `blame`, `branches`, `tag`, `merge`)
+  are in `velody_core::commands`.
 - **`parent` is the snapshot you build on, and `None` starts a new history.** A
   `save_changes` or `save_tree` with `parent: None` makes a root snapshot holding only
   what you give it and moves the branch to it, even if the branch had commits. Pass the
@@ -102,7 +102,7 @@ What the calls return and take (all in `velo_core`):
 - Merge in two steps, with no working tree:
 
 ```rust
-use velo_core::commands::merge::{self, MergeCommit, Resolution};
+use velody_core::commands::merge::{self, MergeCommit, Resolution};
 
 let plan = merge::plan(&repo, &ours, &theirs)?;          // writes nothing
 let conflicts: Vec<_> = plan.conflicts().map(|f| f.path.clone()).collect();
@@ -122,7 +122,7 @@ let merged = merge::commit(&repo.write()?, MergeCommit {
   A conflict with no resolution is `Error::Conflicts` listing the paths. The
   merged snapshot has `ours` as parent and `theirs` as merge parent.
 
-See [`crates/velo-core`](../crates/velo-core) and the runnable
+See [`crates/velody-core`](../crates/velody-core) and the runnable
 [`examples/prompt-registry`](../examples/prompt-registry).
 
 ### Python
@@ -136,16 +136,16 @@ python -m venv .venv && .venv/bin/python -m pip install maturin pytest   # Scrip
 ```
 
 ```python
-import velo
-repo = velo.Repo.init("work")
+import velody
+repo = velody.Repo.init("work")
 a = repo.save_tree(branch="main", message="a", entries={"n.txt": "one\n"},
-                   author=velo.Author("ada"))
+                   author=velody.Author("ada"))
 c = repo.save_tree(branch="main", message="c", parent=a, entries={"n.txt": "two\n"})
 repo.history(from_=c, limit=5)
 # Only the changed files; the rest of the tree carries forward from `parent`.
 d = repo.save_changes(branch="main", message="d", parent=c,
-                      changes=[velo.Change.put("n.txt", "three\n"),
-                               velo.Change.delete("old.txt")]).snapshot
+                      changes=[velody.Change.put("n.txt", "three\n"),
+                               velody.Change.delete("old.txt")]).snapshot
 repo.blame("n.txt", at=c).lines[0].origin.author.name
 ```
 
@@ -169,7 +169,7 @@ What the calls return and take:
   id, so it cannot be changed afterwards. Keep "which run" or "who approved" in
   your own metadata namespace (`meta={"app": {...}}`), as the cookbooks do.
 - **Undo and rollback.** Save a new snapshot whose whole tree is the old one, carrying
-  its objects forward: `save_tree(entries=[velo.TreeEntry.stored(f.path, f.object,
+  its objects forward: `save_tree(entries=[velody.TreeEntry.stored(f.path, f.object,
   f.kind) for f in repo.tree_at(old)], parent=current, ...)`. Using `save_tree`
   rather than `save_changes` drops files the bad snapshot added. History stays
   complete. A branch's tip is its newest snapshot, so
@@ -188,7 +188,7 @@ It also exposes more (events, merge drivers, signing, `repack`, `fsck`); see its
 
 ### Node.js
 
-[`bindings/node`](../bindings/node) is a napi-rs binding (`velo-core`); every method
+[`bindings/node`](../bindings/node) is a napi-rs binding (`velody-core`); every method
 returns a `Promise`:
 
 ```bash
@@ -196,7 +196,7 @@ cd bindings/node && npm install && npm run build
 ```
 
 ```js
-const { Repo } = require('velo-core')
+const { Repo } = require('velody-core')
 const repo = await Repo.init('work')
 const id = await repo.saveTree({
   branch: 'main',
@@ -237,30 +237,30 @@ snapshot. Branches and tags are `createBranch`, `branches`, `createTag(name, at)
 
 ### C
 
-[`crates/velo-ffi`](../crates/velo-ffi) is a C ABI (opaque handles, JSON results);
-the declarations are in `crates/velo-ffi/include/velo.h`:
+[`crates/velody-ffi`](../crates/velody-ffi) is a C ABI (opaque handles, JSON results);
+the declarations are in `crates/velody-ffi/include/velody.h`:
 
 ```bash
-cargo build -p velo-ffi --release     # cdylib and staticlib in target/release/
+cargo build -p velody-ffi --release     # cdylib and staticlib in target/release/
 ```
 
 ```c
-VeloRepo *repo; VeloTree *tree; char *id;
-velo_repo_init("/tmp/r", &repo);
-velo_tree_new(&tree);
-velo_tree_add_file(tree, "a.txt", (const uint8_t *)"hi\n", 3, VELO_KIND_REGULAR);
-if (velo_save_tree(repo, tree, "{\"branch\":\"main\",\"message\":\"first\"}", &id) != 0)
-    fprintf(stderr, "%s\n", velo_last_error_message());
-velo_string_free(id);
-velo_tree_free(tree);
-velo_repo_free(repo);
+VelodyRepo *repo; VelodyTree *tree; char *id;
+velody_repo_init("/tmp/r", &repo);
+velody_tree_new(&tree);
+velody_tree_add_file(tree, "a.txt", (const uint8_t *)"hi\n", 3, VELODY_KIND_REGULAR);
+if (velody_save_tree(repo, tree, "{\"branch\":\"main\",\"message\":\"first\"}", &id) != 0)
+    fprintf(stderr, "%s\n", velody_last_error_message());
+velody_string_free(id);
+velody_tree_free(tree);
+velody_repo_free(repo);
 ```
 
-`velo_history`, `velo_blame`, `velo_merge_plan` and `velo_branches` are declared in the same header.
+`velody_history`, `velody_blame`, `velody_merge_plan` and `velody_branches` are declared in the same header.
 
 ### WebAssembly
 
-[`bindings/wasm`](../bindings/wasm) (`velo-wasm`) exposes the embedder API over
+[`bindings/wasm`](../bindings/wasm) (`velody-wasm`) exposes the embedder API over
 **single-file repositories** — the whole repository, objects included, is one
 SQLite database — for browsers and Node. Build it with
 [wasm-pack](https://rustwasm.github.io/wasm-pack/):
@@ -270,7 +270,7 @@ wasm-pack build bindings/wasm --target web      # or --target nodejs / bundler
 ```
 
 ```js
-import { Repo } from './pkg/velo_wasm.js';
+import { Repo } from './pkg/velody_wasm.js';
 
 const repo = Repo.createInMemory('notes.db');
 const id = repo.saveTree({
@@ -293,77 +293,77 @@ brotli (measured 2026-10-14; method in the binding README, budget enforced in CI
 
 ### MCP server
 
-[`crates/velo-mcp`](../crates/velo-mcp) is a stdio Model Context Protocol server
-that makes velo the checkpoint layer for an agent, with every write recorded
+[`crates/velody-mcp`](../crates/velody-mcp) is a stdio Model Context Protocol server
+that makes velody the checkpoint layer for an agent, with every write recorded
 against a run id.
 
-**Tools.** `velo_save`, `velo_restore`, `velo_status`, `velo_diff`,
-`velo_history`, `velo_metadata`, `velo_blame`, `velo_branch` (`list`, `create`,
-`switch`), `velo_merge_plan` then `velo_merge_apply` (a merge is always a plan
-first, with a resolution for every conflict), `velo_undo`, `velo_redo`,
-`velo_tag`, `velo_conflicts`, `velo_find` and `velo_repack`; and, for an agent with no
-checkout (`--store`, below), `velo_save_tree`, `velo_tree_at`, `velo_read_file` and
-`velo_read_files`. Ask the server for the exact arguments with `tools/list`. A result
+**Tools.** `velody_save`, `velody_restore`, `velody_status`, `velody_diff`,
+`velody_history`, `velody_metadata`, `velody_blame`, `velody_branch` (`list`, `create`,
+`switch`), `velody_merge_plan` then `velody_merge_apply` (a merge is always a plan
+first, with a resolution for every conflict), `velody_undo`, `velody_redo`,
+`velody_tag`, `velody_conflicts`, `velody_find` and `velody_repack`; and, for an agent with no
+checkout (`--store`, below), `velody_save_tree`, `velody_tree_at`, `velody_read_file` and
+`velody_read_files`. Ask the server for the exact arguments with `tools/list`. A result
 is in `result.structuredContent` (and as JSON text in `result.content`). There is no tool
 that forces anything or rewrites pushed history.
 
-**Run identity.** Start the server with `--run <id>` (or set `VELO_MCP_RUN`);
+**Run identity.** Start the server with `--run <id>` (or set `VELODY_MCP_RUN`);
 without one it generates `run-<epoch_ms>`. Every write records metadata in the
 `mcp` namespace: `run`, `tool`, `client` and, when the call passes a
-`tool_call_id`, `tool_call_id`. Find a run's snapshots with `velo_find` (or
-`velo history --all --where mcp:run=<id>`), and `velo_blame` reports the run of each
+`tool_call_id`, `tool_call_id`. Find a run's snapshots with `velody_find` (or
+`velody history --all --where mcp:run=<id>`), and `velody_blame` reports the run of each
 line. The snapshot **author** is the `clientInfo.name` your client sends at
-`initialize` (or `VELO_AUTHOR_NAME` when set); it is not the run id.
+`initialize` (or `VELODY_AUTHOR_NAME` when set); it is not the run id.
 
 **Speaking to it.** Messages are JSON-RPC 2.0, one per line, on stdin and stdout.
 Send `initialize` (the server accepts protocol versions 2025-11-25, 2025-06-18,
 2025-03-26 and 2024-11-05 and answers with one it supports), then the
 `notifications/initialized` notification, then `tools/list` and `tools/call`.
 
-**Behaviours worth knowing.** `velo_save` snapshots the whole working tree, so a script
+**Behaviours worth knowing.** `velody_save` snapshots the whole working tree, so a script
 you keep inside the project is saved too (keep it outside, or in `.veloignore`).
-`velo_branch` `create` with no `at` makes an unborn branch; pass `at` to start it from a
-snapshot. `velo_find` searches every branch, while `velo history --where ...` lists
+`velody_branch` `create` with no `at` makes an unborn branch; pass `at` to start it from a
+snapshot. `velody_find` searches every branch, while `velody history --where ...` lists
 only the current branch unless you add `--all`.
 
-**Setup.** The server needs an existing repository: run `velo init` in the
-project first (the CLI is in the `velo-<arch>-<os>` release archive), or point it
-at a single-file store with `--store FILE --create`. A `velo_branch` `switch` to a
+**Setup.** The server needs an existing repository: run `velody init` in the
+project first (the CLI is in the `velody-<arch>-<os>` release archive), or point it
+at a single-file store with `--store FILE --create`. A `velody_branch` `switch` to a
 branch that does not exist yet answers `started_unborn`, with `inherits` naming the
 snapshot the branch will start from at its first save.
 
-Install the `velo-mcp` archive for your platform from the latest release
-(assets `velo-mcp-<arch>-<os>.tar.gz` for Linux and macOS, and
-`velo-mcp-x86_64-windows.zip` for Windows; the line below is the Linux one):
+Install the `velody-mcp` archive for your platform from the latest release
+(assets `velody-mcp-<arch>-<os>.tar.gz` for Linux and macOS, and
+`velody-mcp-x86_64-windows.zip` for Windows; the line below is the Linux one):
 
 ```bash
-curl -L -o velo-mcp.tar.gz https://github.com/LucasVascovici/velo/releases/latest/download/velo-mcp-x86_64-linux.tar.gz && tar -xzf velo-mcp.tar.gz
+curl -L -o velody-mcp.tar.gz https://github.com/LucasVascovici/velody/releases/latest/download/velody-mcp-x86_64-linux.tar.gz && tar -xzf velody-mcp.tar.gz
 ```
 
 Or build it from source:
 
 ```bash
-cargo build -p velo-mcp --release     # target/release/velo-mcp
+cargo build -p velody-mcp --release     # target/release/velody-mcp
 ```
 
 The full tool table, the concurrent-agents rules and the HTTP transport are in the
-[velo-mcp README](../crates/velo-mcp/README.md).
+[velody-mcp README](../crates/velody-mcp/README.md).
 
 Client configuration (the surrounding file format depends on the client):
 
 ```json
-{"command": "velo-mcp", "args": ["--repo", "/path/to/project"]}
+{"command": "velody-mcp", "args": ["--repo", "/path/to/project"]}
 ```
 
 Which real clients were tried, and what broke, is in the
-[tried clients table](../crates/velo-mcp/README.md#tried-clients).
+[tried clients table](../crates/velody-mcp/README.md#tried-clients).
 
 ### From the command line
 
-The CLI reads the same repository. `velo report -o run.html` writes a
+The CLI reads the same repository. `velody report -o run.html` writes a
 self-contained HTML audit report (fsck verdict, a timeline per branch, line
 provenance; flags `--branch`, `--since`, `--json`, `--trust FILE`, `--no-fsck`).
-`velo sync [remote] [branch]` fetches, then fast-forwards, pushes, or merges and
+`velody sync [remote] [branch]` fetches, then fast-forwards, pushes, or merges and
 pushes in one step; a conflict stops with exit 3 and never pushes. See
 [CLI.md](CLI.md).
 
@@ -379,5 +379,5 @@ What is promised to adopters, and which CI job enforces each promise, is in
 
 The generated Python and Node API reference is `api-python.zip` and `api-node.zip`
 on each release page, and the `api-python`/`api-node` artifacts of the apidocs
-workflow. With only the installed package, read `velo/__init__.pyi` (Python) or
+workflow. With only the installed package, read `velody/__init__.pyi` (Python) or
 `index.d.ts` (Node).

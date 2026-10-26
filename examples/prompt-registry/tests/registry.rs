@@ -2,11 +2,11 @@
 //!
 //! These run against a temporary directory and use nothing but the public API of
 //! `prompt-registry`, which in turn uses nothing but the public API of
-//! `velo-core`.
+//! `velody-core`.
 
 use prompt_registry::Registry;
 use tempfile::TempDir;
-use velo_core::commands;
+use velody_core::commands;
 
 fn registry() -> (TempDir, Registry) {
     let tmp = TempDir::new().unwrap();
@@ -135,7 +135,7 @@ fn the_repository_stays_verifiable() {
 
     // fsck recomputes every snapshot id, so this proves the metadata we attached
     // is hashed into the ids exactly as the receiver of a bundle would recompute.
-    let repo = velo_core::Repo::open_and_migrate(tmp.path()).unwrap();
+    let repo = velody_core::Repo::open_and_migrate(tmp.path()).unwrap();
     let report = commands::fsck::check(&repo).unwrap();
     assert!(report.is_healthy(), "registry writes must survive fsck");
 }
@@ -154,8 +154,8 @@ fn history_limit_none_means_everything() {
     reg.publish("a", "three", "claude-opus-5").unwrap();
     drop(reg);
 
-    let repo = velo_core::Repo::open_and_migrate(tmp.path()).unwrap();
-    let branch: velo_core::BranchName = "registry".parse().unwrap();
+    let repo = velody_core::Repo::open_and_migrate(tmp.path()).unwrap();
+    let branch: velody_core::BranchName = "registry".parse().unwrap();
     let opts = || commands::history::Options {
         branch: Some(&branch),
         ..Default::default()
@@ -183,8 +183,8 @@ fn history_entries_carry_ids_that_can_be_used_directly() {
     reg.publish("a", "one", "claude-opus-5").unwrap();
     drop(reg);
 
-    let repo = velo_core::Repo::open_and_migrate(tmp.path()).unwrap();
-    let branch: velo_core::BranchName = "registry".parse().unwrap();
+    let repo = velody_core::Repo::open_and_migrate(tmp.path()).unwrap();
+    let branch: velody_core::BranchName = "registry".parse().unwrap();
     let history = commands::history::run(
         &repo,
         commands::history::Options {

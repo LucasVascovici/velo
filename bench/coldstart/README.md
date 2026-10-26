@@ -8,7 +8,7 @@ friction log template. The first run's results, against v6.2.1, are in
 documentation fixes, is [`friction-log-v6.2.2-round2.md`](friction-log-v6.2.2-round2.md).
 
 The run needs fresh agents with no memory of the repository, so it cannot be
-done by whoever implements velo. The owner runs it, once per release.
+done by whoever implements velody. The owner runs it, once per release.
 
 ## What is under test
 
@@ -22,8 +22,8 @@ Four wedges, one card each in [`tasks/`](tasks):
 | MCP client | [`mcp-client.md`](tasks/mcp-client.md) | `docs/LIBRARY.md`'s "MCP server" section only |
 
 The task is done from an installed wheel or tarball, not from a checkout. The
-documents the agent receives must show `save_changes`, `velo report` and
-`velo sync`; check that before each run (see "Before you start").
+documents the agent receives must show `save_changes`, `velody report` and
+`velody sync`; check that before each run (see "Before you start").
 
 ## Pass threshold (fixed 2026-10-23, before the first run)
 
@@ -40,7 +40,7 @@ any run so it cannot be adjusted afterwards to fit the results.
 ## Limits
 
 A software sandbox cannot isolate an agent from its training data: an agent
-may know velo from before the run, and the audit only sees what a transcript
+may know velody from before the run, and the audit only sees what a transcript
 shows. Isolation here means an empty directory outside any checkout, the
 documents handed over as text and the installed package. State this limit in
 every results write-up.
@@ -58,7 +58,7 @@ All scripts use only the Python standard library.
    nothing else. Start the clock when the prompt is given; stop at 45 minutes.
 3. **Audit**: `python audit.py transcript.jsonl --sandbox ~/coldstart/python-run1`.
    Exit 1 means invalid: a read of the project's planning notes, the source or the tests,
-   or any path under a velo checkout. Repeat the run with a new agent. Other
+   or any path under a velody checkout. Repeat the run with a new agent. Other
    paths outside the sandbox are warnings to read, not to count.
 4. **Check**: `python check.py <repo-dir> --actor <actor> --file <file>` with
    the values in `run.json`.
@@ -75,8 +75,8 @@ All scripts use only the Python standard library.
 1. Pick the release tag to test (`vX.Y.Z`).
 2. Confirm the pages handed over at that tag (`README.md`, `docs/LIBRARY.md`,
    `docs/CLI.md`, `docs/COLLABORATION.md` and the cookbooks) mention `save_changes`,
-   `velo report` and `velo sync`:
-   `for f in README.md docs/LIBRARY.md docs/CLI.md docs/COLLABORATION.md docs/cookbook/*.md; do git show vX.Y.Z:$f | grep -c -E "save_changes|velo report|velo sync"; done`
+   `velody report` and `velody sync`:
+   `for f in README.md docs/LIBRARY.md docs/CLI.md docs/COLLABORATION.md docs/cookbook/*.md; do git show vX.Y.Z:$f | grep -c -E "save_changes|velody report|velody sync"; done`
    and check that the pages the wedge uses are among those that match. A missing term is itself a
    finding: write it in the friction log as a doc defect.
 3. Make one fresh directory per wedge, outside any checkout, for example
@@ -90,9 +90,9 @@ on PyPI or npm.
 
 ```bash
 mkdir -p ~/coldstart/assets && cd ~/coldstart/assets
-gh release download vX.Y.Z --repo LucasVascovici/velo \
+gh release download vX.Y.Z --repo LucasVascovici/velody \
   --pattern 'SHA256SUMS-bindings.txt' \
-  --pattern '*.whl' --pattern 'velo-core-*.tgz'
+  --pattern '*.whl' --pattern 'velody-core-*.tgz'
 
 # Verify before installing. A failure on any listed file stops the run.
 sha256sum --check --ignore-missing SHA256SUMS-bindings.txt   # shasum -a 256 -c on macOS
@@ -103,23 +103,23 @@ Then, in an isolated environment per wedge:
 ```bash
 # Python: use the wheel for your platform
 python -m venv ~/coldstart/python/venv
-~/coldstart/python/venv/bin/pip install ./velo_core-<version>-cp39-abi3-<platform>.whl
+~/coldstart/python/venv/bin/pip install ./velody_core-<version>-cp39-abi3-<platform>.whl
 
 # Node: use the tarball for your platform (linux, macos or windows)
 mkdir -p ~/coldstart/node/work && cd ~/coldstart/node/work && npm init -y
-npm install ~/coldstart/assets/velo-core-<version>-<platform>.tgz
+npm install ~/coldstart/assets/velody-core-<version>-<platform>.tgz
 ```
 
 The Rust wedge uses the crate the agent adds to its own `Cargo.toml`, as the
 README and `docs/INSTALL.md` say to; do not hand it a path into a checkout. The CLI the checker
-needs comes from `cargo install --git https://github.com/LucasVascovici/velo
---tag vX.Y.Z velo-cli`, or the release binary. The MCP wedge installs the
-`velo-mcp-<target>` release archive (and the `velo-<target>` one for the CLI):
+needs comes from `cargo install --git https://github.com/LucasVascovici/velody
+--tag vX.Y.Z velody-cli`, or the release binary. The MCP wedge installs the
+`velody-mcp-<target>` release archive (and the `velody-<target>` one for the CLI):
 download both with `gh release download`, then verify them against
 `SHA256SUMS.txt` (`sha256sum --check --ignore-missing SHA256SUMS.txt`) before
-extracting. Do not build `velo-mcp` from source.
+extracting. Do not build `velody-mcp` from source.
 
-Install the checker's `velo` outside the agent's reach if you can, so the agent
+Install the checker's `velody` outside the agent's reach if you can, so the agent
 is not helped by `--help` on a binary it was not given. If the agent was given
 the CLI (the Rust and MCP wedges may need it), say so in the friction log.
 
@@ -164,15 +164,15 @@ not mention is still a guess. Note the minute of each event.
 ## Independent check
 
 `check.py` uses only the Python standard library and shells out to an installed
-`velo`. It does not import the bindings and does not trust the agent's own
+`velody`. It does not import the bindings and does not trust the agent's own
 output:
 
 ```bash
-python check.py <repo-dir> --actor <actor-name> --file <path-in-repo> [--velo /path/to/velo]
+python check.py <repo-dir> --actor <actor-name> --file <path-in-repo> [--velody /path/to/velody]
 ```
 
-It asserts that `velo fsck` exits zero, that history shows at least one
-snapshot, and that `velo blame` of the file the task produced names the actor.
+It asserts that `velody fsck` exits zero, that history shows at least one
+snapshot, and that `velody blame` of the file the task produced names the actor.
 It prints PASS or FAIL for each and exits non-zero on any failure. The card
 says which file and actor to pass.
 
@@ -202,4 +202,4 @@ directories is reused. Keep each run's friction log as its own file
 (`friction-log-<tag>.md`, copied from the template) so the two can be compared
 row by row. A defect from the earlier run that reappears is a regression in the
 docs; mark it as such. For 6.0 also confirm the agent sees `save_changes`,
-`velo report` and `velo sync` in what it is given.
+`velody report` and `velody sync` in what it is given.

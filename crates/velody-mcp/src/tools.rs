@@ -1,0 +1,949 @@
+//! The tool surface: schemas and handlers.
+//!
+//! Handlers take and return `serde_json::Value`. There is deliberately no
+//! `force` argument anywhere: an agent that hits a dirty tree is told so and
+//! must save or discard on purpose, never by a flag.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use std::time::Duration;
+
+use crate::{recovery_tools, store_tools};
+use serde_json::{json, Map, Value};
+use velody_core::commands::{
+    blame, branches, diff, history, merge, resolve_snapshot_id, restore, save, status, switch,
+};
+use velody_core::{Author, BranchName, Error, Repo, SnapshotId, SnapshotMeta};
+
+/// Namespaces an agent may not write: `velo` is reserved by the core, `mcp`
+/// carries the server's own run identity and would otherwise be forgeable.
+const REFUSED_NAMESPACES: [&str; 2] = ["velo", "mcp"];
+
+/// Entries `velody_history` returns when the call gives no `limit`.
+pub(crate) const HISTORY_DEFAULT_LIMIT: usize = 200;
+/// Lines `velody_blame` returns when the call gives no `limit`.
+pub(crate) const BLAME_DEFAULT_LIMIT: usize = 2000;
+
+/// Why a tool call failed.
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum ToolError {
+    /// The arguments were wrong. This is a tool result with `isError: true`
+    /// whose text says what was wrong, so the model can correct the call (the
+    /// 2025-11-25 revision asks for exactly this).
+    Params(String),
+    /// No tool has this name: a JSON-RPC invalid-params error, because the
+    /// request itself is malformed rather than the arguments.
+    UnknownTool(String),
+    /// velody refused or failed: a tool result with `isError: true`.
+    Velody(Error),
+}
+
+impl From<Error> for ToolError {
+    fn from(e: Error) -> Self {
+        ToolError::Velody(e)
+    }
+}
+
+pub(crate) fn bad(msg: impl Into<String>) -> ToolError {
+    ToolError::Params(msg.into())
+}
+
+/// What a handler needs to know about the caller.
+pub struct Context<'a> {
+    pub repo: &'a Repo,
+    pub run: &'a str,
+    pub client: &'a str,
+    /// Author override from the environment, as `(name, email)`.
+    pub author: Option<&'a (String, Option<String>)>,
+    /// The repository has no working tree: tools that need one are refused.
+    pub store_only: bool,
+    /// How long a write tool waits for the repository lock before it answers
+    /// `Locked`, naming the holder.
+    pub lock_wait: Duration,
+}
+
+impl Context<'_> {
+    /// The write lock, waiting up to [`Context::lock_wait`] for another holder.
+    pub(crate) fn write(&self) -> velody_core::Result<velody_core::WriteGuard<'_>> {
+        self.repo.write_timeout(self.lock_wait)
+    }
+}
+
+/// The variant name of a velody error.
+pub fn variant_name(e: &Error) -> String {
+    e.variant_name().to_string()
+}
+
+/// An object schema with the given properties.
+pub(crate) fn obj_schema(props: Value, required: Value) -> Value {
+    json!({"type": "object", "properties": props, "required": required})
+}
+
+/// The `tools/list` payload. In store-only mode the tools that need a working
+/// tree are left out, so a client never offers the model a call that must fail.
+pub fn list(store_only: bool) -> Value {
+    let obj = obj_schema;
+    let strs = json!({"type": "array", "items": {"type": "string"}});
+    let all = json!([
+        {
+            "name": "velody_save",
+            "description": "Save a snapshot of the working tree. Records this run's identity in metadata.",
+            "inputSchema": obj(json!({
+                "message": {"type": "string", "description": "Snapshot message."},
+                "paths": strs,
+                "meta": {"type": "object", "description": "Extra metadata as {namespace: {key: value}}. The 'velo' and 'mcp' namespaces are reserved.",
+                         "additionalProperties": {"type": "object", "additionalProperties": {"type": "string"}}},
+                "tool_call_id": {"type": "string", "description": "Your id for this tool call, recorded as mcp/tool_call_id."}
+            }), json!(["message"]))
+        },
+        {
+            "name": "velody_restore",
+            "description": "Restore the working tree (or some paths) to a snapshot. Refuses if unsaved changes would be overwritten; there is no force.",
+            "inputSchema": obj(json!({
+                "snapshot": {"type": "string", "description": "Snapshot id, prefix, branch or tag."},
+                "paths": strs
+            }), json!(["snapshot"]))
+        },
+        {
+            "name": "velody_status",
+            "description": "Show the branch, position and unsaved changes.",
+            "inputSchema": obj(json!({}), json!([]))
+        },
+        {
+            "name": "velody_diff",
+            "description": "Diff two snapshots, or a snapshot against the working tree. Defaults: from = current position, to = working tree.",
+            "inputSchema": obj(json!({
+                "from": {"type": "string"},
+                "to": {"type": "string"},
+                "paths": strs
+            }), json!([]))
+        },
+        {
+            "name": "velody_history",
+            "description": "List snapshots, newest first, optionally filtered by metadata.",
+            "inputSchema": obj(json!({
+                "limit": {"type": "integer", "minimum": 1, "default": 200, "description": "Most entries to return. The result says truncated: true and how to get the next page when there are more."},
+                "offset": {"type": "integer", "minimum": 0, "default": 0, "description": "Entries to skip, for paging. Repeat the same branch/from/meta/paths with the next_offset of the previous page."},
+                "branch": {"type": "string"},
+                "from": {"type": "string"},
+                "paths": strs,
+                "meta": {"type": "array", "items": obj(json!({
+                    "namespace": {"type": "string"},
+                    "key": {"type": "string"},
+                    "value": {"type": "string", "description": "Omit to match any value."}
+                }), json!(["namespace", "key"]))}
+            }), json!([]))
+        },
+        {
+            "name": "velody_metadata",
+            "description": "Show the author and all metadata recorded on a snapshot.",
+            "inputSchema": obj(json!({"snapshot": {"type": "string"}}), json!(["snapshot"]))
+        },
+        {
+            "name": "velody_branch",
+            "description": "List, create or switch branches; use one branch per attempt. 'create' makes the branch (at 'at', default the current position) without switching. 'switch' moves to the branch and creates it if it does not exist, as the CLI does; it refuses on a dirty tree (DirtyWorkingTree) and has no force.",
+            "inputSchema": obj(json!({
+                "action": {"type": "string", "enum": ["list", "create", "switch"]},
+                "name": {"type": "string", "description": "Branch name; required for create and switch."},
+                "at": {"type": "string", "description": "Snapshot spec to create the branch at."}
+            }), json!(["action"]))
+        },
+        {
+            "name": "velody_merge_plan",
+            "description": "Plan merging 'source' into the current branch. Writes nothing. Conflicts carry the three texts (omitted for binary content). Then call velody_merge_apply, with resolutions for every conflict.",
+            "inputSchema": obj(json!({
+                "source": {"type": "string", "description": "Snapshot id, prefix, branch or tag to merge in."}
+            }), json!(["source"]))
+        },
+        {
+            "name": "velody_merge_apply",
+            "description": "Apply a merge of 'source' into the current branch and record it as a two-parent snapshot. Requires a clean working tree (DirtyWorkingTree otherwise). The plan is recomputed, so nothing can be stale; unresolved conflicts return Conflicts. Updates the working tree to the merge. Records this run in metadata.",
+            "inputSchema": obj(json!({
+                "source": {"type": "string"},
+                "message": {"type": "string", "description": "Merge snapshot message."},
+                "resolutions": {"type": "object", "description": "Per conflicted path: \"ours\", \"theirs\", \"delete\" or {\"content\": \"text\"}.",
+                               "additionalProperties": {}},
+                "tool_call_id": {"type": "string", "description": "Your id for this tool call, recorded as mcp/tool_call_id."}
+            }), json!(["source", "message"]))
+        },
+        {
+            "name": "velody_blame",
+            "description": "Attribute each line of a file to the snapshot that last changed it; origin.run names the agent run that saved it.",
+            "inputSchema": obj(json!({
+                "path": {"type": "string"},
+                "at": {"type": "string", "description": "Snapshot spec; default the current position."},
+                "start_line": {"type": "integer", "minimum": 1},
+                "end_line": {"type": "integer", "minimum": 1, "description": "Inclusive."},
+                "limit": {"type": "integer", "minimum": 1, "default": 2000, "description": "Most lines to return. The result says truncated: true and the start_line to continue from."}
+            }), json!(["path"]))
+        }
+    ]);
+    let mut tools = all.as_array().cloned().unwrap_or_default();
+    if store_only {
+        tools.retain(|t| {
+            let name = t["name"].as_str().unwrap_or_default();
+            !store_tools::NEEDS_WORKING_TREE
+                .iter()
+                .any(|(n, _)| *n == name)
+        });
+    }
+    tools.extend(store_tools::list());
+    let mut recovery = recovery_tools::list();
+    if store_only {
+        recovery.retain(|t| {
+            let name = t["name"].as_str().unwrap_or_default();
+            !recovery_tools::NEEDS_WORKING_TREE
+                .iter()
+                .any(|(n, _)| *n == name)
+        });
+    }
+    tools.extend(recovery);
+    Value::Array(tools)
+}
+
+/// Dispatch one tool call.
+pub fn call(ctx: &Context<'_>, name: &str, args: &Value) -> Result<Value, ToolError> {
+    if !args.is_object() {
+        return Err(bad("arguments must be an object"));
+    }
+    if ctx.store_only {
+        if let Some((_, instead)) = store_tools::NEEDS_WORKING_TREE
+            .iter()
+            .find(|(n, _)| *n == name)
+        {
+            return Err(unsupported(name, instead));
+        }
+    }
+    if ctx.store_only {
+        if let Some((_, instead)) = recovery_tools::NEEDS_WORKING_TREE
+            .iter()
+            .find(|(n, _)| *n == name)
+        {
+            return Err(unsupported(name, instead));
+        }
+    }
+    match name {
+        "velody_undo" => recovery_tools::undo_tool(ctx),
+        "velody_redo" => recovery_tools::redo_tool(ctx),
+        "velody_tag" => recovery_tools::tag_tool(ctx, args),
+        "velody_conflicts" => recovery_tools::conflicts_tool(ctx),
+        "velody_find" => recovery_tools::find_tool(ctx, args),
+        "velody_save_tree" => store_tools::save_tree_tool(ctx, args),
+        "velody_tree_at" => store_tools::tree_at_tool(ctx, args),
+        "velody_read_file" => store_tools::read_file_tool(ctx, args),
+        "velody_read_files" => store_tools::read_files_tool(ctx, args),
+        "velody_repack" => store_tools::repack_tool(ctx, args),
+        "velody_save" => save_tool(ctx, args),
+        "velody_restore" => restore_tool(ctx, args),
+        "velody_status" => status_tool(ctx),
+        "velody_diff" => diff_tool(ctx, args),
+        "velody_history" => history_tool(ctx, args),
+        "velody_metadata" => metadata_tool(ctx, args),
+        "velody_branch" => branch_tool(ctx, args),
+        "velody_merge_plan" => merge_plan_tool(ctx, args),
+        "velody_merge_apply" => merge_apply_tool(ctx, args),
+        "velody_blame" => blame_tool(ctx, args),
+        other => Err(ToolError::UnknownTool(format!("unknown tool: {other}"))),
+    }
+}
+
+/// The refusal for a tool that needs a working tree in a store-only session.
+fn unsupported(tool: &str, instead: &str) -> ToolError {
+    ToolError::Velody(Error::Unsupported {
+        detail: format!("{tool} needs a working tree and this server is store-only; use {instead}"),
+    })
+}
+
+// ── Argument helpers ─────────────────────────────────────────────────────────
+
+pub(crate) fn opt_str<'a>(args: &'a Value, key: &str) -> Result<Option<&'a str>, ToolError> {
+    match args.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(bad(format!("'{key}' must be a string"))),
+    }
+}
+
+pub(crate) fn req_str<'a>(args: &'a Value, key: &str) -> Result<&'a str, ToolError> {
+    opt_str(args, key)?.ok_or_else(|| bad(format!("missing required argument '{key}'")))
+}
+
+fn paths_arg(args: &Value) -> Result<Vec<PathBuf>, ToolError> {
+    match args.get("paths") {
+        None | Some(Value::Null) => Ok(Vec::new()),
+        Some(Value::Array(a)) => a
+            .iter()
+            .map(|v| {
+                v.as_str()
+                    .map(PathBuf::from)
+                    .ok_or_else(|| bad("'paths' must be an array of strings"))
+            })
+            .collect(),
+        Some(_) => Err(bad("'paths' must be an array of strings")),
+    }
+}
+
+fn path_refs(paths: &[PathBuf]) -> Vec<&Path> {
+    paths.iter().map(PathBuf::as_path).collect()
+}
+
+pub(crate) fn snapshot_arg(repo: &Repo, spec: &str) -> Result<SnapshotId, ToolError> {
+    Ok(resolve_snapshot_id(repo, spec)?)
+}
+
+// ── Write-tool identity ──────────────────────────────────────────────────────
+
+pub(crate) fn author(ctx: &Context<'_>) -> Result<Author, ToolError> {
+    Ok(match ctx.author {
+        Some((name, Some(email))) => Author::with_email(name.clone(), email.clone())?,
+        Some((name, None)) => Author::new(name.clone())?,
+        None => Author::new(ctx.client)?,
+    })
+}
+
+/// Agent-supplied metadata plus the server's own `mcp` identity.
+///
+/// The refusal of `velo` and `mcp` happens here, before velody is called, so it
+/// reads as the caller's mistake (invalid params) rather than a velody failure.
+pub(crate) fn build_meta(
+    ctx: &Context<'_>,
+    tool: &str,
+    args: &Value,
+) -> Result<SnapshotMeta, ToolError> {
+    let mut meta = SnapshotMeta::new();
+    match args.get("meta") {
+        None | Some(Value::Null) => {}
+        Some(Value::Object(namespaces)) => {
+            for (ns, keys) in namespaces {
+                if ns.is_empty() || REFUSED_NAMESPACES.contains(&ns.as_str()) {
+                    return Err(bad(format!(
+                        "metadata namespace '{ns}' is not writable by agents; use your own"
+                    )));
+                }
+                let keys = keys
+                    .as_object()
+                    .ok_or_else(|| bad("'meta' must be {namespace: {key: value}}"))?;
+                for (k, v) in keys {
+                    let v = v
+                        .as_str()
+                        .ok_or_else(|| bad("metadata values must be strings"))?;
+                    meta.set(ns.as_str(), k.as_str(), v)
+                        .map_err(invalid_to_params)?;
+                }
+            }
+        }
+        Some(_) => return Err(bad("'meta' must be {namespace: {key: value}}")),
+    }
+    let mut own = |k: &str, v: &str| meta.set("mcp", k, v).map_err(ToolError::Velody);
+    own("run", ctx.run)?;
+    own("tool", tool)?;
+    own("client", ctx.client)?;
+    if let Some(id) = opt_str(args, "tool_call_id")? {
+        own("tool_call_id", id)?;
+    }
+    Ok(meta)
+}
+
+fn invalid_to_params(e: Error) -> ToolError {
+    match e {
+        Error::InvalidInput { detail } => ToolError::Params(detail),
+        other => ToolError::Velody(other),
+    }
+}
+
+// ── Tools ────────────────────────────────────────────────────────────────────
+
+fn save_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let message = req_str(args, "message")?;
+    let paths = paths_arg(args)?;
+    let refs = path_refs(&paths);
+    let meta = build_meta(ctx, "velody_save", args)?;
+    let author = author(ctx)?;
+    let guard = ctx.write()?;
+    let outcome = save::run(
+        &guard,
+        Some(message),
+        save::Options {
+            paths: &refs,
+            author: Some(&author),
+            meta,
+            ..Default::default()
+        },
+    );
+    drop(guard);
+    Ok(match outcome? {
+        save::Outcome::Saved(r) => {
+            let branch = fs::read_to_string(ctx.repo.root().join(".velo/HEAD"))
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|_| "main".into());
+            json!({
+                "snapshot": r.hash.as_str(),
+                "branch": branch,
+                "files_changed": r.new_count + r.modified_count + r.deleted_count,
+                "new": r.new_count,
+                "modified": r.modified_count,
+                "deleted": r.deleted_count,
+            })
+        }
+        _ => json!({"saved": false}),
+    })
+}
+
+fn restore_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let spec = req_str(args, "snapshot")?;
+    let paths = paths_arg(args)?;
+    let refs = path_refs(&paths);
+    let id = snapshot_arg(ctx.repo, spec)?;
+    let guard = ctx.write()?;
+    // `force` is never true here, whatever the caller asks.
+    let outcome = restore::run(
+        &guard,
+        &id,
+        restore::Options {
+            force: false,
+            paths: &refs,
+            ..Default::default()
+        },
+    );
+    drop(guard);
+    Ok(match outcome? {
+        restore::Outcome::AlreadyThere { snapshot } => {
+            json!({"result": "already_there", "snapshot": snapshot})
+        }
+        restore::Outcome::Restored {
+            snapshot,
+            branch,
+            message,
+            files,
+            ghosts_removed,
+            ..
+        } => json!({"result": "restored", "snapshot": snapshot, "branch": branch,
+                    "message": message, "files": files, "removed": ghosts_removed}),
+        restore::Outcome::RestoredPaths {
+            snapshot, files, ..
+        } => {
+            json!({"result": "restored_paths", "snapshot": snapshot, "files": files})
+        }
+        restore::Outcome::NoMatchingPaths { snapshot } => {
+            json!({"result": "no_matching_paths", "snapshot": snapshot})
+        }
+    })
+}
+
+fn status_tool(ctx: &Context<'_>) -> Result<Value, ToolError> {
+    let s = status::run(ctx.repo, &[])?;
+    Ok(json!({
+        "branch": s.branch,
+        "position": s.position,
+        "position_message": s.position_message,
+        "new_files": s.new_files,
+        "modified": s.modified,
+        "deleted": s.deleted,
+        "conflicts": s.conflicts,
+    }))
+}
+
+fn tagged(prefix: &str, text: &str) -> String {
+    format!("{prefix}{text}")
+}
+
+fn hunks_json(hunks: &[diff::Hunk]) -> Value {
+    hunks
+        .iter()
+        .map(|h| {
+            let lines: Vec<String> = h
+                .lines
+                .iter()
+                .map(|l| match l.tag {
+                    diff::LineTag::Added => tagged("+", &l.text),
+                    diff::LineTag::Removed => tagged("-", &l.text),
+                    diff::LineTag::Context => tagged(" ", &l.text),
+                })
+                .collect();
+            json!({"old_start": h.old_start, "old_count": h.old_count,
+                   "new_start": h.new_start, "new_count": h.new_count, "lines": lines})
+        })
+        .collect()
+}
+
+fn diff_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let paths = paths_arg(args)?;
+    let refs = path_refs(&paths);
+    let from = match opt_str(args, "from")? {
+        Some(spec) => snapshot_arg(ctx.repo, spec)?,
+        None => {
+            let position = status::run(ctx.repo, &[])?.position;
+            let position = position.ok_or_else(|| {
+                bad("no current position to diff from; pass 'from' or save first")
+            })?;
+            snapshot_arg(ctx.repo, &position)?
+        }
+    };
+    let to = opt_str(args, "to")?
+        .map(|spec| snapshot_arg(ctx.repo, spec))
+        .transpose()?;
+    let d = diff::between(ctx.repo, &from, to.as_ref(), &refs)?;
+    let files: Vec<Value> = d
+        .files
+        .iter()
+        .map(|f| match &f.change {
+            diff::FileChange::Added { lines } => {
+                let lines: Vec<String> = lines.iter().map(|l| tagged("+", l)).collect();
+                json!({"path": f.path, "change": "added", "lines": lines})
+            }
+            diff::FileChange::Deleted => json!({"path": f.path, "change": "deleted"}),
+            diff::FileChange::Modified { hunks } => {
+                json!({"path": f.path, "change": "modified", "hunks": hunks_json(hunks)})
+            }
+            diff::FileChange::BinaryChanged { .. } => {
+                json!({"path": f.path, "change": "binary"})
+            }
+            diff::FileChange::Renamed { from, hunks } => {
+                json!({"path": f.path, "change": "renamed", "from": from,
+                       "hunks": hunks_json(hunks)})
+            }
+        })
+        .collect();
+    Ok(json!({
+        "from": from.as_str(),
+        "to": to.as_ref().map(|t| t.as_str()),
+        "files": files,
+    }))
+}
+
+fn history_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let limit = match args.get("limit") {
+        None | Some(Value::Null) => HISTORY_DEFAULT_LIMIT,
+        Some(v) => v
+            .as_u64()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| bad("'limit' must be a positive integer"))? as usize,
+    };
+    let offset = match args.get("offset") {
+        None | Some(Value::Null) => 0,
+        Some(v) => {
+            v.as_u64()
+                .ok_or_else(|| bad("'offset' must be a non-negative integer"))? as usize
+        }
+    };
+    let branch = opt_str(args, "branch")?
+        .map(|b| b.parse::<BranchName>())
+        .transpose()?;
+    let from = opt_str(args, "from")?
+        .map(|s| snapshot_arg(ctx.repo, s))
+        .transpose()?;
+    let paths = paths_arg(args)?;
+    let refs = path_refs(&paths);
+
+    // `MetaFilter` borrows, so the owned strings must outlive the call.
+    let mut wanted: Vec<(String, String, Option<String>)> = Vec::new();
+    match args.get("meta") {
+        None | Some(Value::Null) => {}
+        Some(Value::Array(items)) => {
+            for item in items {
+                let ns = req_str(item, "namespace")?;
+                let key = req_str(item, "key")?;
+                let value = opt_str(item, "value")?;
+                wanted.push((ns.into(), key.into(), value.map(String::from)));
+            }
+        }
+        Some(_) => return Err(bad("'meta' must be an array of filters")),
+    }
+    let filters: Vec<history::MetaFilter<'_>> = wanted
+        .iter()
+        .map(|(ns, k, v)| match v {
+            Some(v) => history::MetaFilter::equals(ns, k, v),
+            None => history::MetaFilter::has(ns, k),
+        })
+        .collect();
+
+    let h = history::run(
+        ctx.repo,
+        history::Options {
+            branch: branch.as_ref(),
+            from: from.as_ref(),
+            paths: &refs,
+            meta: &filters,
+            // One more than asked, to know whether there is a next page.
+            limit: Some(offset.saturating_add(limit).saturating_add(1)),
+            ..Default::default()
+        },
+    )?;
+    let truncated = h.entries.len() > offset.saturating_add(limit);
+    let mut entries = Vec::new();
+    for e in h.entries.iter().skip(offset).take(limit) {
+        let mut o = Map::new();
+        o.insert("snapshot".into(), json!(e.hash.as_str()));
+        o.insert("message".into(), json!(e.message));
+        o.insert("created_at".into(), json!(e.created_at.to_rfc3339()));
+        o.insert("branch".into(), json!(e.branch.as_str()));
+        o.insert(
+            "parent".into(),
+            json!(e.parent.as_ref().map(|p| p.as_str())),
+        );
+        o.insert(
+            "merge_parent".into(),
+            json!(e.merge_parent.as_ref().map(|p| p.as_str())),
+        );
+        o.insert("tag".into(), json!(e.tag.as_ref().map(|t| t.as_str())));
+        if let Some(run) = ctx.repo.snapshot_meta(&e.hash)?.get("mcp", "run") {
+            o.insert("run".into(), json!(run));
+        }
+        entries.push(Value::Object(o));
+    }
+    let mut out = json!({"entries": entries, "truncated": truncated});
+    if truncated {
+        let next = offset + limit;
+        out["next_offset"] = json!(next);
+        out["hint"] = json!(format!(
+            "Showing {limit} entries from offset {offset}. Call velody_history again with the same branch/from/meta/paths and \"offset\": {next} for the next page, or narrow it with 'branch', 'meta' or 'paths'."
+        ));
+    }
+    Ok(out)
+}
+
+fn metadata_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let id = snapshot_arg(ctx.repo, req_str(args, "snapshot")?)?;
+    let meta = ctx.repo.snapshot_meta(&id)?;
+    let mut namespaces: Map<String, Value> = Map::new();
+    for (ns, key, value) in meta.iter() {
+        namespaces
+            .entry(ns.to_string())
+            .or_insert_with(|| Value::Object(Map::new()))
+            .as_object_mut()
+            .expect("just inserted an object")
+            .insert(key.to_string(), json!(value));
+    }
+    let author = meta.author().map(|a| {
+        let mut o = Map::new();
+        o.insert("name".into(), json!(a.name()));
+        if let Some(e) = a.email() {
+            o.insert("email".into(), json!(e));
+        }
+        Value::Object(o)
+    });
+    Ok(json!({"snapshot": id.as_str(), "author": author, "meta": namespaces}))
+}
+
+// ── Branches, merging, blame ─────────────────────────────────────────────────
+
+fn branch_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let action = req_str(args, "action")?;
+    let name = opt_str(args, "name")?;
+    let need_name = || name.ok_or_else(|| bad(format!("'name' is required for '{action}'")));
+    match action {
+        "list" => {
+            let list: Vec<Value> = branches::list(ctx.repo)?
+                .iter()
+                .map(|b| {
+                    json!({"name": b.name.as_str(), "current": b.is_current,
+                           "tip": b.tip.as_ref().map(|t| json!({
+                               "snapshot": t.hash.as_str(), "message": t.message,
+                               "created_at": t.created_at.to_rfc3339()}))})
+                })
+                .collect();
+            Ok(json!({"branches": list}))
+        }
+        "create" => {
+            let name = need_name()?.parse::<BranchName>()?;
+            let at = opt_str(args, "at")?
+                .map(|s| snapshot_arg(ctx.repo, s))
+                .transpose()?;
+            let guard = ctx.write()?;
+            let outcome = branches::create(&guard, &name, at.as_ref());
+            drop(guard);
+            outcome?;
+            Ok(json!({"created": name.as_str(), "at": at.as_ref().map(|a| a.as_str())}))
+        }
+        "switch" if ctx.store_only => Err(unsupported(
+            "velody_branch switch",
+            "velody_save_tree with a branch name",
+        )),
+        "switch" => {
+            let name = need_name()?;
+            let guard = ctx.write()?;
+            // `force` is never true here, whatever the caller asks.
+            let outcome = switch::run(&guard, name, false);
+            drop(guard);
+            Ok(match outcome? {
+                switch::Outcome::AlreadyOn { branch } => {
+                    json!({"result": "already_on", "branch": branch})
+                }
+                switch::Outcome::Switched { branch, at } => {
+                    json!({"result": "switched", "branch": branch, "at": at})
+                }
+                switch::Outcome::StartedUnborn {
+                    branch,
+                    existing,
+                    inherits,
+                } => json!({"result": "started_unborn", "branch": branch,
+                            "existing": existing, "inherits": inherits}),
+            })
+        }
+        other => Err(bad(format!(
+            "unknown action '{other}'; use list, create or switch"
+        ))),
+    }
+}
+
+/// The current branch and its tip, which a merge needs as `ours`.
+fn current_tip(repo: &Repo) -> Result<(BranchName, SnapshotId), ToolError> {
+    let current = branches::list(repo)?
+        .into_iter()
+        .find(|b| b.is_current)
+        .ok_or_else(|| bad("no current branch"))?;
+    match current.tip {
+        Some(t) => Ok((current.name, t.hash)),
+        None => Err(bad(format!(
+            "branch '{}' has no snapshots yet; save before merging",
+            current.name
+        ))),
+    }
+}
+
+fn action_name(a: merge::FileAction) -> &'static str {
+    match a {
+        merge::FileAction::Deleted => "deleted",
+        merge::FileAction::Added => "added",
+        merge::FileAction::Updated => "updated",
+        merge::FileAction::AutoMerged => "auto_merged",
+        merge::FileAction::KeptOurs => "kept_ours",
+        merge::FileAction::Conflicted => "conflicted",
+    }
+}
+
+fn merge_plan_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let spec = req_str(args, "source")?;
+    let theirs = snapshot_arg(ctx.repo, spec)?;
+    let (_, ours) = current_tip(ctx.repo)?;
+    let plan = merge::plan(ctx.repo, &ours, &theirs)?;
+    let text = |h: &Option<velody_core::ObjectHash>| -> Result<Option<String>, ToolError> {
+        let Some(h) = h else { return Ok(None) };
+        // Binary content is omitted: it would be noise, and unusable as text.
+        Ok(String::from_utf8(ctx.repo.read_object(h)?).ok())
+    };
+    let mut files = Vec::new();
+    for f in &plan.files {
+        let mut o = Map::new();
+        o.insert("path".into(), json!(f.path));
+        o.insert("action".into(), json!(action_name(f.change.action())));
+        if let merge::PlannedChange::Conflict { base, ours, theirs } = &f.change {
+            let mut c = Map::new();
+            for (k, h) in [
+                ("base_text", base),
+                ("ours_text", ours),
+                ("theirs_text", theirs),
+            ] {
+                if let Some(t) = text(h)? {
+                    c.insert(k.into(), json!(t));
+                }
+            }
+            o.insert("conflict".into(), Value::Object(c));
+        }
+        files.push(Value::Object(o));
+    }
+    let clean = plan.is_clean();
+    let apply_hint = if clean {
+        format!(
+            "Call velody_merge_apply {{\"source\": \"{spec}\", \"message\": \"<message>\"}} on a clean working tree."
+        )
+    } else {
+        let paths: Vec<String> = plan
+            .conflicts()
+            .map(|f| format!("\"{}\": ...", f.path))
+            .collect();
+        format!(
+            "Call velody_merge_apply {{\"source\": \"{spec}\", \"message\": \"<message>\", \"resolutions\": {{{}}}}} on a clean working tree; each resolution is \"ours\", \"theirs\", \"delete\" or {{\"content\": \"<text>\"}}.",
+            paths.join(", ")
+        )
+    };
+    Ok(json!({
+        "base": plan.base.as_ref().map(|b| b.as_str()),
+        "ours": ours.as_str(),
+        "theirs": theirs.as_str(),
+        "clean": clean,
+        "files": files,
+        "apply_hint": apply_hint,
+    }))
+}
+
+fn resolutions_arg(args: &Value) -> Result<Vec<(String, merge::Resolution)>, ToolError> {
+    let obj = match args.get("resolutions") {
+        None | Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Object(o)) => o,
+        Some(_) => return Err(bad("'resolutions' must be {path: resolution}")),
+    };
+    let mut out = Vec::new();
+    for (path, r) in obj {
+        let res = match r {
+            Value::String(s) => match s.as_str() {
+                "ours" => merge::Resolution::Ours,
+                "theirs" => merge::Resolution::Theirs,
+                "delete" => merge::Resolution::Delete,
+                other => {
+                    return Err(bad(format!(
+                        "resolution for '{path}' must be ours, theirs, delete or {{content}}, not '{other}'"
+                    )))
+                }
+            },
+            Value::Object(o) => match o.get("content") {
+                Some(Value::String(c)) => merge::Resolution::Content(c.clone().into_bytes()),
+                _ => {
+                    return Err(bad(format!(
+                        "resolution for '{path}' needs a string 'content'"
+                    )))
+                }
+            },
+            _ => return Err(bad(format!("invalid resolution for '{path}'"))),
+        };
+        out.push((path.clone(), res));
+    }
+    Ok(out)
+}
+
+fn merge_apply_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let spec = req_str(args, "source")?;
+    let message = req_str(args, "message")?;
+    let resolutions = resolutions_arg(args)?;
+    let meta = build_meta(ctx, "velody_merge_apply", args)?;
+    let author = author(ctx)?;
+    let theirs = snapshot_arg(ctx.repo, spec)?;
+    let guard = ctx.write()?;
+    let result = (|| -> Result<Value, ToolError> {
+        let s = status::run(ctx.repo, &[])?;
+        if !s.is_clean() {
+            let paths = s
+                .new_files
+                .iter()
+                .chain(&s.modified)
+                .chain(&s.deleted)
+                .chain(&s.conflicts)
+                .map(PathBuf::from)
+                .collect();
+            return Err(Error::DirtyWorkingTree { paths }.into());
+        }
+        let (branch, ours) = current_tip(ctx.repo)?;
+        let plan = merge::plan(ctx.repo, &ours, &theirs)?;
+        let id = merge::commit(
+            &guard,
+            merge::MergeCommit {
+                branch: &branch,
+                ours: &ours,
+                theirs: &theirs,
+                resolutions: &resolutions,
+                message,
+                meta,
+                author: Some(&author),
+                timestamp_ms: None,
+            },
+        )?;
+        // The tree was clean and the new snapshot is a superset of the decided
+        // changes, so this only brings the tree and position to the merge.
+        restore::run(&guard, &id, restore::Options::default())?;
+        Ok(
+            json!({"snapshot": id.as_str(), "merged_from": theirs.as_str(),
+                  "files_changed": plan.files.len()}),
+        )
+    })();
+    drop(guard);
+    result
+}
+
+fn blame_tool(ctx: &Context<'_>, args: &Value) -> Result<Value, ToolError> {
+    let path = req_str(args, "path")?;
+    let at = opt_str(args, "at")?
+        .map(|s| snapshot_arg(ctx.repo, s))
+        .transpose()?;
+    let line = |key: &str| -> Result<Option<usize>, ToolError> {
+        match args.get(key) {
+            None | Some(Value::Null) => Ok(None),
+            Some(v) => Ok(Some(
+                v.as_u64()
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| bad(format!("'{key}' must be a positive integer")))?
+                    as usize,
+            )),
+        }
+    };
+    let (start, end) = (line("start_line")?, line("end_line")?);
+    let limit = line("limit")?.unwrap_or(BLAME_DEFAULT_LIMIT);
+    if let (Some(s), Some(e)) = (start, end) {
+        if s > e {
+            return Err(bad(format!("'start_line' ({s}) is after 'end_line' ({e})")));
+        }
+    }
+    let lines_asked = start.is_some() || end.is_some();
+    let lines = if start.is_some() || end.is_some() {
+        // 1-based inclusive in, half-open out.
+        Some(start.unwrap_or(1)..end.map_or(usize::MAX, |e| e.saturating_add(1)))
+    } else {
+        None
+    };
+    let b = blame::run(
+        ctx.repo,
+        Path::new(path),
+        blame::Options {
+            at: at.as_ref(),
+            lines,
+            ..Default::default()
+        },
+    )?;
+    if lines_asked && b.lines.is_empty() {
+        // Core answers a range past the end with nothing; a caller that asked
+        // for it needs to be told, with the length to correct itself.
+        let total = blame::run(
+            ctx.repo,
+            Path::new(path),
+            blame::Options {
+                at: at.as_ref(),
+                ..Default::default()
+            },
+        )?
+        .lines
+        .len();
+        return Err(bad(format!(
+            "line range is out of range: '{path}' has {total} line(s)"
+        )));
+    }
+    // One metadata read per distinct origin snapshot, not per line.
+    let mut runs: std::collections::HashMap<String, Option<String>> = Default::default();
+    let mut out = Vec::new();
+    let truncated = b.lines.len() > limit;
+    for l in b.lines.iter().take(limit) {
+        let origin = match &l.origin {
+            None => Value::Null,
+            Some(o) => {
+                let key = o.hash.as_str().to_string();
+                if !runs.contains_key(&key) {
+                    let run = ctx
+                        .repo
+                        .snapshot_meta(&o.hash)?
+                        .get("mcp", "run")
+                        .map(String::from);
+                    runs.insert(key.clone(), run);
+                }
+                json!({
+                    "snapshot": o.hash.as_str(),
+                    "message": o.message,
+                    "author": o.author.as_ref().map(|a| a.name()),
+                    "branch": o.branch.as_str(),
+                    "created_at": o.created_at.to_rfc3339(),
+                    "run": runs[&key],
+                })
+            }
+        };
+        out.push(json!({"line_no": l.line_no, "text": l.text, "origin": origin}));
+    }
+    let mut result = json!({"path": path, "snapshot": b.snapshot.as_str(), "lines": out, "truncated": truncated});
+    if truncated {
+        let next = b.lines[limit].line_no;
+        result["next_start_line"] = json!(next);
+        result["hint"] = json!(format!(
+            "Showing {limit} lines; the file has more (to line {}). Call velody_blame again with \"start_line\": {next} for the rest.",
+            b.lines[b.lines.len() - 1].line_no
+        ));
+    }
+    Ok(result)
+}

@@ -1,6 +1,6 @@
 # Outside findings
 
-No outside person has used velo yet.
+No outside person has used velody yet.
 
 Rows are added only from notes committed in this directory. "Agrees with the
 cold-start agents?" compares against `bench/coldstart/friction-log-<tag>.md`

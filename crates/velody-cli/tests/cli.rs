@@ -1,0 +1,1095 @@
+//! End-to-end CLI tests: drive the real `velody` binary and assert on its actual
+//! stdout. These complement the in-process unit tests (which mostly guard
+//! against panics for the display commands) by verifying the *output* users see.
+//!
+//! Cargo builds the binary and exposes its path via `CARGO_BIN_EXE_velody`.
+
+use std::path::Path;
+use std::process::Command;
+
+use tempfile::TempDir;
+
+/// Run `velody <args>` in `dir`; return (stdout, success).
+fn velody(dir: &Path, args: &[&str]) -> (String, bool) {
+    let out = Command::new(env!("CARGO_BIN_EXE_velody"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run velody binary");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (s, out.status.success())
+}
+
+/// Run `velody <args>` in `dir`; return (stdout+stderr, exit code).
+fn velody_code(dir: &Path, args: &[&str]) -> (String, Option<i32>) {
+    let out = Command::new(env!("CARGO_BIN_EXE_velody"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run velody binary");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (s, out.status.code())
+}
+
+fn write(dir: &Path, rel: &str, content: &str) {
+    let p = dir.join(rel);
+    if let Some(parent) = p.parent() {
+        std::fs::create_dir_all(parent).unwrap();
+    }
+    std::fs::write(p, content).unwrap();
+}
+
+/// A repo with a couple of snapshots to exercise the read-only commands.
+fn repo() -> TempDir {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    assert!(velody(d, &["init"]).1);
+    write(
+        d,
+        "app.py",
+        "def main():\n    print(\"hello\")\n    return 0\n",
+    );
+    assert!(velody(d, &["save", "initial commit"]).1);
+    write(
+        d,
+        "app.py",
+        "def main():\n    print(\"hello world\")\n    return 0\n",
+    );
+    assert!(velody(d, &["save", "tweak greeting"]).1);
+    tmp
+}
+
+#[test]
+fn status_reports_clean_and_dirty() {
+    let tmp = repo();
+    let d = tmp.path();
+    let (out, ok) = velody(d, &["status"]);
+    assert!(ok);
+    assert!(out.contains("clean"), "clean tree should say so:\n{out}");
+
+    write(d, "app.py", "changed\n");
+    let (out, ok) = velody(d, &["status"]);
+    assert!(ok);
+    assert!(
+        out.contains("app.py") && out.contains("Modified"),
+        "should list the change:\n{out}"
+    );
+}
+
+#[test]
+fn diff_shows_the_actual_change() {
+    let tmp = repo();
+    let d = tmp.path();
+    write(
+        d,
+        "app.py",
+        "def main():\n    print(\"goodbye\")\n    return 0\n",
+    );
+    let (out, ok) = velody(d, &["diff"]);
+    assert!(ok);
+    assert!(
+        out.contains("goodbye"),
+        "diff must show the new line:\n{out}"
+    );
+    assert!(
+        out.contains("hello world"),
+        "diff must show the removed line:\n{out}"
+    );
+}
+
+#[test]
+fn grep_finds_matches_and_respects_flags() {
+    let tmp = repo();
+    let d = tmp.path();
+    let (out, ok) = velody(d, &["grep", "print"]);
+    assert!(ok);
+    assert!(
+        out.contains("app.py") && out.contains("print"),
+        "grep should find the match:\n{out}"
+    );
+
+    // -l prints only file names (no code line content like the paren).
+    let (out, ok) = velody(d, &["grep", "-l", "print"]);
+    assert!(ok);
+    assert!(out.contains("app.py"), "grep -l lists the file:\n{out}");
+
+    // case-insensitive
+    let (out, ok) = velody(d, &["grep", "-i", "PRINT"]);
+    assert!(ok);
+    assert!(
+        out.contains("print"),
+        "grep -i should match case-insensitively:\n{out}"
+    );
+
+    // no match → still succeeds, no file listed
+    let (out, ok) = velody(d, &["grep", "zzz_nomatch_zzz"]);
+    assert!(ok);
+    assert!(
+        !out.contains("app.py"),
+        "no-match grep should not list files:\n{out}"
+    );
+}
+
+#[test]
+fn history_and_graph_show_commits() {
+    let tmp = repo();
+    let d = tmp.path();
+    let (out, ok) = velody(d, &["history", "--oneline"]);
+    assert!(ok);
+    assert!(
+        out.contains("initial commit") && out.contains("tweak greeting"),
+        "history lists messages:\n{out}"
+    );
+
+    let (out, ok) = velody(d, &["history", "--graph"]);
+    assert!(ok);
+    assert!(
+        out.contains("tweak greeting"),
+        "graph shows commits:\n{out}"
+    );
+}
+
+#[test]
+fn show_and_blame_render() {
+    let tmp = repo();
+    let d = tmp.path();
+    // resolve the latest hash from history --oneline
+    let (hist, ok) = velody(d, &["history", "--oneline"]);
+    assert!(ok);
+    let hash = hist
+        .lines()
+        .find_map(|l| {
+            l.split_whitespace()
+                .find(|w| w.len() >= 12 && w.chars().all(|c| c.is_ascii_hexdigit()))
+        })
+        .expect("a hash in history output")
+        .to_string();
+
+    let (out, ok) = velody(d, &["show", &hash]);
+    assert!(ok);
+    assert!(
+        out.contains("tweak greeting"),
+        "show renders the snapshot:\n{out}"
+    );
+
+    let (out, ok) = velody(d, &["blame", "app.py"]);
+    assert!(ok);
+    assert!(
+        out.contains("hello world"),
+        "blame shows annotated lines:\n{out}"
+    );
+}
+
+#[test]
+fn fsck_reports_health() {
+    let tmp = repo();
+    let d = tmp.path();
+    let (out, ok) = velody(d, &["fsck"]);
+    assert!(ok, "fsck should succeed on a healthy repo:\n{out}");
+    assert!(out.contains("healthy"), "fsck should report health:\n{out}");
+}
+
+#[test]
+fn bundle_transfers_history_between_repos() {
+    // Repo A with two branches + a tag.
+    let a_tmp = TempDir::new().unwrap();
+    let a = a_tmp.path();
+    assert!(velody(a, &["init"]).1);
+    write(a, "app.py", "print('a')\n");
+    assert!(velody(a, &["save", "initial"]).1);
+    assert!(velody(a, &["switch", "feature"]).1);
+    write(a, "feat.py", "print('feature')\n");
+    assert!(velody(a, &["save", "feature work"]).1);
+    assert!(velody(a, &["switch", "main"]).1);
+    assert!(velody(a, &["tag", "v1"]).1);
+
+    // Bundle the whole repo to a file outside both repos.
+    let share = TempDir::new().unwrap();
+    let bundle = share.path().join("proj.velo");
+    let bundle = bundle.to_str().unwrap();
+    let (out, ok) = velody(a, &["bundle", "create", bundle]);
+    assert!(ok, "bundle create failed:\n{out}");
+
+    // Repo B imports it.
+    let b_tmp = TempDir::new().unwrap();
+    let b = b_tmp.path();
+    assert!(velody(b, &["init"]).1);
+    let (out, ok) = velody(b, &["bundle", "apply", bundle]);
+    assert!(ok, "bundle apply failed:\n{out}");
+
+    // B has A's history, branches, and tag.
+    let (hist, ok) = velody(b, &["history", "--all", "--oneline"]);
+    assert!(ok);
+    assert!(
+        hist.contains("initial") && hist.contains("feature work"),
+        "B is missing history:\n{hist}"
+    );
+    let (tags, _) = velody(b, &["tag"]);
+    assert!(tags.contains("v1"), "tag not transferred:\n{tags}");
+
+    // The imported feature content restores byte-for-byte.
+    assert!(velody(b, &["switch", "feature", "--force"]).1);
+    assert_eq!(
+        std::fs::read_to_string(b.join("feat.py")).unwrap(),
+        "print('feature')\n"
+    );
+
+    // Receiver is consistent, and re-apply is a no-op.
+    assert!(velody(b, &["fsck"]).1, "B must pass fsck after import");
+    let (out, ok) = velody(b, &["bundle", "apply", bundle]);
+    assert!(
+        ok && out.contains("up to date"),
+        "re-apply should be idempotent:\n{out}"
+    );
+}
+
+#[test]
+fn clone_push_pull_full_collaboration_loop() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velody(&origin, &["init"]).1);
+    write(&origin, "shared.txt", "base\n");
+    assert!(velody(&origin, &["save", "C0"]).1);
+    let origin_s = origin.to_str().unwrap();
+
+    // Two developers clone.
+    assert!(velody(root.path(), &["clone", origin_s, "A"]).1);
+    assert!(velody(root.path(), &["clone", origin_s, "B"]).1);
+    let a = root.path().join("A");
+    let b = root.path().join("B");
+
+    // A edits and pushes (fast-forward).
+    write(&a, "a.txt", "a-work\n");
+    assert!(velody(&a, &["save", "A1"]).1);
+    let (out, ok) = velody(&a, &["push"]);
+    assert!(
+        ok && out.contains("Pushed"),
+        "A push (ff) should succeed:\n{out}"
+    );
+
+    // B commits, then its push is rejected (origin moved under it).
+    write(&b, "b.txt", "b-work\n");
+    assert!(velody(&b, &["save", "B1"]).1);
+    let (out, ok) = velody(&b, &["push"]);
+    // Assert on behaviour, not prose: it must fail, say why, and say how to fix it.
+    assert!(!ok, "B push must be rejected:\n{out}");
+    assert!(out.contains("non-fast-forward"), "and must say why:\n{out}");
+    assert!(
+        out.contains("velody sync") && out.contains("velody merge origin/main"),
+        "and must point at the fix:\n{out}"
+    );
+
+    // B pulls → divergence is reported (not auto-merged).
+    let (out, code) = velody_code(&b, &["pull"]);
+    assert!(
+        code == Some(4) && out.to_lowercase().contains("diverged"),
+        "B pull should report divergence and exit 4:\n{out}"
+    );
+
+    // B reconciles via the existing merge engine, then pushes (now ff).
+    let (out, ok) = velody(&b, &["merge", "origin/main"]);
+    assert!(ok, "merge origin/main should succeed:\n{out}");
+    assert!(velody(&b, &["save", "Merge origin/main"]).1);
+    assert!(
+        b.join("a.txt").exists() && b.join("b.txt").exists(),
+        "B must have both sides' files"
+    );
+    let (out, ok) = velody(&b, &["push"]);
+    assert!(
+        ok && out.contains("Pushed"),
+        "B push after merge should succeed:\n{out}"
+    );
+
+    // A pulls → fast-forwards and gains B's file.
+    let (out, ok) = velody(&a, &["pull"]);
+    assert!(
+        ok && out.to_lowercase().contains("fast-forward"),
+        "A pull should fast-forward:\n{out}"
+    );
+    assert!(a.join("b.txt").exists(), "A should now have b.txt");
+
+    // Everyone converges on the same content-addressed tip, and both verify.
+    let a_tip = std::fs::read_to_string(a.join(".velo/PARENT")).unwrap();
+    let b_tip = std::fs::read_to_string(b.join(".velo/PARENT")).unwrap();
+    assert_eq!(a_tip, b_tip, "A and B must converge on the same tip");
+    assert!(velody(&a, &["fsck"]).1, "A must pass fsck");
+    assert!(velody(&b, &["fsck"]).1, "B must pass fsck");
+}
+
+#[test]
+fn sync_over_streaming_child_protocol() {
+    // Exercises the full client↔server pack protocol (transport::StreamRemote +
+    // serve-upload/serve-receive) via the `child:` scheme, which runs the server
+    // as a local subprocess — the same path ssh uses, minus the network.
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velody(&origin, &["init"]).1);
+    write(&origin, "shared.txt", "base\n");
+    assert!(velody(&origin, &["save", "C0"]).1);
+    let origin_url = format!("child:{}", origin.to_str().unwrap());
+
+    // Clone over the streaming protocol.
+    let (out, ok) = velody(root.path(), &["clone", &origin_url, "A"]);
+    assert!(ok, "streaming clone failed:\n{out}");
+    let (out, ok) = velody(root.path(), &["clone", &origin_url, "B"]);
+    assert!(ok, "streaming clone B failed:\n{out}");
+    let a = root.path().join("A");
+    let b = root.path().join("B");
+
+    // A pushes over the protocol (fast-forward).
+    write(&a, "a.txt", "a\n");
+    assert!(velody(&a, &["save", "A1"]).1);
+    let (out, ok) = velody(&a, &["push"]);
+    assert!(
+        ok && out.contains("Pushed"),
+        "streaming push failed:\n{out}"
+    );
+
+    // B diverges → its push is rejected by the server.
+    write(&b, "b.txt", "b\n");
+    assert!(velody(&b, &["save", "B1"]).1);
+    let (out, ok) = velody(&b, &["push"]);
+    assert!(!ok, "streaming non-ff must be rejected:\n{out}");
+    assert!(out.contains("non-fast-forward"), "and must say why:\n{out}");
+
+    // B pulls (diverged), merges, and pushes.
+    let (out, code) = velody_code(&b, &["pull"]);
+    assert!(
+        code == Some(4) && out.to_lowercase().contains("diverged"),
+        "streaming pull should report divergence and exit 4:\n{out}"
+    );
+    assert!(velody(&b, &["merge", "origin/main"]).1);
+    assert!(velody(&b, &["save", "merge"]).1);
+    let (out, ok) = velody(&b, &["push"]);
+    assert!(
+        ok && out.contains("Pushed"),
+        "streaming push after merge failed:\n{out}"
+    );
+
+    // A pulls → fast-forward and gains b.txt.
+    let (out, ok) = velody(&a, &["pull"]);
+    assert!(
+        ok && out.to_lowercase().contains("fast-forward"),
+        "streaming pull ff failed:\n{out}"
+    );
+    assert!(a.join("b.txt").exists() && a.join("a.txt").exists());
+
+    assert!(velody(&a, &["fsck"]).1);
+    assert!(velody(&b, &["fsck"]).1);
+}
+
+#[test]
+fn status_reports_ahead_behind_and_diverged() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velody(&origin, &["init"]).1);
+    write(&origin, "f.txt", "base\n");
+    assert!(velody(&origin, &["save", "C0"]).1);
+    let origin_s = origin.to_str().unwrap();
+
+    assert!(velody(root.path(), &["clone", origin_s, "A"]).1);
+    assert!(velody(root.path(), &["clone", origin_s, "B"]).1);
+    let a = root.path().join("A");
+    let b = root.path().join("B");
+
+    // Fresh clone → in sync.
+    let (out, _) = velody(&a, &["status"]);
+    assert!(
+        out.contains("up to date with origin/main"),
+        "fresh clone should be in sync:\n{out}"
+    );
+
+    // A commits → ahead.
+    write(&a, "a.txt", "a\n");
+    assert!(velody(&a, &["save", "A1"]).1);
+    let (out, _) = velody(&a, &["status"]);
+    assert!(
+        out.contains("1 ahead of origin/main"),
+        "should report ahead:\n{out}"
+    );
+
+    // A pushes; B fetches → behind.
+    assert!(velody(&a, &["push"]).1);
+    assert!(velody(&b, &["fetch"]).1);
+    let (out, _) = velody(&b, &["status"]);
+    assert!(
+        out.contains("1 behind origin/main"),
+        "should report behind:\n{out}"
+    );
+
+    // B also commits → diverged.
+    write(&b, "b.txt", "b\n");
+    assert!(velody(&b, &["save", "B1"]).1);
+    let (out, _) = velody(&b, &["status"]);
+    assert!(
+        out.contains("diverged from origin/main"),
+        "should report divergence:\n{out}"
+    );
+    assert!(
+        out.contains("1 ahead, 1 behind"),
+        "should show both counts:\n{out}"
+    );
+}
+
+#[test]
+fn fetch_is_readonly_and_tracks_remote() {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velody(&origin, &["init"]).1);
+    write(&origin, "f.txt", "one\n");
+    assert!(velody(&origin, &["save", "first"]).1);
+    let origin_s = origin.to_str().unwrap();
+
+    assert!(velody(root.path(), &["clone", origin_s, "C"]).1);
+    let c = root.path().join("C");
+
+    // Origin advances on its own.
+    write(&origin, "f.txt", "two\n");
+    assert!(velody(&origin, &["save", "second"]).1);
+
+    // Fetch pulls the history but must not touch C's working tree.
+    let (out, ok) = velody(&c, &["fetch"]);
+    assert!(ok, "fetch failed:\n{out}");
+    assert_eq!(
+        std::fs::read_to_string(c.join("f.txt")).unwrap(),
+        "one\n",
+        "fetch must not change the working tree"
+    );
+
+    // The remote-tracking ref resolves to origin's new commit.
+    let (out, ok) = velody(&c, &["show", "origin/main"]);
+    assert!(
+        ok && out.contains("second"),
+        "origin/main should resolve to the fetched commit:\n{out}"
+    );
+    assert!(velody(&c, &["fsck"]).1);
+}
+
+#[test]
+fn fetch_then_pull_still_fast_forwards() {
+    // Regression: `fetch` parks incoming commits on the remote-tracking branch.
+    // A following `pull` used to (a) report divergence, because its ancestry walk
+    // only consulted the (now-empty) pack, and (b) not advance the local branch,
+    // because Velody derives branch tips from the `branch` column and nothing
+    // re-labelled the fetched commits onto it.
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velody(&origin, &["init"]).1);
+    write(&origin, "f.txt", "one\n");
+    assert!(velody(&origin, &["save", "first"]).1);
+    let origin_s = origin.to_str().unwrap();
+
+    assert!(velody(root.path(), &["clone", origin_s, "C"]).1);
+    let c = root.path().join("C");
+
+    // Origin advances.
+    write(&origin, "g.txt", "two\n");
+    assert!(velody(&origin, &["save", "second"]).1);
+
+    // Fetch first (read-only), then pull.
+    assert!(velody(&c, &["fetch"]).1);
+    let (out, ok) = velody(&c, &["pull"]);
+    assert!(ok, "pull after fetch failed:\n{out}");
+    assert!(
+        out.to_lowercase().contains("fast-forward"),
+        "pull after fetch must fast-forward, not report divergence:\n{out}"
+    );
+    assert!(
+        c.join("g.txt").exists(),
+        "pull must bring the new file into the tree"
+    );
+
+    // The local branch really advanced: status is up to date, not behind.
+    let (out, _) = velody(&c, &["status"]);
+    assert!(
+        out.contains("up to date with origin/main"),
+        "local branch must have advanced after the fast-forward:\n{out}"
+    );
+    assert!(velody(&c, &["fsck"]).1);
+}
+
+#[test]
+fn errors_outside_a_repo_and_on_empty_remotes_are_actionable() {
+    let root = TempDir::new().unwrap();
+
+    // A sync command outside any repository should point at clone *and* init.
+    let plain = root.path().join("not_a_repo");
+    std::fs::create_dir_all(&plain).unwrap();
+    let (out, ok) = velody(&plain, &["remote", "add", "origin", "somewhere"]);
+    assert!(!ok, "remote add outside a repo must fail:\n{out}");
+    assert!(out.contains("velody clone"), "should suggest clone:\n{out}");
+    assert!(out.contains("velody init"), "should suggest init:\n{out}");
+
+    // Cloning an initialised-but-empty repository explains what to do.
+    let empty = root.path().join("empty_remote");
+    std::fs::create_dir_all(&empty).unwrap();
+    assert!(velody(&empty, &["init"]).1);
+    let (out, ok) = velody(root.path(), &["clone", empty.to_str().unwrap(), "attempt"]);
+    assert!(!ok, "cloning an empty remote must fail:\n{out}");
+    assert!(out.contains("no commits yet"), "should say why:\n{out}");
+    assert!(
+        out.contains("velody push"),
+        "should say how to fix it:\n{out}"
+    );
+    assert!(
+        !root.path().join("attempt").exists(),
+        "a failed clone must not leave a directory behind"
+    );
+
+    // Pushing into that empty remote works and says the remote was empty.
+    let work = root.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    assert!(velody(&work, &["init"]).1);
+    write(&work, "a.txt", "hi\n");
+    assert!(velody(&work, &["save", "first"]).1);
+    assert!(velody(&work, &["remote", "add", "origin", empty.to_str().unwrap()]).1);
+    let (out, ok) = velody(&work, &["push"]);
+    assert!(ok, "push into an empty remote should succeed:\n{out}");
+    assert!(
+        out.contains("was empty"),
+        "should note the remote was empty:\n{out}"
+    );
+
+    // And now it is clonable.
+    let (out, ok) = velody(root.path(), &["clone", empty.to_str().unwrap(), "copy"]);
+    assert!(ok, "clone should work once the remote has history:\n{out}");
+    assert!(root.path().join("copy").join("a.txt").exists());
+}
+
+#[test]
+fn fsck_fails_and_repairs_are_exit_coded() {
+    let tmp = repo();
+    let d = tmp.path();
+    // Corrupt an object → fsck must exit non-zero.
+    let objects = d.join(".velo/objects");
+    let first = std::fs::read_dir(&objects)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .find(|p| p.is_file())
+        .unwrap();
+    std::fs::write(&first, b"corrupt").unwrap();
+    let (out, ok) = velody(d, &["fsck"]);
+    assert!(!ok, "fsck must fail on corruption:\n{out}");
+}
+
+// ─── history views ────────────────────────────────────────────────────────────
+//
+// The full / oneline / graph presentations live in this crate, so they are
+// tested here against real output rather than in velody-core.
+
+#[test]
+fn history_full_view_aligns_its_columns() {
+    let tmp = repo();
+    let (out, ok) = velody(tmp.path(), &["history"]);
+    assert!(ok, "history failed:\n{out}");
+    let lines: Vec<&str> = out.lines().collect();
+
+    let header = lines
+        .iter()
+        .find(|l| l.contains("Hash") && l.contains("Message"))
+        .expect("the full view has a column header");
+    // Every snapshot row must start its message at the same column as the header.
+    let msg_col = header.find("Message").unwrap();
+    let rows: Vec<&&str> = lines
+        .iter()
+        .filter(|l| l.starts_with('→') || l.starts_with("  ") && l.contains(':'))
+        .collect();
+    assert!(!rows.is_empty(), "expected snapshot rows in:\n{out}");
+    for row in rows {
+        assert!(
+            row.len() >= msg_col,
+            "row is shorter than the message column, so the table is misaligned:\n{row}"
+        );
+    }
+}
+
+#[test]
+fn history_oneline_prints_one_row_per_snapshot() {
+    let tmp = repo();
+    let (out, ok) = velody(tmp.path(), &["history", "--oneline"]);
+    assert!(ok, "history --oneline failed:\n{out}");
+    // No table furniture in the compact view.
+    assert!(
+        !out.contains("Hash"),
+        "oneline must not print headers:\n{out}"
+    );
+    assert!(
+        out.contains("(HEAD → main)"),
+        "the checked-out branch should be decorated:\n{out}"
+    );
+    // The current snapshot is marked with '*'.
+    assert!(
+        out.lines().any(|l| l.starts_with("* ")),
+        "the current snapshot should be marked:\n{out}"
+    );
+}
+
+#[test]
+fn history_graph_draws_lanes_and_survives_branching() {
+    let tmp = repo();
+    let d = tmp.path();
+    let (out, ok) = velody(d, &["history", "--graph"]);
+    assert!(ok, "history --graph failed:\n{out}");
+    assert!(
+        out.contains('●') || out.contains('○'),
+        "the graph should draw commit glyphs:\n{out}"
+    );
+
+    // Branch, commit, come back, and render every branch at once — the lane
+    // bookkeeping is where a graph renderer usually breaks.
+    assert!(velody(d, &["switch", "dev"]).1);
+    write(d, "dev.py", "dev = 1\n");
+    assert!(velody(d, &["save", "dev work"]).1);
+    assert!(velody(d, &["switch", "main", "--force"]).1);
+
+    let (out, ok) = velody(d, &["history", "--graph", "--all"]);
+    assert!(ok, "graph --all failed:\n{out}");
+    assert!(
+        out.contains("dev work"),
+        "dev's snapshot should appear:\n{out}"
+    );
+    assert!(
+        out.contains("Global history"),
+        "--all should announce its scope:\n{out}"
+    );
+}
+
+#[test]
+fn history_on_an_unborn_branch_says_so() {
+    let tmp = TempDir::new().unwrap();
+    assert!(velody(tmp.path(), &["init"]).1);
+    let (out, ok) = velody(tmp.path(), &["history"]);
+    assert!(ok, "history on a fresh repo should not fail:\n{out}");
+    assert!(
+        out.contains("No snapshots yet"),
+        "expected the unborn-branch message:\n{out}"
+    );
+}
+
+#[test]
+fn history_file_filter_reports_when_nothing_matched() {
+    let tmp = repo();
+    let (out, ok) = velody(tmp.path(), &["history", "--file", "no_such_file.py"]);
+    assert!(ok, "an empty filter result is not an error:\n{out}");
+    assert!(
+        out.contains("No snapshots found that touched"),
+        "expected the no-match message:\n{out}"
+    );
+}
+
+#[test]
+fn export_git_stream_is_accepted_by_git_fast_import() {
+    use std::process::Stdio;
+    if !Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("skipping: git is not installed");
+        return;
+    }
+    let tmp = repo();
+    // Names git's check-ref-format rejects must not sink the whole stream.
+    assert!(velody(tmp.path(), &["switch", "my feature"]).1);
+    write(
+        tmp.path(),
+        "extra.txt",
+        "x
+",
+    );
+    assert!(velody(tmp.path(), &["save", "on odd branch"]).1);
+    assert!(velody(tmp.path(), &["tag", "v1 final"]).1);
+    assert!(velody(tmp.path(), &["switch", "main", "--force"]).1);
+    let out = tmp.path().join("history.fi");
+
+    // The stream goes to stdout by default, and to a file with --output.
+    let exported = Command::new(env!("CARGO_BIN_EXE_velody"))
+        .args(["export-git"])
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+    let (_, ok) = velody(
+        tmp.path(),
+        &["export-git", "--output", out.to_str().unwrap()],
+    );
+    assert!(ok);
+    assert_eq!(std::fs::read(&out).unwrap(), exported.stdout);
+    std::fs::remove_file(&out).unwrap();
+
+    let git_dir = TempDir::new().unwrap();
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(git_dir.path())
+            .output()
+            .unwrap()
+    };
+    assert!(git(&["init", "-q", "-b", "main"]).status.success());
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(git_dir.path())
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    {
+        use std::io::Write;
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(&exported.stdout)
+            .unwrap();
+    }
+    assert!(child.wait().unwrap().success(), "git rejected the stream");
+
+    let count = git(&["rev-list", "--all", "--count"]);
+    assert_eq!(String::from_utf8_lossy(&count.stdout).trim(), "3");
+    let message = git(&["log", "-1", "--format=%B", "main"]);
+    assert!(String::from_utf8_lossy(&message.stdout).contains("Velo-Snapshot:"));
+}
+
+/// Run `velody <args>` in `dir` as the author `name`.
+fn velody_as(dir: &Path, name: &str, args: &[&str]) -> (String, bool) {
+    let out = Command::new(env!("CARGO_BIN_EXE_velody"))
+        .args(args)
+        .env("VELODY_AUTHOR_NAME", name)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run velody binary");
+    let mut s = String::from_utf8_lossy(&out.stdout).into_owned();
+    s.push_str(&String::from_utf8_lossy(&out.stderr));
+    (s, out.status.success())
+}
+
+#[test]
+fn history_where_filters_by_metadata() {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    assert!(velody(d, &["init"]).1);
+    write(d, "a.txt", "one\n");
+    assert!(velody_as(d, "ada", &["save", "by ada"]).1);
+    write(d, "a.txt", "two\n");
+    assert!(velody_as(d, "bob", &["save", "by bob"]).1);
+
+    let (out, ok) = velody(
+        d,
+        &["history", "--oneline", "--where", "velo:author.name=ada"],
+    );
+    assert!(ok, "{out}");
+    assert!(out.contains("by ada") && !out.contains("by bob"), "{out}");
+
+    // Without `=` the filter means "is set"; two filters AND together.
+    let (out, ok) = velody(d, &["history", "--oneline", "--where", "velo:author.name"]);
+    assert!(
+        ok && out.contains("by ada") && out.contains("by bob"),
+        "{out}"
+    );
+    let (out, ok) = velody(
+        d,
+        &[
+            "history",
+            "--oneline",
+            "--where",
+            "velo:author.name=ada",
+            "--where",
+            "velo:author.name=bob",
+        ],
+    );
+    assert!(ok, "{out}");
+    assert!(
+        out.contains("No snapshots match the --where filter"),
+        "{out}"
+    );
+}
+
+#[test]
+fn history_where_rejects_a_malformed_filter() {
+    let tmp = repo();
+    for bad in ["nocolon", ":key=v", "ns:=v"] {
+        let (out, ok) = velody(tmp.path(), &["history", "--where", bad]);
+        assert!(!ok, "{bad} should be rejected:\n{out}");
+        assert!(out.contains("NAMESPACE:KEY"), "{bad}: {out}");
+    }
+}
+
+#[test]
+fn merge_combines_json_keys_added_on_both_branches() {
+    let tmp = TempDir::new().unwrap();
+    let d = tmp.path();
+    assert!(velody(d, &["init"]).1);
+    write(d, "config.json", "{\n  \"a\": 1\n}\n");
+    assert!(velody(d, &["save", "base"]).1);
+    assert!(velody(d, &["switch", "feature"]).1);
+    write(d, "config.json", "{\n  \"a\": 1,\n  \"theirs\": 2\n}\n");
+    assert!(velody(d, &["save", "feature key"]).1);
+    assert!(velody(d, &["switch", "main"]).1);
+    write(d, "config.json", "{\n  \"a\": 1,\n  \"ours\": 3\n}\n");
+    assert!(velody(d, &["save", "main key"]).1);
+
+    let (out, ok) = velody(d, &["merge", "feature"]);
+    assert!(ok, "merge should succeed:\n{out}");
+    assert!(out.contains("Clean merge"), "{out}");
+    let merged = std::fs::read_to_string(d.join("config.json")).unwrap();
+    assert!(
+        merged.contains("\"ours\"") && merged.contains("\"theirs\""),
+        "{merged}"
+    );
+    assert!(!merged.contains("<<<<"), "{merged}");
+}
+
+// ─── HTTP transport ───────────────────────────────────────────────────────────
+
+/// A running `velody serve-http`, killed when dropped.
+struct HttpServer {
+    child: std::process::Child,
+    url: String,
+}
+
+impl Drop for HttpServer {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn serve_http(dir: &Path) -> HttpServer {
+    use std::io::{BufRead, BufReader};
+    let mut child = Command::new(env!("CARGO_BIN_EXE_velody"))
+        .args([
+            "serve-http",
+            dir.to_str().unwrap(),
+            "--listen",
+            "127.0.0.1:0",
+            "--allow-anonymous-push",
+        ])
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("failed to spawn velody serve-http");
+    let mut line = String::new();
+    BufReader::new(child.stdout.take().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    let url = line
+        .trim()
+        .strip_prefix("listening on ")
+        .unwrap_or_else(|| panic!("unexpected first line: {line:?}"))
+        .to_string();
+    assert!(url.starts_with("http://127.0.0.1:") && url.ends_with('/'));
+    HttpServer { child, url }
+}
+
+/// Snapshot ids of the current branch, newest first.
+fn history_ids(dir: &Path) -> Vec<String> {
+    let (out, ok) = velody(dir, &["history", "--oneline", "--branch", "main"]);
+    assert!(ok, "{out}");
+    out.lines()
+        .filter(|l| l.starts_with("* ") || l.starts_with("  "))
+        .filter_map(|l| l.get(2..)?.split_whitespace().next().map(str::to_string))
+        .collect()
+}
+
+/// An origin repo with two snapshots, served over http, plus a clone of it.
+fn http_fixture() -> (TempDir, std::path::PathBuf, HttpServer, std::path::PathBuf) {
+    let root = TempDir::new().unwrap();
+    let origin = root.path().join("origin");
+    std::fs::create_dir_all(&origin).unwrap();
+    assert!(velody(&origin, &["init"]).1);
+    write(&origin, "shared.txt", "base\n");
+    assert!(velody(&origin, &["save", "C0"]).1);
+    write(&origin, "shared.txt", "base\nmore\n");
+    assert!(velody(&origin, &["save", "C1"]).1);
+    let server = serve_http(&origin);
+    let (out, ok) = velody(root.path(), &["clone", &server.url, "clone"]);
+    assert!(ok, "clone over http failed:\n{out}");
+    let clone = root.path().join("clone");
+    (root, origin, server, clone)
+}
+
+#[test]
+fn http_clone_reproduces_history() {
+    let (_root, origin, _server, clone) = http_fixture();
+    let ids = history_ids(&origin);
+    assert_eq!(ids.len(), 2);
+    assert_eq!(history_ids(&clone), ids);
+}
+
+#[test]
+fn http_push_fast_forwards_the_server() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&clone, "new.txt", "x\n");
+    assert!(velody(&clone, &["save", "C2"]).1);
+    let (out, ok) = velody(&clone, &["push"]);
+    assert!(ok && out.contains("Pushed"), "{out}");
+    assert_eq!(history_ids(&origin), history_ids(&clone));
+    assert_eq!(history_ids(&origin).len(), 3);
+}
+
+#[test]
+fn http_diverged_push_is_rejected_and_server_unchanged() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&origin, "o.txt", "o\n");
+    assert!(velody(&origin, &["save", "server side"]).1);
+    let before = history_ids(&origin);
+    write(&clone, "c.txt", "c\n");
+    assert!(velody(&clone, &["save", "client side"]).1);
+    let (out, ok) = velody(&clone, &["push"]);
+    assert!(!ok, "{out}");
+    assert!(out.contains("non-fast-forward"), "{out}");
+    assert_eq!(history_ids(&origin), before);
+}
+
+#[test]
+fn http_pull_fast_forwards_the_client() {
+    let (_root, origin, _server, clone) = http_fixture();
+    write(&origin, "s.txt", "s\n");
+    assert!(velody(&origin, &["save", "C2"]).1);
+    let (out, ok) = velody(&clone, &["pull"]);
+    assert!(ok, "{out}");
+    assert_eq!(history_ids(&clone), history_ids(&origin));
+    assert!(clone.join("s.txt").exists());
+}
+
+#[test]
+fn http_unknown_path_is_404_and_wrong_method_405() {
+    use std::io::{Read, Write};
+    let (_root, _origin, server, _clone) = http_fixture();
+    let addr = server
+        .url
+        .trim_start_matches("http://")
+        .trim_end_matches('/')
+        .to_string();
+    let get = |req: &str| {
+        let mut s = std::net::TcpStream::connect(&addr).unwrap();
+        s.write_all(req.as_bytes()).unwrap();
+        let mut resp = String::new();
+        s.read_to_string(&mut resp).unwrap();
+        resp
+    };
+    let r = get("GET /nope HTTP/1.0\r\n\r\n");
+    assert!(
+        r.starts_with("HTTP/1.0 404") || r.starts_with("HTTP/1.1 404"),
+        "{r}"
+    );
+    let r = get("POST /velo/v1/refs HTTP/1.0\r\nContent-Length: 0\r\n\r\n");
+    assert!(r.contains(" 405 "), "{r}");
+    let r = get("GET /velo/v1/refs HTTP/1.0\r\n\r\n");
+    assert!(r.contains(" 200 "), "{r}");
+}
+
+/// The ids `velody history --all --oneline` lists, sorted.
+fn all_history_ids(dir: &Path) -> Vec<String> {
+    let (out, ok) = velody(dir, &["history", "--all", "--oneline"]);
+    assert!(ok, "{out}");
+    let mut ids: Vec<String> = out
+        .lines()
+        .filter(|l| l.starts_with("* ") || l.starts_with("  "))
+        .filter_map(|l| l.get(2..)?.split_whitespace().next())
+        .map(str::to_string)
+        .collect();
+    ids.sort();
+    ids
+}
+
+#[test]
+fn export_git_then_import_git_round_trips_snapshot_ids() {
+    use std::io::Write;
+    use std::process::Stdio;
+    if !Command::new("git")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success())
+    {
+        eprintln!("skipping: git is not installed");
+        return;
+    }
+    let tmp = repo();
+    let d = tmp.path();
+    assert!(velody(d, &["switch", "side"]).1);
+    write(d, "extra.txt", "extra\n");
+    assert!(velody(d, &["save", "on side"]).1);
+    assert!(velody(d, &["tag", "v1"]).1);
+    assert!(velody(d, &["switch", "main", "--force"]).1);
+    let original = all_history_ids(d);
+    assert_eq!(original.len(), 3, "{original:?}");
+
+    let exported = Command::new(env!("CARGO_BIN_EXE_velody"))
+        .args(["export-git"])
+        .current_dir(d)
+        .output()
+        .unwrap();
+    assert!(exported.status.success());
+
+    let git_dir = TempDir::new().unwrap();
+    assert!(Command::new("git")
+        .args(["init", "-q", "-b", "main"])
+        .current_dir(git_dir.path())
+        .status()
+        .unwrap()
+        .success());
+    let mut child = Command::new("git")
+        .args(["fast-import", "--quiet"])
+        .current_dir(git_dir.path())
+        .stdin(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(&exported.stdout)
+        .unwrap();
+    assert!(child.wait().unwrap().success(), "git rejected the stream");
+
+    let fe = Command::new("git")
+        .args([
+            "fast-export",
+            "--all",
+            "--reencode=yes",
+            "--signed-tags=strip",
+            "-M",
+        ])
+        .current_dir(git_dir.path())
+        .output()
+        .unwrap();
+    assert!(fe.status.success());
+
+    let fresh = TempDir::new().unwrap();
+    assert!(velody(fresh.path(), &["init"]).1);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_velody"))
+        .args(["import-git"])
+        .current_dir(fresh.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(&fe.stdout).unwrap();
+    let out = child.wait_with_output().unwrap();
+    let text =
+        String::from_utf8_lossy(&out.stdout).into_owned() + &String::from_utf8_lossy(&out.stderr);
+    assert!(out.status.success(), "{text}");
+    assert!(text.contains("Imported 3 commit(s)"), "{text}");
+
+    assert_eq!(all_history_ids(fresh.path()), original);
+
+    // --input reads a file, too.
+    let file = fresh.path().join("stream.fe");
+    std::fs::write(&file, &fe.stdout).unwrap();
+    let again = TempDir::new().unwrap();
+    assert!(velody(again.path(), &["init"]).1);
+    let (out, ok) = velody(
+        again.path(),
+        &["import-git", "--input", file.to_str().unwrap()],
+    );
+    assert!(ok, "{out}");
+    assert_eq!(all_history_ids(again.path()), original);
+}

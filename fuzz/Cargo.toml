@@ -1,5 +1,5 @@
 [package]
-name = "velo-fuzz"
+name = "velody-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2021"
@@ -9,7 +9,7 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-velo-core = { path = "../crates/velo-core", features = ["fuzzing", "bundle"] }
+velody-core = { path = "../crates/velody-core", features = ["fuzzing", "bundle"] }
 
 # Its own workspace: the root one excludes `fuzz`, which needs nightly.
 [workspace]

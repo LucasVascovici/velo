@@ -1,4 +1,4 @@
-# Velo on Windows
+# Velody on Windows
 
 The first save of a large tree is much slower on Windows than on Linux. This
 page gives the measured cost, why it happens, and the settings that change it.
@@ -16,7 +16,7 @@ first save):
 In that run `gc` at 100,000 files took 392 s on Windows against 8 s on Linux.
 
 Since then, 19.6-a made a save open each new file once instead of several
-times, and 19.6-b added `velo init --objects database`. Both were measured on
+times, and 19.6-b added `velody init --objects database`. Both were measured on
 Windows 11 (NTFS), release build, Defender real-time protection on with no
 exclusions, 5 snapshots, one file changed per snapshot, with
 `bench/scale/scale.py`. The raw results are in
@@ -50,12 +50,12 @@ What the numbers say:
 
 ## Why it happens
 
-Windows Defender real-time protection scans a file when it is opened. Velo
+Windows Defender real-time protection scans a file when it is opened. Velody
 opens every file once to hash it, and, with the default object store, creates
 one new object file for every new file, which is scanned again on write. Each
 scan has a fixed per-file cost, so time grows with the file count rather than
 the byte count. Linux has no such per-open hook. This is a property of the
-platform configuration, not of velo's data model.
+platform configuration, not of velody's data model.
 
 ## Excluding the work directory
 
@@ -70,12 +70,12 @@ The trade-off is real: files in an excluded directory are not scanned when they
 are opened or written, so malware placed there is not caught by real-time
 protection. Exclude only directories you control, such as an agent's scratch
 workspace, and prefer a narrow path over a drive. On a managed machine the
-exclusion may need your administrator. The effect of the exclusion on velo has
+exclusion may need your administrator. The effect of the exclusion on velody has
 not been measured yet (see the table).
 
 ## The single-file option
 
-`velo init --objects database` stores objects inside `velo.db` instead of one
+`velody init --objects database` stores objects inside `velo.db` instead of one
 file each under `.velo/objects`. Choose it for agent workloads and trees with
 many small files: it needs no per-object file creation, and it made `gc`
 roughly ten times faster here. What it costs: one large `velo.db` (about 188 MB
@@ -86,7 +86,7 @@ fixed at init; an existing repository cannot be switched.
 
 - Small and medium trees (a few thousand files): the defaults are fine.
 - Large trees or agent workloads on Windows: initialise with
-  `velo init --objects database`, and, where your policy allows, exclude the
+  `velody init --objects database`, and, where your policy allows, exclude the
   work directory from Defender. The first save is paid once; later saves
   were 0.2-0.4 s at 10,000 files.
 - Whether `--objects database` should become the default at `init` on Windows
@@ -104,7 +104,7 @@ built.
 The first save of a large tree is one open per file under Defender. If that
 cost were per-open latency rather than throughput, a rayon pool with more
 threads than cores might overlap it. `first_save_threads` (an ignored,
-Windows-only test in `velo-core`) writes the files into a fresh temporary
+Windows-only test in `velody-core`) writes the files into a fresh temporary
 directory for each thread count, so Defender scans every file, then runs the
 real first save inside a local rayon pool of that size. The production pool is
 untouched.
@@ -127,7 +127,7 @@ count; 30,000 and 100,000 files were not measured.
 To repeat it at 100,000 files (the first save alone was 348 to 448 s):
 
 ```text
-VELO_PROFILE_FILES=100000 VELO_PROFILE_THREADS=20,40,80 VELO_PROFILE_OUT=out.json \
-    cargo test -p velo-core --release first_save_threads \
+VELODY_PROFILE_FILES=100000 VELODY_PROFILE_THREADS=20,40,80 VELODY_PROFILE_OUT=out.json \
+    cargo test -p velody-core --release first_save_threads \
     -- --ignored --nocapture --test-threads=1
 ```

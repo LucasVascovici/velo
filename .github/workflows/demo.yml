@@ -35,11 +35,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: Build velo
-        run: cargo build --release --locked -p velo-cli
+      - name: Build velody
+        run: cargo build --release --locked -p velody-cli
 
       - name: Regenerate the transcript
-        run: bash docs/demo/demo.sh target/release/velo
+        run: bash docs/demo/demo.sh target/release/velody
 
       - name: Fail if the committed transcript is stale
         run: |

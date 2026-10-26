@@ -1,13 +1,13 @@
 # Mixed-version compatibility
 
-`mixed_versions.py --old <velo 5.x> --new <velo 6.x>` checks a 5.x client
+`mixed_versions.py --old <velody 5.x> --new <velody 6.x>` checks a 5.x client
 against a 6.0 peer and the reverse. CI runs it in the `old-release` job, with
 the old build and the current build. The refusal of a v4 working repository
 and the bundle round trip are covered separately by
 `tests/corpus/old_release_check.py`.
 
 Every HTTP cell starts `serve-http` on a free localhost port with
-`VELO_SERVE_TOKEN` (anonymous push is refused by default), always kills it in a
+`VELODY_SERVE_TOKEN` (anonymous push is refused by default), always kills it in a
 `finally`, and has the client clone, save, push, pull and fetch. Afterwards the
 server's history ids must equal the client's and `fsck` must be green on both.
 

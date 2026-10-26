@@ -1,6 +1,6 @@
-# velo-core (Python)
+# velody-core (Python)
 
-PyO3 binding over `velo-core`'s embedder API. It is its own Cargo workspace so
+PyO3 binding over `velody-core`'s embedder API. It is its own Cargo workspace so
 the Python toolchain stays out of the main build.
 
 ```
@@ -11,8 +11,8 @@ python -m venv .venv
 ```
 
 ```python
-import velo
-repo = velo.Repo.init("work")
+import velody
+repo = velody.Repo.init("work")
 sid = repo.save_tree(branch="main", message="hi", entries={"a.txt": "hello"})
 repo.read_file_at(sid, "a.txt")
 # Several files of one snapshot in one call, in the order asked:
@@ -27,17 +27,17 @@ Save only what changed, and get object ids back:
 saved = repo.save_changes(branch="main", message="edit", parent=sid,
                           changes={"a.txt": "hi", "old.txt": None})
 saved.snapshot, saved.written   # id, {"a.txt": object id}
-# or a list: velo.Change.put / stored / delete / rename
+# or a list: velody.Change.put / stored / delete / rename
 ```
 
 Notes:
 
 - `Repo` is `unsendable`: using it from another thread raises `RuntimeError`.
-  That is the binding enforcing velo's anti-goal on `Sync`.
+  That is the binding enforcing velody's anti-goal on `Sync`.
 - Calls hold the GIL, except `merge_plan` and `merge_commit`, which release it
   so a merge driver can run on any thread (see below).
-- Every `velo_core::Error` variant is an exception subclass of `velo.VeloError`
-  named after the variant (`Io` is `VeloIOError`, `Db` is `DatabaseError`), with
+- Every `velody_core::Error` variant is an exception subclass of `velody.VelodyError`
+  named after the variant (`Io` is `VelodyIOError`, `Db` is `DatabaseError`), with
   the variant's fields as attributes (`NotFound.kind`, `Compacted.into`, ...).
 - Ids are plain `str`; a malformed one raises `InvalidInput`.
 - A repository with no working tree has no current position, so pass `from_`
@@ -47,7 +47,7 @@ History, blame and a store-only merge:
 
 ```python
 a = repo.save_tree(branch="main", message="a", entries={"n.txt": "one\n"},
-                   author=velo.Author("ada"), meta={"app": {"kind": "draft"}})
+                   author=velody.Author("ada"), meta={"app": {"kind": "draft"}})
 b = repo.save_tree(branch="side", message="b", parent=a, entries={"n.txt": "two\n"})
 c = repo.save_tree(branch="main", message="c", parent=a, entries={"n.txt": "three\n"})
 
@@ -90,8 +90,8 @@ repo.clear_merge_drivers()
 - A driver function runs **inside** the merge, under the repository lock, and
   the GIL is released around `merge_plan` / `merge_commit` so it can run on any
   worker thread. It must **not** call back into the repository: any method
-  called on the same handle while it is busy raises `velo.ReentrantCall`
-  (a `VeloError`) at once, rather than deadlocking.
+  called on the same handle while it is busy raises `velody.ReentrantCall`
+  (a `VelodyError`) at once, rather than deadlocking.
 - An exception raised by a driver makes `merge_plan` / `merge_commit` raise that
   same exception, and nothing is committed. With resolutions given, the merge
   is planned first so the exception surfaces before any write; the driver then
@@ -100,7 +100,7 @@ repo.clear_merge_drivers()
 ## Threads
 
 - A `Repo` belongs to the thread that created it. Using it from another thread
-  raises `RuntimeError` ("velo.Repo is unsendable: it can only be used on the
+  raises `RuntimeError` ("velody.Repo is unsendable: it can only be used on the
   thread that created it"); the handle is never `Sync` and never shared.
 - Use one `Repo` per thread: open another `Repo` on the same path in each
   thread.
@@ -109,5 +109,5 @@ repo.clear_merge_drivers()
   `retention`, `compact`, `fsck`, `sign`, `verify`, `signed_snapshots`, `sync`),
   so threads that each have their own handle run in parallel, and other Python
   threads keep running during a long call. A write takes the repository lock
-  without waiting: while another handle holds it, the call raises `velo.Locked`
+  without waiting: while another handle holds it, the call raises `velody.Locked`
   at once, so retry after a short delay.

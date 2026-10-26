@@ -1,7 +1,7 @@
 # Fuzz targets
 
-`cargo-fuzz` targets for every reader of untrusted bytes in `velo-core`. They
-call the `velo_core::fuzzing` wrappers (feature `fuzzing`, hidden from the docs),
+`cargo-fuzz` targets for every reader of untrusted bytes in `velody-core`. They
+call the `velody_core::fuzzing` wrappers (feature `fuzzing`, hidden from the docs),
 which discard every `Err`: a refusal is the right answer to hostile input. Only a
 panic, an abort, an out-of-memory or a timeout is a finding.
 
@@ -45,8 +45,8 @@ cargo +nightly fuzz tmin bundle_decode fuzz/artifacts/bundle_decode/crash-<hash>
 
 ## Add a regression test
 
-Fix the bug in `velo-core`, then add a test to
-`crates/velo-core/src/tests/fuzz_regressions.rs` that feeds the minimised input
+Fix the bug in `velody-core`, then add a test to
+`crates/velody-core/src/tests/fuzz_regressions.rs` that feeds the minimised input
 (inline bytes, kept small) to the same underlying `pub(crate)` function the
 wrapper calls, without the `fuzzing` feature, and asserts it returns instead of
 panicking. Name it after the bug, not the hash.

@@ -6,17 +6,17 @@
 //
 //   cd bindings/node && npm install && npm run build && npm pack
 //   mkdir /tmp/try && cd /tmp/try && npm init -y && npm install <path to the .tgz>
-//   node <path to velo>/bindings/node/examples/config_registry.mjs
+//   node <path to velody>/bindings/node/examples/config_registry.mjs
 //
-// Node resolves `velo-core` from the directory of the script, so copy the
+// Node resolves `velody-core` from the directory of the script, so copy the
 // script next to the install (or into it) when it is run from elsewhere.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import velo from 'velo-core';
+import velody from 'velody-core';
 
-const { Repo } = velo;
+const { Repo } = velody;
 
 const PATH = 'configs/service.yaml';
 const VERSIONS = {
@@ -25,7 +25,7 @@ const VERSIONS = {
   '1.2.0': 'replicas: 3\ntimeout: 5\n', // a bad change
 };
 
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'velo-config-registry-'));
+const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'velody-config-registry-'));
 try {
   let repo = await Repo.init(tmp);
 

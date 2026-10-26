@@ -1,8 +1,8 @@
 {
-  "name": "velo-wasm-e2e",
+  "name": "velody-wasm-e2e",
   "private": true,
   "version": "0.0.0",
-  "description": "Page-reload persistence test for the velo WebAssembly binding",
+  "description": "Page-reload persistence test for the velody WebAssembly binding",
   "type": "module",
   "scripts": {
     "test": "playwright test"

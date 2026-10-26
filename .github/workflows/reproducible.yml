@@ -44,19 +44,19 @@ jobs:
             ( cd "$d"
               export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
               export RUSTFLAGS="--remap-path-prefix=$PWD=/build --remap-path-prefix=$HOME/.cargo=/cargo"
-              cargo build -p velo-cli --release --locked --target x86_64-unknown-linux-musl )
+              cargo build -p velody-cli --release --locked --target x86_64-unknown-linux-musl )
           done
           mkdir -p out
-          cp build-a/target/x86_64-unknown-linux-musl/release/velo out/velo-a
-          cp build-b/target/x86_64-unknown-linux-musl/release/velo out/velo-b
+          cp build-a/target/x86_64-unknown-linux-musl/release/velody out/velody-a
+          cp build-b/target/x86_64-unknown-linux-musl/release/velody out/velody-b
 
       - name: Compare hashes
         id: compare
         shell: bash
         run: |
-          sha256sum out/velo-a out/velo-b
-          A=$(sha256sum out/velo-a | cut -d' ' -f1)
-          B=$(sha256sum out/velo-b | cut -d' ' -f1)
+          sha256sum out/velody-a out/velody-b
+          A=$(sha256sum out/velody-a | cut -d' ' -f1)
+          B=$(sha256sum out/velody-b | cut -d' ' -f1)
           if [ "$A" = "$B" ]; then
             echo "Reproducible: $A"
           else
@@ -71,7 +71,7 @@ jobs:
 
       - name: Run diffoscope
         if: failure() && steps.compare.outputs.differs == 'true'
-        run: diffoscope --html out/diffoscope.html --text out/diffoscope.txt out/velo-a out/velo-b || true
+        run: diffoscope --html out/diffoscope.html --text out/diffoscope.txt out/velody-a out/velody-b || true
 
       - name: Upload diffoscope report
         if: failure() && steps.compare.outputs.differs == 'true'

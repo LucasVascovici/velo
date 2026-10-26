@@ -1,11 +1,11 @@
 import pytest
-import velo
+import velody
 
 
 def make(tmp_path):
     d = tmp_path / "r"
     d.mkdir()
-    return velo.Repo.init(d)
+    return velody.Repo.init(d)
 
 
 def fork(repo, base_files, ours_files, theirs_files):
@@ -39,7 +39,7 @@ def test_conflict_needs_resolution(tmp_path):
     assert repo.read_object(conflict.base) == b"base\n"
     assert repo.read_object(conflict.ours) == b"ours\n"
     assert repo.read_object(conflict.theirs) == b"theirs\n"
-    with pytest.raises(velo.Conflicts) as exc:
+    with pytest.raises(velody.Conflicts) as exc:
         repo.merge_commit(branch="main", ours=c, theirs=b, message="m")
     assert exc.value.paths == ["f"]
     m = repo.merge_commit(branch="main", ours=c, theirs=b, message="m",
@@ -49,7 +49,7 @@ def test_conflict_needs_resolution(tmp_path):
     m2 = repo.merge_commit(branch="x", ours=c, theirs=b, message="m",
                            resolutions={"f": "theirs"})
     assert repo.read_file_at(m2, "f") == b"theirs\n"
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.merge_commit(branch="x", ours=c, theirs=b, message="m",
                           resolutions={"f": "bogus"})
 
@@ -65,7 +65,7 @@ def test_branches(tmp_path):
     assert tips["unborn"].tip is None
     repo.set_branch_tip("release", b)
     assert repo.branch_tip("release") == b
-    with pytest.raises(velo.NotFound):
+    with pytest.raises(velody.NotFound):
         repo.set_branch_tip("release", "0" * 64)
-    with pytest.raises(velo.NotFound):
+    with pytest.raises(velody.NotFound):
         repo.set_branch_tip("nope", a)

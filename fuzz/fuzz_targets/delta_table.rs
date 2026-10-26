@@ -3,5 +3,5 @@
 use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
-    velo_core::fuzzing::delta_table(data);
+    velody_core::fuzzing::delta_table(data);
 });

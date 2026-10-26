@@ -1,10 +1,10 @@
 """Agent checkpointing: a snapshot per tool call, a branch per attempt.
 
-Runs against the velo Python binding and asserts every claim it prints.
+Runs against the velody Python binding and asserts every claim it prints.
 """
 import tempfile
 
-import velo
+import velody
 
 BASE = "def total(xs):\n    return sum(xs)\n\nprint(total([1, 2]))\n"
 GENERATOR = BASE.replace("sum(xs)", "sum(x for x in xs)")
@@ -20,18 +20,18 @@ def tool_call(repo, branch, parent, run, call, model, files, message, tests=None
         message=message,
         changes=files,
         parent=parent,
-        author=velo.Author(f"agent-{run}"),
+        author=velody.Author(f"agent-{run}"),
         meta={"agent": agent},
     ).snapshot
 
 
 with tempfile.TemporaryDirectory() as tmp:
-    repo = velo.Repo.init(tmp)
+    repo = velody.Repo.init(tmp)
 
     # A base snapshot written by a human; both attempts fork from it.
     base = repo.save_tree(
         branch="main", message="base", entries={"app.py": BASE},
-        author=velo.Author("human"),
+        author=velody.Author("human"),
     )
     repo.create_branch("attempt-1", at=base)
     repo.create_branch("attempt-2", at=base)
@@ -66,7 +66,7 @@ with tempfile.TemporaryDirectory() as tmp:
     merged = repo.merge_commit(
         branch="main", ours=base, theirs=winner.id,
         message="take attempt-1",
-        author=velo.Author("human"),
+        author=velody.Author("human"),
         meta={"agent": {"picked": "run-1"}},
     )
     entry = repo.snapshot(merged)

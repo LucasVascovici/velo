@@ -12,14 +12,14 @@ CI runs a small guard on every pull request (`perf` job in
 
 Environment overrides, for runners too slow for the full size:
 
-- `VELO_PERF_AGENT_STEPS` (default 500): steps in `agent_steps`. CI sets 100 on Windows.
-- `VELO_PERF_SAVE_TREE_FILES` (default 100000): files in `save_tree_100k`. CI sets
+- `VELODY_PERF_AGENT_STEPS` (default 500): steps in `agent_steps`. CI sets 100 on Windows.
+- `VELODY_PERF_SAVE_TREE_FILES` (default 100000): files in `save_tree_100k`. CI sets
   10000 on Windows. A shortened run is not comparable to a full-size baseline, so
   the Windows baseline must be taken with the same value set.
 
 Measured runtime (developer Windows machine, release build, a busy machine so
 timings vary by tens of percent): with the Windows CI values
-(`VELO_PERF_AGENT_STEPS=100`, `VELO_PERF_SAVE_TREE_FILES=10000`) the local
+(`VELODY_PERF_AGENT_STEPS=100`, `VELODY_PERF_SAVE_TREE_FILES=10000`) the local
 release run of the guard took 146 s of test time, well inside the Windows leg's
 20 minute limit. An earlier measurement with 30,000 files (before the timed
 saves reused the parent's stored objects) took 203 s, so the untimed setup adds
@@ -52,7 +52,7 @@ Do it deliberately, in the same pull request as the change that moved the ratio,
 so a regression is a red check and an improvement is a diff someone reads:
 
 ```sh
-VELO_PERF_UPDATE=1 cargo test -p velo-core --release perf_guard -- --ignored
+VELODY_PERF_UPDATE=1 cargo test -p velody-core --release perf_guard -- --ignored
 ```
 
 This rewrites the entry for the current OS only; run it on the other OS (or copy
@@ -70,7 +70,7 @@ green run on this branch.
 Both entries of `baseline.json` are the per-workload medians of three green
 `ci.yml` runs on `phase-23`, all on the final workload code: 39932862928
 (f33925f), 39933199028 (6016770) and 39934899978 (b4d01e3). The Windows leg
-runs with `VELO_PERF_AGENT_STEPS=100` and `VELO_PERF_SAVE_TREE_FILES=10000`,
+runs with `VELODY_PERF_AGENT_STEPS=100` and `VELODY_PERF_SAVE_TREE_FILES=10000`,
 as its baseline does. Spread is max/min over the three runs:
 
 | Workload | Linux median | Linux spread | Windows median | Windows spread |

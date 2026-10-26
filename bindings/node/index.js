@@ -82,15 +82,15 @@ function requireNative() {
   } else if (process.platform === 'android') {
     if (process.arch === 'arm64') {
       try {
-        return require('./velo.android-arm64.node')
+        return require('./velody.android-arm64.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-android-arm64')
-        const bindingPackageVersion = require('velo-core-android-arm64/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-android-arm64')
+        const bindingPackageVersion = require('velody-core-android-arm64/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -98,15 +98,15 @@ function requireNative() {
       }
     } else if (process.arch === 'arm') {
       try {
-        return require('./velo.android-arm-eabi.node')
+        return require('./velody.android-arm-eabi.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-android-arm-eabi')
-        const bindingPackageVersion = require('velo-core-android-arm-eabi/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-android-arm-eabi')
+        const bindingPackageVersion = require('velody-core-android-arm-eabi/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -119,15 +119,15 @@ function requireNative() {
     if (process.arch === 'x64') {
       if ((process.config && process.config.variables && process.config.variables.shlib_suffix === 'dll.a') || (process.config && process.config.variables && process.config.variables.node_target_type === 'shared_library')) {
         try {
-          return require('./velo.win32-x64-gnu.node')
+          return require('./velody.win32-x64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-win32-x64-gnu')
-          const bindingPackageVersion = require('velo-core-win32-x64-gnu/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-win32-x64-gnu')
+          const bindingPackageVersion = require('velody-core-win32-x64-gnu/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -135,15 +135,15 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./velo.win32-x64-msvc.node')
+          return require('./velody.win32-x64-msvc.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-win32-x64-msvc')
-          const bindingPackageVersion = require('velo-core-win32-x64-msvc/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-win32-x64-msvc')
+          const bindingPackageVersion = require('velody-core-win32-x64-msvc/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -152,15 +152,15 @@ function requireNative() {
       }
     } else if (process.arch === 'ia32') {
       try {
-        return require('./velo.win32-ia32-msvc.node')
+        return require('./velody.win32-ia32-msvc.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-win32-ia32-msvc')
-        const bindingPackageVersion = require('velo-core-win32-ia32-msvc/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-win32-ia32-msvc')
+        const bindingPackageVersion = require('velody-core-win32-ia32-msvc/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -168,15 +168,15 @@ function requireNative() {
       }
     } else if (process.arch === 'arm64') {
       try {
-        return require('./velo.win32-arm64-msvc.node')
+        return require('./velody.win32-arm64-msvc.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-win32-arm64-msvc')
-        const bindingPackageVersion = require('velo-core-win32-arm64-msvc/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-win32-arm64-msvc')
+        const bindingPackageVersion = require('velody-core-win32-arm64-msvc/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -187,15 +187,15 @@ function requireNative() {
     }
   } else if (process.platform === 'darwin') {
     try {
-      return require('./velo.darwin-universal.node')
+      return require('./velody.darwin-universal.node')
     } catch (e) {
       loadErrors.push(e)
     }
     try {
-      const binding = require('velo-core-darwin-universal')
-      const bindingPackageVersion = require('velo-core-darwin-universal/package.json').version
-      if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-        throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+      const binding = require('velody-core-darwin-universal')
+      const bindingPackageVersion = require('velody-core-darwin-universal/package.json').version
+      if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+        throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
       }
       return binding
     } catch (e) {
@@ -203,15 +203,15 @@ function requireNative() {
     }
     if (process.arch === 'x64') {
       try {
-        return require('./velo.darwin-x64.node')
+        return require('./velody.darwin-x64.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-darwin-x64')
-        const bindingPackageVersion = require('velo-core-darwin-x64/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-darwin-x64')
+        const bindingPackageVersion = require('velody-core-darwin-x64/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -219,15 +219,15 @@ function requireNative() {
       }
     } else if (process.arch === 'arm64') {
       try {
-        return require('./velo.darwin-arm64.node')
+        return require('./velody.darwin-arm64.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-darwin-arm64')
-        const bindingPackageVersion = require('velo-core-darwin-arm64/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-darwin-arm64')
+        const bindingPackageVersion = require('velody-core-darwin-arm64/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -239,15 +239,15 @@ function requireNative() {
   } else if (process.platform === 'freebsd') {
     if (process.arch === 'x64') {
       try {
-        return require('./velo.freebsd-x64.node')
+        return require('./velody.freebsd-x64.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-freebsd-x64')
-        const bindingPackageVersion = require('velo-core-freebsd-x64/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-freebsd-x64')
+        const bindingPackageVersion = require('velody-core-freebsd-x64/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -255,15 +255,15 @@ function requireNative() {
       }
     } else if (process.arch === 'arm64') {
       try {
-        return require('./velo.freebsd-arm64.node')
+        return require('./velody.freebsd-arm64.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-freebsd-arm64')
-        const bindingPackageVersion = require('velo-core-freebsd-arm64/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-freebsd-arm64')
+        const bindingPackageVersion = require('velody-core-freebsd-arm64/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -276,15 +276,15 @@ function requireNative() {
     if (process.arch === 'x64') {
       if (isMusl()) {
         try {
-          return require('./velo.linux-x64-musl.node')
+          return require('./velody.linux-x64-musl.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-x64-musl')
-          const bindingPackageVersion = require('velo-core-linux-x64-musl/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-x64-musl')
+          const bindingPackageVersion = require('velody-core-linux-x64-musl/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -292,15 +292,15 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./velo.linux-x64-gnu.node')
+          return require('./velody.linux-x64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-x64-gnu')
-          const bindingPackageVersion = require('velo-core-linux-x64-gnu/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-x64-gnu')
+          const bindingPackageVersion = require('velody-core-linux-x64-gnu/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -310,15 +310,15 @@ function requireNative() {
     } else if (process.arch === 'arm64') {
       if (isMusl()) {
         try {
-          return require('./velo.linux-arm64-musl.node')
+          return require('./velody.linux-arm64-musl.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-arm64-musl')
-          const bindingPackageVersion = require('velo-core-linux-arm64-musl/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-arm64-musl')
+          const bindingPackageVersion = require('velody-core-linux-arm64-musl/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -326,15 +326,15 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./velo.linux-arm64-gnu.node')
+          return require('./velody.linux-arm64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-arm64-gnu')
-          const bindingPackageVersion = require('velo-core-linux-arm64-gnu/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-arm64-gnu')
+          const bindingPackageVersion = require('velody-core-linux-arm64-gnu/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -344,15 +344,15 @@ function requireNative() {
     } else if (process.arch === 'arm') {
       if (isMusl()) {
         try {
-          return require('./velo.linux-arm-musleabihf.node')
+          return require('./velody.linux-arm-musleabihf.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-arm-musleabihf')
-          const bindingPackageVersion = require('velo-core-linux-arm-musleabihf/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-arm-musleabihf')
+          const bindingPackageVersion = require('velody-core-linux-arm-musleabihf/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -360,15 +360,15 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./velo.linux-arm-gnueabihf.node')
+          return require('./velody.linux-arm-gnueabihf.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-arm-gnueabihf')
-          const bindingPackageVersion = require('velo-core-linux-arm-gnueabihf/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-arm-gnueabihf')
+          const bindingPackageVersion = require('velody-core-linux-arm-gnueabihf/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -378,15 +378,15 @@ function requireNative() {
     } else if (process.arch === 'loong64') {
       if (isMusl()) {
         try {
-          return require('./velo.linux-loong64-musl.node')
+          return require('./velody.linux-loong64-musl.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-loong64-musl')
-          const bindingPackageVersion = require('velo-core-linux-loong64-musl/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-loong64-musl')
+          const bindingPackageVersion = require('velody-core-linux-loong64-musl/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -394,15 +394,15 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./velo.linux-loong64-gnu.node')
+          return require('./velody.linux-loong64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-loong64-gnu')
-          const bindingPackageVersion = require('velo-core-linux-loong64-gnu/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-loong64-gnu')
+          const bindingPackageVersion = require('velody-core-linux-loong64-gnu/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -412,15 +412,15 @@ function requireNative() {
     } else if (process.arch === 'riscv64') {
       if (isMusl()) {
         try {
-          return require('./velo.linux-riscv64-musl.node')
+          return require('./velody.linux-riscv64-musl.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-riscv64-musl')
-          const bindingPackageVersion = require('velo-core-linux-riscv64-musl/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-riscv64-musl')
+          const bindingPackageVersion = require('velody-core-linux-riscv64-musl/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -428,15 +428,15 @@ function requireNative() {
         }
       } else {
         try {
-          return require('./velo.linux-riscv64-gnu.node')
+          return require('./velody.linux-riscv64-gnu.node')
         } catch (e) {
           loadErrors.push(e)
         }
         try {
-          const binding = require('velo-core-linux-riscv64-gnu')
-          const bindingPackageVersion = require('velo-core-linux-riscv64-gnu/package.json').version
-          if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-            throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const binding = require('velody-core-linux-riscv64-gnu')
+          const bindingPackageVersion = require('velody-core-linux-riscv64-gnu/package.json').version
+          if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+            throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
           return binding
         } catch (e) {
@@ -445,15 +445,15 @@ function requireNative() {
       }
     } else if (process.arch === 'ppc64') {
       try {
-        return require('./velo.linux-ppc64-gnu.node')
+        return require('./velody.linux-ppc64-gnu.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-linux-ppc64-gnu')
-        const bindingPackageVersion = require('velo-core-linux-ppc64-gnu/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-linux-ppc64-gnu')
+        const bindingPackageVersion = require('velody-core-linux-ppc64-gnu/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -461,15 +461,15 @@ function requireNative() {
       }
     } else if (process.arch === 's390x') {
       try {
-        return require('./velo.linux-s390x-gnu.node')
+        return require('./velody.linux-s390x-gnu.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-linux-s390x-gnu')
-        const bindingPackageVersion = require('velo-core-linux-s390x-gnu/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-linux-s390x-gnu')
+        const bindingPackageVersion = require('velody-core-linux-s390x-gnu/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -481,15 +481,15 @@ function requireNative() {
   } else if (process.platform === 'openharmony') {
     if (process.arch === 'arm64') {
       try {
-        return require('./velo.openharmony-arm64.node')
+        return require('./velody.openharmony-arm64.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-openharmony-arm64')
-        const bindingPackageVersion = require('velo-core-openharmony-arm64/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-openharmony-arm64')
+        const bindingPackageVersion = require('velody-core-openharmony-arm64/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -497,15 +497,15 @@ function requireNative() {
       }
     } else if (process.arch === 'x64') {
       try {
-        return require('./velo.openharmony-x64.node')
+        return require('./velody.openharmony-x64.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-openharmony-x64')
-        const bindingPackageVersion = require('velo-core-openharmony-x64/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-openharmony-x64')
+        const bindingPackageVersion = require('velody-core-openharmony-x64/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -513,15 +513,15 @@ function requireNative() {
       }
     } else if (process.arch === 'arm') {
       try {
-        return require('./velo.openharmony-arm.node')
+        return require('./velody.openharmony-arm.node')
       } catch (e) {
         loadErrors.push(e)
       }
       try {
-        const binding = require('velo-core-openharmony-arm')
-        const bindingPackageVersion = require('velo-core-openharmony-arm/package.json').version
-        if (bindingPackageVersion !== '6.2.3' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          throw new Error(`Native binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+        const binding = require('velody-core-openharmony-arm')
+        const bindingPackageVersion = require('velody-core-openharmony-arm/package.json').version
+        if (bindingPackageVersion !== '7.0.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
+          throw new Error(`Native binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
         }
         return binding
       } catch (e) {
@@ -635,10 +635,10 @@ if (!nativeBinding || forceWasi) {
     let candidateError = null
     let candidateFailed = false
     try {
-      candidateError = __napiWasiResolveCandidate('./velo.wasi.cjs', false, ['./velo.wasm32-wasi.debug.wasm', './velo.wasm32-wasi.wasm'])
+      candidateError = __napiWasiResolveCandidate('./velody.wasi.cjs', false, ['./velody.wasm32-wasi.debug.wasm', './velody.wasm32-wasi.wasm'])
       candidateFailed = candidateError !== null
       if (!candidateFailed) {
-        wasiBinding = require('./velo.wasi.cjs')
+        wasiBinding = require('./velody.wasi.cjs')
         nativeBinding = wasiBinding
         __napiLoadedBindingTarget = 'wasm32-wasi'
         wasiBindingLoaded = true
@@ -656,16 +656,16 @@ if (!nativeBinding || forceWasi) {
     let candidateError = null
     let candidateFailed = false
     try {
-      candidateError = __napiWasiResolveCandidate('velo-core-wasm32-wasi', true, undefined)
+      candidateError = __napiWasiResolveCandidate('velody-core-wasm32-wasi', true, undefined)
       candidateFailed = candidateError !== null
       if (!candidateFailed) {
         if (process.env.NAPI_RS_ENFORCE_VERSION_CHECK && process.env.NAPI_RS_ENFORCE_VERSION_CHECK !== '0') {
-          const bindingPackageVersion = require('velo-core-wasm32-wasi/package.json').version
-          if (bindingPackageVersion !== '6.2.3') {
-            throw new Error(`WASI binding package version mismatch, expected 6.2.3 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
+          const bindingPackageVersion = require('velody-core-wasm32-wasi/package.json').version
+          if (bindingPackageVersion !== '7.0.0') {
+            throw new Error(`WASI binding package version mismatch, expected 7.0.0 but got ${bindingPackageVersion}. You can reinstall dependencies to fix this issue.`)
           }
         }
-        wasiBinding = require('velo-core-wasm32-wasi')
+        wasiBinding = require('velody-core-wasm32-wasi')
         nativeBinding = wasiBinding
         __napiLoadedBindingTarget = 'wasm32-wasi'
         wasiBindingLoaded = true

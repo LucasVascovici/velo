@@ -1,23 +1,23 @@
 # MCP: give any agent a checkpoint layer in five minutes
 
-`velo-mcp` is a stdio [Model Context Protocol](https://modelcontextprotocol.io)
+`velody-mcp` is a stdio [Model Context Protocol](https://modelcontextprotocol.io)
 server. Any MCP client gets save, history and read tools without integration
 code. Every tool is listed in the
-[server README](../../crates/velo-mcp/README.md).
+[server README](../../crates/velody-mcp/README.md).
 
 ## Install
 
 Build the server from a release tag (see [INSTALL.md](../INSTALL.md)):
 
 ```sh
-cargo install --git https://github.com/LucasVascovici/velo --tag vX.Y.Z velo-mcp
+cargo install --git https://github.com/LucasVascovici/velody --tag vX.Y.Z velody-mcp
 ```
 
 Then point your client at it. This is the working-tree mode, serving a
 project directory:
 
 ```json
-{"command": "velo-mcp", "args": ["--repo", "/path/to/project"]}
+{"command": "velody-mcp", "args": ["--repo", "/path/to/project"]}
 ```
 
 ## Drive it by hand
@@ -27,7 +27,7 @@ project directory: one file holds the history. It starts the server, runs the
 `initialize` handshake, lists the tools, saves a snapshot, reads the history
 and reads the file back. A real client (Claude Desktop, the official SDKs)
 does the same over the same pipe. The script takes the server's path from
-`$VELO_MCP` and falls back to `velo-mcp` on `PATH`.
+`$VELODY_MCP` and falls back to `velody-mcp` on `PATH`.
 
 ```python quickstart
 import json
@@ -35,7 +35,7 @@ import os
 import subprocess
 import tempfile
 
-server = os.environ.get("VELO_MCP", "velo-mcp")
+server = os.environ.get("VELODY_MCP", "velody-mcp")
 
 with tempfile.TemporaryDirectory() as tmp:
     proc = subprocess.Popen(
@@ -72,18 +72,18 @@ with tempfile.TemporaryDirectory() as tmp:
         "capabilities": {},
         "clientInfo": {"name": "quickstart", "version": "0"},
     })
-    assert init["serverInfo"]["name"] == "velo-mcp"
+    assert init["serverInfo"]["name"] == "velody-mcp"
     send("notifications/initialized", notify=True)
 
     names = {t["name"] for t in send("tools/list")["tools"]}
-    assert {"velo_save_tree", "velo_history", "velo_read_file"} <= names, names
+    assert {"velody_save_tree", "velody_history", "velody_read_file"} <= names, names
 
-    saved = call("velo_save_tree", branch="main", message="first checkpoint",
+    saved = call("velody_save_tree", branch="main", message="first checkpoint",
                  files={"app.py": "print('v1')\n"})
     snapshot = saved["snapshot"]
 
-    assert "first checkpoint" in json.dumps(call("velo_history", branch="main"))
-    back = call("velo_read_file", snapshot=snapshot, path="app.py")
+    assert "first checkpoint" in json.dumps(call("velody_history", branch="main"))
+    back = call("velody_read_file", snapshot=snapshot, path="app.py")
     assert "print('v1')" in json.dumps(back), back
     print("ok:", snapshot[:8])
 

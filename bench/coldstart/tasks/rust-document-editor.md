@@ -6,7 +6,7 @@ Installed from: the crate the agent adds to its own `Cargo.toml`, as the
 
 ## Task (give the agent only this sentence)
 
-A collaborative editor on velo: drafts are branches, saving is a snapshot, and
+A collaborative editor on velody: drafts are branches, saving is a snapshot, and
 blame tells you who wrote each sentence.
 
 Use the actor name `coldstart-rust` for the author of the saved work. (Give
@@ -15,7 +15,7 @@ this name to the agent together with the sentence.)
 ## Acceptance (for the checker; not shown to the agent)
 
 - The repository has a draft branch and at least one snapshot saved from Rust.
-- `velo fsck` is clean.
+- `velody fsck` is clean.
 - History is non-empty.
 - Blame of the document the agent wrote names `coldstart-rust`.
 

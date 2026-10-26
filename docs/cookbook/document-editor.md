@@ -2,7 +2,7 @@
 
 Script: [`bindings/python/examples/document_editor.py`](../../bindings/python/examples/document_editor.py)
 
-A collaborative editor on velo: drafts are branches, saving is a snapshot, and
+A collaborative editor on velody: drafts are branches, saving is a snapshot, and
 blame tells you who wrote each sentence.
 
 ## One sentence per line
@@ -26,7 +26,7 @@ When an edit touches one document of many, `save_changes` sends just that file:
 
 ```python
 repo.save_changes(branch="main", message="fix typo", parent=base,
-                  changes=[velo.Change.put("essay.txt", TEXT)])
+                  changes=[velody.Change.put("essay.txt", TEXT)])
 ```
 
 ## Drafts as branches
@@ -42,14 +42,14 @@ repo.merge_commit(branch="main", ours=m1, theirs=g, message="merge",
                   resolutions={"essay.txt": resolved_bytes})
 ```
 
-Without a resolution, `merge_commit` raises `velo.Conflicts` with the paths. A
+Without a resolution, `merge_commit` raises `velody.Conflicts` with the paths. A
 resolution is the exact bytes of the merged file, or `"ours"` / `"theirs"`. The
 result is a two-parent snapshot.
 
 ## Sharing the history
 
-Between machines, `velo sync` fetches, merges and pushes in one step. For a
-reader, `velo report -o essay.html` writes per-line provenance as one HTML file.
+Between machines, `velody sync` fetches, merges and pushes in one step. For a
+reader, `velody report -o essay.html` writes per-line provenance as one HTML file.
 
 ## Blame per line
 

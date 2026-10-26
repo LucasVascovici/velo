@@ -1171,8 +1171,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
-name = "velo-core"
-version = "6.2.3"
+name = "velody-core"
+version = "7.0.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -1187,13 +1187,13 @@ dependencies = [
  "regex",
  "rusqlite",
  "similar",
- "velo-merge",
+ "velody-merge",
  "zstd",
 ]
 
 [[package]]
-name = "velo-merge"
-version = "6.2.3"
+name = "velody-merge"
+version = "7.0.0"
 dependencies = [
  "serde_json",
  "serde_yaml_ng",
@@ -1202,13 +1202,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "velo-node"
-version = "6.2.3"
+name = "velody-node"
+version = "7.0.0"
 dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
- "velo-core",
+ "velody-core",
 ]
 
 [[package]]

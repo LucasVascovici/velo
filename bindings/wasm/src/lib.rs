@@ -1,23 +1,23 @@
-//! WebAssembly binding for velo-core, over single-file repositories.
+//! WebAssembly binding for velody-core, over single-file repositories.
 //!
 //! Everything is synchronous after the repository is open: the core is
 //! synchronous, and one tab (or worker) owns the database. Results are plain
 //! JavaScript objects whose field names mirror the Node binding. Errors are
-//! thrown as `Error` objects whose `code` is the velo `Error` variant name.
+//! thrown as `Error` objects whose `code` is the velody `Error` variant name.
 //!
 //! There is no working tree and no remotes here. Only the store-only API of
-//! velo-core works, which is what `Repo::create_file` provides.
+//! velody-core works, which is what `Repo::create_file` provides.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use js_sys::{Array, BigInt, Date, Object, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
-use velo_core::commands::merge::{self, FileAction, MergeCommit, PlannedChange, Resolution};
-use velo_core::commands::{blame, fsck, history};
-use velo_core::error::{InProgress, RefKind};
-use velo_core::tree::{Content, FileKind, SaveTree, TreeEntry as CoreEntry};
-use velo_core::{
+use velody_core::commands::merge::{self, FileAction, MergeCommit, PlannedChange, Resolution};
+use velody_core::commands::{blame, fsck, history};
+use velody_core::error::{InProgress, RefKind};
+use velody_core::tree::{Content, FileKind, SaveTree, TreeEntry as CoreEntry};
+use velody_core::{
     Author as CoreAuthor, BranchName, Error as CoreError, ObjectHash, Repo as CoreRepo, SnapshotId,
     SnapshotMeta,
 };
@@ -107,7 +107,7 @@ export interface PlannedFileInfo {
 export interface MergePlanInfo { base: string | null; files: PlannedFileInfo[] }
 export interface FsckFinding { kind: string; detail: string }
 export interface FsckReport { ok: boolean; problems: FsckFinding[]; cruft: FsckFinding[] }
-export type VeloErrorCode = string;
+export type VelodyErrorCode = string;
 "#;
 
 // ---------------------------------------------------------------- errors
@@ -181,7 +181,7 @@ fn path_array(paths: &[PathBuf]) -> Array {
         .collect()
 }
 
-/// The JS `Error` for a velo error: `code` is the variant name and the
+/// The JS `Error` for a velody error: `code` is the variant name and the
 /// variant's fields are attached as properties, so typed errors are not
 /// flattened into strings at the boundary.
 fn js_err(err: CoreError) -> JsValue {
@@ -605,7 +605,7 @@ struct MergeInput {
 
 // ------------------------------------------------------------------ Repo
 
-/// An open single-file velo repository.
+/// An open single-file velody repository.
 #[wasm_bindgen]
 pub struct Repo {
     inner: CoreRepo,

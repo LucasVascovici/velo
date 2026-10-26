@@ -11,7 +11,7 @@ const { Repo } = require('../index.js');
 const opts = { timeout: 30000 };
 
 async function fresh() {
-  const repo = await Repo.init(fs.mkdtempSync(path.join(os.tmpdir(), 'velo-node-')));
+  const repo = await Repo.init(fs.mkdtempSync(path.join(os.tmpdir(), 'velody-node-')));
   const files = {
     'a.txt': 'one',
     'src/b.py': 'two',
@@ -26,7 +26,7 @@ async function fresh() {
   return { repo, id };
 }
 
-const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'velo-out-'));
+const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'velody-out-'));
 
 test('readFilesAt keeps order and bytes', opts, async () => {
   const { repo, id } = await fresh();
