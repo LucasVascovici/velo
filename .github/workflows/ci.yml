@@ -204,9 +204,6 @@ jobs:
   semver:
     name: Semver check
     runs-on: ubuntu-latest
-    # 7.0.0 renamed the crates, so v6.2.2 holds no velody-core to compare with. Advisory
-    # until the baseline below moves to v7.0.0 right after that release.
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -216,7 +213,7 @@ jobs:
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           package: velody-core,velody-merge
-          baseline-rev: v6.2.2
+          baseline-rev: v7.0.0
           feature-group: all-features
 
   # Licences, bans, sources and advisories against deny.toml for the root
