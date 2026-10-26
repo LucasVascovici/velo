@@ -3,7 +3,10 @@
 
     audit.py TRANSCRIPT --sandbox DIR
 
-The transcript is plain text or JSONL (every string value is scanned). Exit
+The transcript is plain text or JSONL. For a session transcript (records with a
+`type`) only the agent's own tool calls are scanned; its prose, the host's preamble
+records and the tool results are not, because they hold what the agent was shown,
+not what it did. Other JSONL has every string value scanned. Exit
 status: 1 when the run is INVALID, 0 otherwise (warnings are printed).
 
 Isolation is the whole test and a software sandbox is imperfect, so this audit
@@ -48,14 +51,42 @@ def _strings(value):
             yield from _strings(v)
 
 
+def _agent_actions(record):
+    """The strings an agent session record holds that the agent itself produced.
+
+    A Claude Code session transcript is JSONL whose records have a `type`: the
+    host writes its own preamble records (skill lists, memory instructions, the
+    request body) and the tool results, which echo whatever the agent read, such
+    as a handed-over page that links to `crates/velo-core`. Neither shows what
+    the agent did. What does is its tool calls (a read, a search, a command), so
+    only the `assistant` records' tool-use inputs are returned. The agent's prose
+    is not: its final report quotes the pages it was given, and a quoted link is
+    not a read. A record with no recognised `type` is scanned whole.
+    """
+    kind = record.get("type") if isinstance(record, dict) else None
+    if kind is None:
+        return list(_strings(record))
+    if kind != "assistant":
+        return []
+    out = []
+    msg = record.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    for block in content if isinstance(content, list) else []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "tool_use":
+            out.extend(_strings(block.get("input")))
+    return out
+
+
 def transcript_text(raw):
-    """Flatten JSONL to the strings inside it; plain lines pass through."""
+    """Flatten JSONL to the agent's own strings; plain lines pass through."""
     out = []
     for line in raw.splitlines():
         s = line.strip()
         if s.startswith("{") or s.startswith("["):
             try:
-                out.extend(_strings(json.loads(s)))
+                out.extend(_agent_actions(json.loads(s)))
                 continue
             except ValueError:
                 pass

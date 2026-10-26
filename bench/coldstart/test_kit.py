@@ -59,6 +59,30 @@ class AuditTests(unittest.TestCase):
         inv, _ = audit.audit("cat ../velo/bindings/python/tests/test_api.py", "/tmp/sb")
         self.assertTrue(inv)
 
+    def test_session_preamble_and_tool_results_are_not_the_agents_actions(self):
+        import json
+        lines = [
+            json.dumps({"type": "attachment", "text": "init: Initialize a new CLAUDE.md file"}),
+            json.dumps({"type": "user", "message": {"content": [{"type": "tool_result",
+                "content": "see crates/velo-core and ARCHITECTURE.md"}]}}),
+        ]
+        invalid, _ = audit.audit(audit.transcript_text("\n".join(lines)), "/sb")
+        self.assertEqual(invalid, [])
+
+    def test_a_quoted_link_in_the_agents_prose_is_not_a_read(self):
+        import json
+        say = {"type": "assistant", "message": {"content": [
+            {"type": "text", "text": "the docs link to crates/velo-mcp/README.md, which I do not have"}]}}
+        invalid, _ = audit.audit(audit.transcript_text(json.dumps(say)), "/sb")
+        self.assertEqual(invalid, [])
+
+    def test_the_agents_own_tool_call_is_scanned_in_a_session_transcript(self):
+        import json
+        call = {"type": "assistant", "message": {"content": [
+            {"type": "tool_use", "name": "Read", "input": {"file_path": "ARCHITECTURE.md"}}]}}
+        invalid, _ = audit.audit(audit.transcript_text(json.dumps(call)), "/sb")
+        self.assertTrue(any("ARCHITECTURE.md" in r for r in invalid))
+
     def test_exit_codes(self):
         with tempfile.TemporaryDirectory() as d:
             bad = os.path.join(d, "bad.txt")

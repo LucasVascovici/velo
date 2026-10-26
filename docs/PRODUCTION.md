@@ -192,7 +192,7 @@ should demand, which is the owner's:
   the threshold written before the runs**. The log, the audit reading and the
   ranked defects are in
   [`friction-log-v6.2.1.md`](../bench/coldstart/friction-log-v6.2.1.md).
-- **What it found.** No run hit a velo error. The friction is documentation:
+- **What round one found.** No run hit a velo error. The friction is documentation:
   the API reference the pages link to is not reachable (four runs), API shapes
   had to be read from type stubs (four runs), the Rust page shows little beyond
   save, history and blame, and the MCP section does not say how to set the run
@@ -200,9 +200,16 @@ should demand, which is the owner's:
   client's name. The checker also found a velo bug the agents did not run into:
   `velo history` showed nothing in a repository written through the library,
   fixed in 6.2.2.
-- **Not done yet, from the protocol:** fixing the doc defects and running round
-  two at the fixed tag. Until then the friction log is the documentation
-  backlog.
+- **Round two ran on v6.2.2** (2026-10-26), after the documentation fixes: the
+  same eight-run protocol with fresh agents and new sandboxes. All eight runs
+  passed again. Distinct defects fell from 20 to 15 and friction rows from 40 to
+  31; four of round one's top five are gone and the fifth survives only as links
+  to pages the test does not hand over. What remains is Node and Rust call shapes
+  and two `parent` behaviours, all now written into `docs/LIBRARY.md`. See
+  [`friction-log-v6.2.2-round2.md`](../bench/coldstart/friction-log-v6.2.2-round2.md).
+  The audit script was corrected between the rounds (it had flagged every
+  transcript on the host's own records and on quoted links); under it all
+  sixteen runs are valid.
 - **The limit, stated.** Agents are the only evidence this line has. An agent
   that reads the README and succeeds shows that the steps are findable and
   followable by a model; it does not show that a person who has never seen velo

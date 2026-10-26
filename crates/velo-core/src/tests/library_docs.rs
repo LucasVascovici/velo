@@ -51,6 +51,41 @@ fn the_documented_rust_calls_work_as_written() {
     spec.changes = vec![Change::Put(TreeEntry::file("notes.md", b"two\n".to_vec()))];
     let second = repo.write().unwrap().save_changes(spec).unwrap().snapshot;
 
+    // `parent: None` starts a new history holding only what is passed, and the
+    // branch moves to it: the page tells the reader to pass the parent every time.
+    let orphan_branch: BranchName = "orphan".parse().unwrap();
+    let mut spec = SaveChanges::new(&orphan_branch, None, "root one");
+    spec.changes = vec![Change::Put(TreeEntry::file(
+        "a.txt",
+        b"1
+"
+        .to_vec(),
+    ))];
+    let root_one = repo.write().unwrap().save_changes(spec).unwrap().snapshot;
+    let mut spec = SaveChanges::new(&orphan_branch, None, "root two");
+    spec.changes = vec![Change::Put(TreeEntry::file(
+        "b.txt",
+        b"2
+"
+        .to_vec(),
+    ))];
+    let root_two = repo.write().unwrap().save_changes(spec).unwrap().snapshot;
+    assert_eq!(
+        repo.branch_tip(&orphan_branch).unwrap().as_ref(),
+        Some(&root_two)
+    );
+    let paths: Vec<String> = repo
+        .tree_at(&root_two)
+        .unwrap()
+        .into_iter()
+        .map(|f| f.path)
+        .collect();
+    assert_eq!(
+        paths,
+        ["b.txt"],
+        "a.txt from {root_one} is not carried over"
+    );
+
     // history: entries, ancestry with `from`, and the default with no position.
     let h = history::run(
         &repo,
