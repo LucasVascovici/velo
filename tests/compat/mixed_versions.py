@@ -117,7 +117,7 @@ def cell_http(client_exe, server_exe, tmp):
     server = tmp / "server"
     make_repo(server_exe, server)
     port = free_port()
-    env = dict(ENV, VELODY_SERVE_TOKEN=TOKEN)
+    env = dict(ENV, VELODY_SERVE_TOKEN=TOKEN, VELO_SERVE_TOKEN=TOKEN)
     proc = subprocess.Popen(
         [str(server_exe), "serve-http", str(server), "--listen", f"127.0.0.1:{port}"],
         cwd=str(tmp),
@@ -137,7 +137,7 @@ def cell_http(client_exe, server_exe, tmp):
                 if time.time() > deadline:
                     raise Fail("serve-http did not become ready")
                 time.sleep(0.1)
-        cenv = dict(ENV, VELODY_TOKEN=TOKEN)
+        cenv = dict(ENV, VELODY_TOKEN=TOKEN, VELO_TOKEN=TOKEN)
         url = f"http://127.0.0.1:{port}/"
         client = tmp / "client"
         run(client_exe, ["clone", url, str(client)], tmp, env=cenv)
