@@ -18,6 +18,11 @@ public API changes in `velo-core` are additive.
 - **`velo history` showed no snapshots in a repository written through the library.** A directory repository built with `save_tree` or `save_changes` has no `.velo/PARENT`, and the default history read only that, so `velo history` printed "No snapshots yet on branch 'main'" while `velo branches` showed the tip (core reported the branch as unborn). The default now walks back from the checked-out branch's tip when there is no position, as it already did for single-file repositories. Found by the cold-start checker.
 - **`undo` of a local merge warned that it rewrote pushed history.** The warning compared the merge against its first parent only, so the merged branch's pushed history counted as rewritten. Undo and `save --amend` now exclude everything every parent reaches, through the new additive `commands::sync::published_except`; a merge that was itself pushed still warns.
 
+### Documentation
+
+- **The pages a newcomer reads now say what the first cold-start test had to guess** (`bench/coldstart/friction-log-v6.2.1.md`, 35 rows). `docs/LIBRARY.md` has the install lines for the Python wheel, the Node tarball and a Rust git dependency; what each Rust, Python and Node call returns and takes (authors, `Saved`, `History.entries`, `TreeFile`); history scopes (`branch` against `from`); who wrote what (`snapshot_meta`, blame); undo and rollback; branches, tags and merging in each language (with the Python resolution forms); and the MCP server's run id, author, tool list, stdio framing, protocol versions and setup. `docs/cookbook` gains an undo recipe and drops the claim that Python has no tags. The README no longer calls a repository "one SQLite file" or the release "v4". A test (`library_docs`) runs the documented Rust calls.
+- **`set_branch_tip` is documented for what it does.** A branch's tip is its newest snapshot, so it moves only a branch with no snapshots of its own; it never took an existing branch back. The core, Python and Node comments said "point an existing branch at"; to go back, save a rollback snapshot.
+
 ## 6.2.1
 
 Phase 23: gather the evidence.

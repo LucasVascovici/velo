@@ -54,7 +54,10 @@ export declare class Repo {
   branches(): Promise<Array<BranchInfo>>
   /** Create a branch, at snapshot `at` or unborn when absent. */
   createBranch(name: string, at?: string | undefined | null): Promise<void>
-  /** Point an existing branch at snapshot `to`. */
+  /**
+   * Point a branch that has no snapshots of its own at snapshot `to`.
+   * A branch that has snapshots keeps its newest one as its tip: to go back, save a rollback snapshot.
+   */
   setBranchTip(name: string, to: string): Promise<void>
   static init(path: string): Promise<Repo>
   static open(path: string): Promise<Repo>

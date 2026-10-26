@@ -64,6 +64,25 @@ merged = repo.merge_commit(branch="main", ours=base, theirs=winner.id,
 The result is a two-parent snapshot (`is_merge`, `merge_parent` is the
 winner), and the discarded attempt stays reachable on `attempt-2` for review.
 
+## Undo a tool call
+
+A bad tool call is undone by saving a new snapshot whose whole tree is an earlier
+one (`save_tree`, so files the bad call added are dropped). The trail keeps both
+the mistake and the fix:
+
+```python
+good = [velo.TreeEntry.stored(f.path, f.object, f.kind) for f in repo.tree_at(before)]
+repo.save_tree(branch=branch, message="undo call-3", entries=good, parent=bad,
+               author=velo.Author(f"agent-{run}"),
+               meta={"agent": {"run": run, "undo_of": "call-3"}})
+```
+
+No content is read or copied; the new snapshot points at the same objects. A
+branch's tip is its newest snapshot, so there is no call that takes an existing
+branch back (`set_branch_tip` moves only a branch with no snapshots of its own).
+With a working tree, `velo undo` does the equivalent: it shelves the last
+snapshot, and `velo redo` brings it back.
+
 ## Blame names the run
 
 `blame` gives each line's origin snapshot; read the run from that snapshot's
