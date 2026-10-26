@@ -6,11 +6,11 @@ here as **green**, with a link to its proof, or **red**, with the reason. This
 page records the evidence; it does not make the decision. Removing or keeping
 the note is the owner's call.
 
-Current count: **9 green, 2 red** (lines 6 and 7). Judged again on
+Current count: **10 green, 1 red** (line 7). Judged again on
 2026-10-24 after simulation run six, the v6.2.1 release check, the Linux
-benchmark runs and the cold-start test: lines 9, 10 and 11 turned green (line 9
-on agent runs alone, with that limit stated), and lines 6 and 7 narrowed (each
-section says to what). The README note stays. The inputs to the decision are in
+benchmark runs, the cold-start test and the Windows envelope runs of 2026-10-26:
+lines 6, 9, 10 and 11 turned green (line 9 on agent runs alone, with that limit
+stated), and line 7 narrowed (its section says to what). The README note stays. The inputs to the decision are in
 "Decisions for the owner" and "Still red" at the end of this page.
 
 ## How a line turns green
@@ -49,7 +49,7 @@ Each line that was green was re-read against that rule:
 | 3 | An interrupted operation leaves a repository `fsck` accepts, on v4 as on v3 | green |
 | 4 | A hosted remote cannot be written without authorisation | green |
 | 5 | A signed history round-trips and tampering is caught | green |
-| 6 | The documented sizes are measured sizes, on the current format | **red (partial)** |
+| 6 | The documented sizes are measured sizes, on the current format | green |
 | 7 | The headline workload is within its stated factor, and a regression fails CI | **red (partial)** |
 | 8 | The API and format promises are enforced by CI | green |
 | 9 | A stranger can follow the README to a working result | green (agents only) |
@@ -112,40 +112,32 @@ Each line that was green was re-read against that rule:
 - Known gap: a later countersignature is not re-sent on a later sync
   ([THREAT_MODEL.md](THREAT_MODEL.md)).
 
-## 6. Documented sizes are measured: red (partial)
+## 6. Documented sizes are measured: green
 
 - [SCALE.md](SCALE.md), "Measured on 6.x (format v4)", is the current envelope.
   Every table there names its platform, velo version and whether the shape is
   full or reduced, and the 5.x tables are kept and labelled as v3. Raw runs:
   [`bench/results`](../bench/results), harness
   [`bench/scale`](../bench/scale).
-- Now measured on 6.x, full size, on a Linux GitHub runner (6.2.0): 10,000
-  files x 2,000 snapshots (`envelope-a`) and 100,000 files x 200 snapshots
-  (`envelope-b`), saves flat in both
-  ([`envelope-a`](../bench/results/2026-10-linux-runner-envelope-v4-a.json),
-  [`envelope-b`](../bench/results/2026-10-linux-runner-envelope-v4-b.json)).
-  Now measured on Windows, full size (6.2.1): 100,000 files x 500 snapshots,
-  the ratio shape
-  ([result](../bench/results/2026-10-windows-ratio-100k-500.json)).
-- Measured on a Linux GitHub runner on 6.2.1 (2026-10-23), both complete:
-  - the 100,000 x 500 ratio shape: one-file save 0.69 s median over the last
-    10%, **0.92x** the history-0 save
-    ([result](../bench/results/2026-10-23-linux-runner-ratio-100k-500.json));
-  - the full retention run, 10,000 files x 2,000 snapshots: `retention::apply`
-    175 s, `gc` 2.8 s, incremental vacuum 115 s, `velo.db` 5.56 GB to 2.21 GB
-    ([log](../bench/results/2026-10-23-linux-runner-retention-10k-2000.txt)).
-    The test builds its history with whole trees, the 18.10 shape, so it is
-    the worst case for the delete stage, not the K = 128 default.
-- Still missing, by SCALE.md's own list "Not run on 6.x":
-  - Windows, `envelope-a` (10,000 x 2,000) and `envelope-b` (100,000 x 200):
-    not run. Windows has only reduced shapes (10,000 x 200, 30,000 x 20 which
-    is partial, 50,000 x 40) plus the one full ratio shape. SCALE.md claims
-    both platforms, so the page is not fully measured.
-  - Linux is a hosted runner only, on two different CPUs; no local Linux.
-- It turns green when the two Windows envelopes exist, each committed as a
-  complete run (the detached commands are in SCALE.md under "Commands for the
-  owner"), or when SCALE.md stops claiming those shapes on Windows. The
-  sentence does not change.
+- **Both envelope shapes and the ratio shape are measured on 6.x, full size,
+  complete, on both platforms:** 10,000 files x 2,000 snapshots and 100,000 x
+  200 on Windows 11 (6.2.1, 2026-10-26;
+  [`a`](../bench/results/2026-10-26-windows-envelope-v4-a-full.json),
+  [`b`](../bench/results/2026-10-26-windows-envelope-v4-b-full.json)) and on a
+  Linux runner (6.2.0;
+  [`a`](../bench/results/2026-10-linux-runner-envelope-v4-a.json),
+  [`b`](../bench/results/2026-10-linux-runner-envelope-v4-b.json)); and 100,000
+  x 500 on Windows
+  ([result](../bench/results/2026-10-windows-ratio-100k-500.json)) and on the
+  Linux runner
+  ([result](../bench/results/2026-10-23-linux-runner-ratio-100k-500.json)). The
+  full retention run, 10,000 x 2,000, ran on the Linux runner on 6.2.1
+  ([log](../bench/results/2026-10-23-linux-runner-retention-10k-2000.txt)).
+- **What the sentence does not claim, and SCALE.md says so:** Windows has no
+  full retention run (only the reduced shape), Linux is a hosted runner and not
+  a local machine, the two Linux envelope runs were on different CPUs, and the
+  Linux envelope runs are on 6.2.0 and the rest on 6.2.1 (no format or save-path
+  change between them). Every number is one run.
 
 ## 7. Headline workload against its stated factor: red (partial)
 
@@ -320,10 +312,6 @@ touched.
 
 Each red line, and what turns it green. This list is the next phase's input.
 
-- **Line 6** (sizes): run Windows `envelope-a` and `envelope-b` on 6.x, each
-  complete and committed to `bench/results`, and label the cells in
-  [SCALE.md](SCALE.md); or have SCALE.md stop claiming those shapes on Windows.
-  The Linux ratio shape and the full retention run were measured on 6.2.1.
 - **Line 7** (headline workload): every target is met on Linux. Open: the CLI
   one-file save at 100,000 files on Windows with Defender on (1.8 to 1.9 s
   against "under 1 s"), and whether the manual `bench.yml` counts against a

@@ -1,11 +1,18 @@
 # Scale: how far velo has been tested
 
-velo keeps every snapshot's whole file list in the `file_map` table, so its
-metadata grows as files x snapshots even when one file changes per snapshot
-(see [FORMAT.md](FORMAT.md) section 11.4). This page says how far that has been
-measured, how fast velo is there, where it degrades, and what to do about it.
+This page says how far velo has been measured, how fast it is there, where it
+degrades, and what to do about it. Up to 5.3 velo kept every snapshot's whole file
+list in the `file_map` table, so its metadata grew as files x snapshots (see
+[FORMAT.md](FORMAT.md) sections 11.4 and 11.5); format v4 stores what changed
+instead, and the "5.x" sections below are that older behaviour, kept as history.
 
 ## Measured on 6.x (format v4)
+
+**Tested on 6.x to 10,000 files x 2,000 snapshots and to 100,000 files x 200
+snapshots, on Windows 11 and on a Linux runner, and to 100,000 files x 500
+snapshots on both. On every shape the one-file save stays flat against history
+(0.92x to 1.12x of the history-0 save on the shapes that report it, and 0.91x to 1.06x growth on all of them) and the repository is under 140 MiB, against
+5.3 GiB for the same shapes on 5.3.0.** Beyond those shapes nothing is claimed.
 
 These are the current numbers. Everything below the "5.x" headings is history
 from the v3 storage and is kept, losses included. Every table says its
@@ -23,6 +30,10 @@ through `bench/scale/scale.py`.
 | 30,000 x 20 | reduced, partial | Windows 11 | 6.2.0 | 2026-10-22 | `2026-10-22-windows-envelope-v4-b30k.json` |
 | 50,000 x 40 | reduced | Windows 11 | 6.2.1 | 2026-10 | `2026-10-windows-ratio-50k-40.json` |
 | 100,000 x 500 | full (ratio shape) | Windows 11 | 6.2.1 | 2026-10 | `2026-10-windows-ratio-100k-500.json` |
+| 10,000 x 2,000 (`envelope-a`) | full | Windows 11 | 6.2.1 | 2026-10-26 | `2026-10-26-windows-envelope-v4-a-full.json` |
+| 100,000 x 200 (`envelope-b`) | full | Windows 11 | 6.2.1 | 2026-10-26 | `2026-10-26-windows-envelope-v4-b-full.json` |
+| 100,000 x 500 (ratio shape) | full | Linux, GitHub runner | 6.2.1 | 2026-10-23 | `2026-10-23-linux-runner-ratio-100k-500.json` |
+| 10,000 x 2,000, retention | full | Linux, GitHub runner | 6.2.1 | 2026-10-23 | `2026-10-23-linux-runner-retention-10k-2000.txt` |
 | 10,000 x 2,000 (`envelope-a`) | full | Linux, GitHub runner | 6.2.0 | 2026-10-22 | `2026-10-linux-runner-envelope-v4-a.json` |
 | 100,000 x 200 (`envelope-b`) | full | Linux, GitHub runner | 6.2.0 | 2026-10-22 | `2026-10-linux-runner-envelope-v4-b.json` |
 
@@ -87,6 +98,33 @@ The first-10% median is over 4 saves and its p95 is the first save itself, so
 the 0.52x growth figure in the JSON is not a speed-up finding; the ratio to
 history-0 (0.93x) is the figure to read.
 
+### Windows 11, velo 6.2.1: the two envelope shapes (full)
+
+Run 2026-10-26 on the published v6.2.1 binary, detached with no time limit, one
+shape after the other, Defender real-time protection on with no exclusions. Both
+finished complete.
+
+| Metric | `envelope-a`: 10,000 files x 2,000 snapshots | `envelope-b`: 100,000 files x 200 snapshots |
+| --- | --- | --- |
+| first save (every file new) | 49.9 s | 531 s |
+| save, first 10% median / p95 | 0.214 / 0.243 s | 1.44 / 1.66 s |
+| save, last 10% median / p95 | 0.226 / 0.271 s | 1.50 / 1.68 s |
+| **save, median / history-0 save** | **1.05x** | **1.12x** |
+| save growth, last / first median | 1.06x | 1.04x |
+| `status` (clean) | 0.15 s | 0.98 s |
+| `history` / `history --file` | 67 / 98 ms | 44 / 50 ms |
+| `restore` to mid / back to tip | 1.47 s / 0.88 s | 1.49 s / 1.64 s |
+| `gc` / `fsck` | 0.79 s / 5.7 s | 7.3 s / 22.9 s |
+| open (`velo branches`) | 41 ms | 43 ms |
+| `.velo` / `velo.db` | 47.9 MiB / 46.0 MiB | 83.2 MiB / 66.9 MiB |
+| `file_map` rows | 160,016 | 200,002 |
+
+The same two shapes on 5.3.0 (format v3) took 1.4 to 2.2 s per save at 10,000
+files and left a 5.3 GiB `velo.db`; here a save is 0.2 s, flat over 2,000
+snapshots, and the whole repository is 48 MiB. The 100,000-file shape saves in
+1.4 to 1.5 s with Defender scanning every touched file and no growth with
+history. One run each, one machine.
+
 ### Windows 11, velo 6.2.1: 100,000 files x 500 snapshots (full, ratio shape)
 
 | Metric | 100,000 files x 500 snapshots |
@@ -108,6 +146,47 @@ history-0 (0.93x) is the figure to read.
 This is the one 6.x measurement of a 100,000-file repository over hundreds of
 snapshots on Windows: the one-file save is flat against history-0 over 500
 snapshots. It is one run under Defender.
+
+### Linux (GitHub runner), velo 6.2.1: 100,000 files x 500 snapshots (full, ratio shape)
+
+| Metric | 100,000 files x 500 snapshots |
+| --- | --- |
+| first save (every file new) | 7.6 s |
+| save, history-0 median | 0.75 s |
+| save, first 10% median / p95 | 0.77 / 0.87 s |
+| save, last 10% median / p95 | 0.69 / 0.71 s |
+| **save, median / history-0 save** | **0.92x** (target 1.5x) |
+| save growth, last / first median | 0.91x |
+| `status` (clean) | 0.47 s |
+| `history` / `history --file` | 7 / 17 ms |
+| `restore` to mid / back to tip | 0.98 s / 0.98 s |
+| `gc` / `fsck` | 1.6 s / 12.4 s |
+| open (`velo branches`) | 3.5 ms |
+| `.velo` / `velo.db` | 137 MiB / 121 MiB |
+| `file_map` rows | 400,004 |
+
+One run on a hosted runner (AMD EPYC 9V74, 4 logical cores), dispatched from
+`main` at `6114905`.
+
+### Linux (GitHub runner), velo 6.2.1: retention, 10,000 files x 2,000 snapshots (full)
+
+The `default_policy_at_ten_thousand_files_and_two_thousand_snapshots` test. It
+builds its 2,000 snapshots with whole trees (the 18.10 shape: 20 million
+`file_map` rows), so it is the worst case for the delete stage, not the K = 128
+default.
+
+| Stage | Time |
+| --- | --- |
+| build the history | 1,879 s |
+| `retention::apply` (default policy; examined 2,000, removed 1,240) | 175 s |
+| `gc` | 2.8 s |
+| `gc::vacuum` (incremental) | 115 s |
+| snapshots / `file_map` rows after | 760 / 7,600,000 |
+| `velo.db` after retention and `gc` / after vacuum | 5.56 GB (3.34 GB on the freelist) / 2.21 GB |
+
+For comparison, the pre-v4 run on Windows (19.4) took 416 s for the apply, 165 s
+for `gc` and 193 s for the vacuum. Different platforms, so read it as the order
+of magnitude, not a ratio.
 
 ### Linux (GitHub runner), velo 6.2.0: `envelope-a`, 10,000 files x 2,000 snapshots (full)
 
@@ -148,20 +227,14 @@ velo costs. The saves stay flat over both full envelope shapes on Linux.
 
 ### Not run on 6.x
 
-Every full shape and platform below has no 6.x number and none is implied.
-The detached commands are under "Detached full runs" in "Commands for the owner".
+A shape or platform below has no 6.x number and none is implied.
 
-- **Windows, `envelope-a` full (10,000 x 2,000)**: not run. Detached
-  `Start-Process ... --preset envelope-a` command under "Detached full runs".
-- **Windows, `envelope-b` full (100,000 x 200)**: not run. Detached
-  `Start-Process ... --preset envelope-b` command under "Detached full runs".
-- **Linux, 100,000 x 500 ratio shape (`ratio-100k`)**: not run. The Linux
-  `nohup python3 bench/scale/scale.py --preset ratio-100k` command.
-- **Full retention run (10,000 x 2,000, 18.10/19.4 shape)**: not run on 6.x;
-  the detached `default_policy_at_ten_thousand_files_and_two_thousand_snapshots`
-  test command under "Detached full runs". The reduced retention run (`default_policy_at_a_reduced_18_10_shape`)
-  was also not re-run; the 19.4 figures (416 s apply, 165 s `gc`, 193 s
-  vacuum) remain pre-v4 and are unconfirmed for 6.x.
+- **Windows, the full retention run (10,000 x 2,000, 18.10/19.4 shape)**: not
+  run. It was run on the Linux runner (above). The detached
+  `default_policy_at_ten_thousand_files_and_two_thousand_snapshots` test command
+  is under "Detached full runs" in "Commands for the owner". The reduced retention
+  run (`default_policy_at_a_reduced_18_10_shape`) on Windows is the only
+  Windows retention figure on 6.x.
 - **Linux on a local machine or WSL2** (as opposed to a hosted runner): not
   run; the runner tables above are the only Linux data.
 

@@ -20,7 +20,7 @@
 
 > **Note:** Velo was vibe-coded for fun — high-level intent, modern tech stack, tight feedback loop with an AI assistant. It's a real working tool, but built as an experiment in what's possible with that workflow, not as a production-grade Git replacement.
 >
-> The [production checklist](docs/PRODUCTION.md) judges each line against its evidence; 2 of its 11 lines are red.
+> The [production checklist](docs/PRODUCTION.md) judges each line against its evidence; 1 of its 11 lines is red.
 
 ---
 
