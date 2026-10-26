@@ -4,7 +4,7 @@
 # the names chosen in docs/NAMES.md, and installs it into a clean place.
 # The cargo side is split: ci.yml's `package` job runs
 # `cargo package --workspace` for every publishable crate, and this file adds
-# a true `cargo publish --dry-run` for velo-merge, the one crate whose
+# a true `cargo publish --dry-run` for velody-merge, the one crate whose
 # dependencies are all external, so the registry check can run before any of
 # its siblings exist on crates.io.
 #
@@ -34,8 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Dry-run publish velo-merge
-        run: cargo publish --dry-run --locked -p velo-merge
+      - name: Dry-run publish velody-merge
+        run: cargo publish --dry-run --locked -p velody-merge
 
   pypi:
     name: PyPI dry run
@@ -64,7 +64,7 @@ jobs:
           cd "$work"   # outside the checkout, so the source tree cannot shadow the package
           python -m venv venv
           venv/bin/python -m pip install "$sdist"
-          venv/bin/python -c 'import velo; print(velo.__file__)'
+          venv/bin/python -c 'import velody; print(velody.__file__)'
 
   npm:
     name: npm dry run
@@ -94,9 +94,9 @@ jobs:
           set -euo pipefail
           cd bindings/node
           npm pack
-          tgz=$(ls "$PWD"/velo-core-*.tgz)
+          tgz=$(ls "$PWD"/velody-core-*.tgz)
           work=$(mktemp -d)
           cd "$work"
           npm init -y
           npm install "$tgz"
-          node -e 'const v = require("velo-core"); console.log(Object.keys(v).slice(0, 5))'
+          node -e 'const v = require("velody-core"); console.log(Object.keys(v).slice(0, 5))'

@@ -16,15 +16,15 @@ class ReleaseAssetsTest(unittest.TestCase):
     def test_expected_has_every_class(self):
         names = r.expected("1.2.3")
         self.assertEqual(len(names), 5 + 5 + 3 + 3 + 4 + 3)
-        self.assertIn("velo-1.2.3.cdx.json", names)
-        self.assertIn("velo_core-1.2.3-cp39-abi3-win_amd64.whl", names)
+        self.assertIn("velody-1.2.3.cdx.json", names)
+        self.assertIn("velody_core-1.2.3-cp39-abi3-win_amd64.whl", names)
 
     def test_complete_set_passes(self):
         self.assertEqual(self.run_check(r.expected("1.2.3")), 0)
 
     def test_missing_wheel_fails(self):
         names = r.expected("1.2.3")
-        gone = "velo_core-1.2.3-cp39-abi3-win_amd64.whl"
+        gone = "velody_core-1.2.3-cp39-abi3-win_amd64.whl"
         names.discard(gone)
         self.assertEqual(r.compare("1.2.3", names)[0], [gone])
         self.assertEqual(self.run_check(names), 1)

@@ -1,6 +1,6 @@
 // Dedicated worker: opens the persistent repository and answers the page.
 // Build the package first: `wasm-pack build bindings/wasm --target web`.
-import init, { Repo } from '../pkg/velo_wasm.js';
+import init, { Repo } from '../pkg/velody_wasm.js';
 
 const NAME = 'reload-test.db';
 const ready = init();

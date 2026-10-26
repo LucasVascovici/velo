@@ -2,7 +2,7 @@
 //
 // Signing needs only the binding. Sync needs a working tree, a remote and a
 // clone, none of which the binding creates, so those scenarios set up their
-// repositories with the `velo` CLI and skip when no binary is built.
+// repositories with the `velody` CLI and skip when no binary is built.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -20,7 +20,7 @@ const SEED = Buffer.from([...Array(32).keys()]);
 const OTHER = Buffer.from([...Array(32).keys()].map((i) => i + 1));
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'velo-node-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'velody-node-'));
 }
 
 async function fresh() {
@@ -78,10 +78,10 @@ test('verify rejects a malformed key', opts, async () => {
 // --- sync ---------------------------------------------------------------
 
 function findVelo() {
-  if (process.env.VELO_BIN) return process.env.VELO_BIN;
+  if (process.env.VELODY_BIN) return process.env.VELODY_BIN;
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
   for (const profile of ['debug', 'release']) {
-    for (const name of ['velo.exe', 'velo']) {
+    for (const name of ['velody.exe', 'velody']) {
       const p = path.join(root, 'target', profile, name);
       if (fs.existsSync(p)) return p;
     }
@@ -90,7 +90,7 @@ function findVelo() {
 }
 
 const VELO = findVelo();
-const skip = VELO ? false : 'no velo binary to set up repositories';
+const skip = VELO ? false : 'no velody binary to set up repositories';
 const syncOpts = { ...opts, skip };
 
 function cli(cwd, ...args) {

@@ -1,17 +1,17 @@
 """Document editor: drafts as branches, a rename edge, merge, blame per line."""
 import tempfile
 
-import velo
+import velody
 
 TEXT = "Intro sentence.\nMiddle sentence.\nClosing sentence.\n"
 
 with tempfile.TemporaryDirectory() as tmp:
-    repo = velo.Repo.init(tmp)
+    repo = velody.Repo.init(tmp)
 
     # One sentence per line keeps merges and blame at sentence granularity.
     base = repo.save_tree(
         branch="main", message="first draft", entries={"draft.txt": TEXT},
-        author=velo.Author("ada"),
+        author=velody.Author("ada"),
     )
 
     # Ada renames the file; the rename edge lets blame follow lines back
@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory() as tmp:
     renamed = repo.save_tree(
         branch="main", message="rename draft to essay", parent=base,
         entries={"essay.txt": TEXT},
-        author=velo.Author("ada"), renames=[("draft.txt", "essay.txt")],
+        author=velody.Author("ada"), renames=[("draft.txt", "essay.txt")],
     )
 
     # Grace works on a draft branch and rewrites the middle sentence.
@@ -27,13 +27,13 @@ with tempfile.TemporaryDirectory() as tmp:
     g = repo.save_tree(
         branch="draft-grace", message="tighten the middle", parent=renamed,
         entries={"essay.txt": "Intro sentence.\nA sharper middle.\nClosing sentence.\n"},
-        author=velo.Author("grace"),
+        author=velody.Author("grace"),
     )
     # Meanwhile Ada edits the same sentence on main.
     m1 = repo.save_tree(
         branch="main", message="reword the middle", parent=renamed,
         entries={"essay.txt": "Intro sentence.\nAn ada middle.\nClosing sentence.\n"},
-        author=velo.Author("ada"),
+        author=velody.Author("ada"),
     )
 
     plan = repo.merge_plan(m1, g)
@@ -42,13 +42,13 @@ with tempfile.TemporaryDirectory() as tmp:
     try:
         repo.merge_commit(branch="main", ours=m1, theirs=g, message="merge")
         raise AssertionError("expected a conflict")
-    except velo.Conflicts as e:
+    except velody.Conflicts as e:
         assert e.paths == ["essay.txt"]
 
     resolved = b"Intro sentence.\nA sharper middle.\nClosing sentence.\n"
     merged = repo.merge_commit(
         branch="main", ours=m1, theirs=g, message="merge grace's draft",
-        author=velo.Author("ada"), resolutions={"essay.txt": resolved},
+        author=velody.Author("ada"), resolutions={"essay.txt": resolved},
     )
     entry = repo.snapshot(merged)
     assert entry.is_merge and entry.merge_parent == g

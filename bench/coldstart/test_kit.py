@@ -20,7 +20,7 @@ class AuditTests(unittest.TestCase):
         self.assertTrue(inv)
 
     def test_source_path_is_invalid(self):
-        inv, _ = audit.audit("Read crates/velo-core/src/lib.rs", "/tmp/sb")
+        inv, _ = audit.audit("Read crates/velody-core/src/lib.rs", "/tmp/sb")
         self.assertTrue(inv)
 
     def test_jsonl_is_scanned(self):
@@ -35,18 +35,18 @@ class AuditTests(unittest.TestCase):
 
     def test_absolute_path_under_checkout_is_invalid(self):
         with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "crates", "velo-core"))
+            os.makedirs(os.path.join(d, "crates", "velody-core"))
             f = os.path.join(d, "docs", "ROADMAP.md").replace("\\", "/")
             inv, _ = audit.audit("cat " + f, "/tmp/sb")
             self.assertTrue(inv)
 
     def test_tilde_path_under_checkout_is_invalid(self):
         with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, "velo", "crates", "velo-core"))
+            os.makedirs(os.path.join(d, "velody", "crates", "velody-core"))
             old = {k: os.environ.get(k) for k in ("HOME", "USERPROFILE")}
             os.environ["HOME"] = os.environ["USERPROFILE"] = d
             try:
-                inv, _ = audit.audit("cat ~/velo/docs/ROADMAP.md", "/tmp/sb")
+                inv, _ = audit.audit("cat ~/velody/docs/ROADMAP.md", "/tmp/sb")
             finally:
                 for k, v in old.items():
                     if v is None:
@@ -56,7 +56,7 @@ class AuditTests(unittest.TestCase):
             self.assertTrue(inv)
 
     def test_bindings_tests_path_is_invalid(self):
-        inv, _ = audit.audit("cat ../velo/bindings/python/tests/test_api.py", "/tmp/sb")
+        inv, _ = audit.audit("cat ../velody/bindings/python/tests/test_api.py", "/tmp/sb")
         self.assertTrue(inv)
 
     def test_session_preamble_and_tool_results_are_not_the_agents_actions(self):
@@ -64,7 +64,7 @@ class AuditTests(unittest.TestCase):
         lines = [
             json.dumps({"type": "attachment", "text": "init: Initialize a new CLAUDE.md file"}),
             json.dumps({"type": "user", "message": {"content": [{"type": "tool_result",
-                "content": "see crates/velo-core and ARCHITECTURE.md"}]}}),
+                "content": "see crates/velody-core and ARCHITECTURE.md"}]}}),
         ]
         invalid, _ = audit.audit(audit.transcript_text("\n".join(lines)), "/sb")
         self.assertEqual(invalid, [])
@@ -72,7 +72,7 @@ class AuditTests(unittest.TestCase):
     def test_a_quoted_link_in_the_agents_prose_is_not_a_read(self):
         import json
         say = {"type": "assistant", "message": {"content": [
-            {"type": "text", "text": "the docs link to crates/velo-mcp/README.md, which I do not have"}]}}
+            {"type": "text", "text": "the docs link to crates/velody-mcp/README.md, which I do not have"}]}}
         invalid, _ = audit.audit(audit.transcript_text(json.dumps(say)), "/sb")
         self.assertEqual(invalid, [])
 
@@ -108,8 +108,8 @@ class PrepareTests(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(root, "rust-run1")))
 
     def test_term_counter(self):
-        c = prepare.term_counts("save_changes save_changes velo report")
-        self.assertEqual(c, {"save_changes": 2, "velo report": 1, "velo sync": 0})
+        c = prepare.term_counts("save_changes save_changes velody report")
+        self.assertEqual(c, {"save_changes": 2, "velody report": 1, "velody sync": 0})
 
     def test_card_parsing(self):
         card = os.path.join(HERE, "tasks", "python-agent-checkpointing.md")

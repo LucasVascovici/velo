@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "velo": {
-      "command": "/path/to/velo-mcp",
-      "args": ["--repo", "/path/to/project"]
-    }
-  }
-}

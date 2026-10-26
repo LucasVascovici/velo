@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use napi::bindgen_prelude::*;
 use napi::{Env, JsDate, ScopedTask};
 use napi_derive::napi;
-use velo_core::commands::{blame, history};
+use velody_core::commands::{blame, history};
 
 use crate::errors::to_js;
 use crate::repo::{
@@ -38,7 +38,7 @@ fn filters(meta: &[MetaFilterInput]) -> Vec<history::MetaFilter<'_>> {
 #[napi(object)]
 pub struct HistoryOptions {
     /// List the ancestry of this snapshot, following both parents of a merge.
-    /// Without `from` or `branch`, velo walks back from the working tree's
+    /// Without `from` or `branch`, velody walks back from the working tree's
     /// position, so a repository with no working tree must pass one of them.
     pub from: Option<String>,
     /// Only snapshots recorded on this branch.
@@ -53,7 +53,7 @@ pub struct HistoryOptions {
     pub meta: Option<Vec<MetaFilterInput>>,
 }
 
-type EntriesWork = Box<dyn FnOnce(&velo_core::Repo) -> CoreResult<Vec<SnapshotData>> + Send>;
+type EntriesWork = Box<dyn FnOnce(&velody_core::Repo) -> CoreResult<Vec<SnapshotData>> + Send>;
 
 pub struct EntriesJob {
     ticket: Ticket,
@@ -68,7 +68,7 @@ impl<'task> ScopedTask<'task> for EntriesJob {
         let run = self
             .run
             .take()
-            .ok_or_else(|| napi::Error::from_reason("velo job already ran"))?;
+            .ok_or_else(|| napi::Error::from_reason("velody job already ran"))?;
         let repo = match self.ticket.lock()? {
             Ok(repo) => repo,
             Err(refused) => return Ok(Err(refused)),
@@ -168,7 +168,7 @@ pub struct BlameJob {
     end_line: Option<u32>,
 }
 
-fn blame_data(job: &BlameJob, repo: &velo_core::Repo) -> CoreResult<BlameData> {
+fn blame_data(job: &BlameJob, repo: &velody_core::Repo) -> CoreResult<BlameData> {
     let at = job.at.as_deref().map(snapshot_id).transpose()?;
     // JS counts lines from 1 and includes the end; core's window is half-open.
     let lines = match (job.start_line, job.end_line) {

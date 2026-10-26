@@ -1,4 +1,4 @@
-# velo cookbooks
+# Velody cookbooks
 
 Each cookbook is a short narrative plus a script that runs against the Python
 binding. CI executes every script after the binding's tests, and the scripts

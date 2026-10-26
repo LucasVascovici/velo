@@ -1,6 +1,6 @@
 # Rust: version a document editor in five minutes
 
-Use the `velo-core` library to give an editor autosave, history and restore,
+Use the `velody-core` library to give an editor autosave, history and restore,
 with no working tree: snapshots are built from memory.
 
 ## Install
@@ -10,18 +10,18 @@ release tag (see [INSTALL.md](../INSTALL.md)):
 
 ```toml
 [dependencies]
-velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "vX.Y.Z" }
+velody-core = { git = "https://github.com/LucasVascovici/velody", tag = "vX.Y.Z" }
 ```
 
 ## Save, read the history, restore
 
 ```rust quickstart
-use velo_core::commands::history;
-use velo_core::tree::{SaveChanges, TreeEntry};
-use velo_core::{BranchName, Repo};
+use velody_core::commands::history;
+use velody_core::tree::{SaveChanges, TreeEntry};
+use velody_core::{BranchName, Repo};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let dir = std::env::temp_dir().join(format!("velo-quickstart-{}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("velody-quickstart-{}", std::process::id()));
     std::fs::create_dir_all(&dir)?;
     let repo = Repo::init(&dir)?;
     let branch: BranchName = "main".parse()?;

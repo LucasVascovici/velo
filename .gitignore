@@ -9,7 +9,7 @@
 !bench/agent/*.py
 !bench/coldstart/*.py
 !tests/compat/*.py
-!crates/velo-mcp/conformance/*.py
+!crates/velody-mcp/conformance/*.py
 !packaging/*.py
 !docs/quickstart/*.py
 /target-lane*

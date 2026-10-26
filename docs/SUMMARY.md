@@ -4,7 +4,7 @@
 
 # Deciding
 
-- [Is velo for you?](IS_VELO_FOR_YOU.md)
+- [Is velody for you?](IS_VELODY_FOR_YOU.md)
 - [Agent checkpointing compared](compare/agent-checkpointing.md)
 - [Registries compared](compare/registries.md)
 - [Document history compared](compare/document-history.md)
@@ -28,7 +28,7 @@
 - [Demo session](demo/README.md)
   - [Transcript](demo/transcript.md)
 
-# Operating velo
+# Operating Velody
 
 - [Install](INSTALL.md)
 - [Integrity and signing](INTEGRITY.md)

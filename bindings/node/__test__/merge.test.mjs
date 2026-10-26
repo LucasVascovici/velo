@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const { Repo } = require('../index.js');
 
 async function fresh() {
-  return Repo.init(fs.mkdtempSync(path.join(os.tmpdir(), 'velo-node-')));
+  return Repo.init(fs.mkdtempSync(path.join(os.tmpdir(), 'velody-node-')));
 }
 
 function save(repo, branch, message, files, parent) {

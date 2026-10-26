@@ -1,4 +1,4 @@
-//! Python binding over `velo-core`'s embedder API.
+//! Python binding over `velody-core`'s embedder API.
 //!
 //! Calls hold the GIL except `merge_plan` and `merge_commit`, which release it so a
 //! Python merge driver can run on any thread. `Repo` is unsendable, so the others
@@ -15,7 +15,7 @@ mod signing;
 mod store;
 
 #[pymodule]
-fn _velo(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn _velody(m: &Bound<'_, PyModule>) -> PyResult<()> {
     errors::register(m)?;
     repo::register(m)?;
     store::register(m)?;

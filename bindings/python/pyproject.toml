@@ -3,12 +3,12 @@ requires = ["maturin>=1.5,<2"]
 build-backend = "maturin"
 
 [project]
-name = "velo-core"
+name = "velody-core"
 dynamic = ["version"]
-description = "Python binding for the velo timeline engine"
+description = "Python binding for the velody timeline engine"
 requires-python = ">=3.9"
 
 [tool.maturin]
 features = ["pyo3/extension-module"]
-module-name = "velo._velo"
+module-name = "velody._velody"
 python-source = "python"

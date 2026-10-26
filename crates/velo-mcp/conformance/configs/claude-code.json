@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "velo": {
-      "type": "stdio",
-      "command": "/path/to/velo-mcp",
-      "args": ["--repo", "/path/to/project"]
-    }
-  }
-}

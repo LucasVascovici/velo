@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Scale benchmark for velo: many files, long histories.
+"""Scale benchmark for velody: many files, long histories.
 
 Drives the real release CLI (no library calls), so the numbers are what a
 user sees. Standard library only. See bench/README.md for method and caveats.
@@ -29,22 +29,22 @@ FILES_PER_DIR = 100
 FILE_BYTES = 200
 EXE = ".exe" if os.name == "nt" else ""
 # Per-command wall-clock limit in seconds; None means no limit. Set by
-# --command-timeout so a hung velo process cannot stall a detached run.
+# --command-timeout so a hung velody process cannot stall a detached run.
 COMMAND_TIMEOUT = None
 
 
-def run(velo, args, cwd, check=True):
-    """Run one velo command; return (seconds, stdout)."""
+def run(velody, args, cwd, check=True):
+    """Run one velody command; return (seconds, stdout)."""
     t0 = time.perf_counter()
     try:
-        p = subprocess.run([str(velo), *args], cwd=cwd, capture_output=True,
+        p = subprocess.run([str(velody), *args], cwd=cwd, capture_output=True,
                            text=True, encoding="utf-8", errors="replace",
                            timeout=COMMAND_TIMEOUT)
     except subprocess.TimeoutExpired:
-        sys.exit(f"velo {' '.join(args)} exceeded --command-timeout {COMMAND_TIMEOUT}s")
+        sys.exit(f"velody {' '.join(args)} exceeded --command-timeout {COMMAND_TIMEOUT}s")
     dt = time.perf_counter() - t0
     if check and p.returncode != 0:
-        sys.exit(f"velo {' '.join(args)} failed ({p.returncode}):\n{p.stdout}\n{p.stderr}")
+        sys.exit(f"velody {' '.join(args)} failed ({p.returncode}):\n{p.stdout}\n{p.stderr}")
     return dt, p.stdout
 
 
@@ -73,8 +73,8 @@ def dir_size(p):
     return sum(f.stat().st_size for f in Path(p).rglob("*") if f.is_file())
 
 
-def median_of(n, velo, args, cwd):
-    return statistics.median(run(velo, args, cwd)[0] for _ in range(n))
+def median_of(n, velody, args, cwd):
+    return statistics.median(run(velody, args, cwd)[0] for _ in range(n))
 
 
 def cpu_name():
@@ -135,7 +135,7 @@ def write_partial(out, res, phases, partial):
 def main():
     global COMMAND_TIMEOUT
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--velo", default=f"target/release/velo{EXE}")
+    ap.add_argument("--velody", default=f"target/release/velody{EXE}")
     ap.add_argument("--files", type=int)
     ap.add_argument("--snapshots", type=int)
     ap.add_argument("--change", type=int, default=1, help="files changed per snapshot")
@@ -144,12 +144,12 @@ def main():
     ap.add_argument("--preset", choices=PRESETS)
     ap.add_argument("--keep", action="store_true", help="keep the work directory")
     ap.add_argument("--objects", choices=["files", "database"], default="files",
-                    help="object backend passed to velo init")
+                    help="object backend passed to velody init")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--defender-note", default=None,
                     help="Windows: free text, e.g. 'workdir excluded from real-time scanning'")
     ap.add_argument("--command-timeout", type=float, default=None, metavar="SECONDS",
-                    help="kill any single velo command after this long (default: no limit)")
+                    help="kill any single velody command after this long (default: no limit)")
     a = ap.parse_args()
     COMMAND_TIMEOUT = a.command_timeout
 
@@ -159,15 +159,15 @@ def main():
     if snaps < 2 or a.change > files:
         sys.exit("need --snapshots >= 2 and --change <= --files")
 
-    velo = Path(a.velo).resolve()
-    if not velo.exists():
-        sys.exit(f"velo binary not found: {velo}")
+    velody = Path(a.velody).resolve()
+    if not velody.exists():
+        sys.exit(f"velody binary not found: {velody}")
     repo_root = Path(__file__).resolve().parents[2]
     if a.workdir:
         base = Path(a.workdir).resolve()
         base.mkdir(parents=True, exist_ok=True)
     else:
-        base = Path(tempfile.mkdtemp(prefix="velo-scale-")).resolve()
+        base = Path(tempfile.mkdtemp(prefix="velody-scale-")).resolve()
     if repo_root == base or repo_root in base.parents:
         sys.exit("workdir must not be inside the repository checkout")
     work = base / "repo"
@@ -187,7 +187,7 @@ def main():
         f.parent.mkdir(parents=True, exist_ok=True)
         f.write_bytes(content(rng, p, 0))
 
-    run(velo, ["init", "--objects", a.objects], work)
+    run(velody, ["init", "--objects", a.objects], work)
     res = {"machine": machine_info(a.defender_note)}
     phases = []
 
@@ -200,7 +200,7 @@ def main():
         if s:
             for p in rng.sample(paths, a.change):
                 (work / p).write_bytes(content(rng, p, s))
-        dt, out = run(velo, ["save", f"snapshot {s}"], work)
+        dt, out = run(velody, ["save", f"snapshot {s}"], work)
         m = re.search(r"Saved ([0-9a-f]{8,64})", out)
         if not m:
             sys.exit(f"cannot parse save output: {out!r}")
@@ -223,9 +223,9 @@ def main():
         res["save_last_10pct"]["median_s"] / res["save_first_10pct"]["median_s"])
     phase("saves")
 
-    velo_dir = work / ".velo"
-    db = velo_dir / "velo.db"
-    res["velo_dir_bytes"] = dir_size(velo_dir)
+    velody_dir = work / ".velo"
+    db = velody_dir / "velo.db"
+    res["velody_dir_bytes"] = dir_size(velody_dir)
     res["db_bytes"] = db.stat().st_size
     con = sqlite3.connect(f"file:{db.as_posix()}?mode=ro", uri=True)
     res["file_map_rows"] = con.execute("SELECT COUNT(*) FROM file_map").fetchone()[0]
@@ -234,30 +234,30 @@ def main():
 
     hist_file = paths[files // 2]
     mid = hashes[snaps // 2 - 1]
-    res["status_clean_s"] = median_of(3, velo, ["status"], work)
+    res["status_clean_s"] = median_of(3, velody, ["status"], work)
     phase("status")
-    res["history_full_s"] = median_of(3, velo, ["history", "--oneline", "--limit", str(snaps)], work)
-    res["history_file_s"] = median_of(3, velo, ["history", "--file", hist_file, "--oneline"], work)
+    res["history_full_s"] = median_of(3, velody, ["history", "--oneline", "--limit", str(snaps)], work)
+    res["history_file_s"] = median_of(3, velody, ["history", "--file", hist_file, "--oneline"], work)
     phase("history")
     ts = []
     for _ in range(3):
-        t1 = run(velo, ["restore", mid, "--force"], work)[0]
-        t2 = run(velo, ["restore", hashes[-1], "--force"], work)[0]
+        t1 = run(velody, ["restore", mid, "--force"], work)[0]
+        t2 = run(velody, ["restore", hashes[-1], "--force"], work)[0]
         ts.append((t1, t2))
     res["restore_mid_s"] = statistics.median(t[0] for t in ts)
     res["restore_tip_s"] = statistics.median(t[1] for t in ts)
     phase("restore")
-    res["gc_s"] = median_of(3, velo, ["gc"], work)
+    res["gc_s"] = median_of(3, velody, ["gc"], work)
     phase("gc")
-    res["fsck_s"] = median_of(3, velo, ["fsck"], work)
+    res["fsck_s"] = median_of(3, velody, ["fsck"], work)
     phase("fsck")
-    res["open_s"] = median_of(5, velo, ["branches"], work)
-    res["velo_dir_bytes_after_gc"] = dir_size(velo_dir)
+    res["open_s"] = median_of(5, velody, ["branches"], work)
+    res["velody_dir_bytes_after_gc"] = dir_size(velody_dir)
 
     res["env"] = {
         "platform": platform.platform(),
         "cpu": cpu_name(),
-        "velo_version": run(velo, ["--version"], work)[1].strip(),
+        "velody_version": run(velody, ["--version"], work)[1].strip(),
         "workdir": str(work),
         "files": files, "snapshots": snaps, "change_per_snapshot": a.change,
         "objects": a.objects,
@@ -282,7 +282,7 @@ def main():
         ("save growth (last/first median)", f"{res['save_growth_median_ratio']:.2f}x"),
         ("one-file save, history-0 median", "n/a" if res["save_ratio_vs_history0"] is None
          else f"{ms(res['save_history0_median_s'])} (tail {res['save_ratio_vs_history0']:.2f}x)"),
-        (".velo size", mb(res["velo_dir_bytes"])),
+        (".velo size", mb(res["velody_dir_bytes"])),
         ("velo.db size", mb(res["db_bytes"])),
         ("file_map rows", str(res["file_map_rows"])),
         ("status (clean)", ms(res["status_clean_s"])),
@@ -294,7 +294,7 @@ def main():
         ("fsck", ms(res["fsck_s"])),
         ("open (branches)", ms(res["open_s"])),
         ("platform", res["env"]["platform"]),
-        ("velo", res["env"]["velo_version"]),
+        ("velody", res["env"]["velody_version"]),
     ]
     if "defender_note" in res["env"]:
         rows.append(("Defender", res["env"]["defender_note"]))

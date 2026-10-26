@@ -1,0 +1,196 @@
+//! A C ABI over the embeddable half of `velody-core`.
+//!
+//! The surface is deliberately the *store* half of the API — `Repo`,
+//! `save_tree`, `tree_at`, snapshot and metadata reads. Nothing here touches a
+//! working tree: a binding that needs one is wrapping the wrong half.
+//!
+//! # Conventions
+//!
+//! - **Handles are opaque.** `VelodyRepo` and `VelodyTree` are created by a
+//!   `velody_*_open` / `velody_*_new` call and released by the matching `*_free`.
+//!   A handle is not thread-safe; use one per thread, or serialise externally.
+//! - **Errors are a code plus a message.** Every fallible function returns an
+//!   `int32_t`, `0` on success. On failure the text is available from
+//!   [`velody_last_error_message`] on the same thread. See [`error`] for the table.
+//! - **Results come back through out-parameters** so the return value is free to
+//!   carry the code. Strings are NUL-terminated UTF-8 freed with
+//!   [`velody_string_free`]; byte buffers are freed with [`velody_bytes_free`].
+//! - **Structured results are JSON**, so the header stays small and a new field
+//!   is not an ABI break.
+//! - **Panics never cross the boundary.** They are caught and reported as
+//!   `VELODY_ERR_PANIC`.
+//!
+//! The C declarations live in `include/velody.h`; a test checks that every
+//! exported symbol is declared there.
+
+// Every exported function is `unsafe` because it takes raw pointers; each carries
+// a `# Safety` section, and the contract is the one stated in `include/velody.h`.
+// `unsafe_op_in_unsafe_fn` is not denied: ~50 pointer operations sit in the
+// bodies of these functions and would each need a block that says the same thing.
+
+mod branches;
+pub mod error;
+mod history;
+mod merge;
+mod repo;
+mod tree;
+
+use std::ffi::{c_char, CStr, CString};
+use std::panic::{catch_unwind, AssertUnwindSafe};
+
+use serde_json::{Map, Value};
+use velody_core::commands::resolve_snapshot_id;
+use velody_core::SnapshotId;
+
+pub use branches::*;
+pub use error::*;
+pub use history::*;
+pub use merge::*;
+pub use repo::*;
+pub use tree::*;
+
+use error::record;
+
+pub(crate) type Res<T> = Result<T, Failure>;
+
+/// Run `body`, turning an error or a panic into a recorded failure and a code.
+pub(crate) fn run(body: impl FnOnce() -> Res<()>) -> i32 {
+    match catch_unwind(AssertUnwindSafe(body)) {
+        Ok(Ok(())) => VELODY_OK,
+        Ok(Err(failure)) => record(failure),
+        Err(payload) => {
+            let what = payload
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| payload.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "unknown panic".to_string());
+            record(Failure::new(VELODY_ERR_PANIC, format!("panic: {what}")))
+        }
+    }
+}
+
+fn null_arg(name: &str) -> Failure {
+    Failure::new(
+        VELODY_ERR_NULL_ARGUMENT,
+        format!("`{name}` must not be NULL."),
+    )
+}
+
+/// A required string argument.
+///
+/// # Safety
+///
+/// `ptr` must be NULL or point to a valid value of the type for the whole of
+/// the returned borrow; strings must be NUL-terminated.
+pub(crate) unsafe fn str_arg<'a>(ptr: *const c_char, name: &str) -> Res<&'a str> {
+    if ptr.is_null() {
+        return Err(null_arg(name));
+    }
+    CStr::from_ptr(ptr).to_str().map_err(|_| {
+        Failure::new(
+            VELODY_ERR_INVALID_UTF8,
+            format!("`{name}` is not valid UTF-8."),
+        )
+    })
+}
+
+/// A required handle argument.
+///
+/// # Safety
+///
+/// `ptr` must be NULL or point to a valid value of the type for the whole of
+/// the returned borrow; strings must be NUL-terminated.
+pub(crate) unsafe fn ref_arg<'a, T>(ptr: *const T, name: &str) -> Res<&'a T> {
+    ptr.as_ref().ok_or_else(|| null_arg(name))
+}
+
+/// A required mutable handle argument.
+///
+/// # Safety
+///
+/// `ptr` must be NULL or point to a valid value of the type for the whole of
+/// the returned borrow; strings must be NUL-terminated.
+pub(crate) unsafe fn mut_arg<'a, T>(ptr: *mut T, name: &str) -> Res<&'a mut T> {
+    ptr.as_mut().ok_or_else(|| null_arg(name))
+}
+
+/// Move `text` to the heap as a C string for the caller to free.
+pub(crate) fn to_c_string(text: String) -> Res<*mut c_char> {
+    CString::new(text).map(CString::into_raw).map_err(|_| {
+        Failure::new(
+            VELODY_ERR_INVALID_OUTPUT,
+            "the result contains a NUL byte and cannot be returned as a C string.",
+        )
+    })
+}
+
+/// A malformed JSON argument. Every JSON-taking function funnels its parse
+/// failures through here so the code and the wording are the same everywhere.
+pub(crate) fn bad_json(detail: impl std::fmt::Display) -> Failure {
+    Failure::new(
+        VELODY_ERR_INVALID_JSON,
+        format!("invalid JSON argument: {detail}"),
+    )
+}
+
+/// An optional string member; absent and `null` are the same.
+pub(crate) fn opt_str<'a>(doc: &'a Map<String, Value>, key: &str) -> Res<Option<&'a str>> {
+    match doc.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(s)) => Ok(Some(s)),
+        Some(_) => Err(bad_json(format!("`{key}` must be a string"))),
+    }
+}
+
+/// A required string member.
+pub(crate) fn req_str<'a>(doc: &'a Map<String, Value>, key: &str) -> Res<&'a str> {
+    opt_str(doc, key)?.ok_or_else(|| bad_json(format!("`{key}` is required")))
+}
+
+/// A snapshot spec (tag, branch, id or prefix) taken from a C string.
+pub(crate) fn snapshot_arg(repo: &velody_core::Repo, spec: *const c_char) -> Res<SnapshotId> {
+    // SAFETY: `spec` is a C string from the exported caller, which promises it is
+    // NULL or NUL-terminated; `str_arg` rejects NULL.
+    let spec = unsafe { str_arg(spec, "spec")? };
+    Ok(resolve_snapshot_id(repo, spec)?)
+}
+
+/// Write a JSON result to the caller's out-parameter.
+pub(crate) fn emit(out: *mut *mut c_char, value: Value) -> Res<()> {
+    // SAFETY: `out` is the caller's out-parameter, NULL or writable; `mut_arg`
+    // rejects NULL.
+    let out = unsafe { mut_arg(out, "out_json")? };
+    *out = to_c_string(value.to_string())?;
+    Ok(())
+}
+
+/// Free a string returned by this library. NULL is a no-op.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velody.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
+#[no_mangle]
+pub unsafe extern "C" fn velody_string_free(text: *mut c_char) {
+    if !text.is_null() {
+        drop(CString::from_raw(text));
+    }
+}
+
+/// Free a buffer returned by this library, given the length it came with.
+/// NULL is a no-op.
+///
+/// # Safety
+///
+/// Every pointer argument must be NULL or valid as the crate-level contract in
+/// `include/velody.h` states: strings are NUL-terminated, handles and buffers came
+/// from this library and are not used after being freed, and out-parameters point
+/// to writable storage.
+#[no_mangle]
+pub unsafe extern "C" fn velody_bytes_free(data: *mut u8, len: usize) {
+    if !data.is_null() {
+        drop(Box::from_raw(std::ptr::slice_from_raw_parts_mut(data, len)));
+    }
+}

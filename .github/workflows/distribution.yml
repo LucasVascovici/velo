@@ -38,7 +38,7 @@ jobs:
         run: |
           mkdir assets
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir assets \
-            --pattern 'velo-aarch64-*' --pattern 'velo-x86_64-*'
+            --pattern 'velody-aarch64-*' --pattern 'velody-x86_64-*'
           ls -l assets
       - name: Unit-test the generator
         working-directory: packaging
@@ -60,18 +60,18 @@ jobs:
           path: manifests
       - name: Install from the formula
         run: |
-          brew tap-new local/velo
-          tap_dir="$(brew --repository local/velo)"
+          brew tap-new local/velody
+          tap_dir="$(brew --repository local/velody)"
           mkdir -p "$tap_dir/Formula"
-          cp manifests/homebrew/velo.rb "$tap_dir/Formula/velo.rb"
-          brew install local/velo/velo
+          cp manifests/homebrew/velody.rb "$tap_dir/Formula/velody.rb"
+          brew install local/velody/velody
       - name: The installed binary reports the tag version
         run: |
-          out="$(velo --version)"
+          out="$(velody --version)"
           echo "$out"
           case "$out" in *"${TAG#v}"*) ;; *) echo "version mismatch for $TAG"; exit 1;; esac
       - name: brew test
-        run: brew test local/velo/velo
+        run: brew test local/velody/velody
 
   scoop:
     needs: generate
@@ -89,11 +89,11 @@ jobs:
           "$HOME\scoop\shims" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
       - name: Install from the manifest
         shell: pwsh
-        run: scoop install (Resolve-Path manifests/scoop/velo.json).Path
+        run: scoop install (Resolve-Path manifests/scoop/velody.json).Path
       - name: The installed binary reports the tag version
         shell: bash
         run: |
-          out="$(velo --version)"
+          out="$(velody --version)"
           echo "$out"
           case "$out" in *"${TAG#v}"*) ;; *) echo "version mismatch for $TAG"; exit 1;; esac
 
@@ -111,7 +111,7 @@ jobs:
       - name: winget validate, when winget exists
         shell: pwsh
         run: |
-          $dir = (Get-ChildItem -Directory manifests/winget/manifests/l/LucasVascovici/Velo/*).FullName
+          $dir = (Get-ChildItem -Directory manifests/winget/manifests/l/LucasVascovici/Velody/*).FullName
           if (Get-Command winget -ErrorAction SilentlyContinue) {
             winget validate --manifest $dir
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -125,7 +125,7 @@ jobs:
           python - <<'EOF'
           import glob, json, urllib.request, yaml, jsonschema
           base = "https://raw.githubusercontent.com/microsoft/winget-cli/master/schemas/JSON/manifests"
-          files = glob.glob("manifests/winget/manifests/l/LucasVascovici/Velo/*/*.yaml")
+          files = glob.glob("manifests/winget/manifests/l/LucasVascovici/Velody/*/*.yaml")
           assert len(files) == 3, files
           for path in sorted(files):
               doc = yaml.safe_load(open(path, encoding="utf-8"))

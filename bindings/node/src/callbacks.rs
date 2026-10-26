@@ -28,9 +28,9 @@ use std::sync::{Arc, Mutex};
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::Env;
-use velo_core::events::{Event, Listener, Ref};
-use velo_core::merge::{MergeDriver, MergeResult};
-use velo_core::{Drivers, Error as CoreError};
+use velody_core::events::{Event, Listener, Ref};
+use velody_core::merge::{MergeDriver, MergeResult};
+use velody_core::{Drivers, Error as CoreError};
 
 use napi::{Env as NapiEnv, Task};
 use napi_derive::napi;
@@ -272,9 +272,9 @@ impl Hooks {
         let mut drivers = Drivers::new();
         for (pattern, rule) in &list {
             drivers = match rule {
-                Rule::Builtin("json") => drivers.with(pattern, velo_core::merge::JsonDriver)?,
-                Rule::Builtin("yaml") => drivers.with(pattern, velo_core::merge::YamlDriver)?,
-                Rule::Builtin(_) => drivers.with(pattern, velo_core::merge::TomlDriver)?,
+                Rule::Builtin("json") => drivers.with(pattern, velody_core::merge::JsonDriver)?,
+                Rule::Builtin("yaml") => drivers.with(pattern, velody_core::merge::YamlDriver)?,
+                Rule::Builtin(_) => drivers.with(pattern, velody_core::merge::TomlDriver)?,
                 Rule::Custom(d) => drivers.with(pattern, JsDriverRef(d.clone()))?,
             };
         }
@@ -332,7 +332,7 @@ pub fn builtin(name: &str) -> CoreResult<Rule> {
 
 fn event_object<'env>(env: &'env Env, event: &Event) -> Result<Object<'env>> {
     let mut o = Object::new(env)?;
-    let id = |s: &velo_core::SnapshotId| s.as_str().to_string();
+    let id = |s: &velody_core::SnapshotId| s.as_str().to_string();
     match event {
         Event::Saved {
             snapshot,
@@ -417,7 +417,7 @@ impl Task for Rebuild {
         };
         // The builders consume the handle, so the new one is opened from the
         // same root with the same listener, and the old one is dropped.
-        let fresh = velo_core::Repo::open_and_migrate(&hooks.root)
+        let fresh = velody_core::Repo::open_and_migrate(&hooks.root)
             .map(|r| r.listening(hooks.listener()).merging(drivers));
         Ok(fresh.map(|fresh| {
             *guard = fresh;

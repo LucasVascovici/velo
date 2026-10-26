@@ -1,0 +1,147 @@
+//! Embeddable core of Velody: a content-addressed, versioned content store with
+//! branching, three-way merging and repository sync.
+//!
+//! # Discipline boundary
+//!
+//! Every operation takes a [`Repo`] (reads) or a [`WriteGuard`] (mutations), so
+//! the type system distinguishes the two and it is impossible to mutate without
+//! holding the repository lock. SQLite is a private implementation detail: it
+//! appears nowhere in the public API.
+//!
+//! This crate performs **no terminal output and reads no process environment**.
+//! It returns data and typed errors; presenting them is the caller's job. The
+//! lints below enforce that mechanically rather than by convention — if you find
+//! yourself wanting `println!` here, the value belongs in a returned struct.
+//!
+//! Specifically, `velody-core` contains no `println!`/`eprintln!`/`print!`, no
+//! `process::exit`, no `env::current_dir`/`current_exe`, no `env::var`, no
+//! `$EDITOR` spawning, no terminal detection and no colour codes. Anything that
+//! depends on the surrounding process is passed in — see
+//! [`transport::Spawn`] for how a subprocess remote is configured.
+//!
+//! # Which half of this API is yours
+//!
+//! There are two APIs here that look like one, and picking the wrong half is the
+//! mistake that costs an embedder an afternoon.
+//!
+//! Some commands own the **working tree** — the user's actual files on disk.
+//! Others operate only on the **store**, the content-addressed objects and the
+//! history in SQLite. An application with its own storage (an editor with
+//! buffers, a registry with no scratch directory) wants the second column, and
+//! must never call the first: those commands will write over the very files it is
+//! managing.
+//!
+//! | | Commands |
+//! | :--- | :--- |
+//! | **Writes your files** — never call these from an app with its own storage | [`commands::restore`], [`commands::switch`], [`commands::merge::run`], [`commands::rebase`], [`commands::cherry_pick`], [`commands::stash`], [`commands::undo`], [`commands::redo`], [`commands::resolve`], [`commands::apply`], [`commands::sync`] (clone/pull, and the one-step `sync`), [`commands::init`] |
+//! | **Reads your files** — answers depend on what is on disk right now | [`commands::save`], [`commands::status`], [`commands::diff`], [`commands::grep`], [`commands::squash`] |
+//! | **Store only** — safe with no working tree at all | [`tree`] (the whole module), [`commands::history`], [`commands::show`], [`commands::blame`], [`commands::branches`], [`commands::tag`], [`commands::fsck`], [`commands::remote`], [`commands::gc`], [`commands::compact`], [`commands::retention`],[`commands::export`], [`commands::import`], [`commands::merge::plan`], [`commands::merge::commit`], [`commands::merge::merge_base`], [`Repo::snapshot`], [`Repo::snapshot_meta`], [`Repo::find_snapshots`], [`Repo::branch_tip`], [`Repo::head_token`] |
+//!
+//! [`commands::bundle`] is its own case: it reads and writes one file at a path
+//! you name, and touches nothing else.
+//!
+//! The [`tree`] module is the entry point for the third row — [`WriteGuard::save_tree`]
+//! builds a snapshot from bytes you hold, and [`Repo::tree_at`] /
+//! [`Repo::read_file_at`] / [`Repo::read_object`] read one back, none of them
+//! going near the filesystem.
+//!
+//! # WebAssembly
+//!
+//! The crate builds for `wasm32-unknown-unknown`, with single-file repositories
+//! only: there is no working tree to scan, [`lock::RepoLock`] is a no-op, and
+//! large-file reads use `fs::read` instead of mmap. See `DEVELOPING.md`.
+//!
+//! # Entry point
+//!
+//! [`Repo`] is the handle: [`Repo::init`], [`Repo::open`], [`Repo::discover`].
+//! Mutations go through a write guard so several changes share one lock and one
+//! transaction:
+//!
+//! ```no_run
+//! # fn main() -> Result<(), velody_core::Error> {
+//! let repo = velody_core::Repo::discover(std::path::Path::new("."))?;
+//! println!("format v{}", repo.format_version()?);   // reads need no lock
+//! {
+//!     let _w = repo.write()?;   // exclusive until the guard drops
+//!     // …several mutations share this one lock and transaction…
+//! }
+//! # Ok(()) }
+//! ```
+//!
+//! Typed outcomes mean callers branch on state rather than parsing messages:
+//!
+//! ```no_run
+//! # use velody_core::{Repo, Error};
+//! # fn demo(repo: &Repo) {
+//! match repo.write() {
+//!     Ok(_guard) => { /* proceed */ }
+//!     Err(Error::Locked { held_by, .. }) => eprintln!("busy: {:?}", held_by),
+//!     Err(e) if e.is_reconcile_needed() => eprintln!("pull first"),
+//!     Err(e) => eprintln!("{e}"),
+//! }
+//! # }
+//! ```
+//!
+//! # Threading
+//!
+//! [`Repo`] is `Send` but not `Sync`: SQLite connections are not shareable.
+//! Use one `Repo` per thread, or `Arc<Mutex<Repo>>`, and `spawn_blocking` from
+//! async contexts. The core is deliberately synchronous.
+#![deny(clippy::print_stdout, clippy::print_stderr)]
+// The one unsafe block is the read-only mmap in `storage.rs`, justified there.
+#![deny(unsafe_code)]
+
+pub mod commands;
+pub mod db;
+pub mod drivers;
+pub mod error;
+pub mod events;
+#[doc(hidden)]
+pub mod failpoint;
+#[cfg(any(feature = "fuzzing", test))]
+#[doc(hidden)]
+pub mod fuzzing;
+pub mod ids;
+pub mod limits;
+pub mod lock;
+pub mod meta;
+pub mod progress;
+pub mod repo;
+pub mod safe_path;
+pub mod scope;
+pub mod serve;
+pub mod sign;
+pub mod storage;
+#[doc(hidden)]
+pub mod timing;
+pub mod transport;
+pub mod tree;
+pub(crate) mod tree_store;
+
+#[cfg(test)]
+mod tests;
+
+// ─── Public surface ───────────────────────────────────────────────────────────
+
+pub use commands::init::InitOptions;
+pub use drivers::Drivers;
+pub use error::{Error, Result};
+pub use events::{Event, Listener};
+pub use ids::{BranchName, ObjectHash, SnapshotId, TagName};
+pub use limits::Limits;
+pub use lock::LockHolder;
+pub use meta::{Author, SnapshotMeta};
+pub use repo::{Repo, WriteGuard};
+pub use scope::Scope;
+pub use storage::ObjectLocation;
+
+/// Re-exported so callers can match on merge outcomes without adding a second
+/// dependency.
+pub use velody_merge as merge;
+
+/// Repository format version this crate reads and writes.
+///
+/// Recorded in SQLite's `PRAGMA user_version`. Opening a repository with a
+/// higher value fails with [`Error::SchemaTooNew`] rather than risking a
+/// half-migration — see `docs/FORMAT.md`.
+pub const FORMAT_VERSION: u32 = 4;

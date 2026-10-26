@@ -1,8 +1,8 @@
 import { test, expect } from '@playwright/test';
 
 async function call(page, message) {
-  await page.waitForFunction(() => window.veloReady === true);
-  const reply = await page.evaluate((m) => window.veloCall(m), message);
+  await page.waitForFunction(() => window.velodyReady === true);
+  const reply = await page.evaluate((m) => window.velodyCall(m), message);
   expect(reply.error, JSON.stringify(reply)).toBeUndefined();
   return reply;
 }

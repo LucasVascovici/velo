@@ -43,7 +43,7 @@ jobs:
           $BIN/python -m pytest -q
           # The stubs must match the compiled module; see stubtest_allowlist.txt.
           $BIN/python -m pip install mypy
-          $BIN/python -m mypy.stubtest velo --allowlist stubtest_allowlist.txt
+          $BIN/python -m mypy.stubtest velody --allowlist stubtest_allowlist.txt
           for example in agent_checkpointing config_registry document_editor; do
             $BIN/python examples/$example.py
           done

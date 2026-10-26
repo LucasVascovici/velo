@@ -13,15 +13,15 @@ against the source tree:
 
     python   a venv with the wheel installed (`pip install <wheel>`)
     js       an empty directory with the tarball installed (`npm install <tgz>`)
-    rust     `cargo new`, with velo-core taken from this checkout through a
+    rust     `cargo new`, with velody-core taken from this checkout through a
              [patch] section, then `cargo run`
-    mcp      a built `velo-mcp`, named in $VELO_MCP, driven over stdio by the
+    mcp      a built `velody-mcp`, named in $VELODY_MCP, driven over stdio by the
              page's own python block
 
 Only the standard library is used. The exit status is non-zero when any page
 fails, and the failing pages are named on the last line.
 
-    python docs/quickstart/run.py --wheel w.whl --tgz p.tgz --velo-mcp velo-mcp
+    python docs/quickstart/run.py --wheel w.whl --tgz p.tgz --velody-mcp velody-mcp
     python docs/quickstart/run.py --self-test
 """
 from __future__ import annotations
@@ -117,10 +117,10 @@ def run_rust(blocks, work: Path, args) -> None:
     crates = args.checkout / "crates"
     manifest = (app / "Cargo.toml").read_text(encoding="utf-8")
     manifest += (
-        f'velo-core = "{version}"\n\n'
+        f'velody-core = "{version}"\n\n'
         "[patch.crates-io]\n"
-        f'velo-core = {{ path = "{(crates / "velo-core").as_posix()}" }}\n'
-        f'velo-merge = {{ path = "{(crates / "velo-merge").as_posix()}" }}\n'
+        f'velody-core = {{ path = "{(crates / "velody-core").as_posix()}" }}\n'
+        f'velody-merge = {{ path = "{(crates / "velody-merge").as_posix()}" }}\n'
     )
     (app / "Cargo.toml").write_text(manifest, encoding="utf-8")
     (app / "src" / "main.rs").write_text(join(blocks, "rust"), encoding="utf-8")
@@ -128,8 +128,8 @@ def run_rust(blocks, work: Path, args) -> None:
 
 
 def run_mcp(blocks, work: Path, args) -> None:
-    server = need(args.velo_mcp, "--velo-mcp")
-    env = dict(os.environ, VELO_MCP=str(server))
+    server = need(args.velody_mcp, "--velody-mcp")
+    env = dict(os.environ, VELODY_MCP=str(server))
     (work / "quickstart.py").write_text(join(blocks, "python"), encoding="utf-8")
     run([args.python, "quickstart.py"], work, env)
 
@@ -158,7 +158,7 @@ def run_page(page: str, args) -> None:
     blocks = extract((HERE / page).read_text(encoding="utf-8"))
     if not blocks:
         raise ValueError("the page has no `quickstart` block")
-    work = Path(tempfile.mkdtemp(prefix="velo-quickstart-"))
+    work = Path(tempfile.mkdtemp(prefix="velody-quickstart-"))
     try:
         RUNNERS[PAGES[page]](blocks, work, args)
     finally:
@@ -181,7 +181,7 @@ def self_test() -> int:
     else:
         raise AssertionError("an unclosed fence must be an error")
     broken = extract("```python quickstart\nraise SystemExit(3)\n```\n")
-    work = Path(tempfile.mkdtemp(prefix="velo-quickstart-selftest-"))
+    work = Path(tempfile.mkdtemp(prefix="velody-quickstart-selftest-"))
     try:
         (work / "q.py").write_text(join(broken, "python"), encoding="utf-8")
         failed = False
@@ -205,9 +205,9 @@ def main() -> int:
     )
     ap.add_argument("--wheel", help="the built abi3 wheel (python page)")
     ap.add_argument("--tgz", help="the packed Node tarball (node page)")
-    ap.add_argument("--velo-mcp", help="a built velo-mcp binary (mcp page)")
+    ap.add_argument("--velody-mcp", help="a built velody-mcp binary (mcp page)")
     ap.add_argument("--checkout", type=Path, default=ROOT,
-                    help="velo checkout the rust page takes velo-core from (default: this one)")
+                    help="velody checkout the rust page takes velody-core from (default: this one)")
     ap.add_argument("--page", action="append", choices=sorted(PAGES),
                     help="run only this page; repeat for several (default: all)")
     ap.add_argument("--python", default=sys.executable, help="interpreter (default: this one)")

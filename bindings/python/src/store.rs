@@ -7,19 +7,19 @@
 
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
-use velo_core::commands::compact::{self, Protected};
-use velo_core::commands::fsck::{self, Cruft};
-use velo_core::commands::gc::{self, AutoVacuum, Vacuum};
-use velo_core::commands::repack;
-use velo_core::commands::retention::{self, Policy, Tier};
-use velo_core::commands::tag;
-use velo_core::{SnapshotId, TagName};
+use velody_core::commands::compact::{self, Protected};
+use velody_core::commands::fsck::{self, Cruft};
+use velody_core::commands::gc::{self, AutoVacuum, Vacuum};
+use velody_core::commands::repack;
+use velody_core::commands::retention::{self, Policy, Tier};
+use velody_core::commands::tag;
+use velody_core::{SnapshotId, TagName};
 
 use crate::errors::to_py;
 use crate::repo::{branch_name, snapshot_id, Repo};
 
 /// A tag and what it points at.
-#[pyclass(frozen, get_all, module = "velo")]
+#[pyclass(frozen, get_all, module = "velody")]
 pub struct Tag {
     name: String,
     snapshot: String,
@@ -225,7 +225,7 @@ impl Repo {
         let name: TagName = name.parse().map_err(to_py)?;
         let repo = self.core()?;
         let at = at
-            .map(|spec| velo_core::commands::resolve_snapshot_id(&repo, spec))
+            .map(|spec| velody_core::commands::resolve_snapshot_id(&repo, spec))
             .transpose()
             .map_err(to_py)?;
         let guard = repo.write().map_err(to_py)?;

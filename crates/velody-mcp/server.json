@@ -1,0 +1,13 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.LucasVascovici/velody-mcp",
+  "title": "velody",
+  "description": "Checkpoint layer for agents: save, restore, diff and inspect a velody repository over MCP.",
+  "version": "7.0.0",
+  "websiteUrl": "https://github.com/LucasVascovici/velody/releases/latest",
+  "repository": {
+    "url": "https://github.com/LucasVascovici/velody",
+    "source": "github",
+    "subfolder": "crates/velody-mcp"
+  }
+}

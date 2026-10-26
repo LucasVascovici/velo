@@ -1,0 +1,57 @@
+name: setup-velody
+
+on:
+  pull_request:
+    paths: ["setup-velody/**", ".github/workflows/setup-velody.yml"]
+  # Branches only: a tag push races the release workflow and found no asset.
+  # release.yml calls this after `publish`, which runs the `latest` check.
+  push:
+    branches: ["**"]
+    paths: ["setup-velody/**", ".github/workflows/setup-velody.yml"]
+
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  pinned:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - id: velody
+        uses: ./setup-velody
+        with:
+          version: 6.1.0
+      - name: Check the installed version and run velody init
+        shell: bash
+        env:
+          REPORTED: ${{ steps.velody.outputs.version }}
+        run: |
+          velody --version | grep -F 6.1.0
+          test "${REPORTED}" = "6.1.0"
+          d=$(mktemp -d)
+          cd "$d"
+          velody init
+  latest:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./setup-velody
+        with:
+          version: latest
+      - name: Run velody init
+        shell: bash
+        run: |
+          velody --version
+          d=$(mktemp -d)
+          cd "$d"
+          velody init

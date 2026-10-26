@@ -1,15 +1,15 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>velo-wasm reload test</title>
+<title>velody-wasm reload test</title>
 <script type="module">
   // The page only relays messages: the repository lives in a dedicated
   // worker, the only place OPFS synchronous access handles exist.
   const worker = new Worker('./worker.js', { type: 'module' });
-  window.veloCall = (message) =>
+  window.velodyCall = (message) =>
     new Promise((resolve, reject) => {
       worker.onmessage = (e) => resolve(e.data);
       worker.onerror = (e) => reject(new Error(e.message));
       worker.postMessage(message);
     });
-  window.veloReady = true;
+  window.velodyReady = true;
 </script>

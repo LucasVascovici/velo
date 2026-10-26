@@ -1,4 +1,4 @@
-# Releasing velo
+# Releasing Velody
 
 For maintainers. **Nothing publishes automatically.** Pushing a tag builds and
 attaches release assets on GitHub; every registry, tap, bucket, image and
@@ -14,18 +14,18 @@ Open the next version first, then release it.
    `bindings/python/Cargo.lock` and `bindings/wasm/Cargo.lock`
    (`cargo update -w`, or `cargo build`, in each directory).
 3. Align the binding versions: `bindings/node/package.json` and
-   `crates/velo-mcp/server.json` carry the same version. The Python wheel takes
+   `crates/velody-mcp/server.json` carry the same version. The Python wheel takes
    its version from Cargo.
 4. Move the semver baseline: `baseline-rev` in the `semver` job of
    `.github/workflows/ci.yml` must name the newest released tag.
 5. Check the dry runs are green: the `package` job in `ci.yml`
    (`cargo package --workspace`) and `.github/workflows/publish-dry-run.yml`
-   (`cargo publish --dry-run -p velo-merge`, the PyPI sdist and wheel with
+   (`cargo publish --dry-run -p velody-merge`, the PyPI sdist and wheel with
    `twine check`, and `npm publish --dry-run` with an install test).
 6. Tag and push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 
 `release.yml` then produces, on the GitHub release: the CLI archives for each
-platform, the `velo-mcp` archives, the wheels and Node tarballs from
+platform, the `velody-mcp` archives, the wheels and Node tarballs from
 `packages.yml`, the SBOM, and the checksum files (CLI assets only). Verify them
 as described in [INSTALL.md](INSTALL.md).
 
@@ -34,7 +34,7 @@ draft. Only the final `publish` job, which needs `build`, `sbom`,
 `attach-bindings` and `checksums`, sets `draft=false`, so users never see a
 release with assets missing. A release made with `GITHUB_TOKEN` fires no
 `release: published` event, so `release.yml` itself calls `distribution.yml`
-(with the tag) and `setup-velo.yml` after `publish`. `setup-velo.yml` does not
+(with the tag) and `setup-velody.yml` after `publish`. `setup-velody.yml` does not
 run on tag pushes. If a run fails before `publish`, the draft stays; rerun the
 failed jobs (uploads use `--clobber`) or delete the draft and the tag.
 
@@ -58,18 +58,18 @@ Log in once with `cargo login`. Publish in dependency order, waiting for each
 crate to appear in the index before the next (a few seconds to a minute):
 
 ```bash
-cargo publish --locked -p velo-merge     # no workspace dependencies
-cargo publish --locked -p velo-core      # needs velo-merge
-cargo publish --locked -p velo-tui       # needs velo-core
-cargo publish --locked -p velo-testkit   # needs velo-core
-cargo publish --locked -p velo-cli       # needs velo-core and velo-merge
+cargo publish --locked -p velody-merge     # no workspace dependencies
+cargo publish --locked -p velody-core      # needs velody-merge
+cargo publish --locked -p velody-tui       # needs velody-core
+cargo publish --locked -p velody-testkit   # needs velody-core
+cargo publish --locked -p velody-cli       # needs velody-core and velody-merge
 ```
 
-`velo-ffi` and `velo-mcp` have `publish = false` and are not published.
+`velody-ffi` and `velody-mcp` have `publish = false` and are not published.
 
 ### PyPI
 
-Package `velo-core`, from `bindings/python`. Either a token:
+Package `velody-core`, from `bindings/python`. Either a token:
 
 ```bash
 cd bindings/python
@@ -83,7 +83,7 @@ attached to the release with `twine upload`.
 
 ### npm
 
-Package `velo-core`, from `bindings/node`. `package.json` has `"private": true`
+Package `velody-core`, from `bindings/node`. `package.json` has `"private": true`
 as a guard; lift it for the publish (`npm pkg set private=false`, and do not
 commit that). The package must contain the native `.node` file, so build it
 first:
@@ -101,7 +101,7 @@ Generated from the published release by `packaging/generate_manifests.py`; see
 
 ```bash
 mkdir assets
-gh release download vX.Y.Z --dir assets --pattern 'velo-aarch64-*' --pattern 'velo-x86_64-*'
+gh release download vX.Y.Z --dir assets --pattern 'velody-aarch64-*' --pattern 'velody-x86_64-*'
 python3 packaging/generate_manifests.py --tag vX.Y.Z --assets assets --out manifests
 ```
 
@@ -118,20 +118,20 @@ followed by the tag and push loop in that file.
 
 ### MCP directory
 
-The entry is `crates/velo-mcp/server.json`. Once its version matches the
+The entry is `crates/velody-mcp/server.json`. Once its version matches the
 release, submit it with the MCP registry publisher:
 
 ```bash
-cd crates/velo-mcp
+cd crates/velody-mcp
 mcp-publisher login github && mcp-publisher publish
 ```
 
 ### GitHub Action
 
-`setup-velo` is used straight from the tag
-(`uses: LucasVascovici/velo/setup-velo@vX.Y.Z`), so the tag is the publish.
+`setup-velody` is used straight from the tag
+(`uses: LucasVascovici/velody/setup-velody@vX.Y.Z`), so the tag is the publish.
 Update the version in the examples of
-[setup-velo/README.md](../setup-velo/README.md).
+[setup-velody/README.md](../setup-velody/README.md).
 
 ### Docs site
 

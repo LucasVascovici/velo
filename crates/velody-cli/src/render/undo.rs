@@ -1,0 +1,43 @@
+//! Render undo and redo outcomes for the terminal.
+//!
+//! Both used to name the snapshot twice — core printed a "Removing…" line and
+//! returned a "removed" message for the CLI to print. With one place owning the
+//! output, once is enough.
+
+use console::style;
+use velody_core::commands::{redo, undo};
+
+pub fn print(outcome: &undo::Outcome, tracking: &[(String, String)]) {
+    println!(
+        "{} Removed snapshot {} — \"{}\"",
+        style("✔").green().bold(),
+        style(super::id::short(&outcome.snapshot)).yellow(),
+        style(&outcome.message).dim()
+    );
+    match &outcome.now_at {
+        Some(now_at) => println!(
+            "  Working files rewound to {}",
+            style(super::id::short(now_at)).yellow()
+        ),
+        None => println!(
+            "  {} That was the first snapshot, so the working tree is now empty.",
+            style("!").yellow()
+        ),
+    }
+    for (remote, branch) in tracking {
+        println!(
+            "  {remote}/{branch} still has it: the next {} brings it back as remotes/{remote}/{branch}",
+            style("velody fetch").cyan()
+        );
+    }
+    println!("  Bring it back with {}", style("velody redo").cyan());
+}
+
+pub fn print_redo(outcome: &redo::Outcome) {
+    println!(
+        "{} Restored snapshot {} — \"{}\"",
+        style("✔").green().bold(),
+        style(super::id::short(&outcome.snapshot)).yellow(),
+        style(&outcome.message).dim()
+    );
+}

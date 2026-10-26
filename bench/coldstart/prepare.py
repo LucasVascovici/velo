@@ -30,7 +30,7 @@ import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_REPO = os.path.abspath(os.path.join(HERE, "..", ".."))
-GH_REPO = "LucasVascovici/velo"
+GH_REPO = "LucasVascovici/velody"
 
 # Documents handed over per wedge, besides README.md and docs/LIBRARY.md (the
 # mapping table in README.md). The MCP wedge gets no cookbook.
@@ -46,7 +46,7 @@ CARD = {
     "rust": "rust-document-editor.md",
     "mcp": "mcp-client.md",
 }
-TERMS = ["save_changes", "velo report", "velo sync"]
+TERMS = ["save_changes", "velody report", "velody sync"]
 
 
 def inside_git_tree(path):
@@ -213,9 +213,9 @@ def main(argv=None):
     tgt, osname = target()
     if a.wedge == "python":
         wheel_pat = {
-            "linux": "velo_core-%s-*manylinux*%s*.whl" % (ver, tgt.split("-")[0]),
-            "macos": "velo_core-%s-*macosx*%s.whl" % (ver, "arm64" if tgt.startswith("aarch64") else "x86_64"),
-            "windows": "velo_core-%s-*win_amd64.whl" % ver,
+            "linux": "velody_core-%s-*manylinux*%s*.whl" % (ver, tgt.split("-")[0]),
+            "macos": "velody_core-%s-*macosx*%s.whl" % (ver, "arm64" if tgt.startswith("aarch64") else "x86_64"),
+            "windows": "velody_core-%s-*win_amd64.whl" % ver,
         }[osname]
         download(a.tag, assets, ["SHA256SUMS-bindings.txt", wheel_pat])
         wheel = pick(assets, wheel_pat)
@@ -225,7 +225,7 @@ def main(argv=None):
         py = os.path.join(venv, "Scripts" if os.name == "nt" else "bin", "python")
         run([py, "-m", "pip", "install", "--quiet", os.path.join(assets, wheel)])
     elif a.wedge == "node":
-        tgz_pat = "velo-core-%s-%s.tgz" % (ver, osname)
+        tgz_pat = "velody-core-%s-%s.tgz" % (ver, osname)
         download(a.tag, assets, ["SHA256SUMS-bindings.txt", tgz_pat])
         verify(assets, [pick(assets, tgz_pat)])
         npm = "npm.cmd" if os.name == "nt" else "npm"
@@ -233,7 +233,7 @@ def main(argv=None):
         run([npm, "install", os.path.join(assets, tgz_pat)], cwd=work)
     elif a.wedge == "mcp":
         ext = "zip" if osname == "windows" else "tar.gz"
-        pats = ["velo-%s.%s" % (tgt, ext), "velo-mcp-%s.%s" % (tgt, ext)]
+        pats = ["velody-%s.%s" % (tgt, ext), "velody-mcp-%s.%s" % (tgt, ext)]
         download(a.tag, assets, ["SHA256SUMS.txt"] + pats)
         verify(assets, pats)
         for p in pats:

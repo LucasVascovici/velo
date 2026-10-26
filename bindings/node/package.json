@@ -1,8 +1,8 @@
 {
-  "name": "velo-core",
-  "version": "6.2.3",
+  "name": "velody-core",
+  "version": "7.0.0",
   "private": true,
-  "description": "Node.js binding for velo-core",
+  "description": "Node.js binding for velody-core",
   "main": "index.js",
   "types": "index.d.ts",
   "files": [
@@ -11,7 +11,7 @@
     "*.node"
   ],
   "napi": {
-    "binaryName": "velo"
+    "binaryName": "velody"
   },
   "engines": {
     "node": ">= 18"

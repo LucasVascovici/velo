@@ -41,13 +41,13 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Run tests
-        # `--workspace` is not optional: `default-members` is velo-cli, so a bare
+        # `--workspace` is not optional: `default-members` is velody-cli, so a bare
         # `cargo test` runs only that crate's 19 integration tests and silently
-        # skips velo-core's ~300 unit tests.
+        # skips velody-core's ~300 unit tests.
         run: cargo test --workspace --locked
 
       - name: Stage timer tests
-        run: cargo test -p velo-core --features timing --locked timing_laps
+        run: cargo test -p velody-core --features timing --locked timing_laps
 
   # ── Clippy (blocking) ──────────────────────────────────────────────────────
   # Clippy catches real defects (this project has had genuine bugs surfaced by
@@ -128,7 +128,7 @@ jobs:
   # so the checks that would reject it belong on every push rather than on the
   # day someone runs the command.
   #
-  # `--workspace` rather than a crate at a time: velo-core depends on velo-merge
+  # `--workspace` rather than a crate at a time: velody-core depends on velody-merge
   # by path, and packaging it alone sends cargo to the registry for a version
   # that is not there yet.  Packaging the workspace resolves the siblings
   # against each other, which is also the order a release goes out in.
@@ -145,8 +145,8 @@ jobs:
       # target/ is deliberately not cached here. The verify builds compile the
       # workspace crates as registry packages, whose fingerprint is name and
       # version only, and every crate shares one version: a restored artefact
-      # from an earlier commit is reused as if it were current, so velo-cli was
-      # verified against a velo-core that predated what it calls.
+      # from an earlier commit is reused as if it were current, so velody-cli was
+      # verified against a velody-core that predated what it calls.
       - name: Cache Cargo artefacts
         uses: actions/cache@v4
         with:
@@ -158,7 +158,7 @@ jobs:
           restore-keys: package-cargo-
 
       - name: Package every published crate
-        run: cargo package --workspace --locked --exclude prompt-registry --exclude velo-ffi --exclude velo-mcp
+        run: cargo package --workspace --locked --exclude prompt-registry --exclude velody-ffi --exclude velody-mcp
 
   # ── Formatting (advisory) ──────────────────────────────────────────────────
   # Style only — never blocks a legitimate fix from landing.  Fix with:
@@ -180,7 +180,7 @@ jobs:
         run: cargo fmt --all -- --check
 
   # ── Binding parity (blocking) ──────────────────────────────────────────────
-  # Every public velo-core entry point is bound or exempted with a reason.
+  # Every public velody-core entry point is bound or exempted with a reason.
   parity:
     name: Binding parity
     runs-on: ubuntu-latest
@@ -196,7 +196,7 @@ jobs:
         run: python bindings/parity/check.py
 
   # ── Semver compatibility (blocking) ────────────────────────────────────────
-  # A breaking change to velo-core or velo-merge cannot land in a minor
+  # A breaking change to velody-core or velody-merge cannot land in a minor
   # release by accident. The baseline is the previous released tag and MUST be
   # bumped to the newest released tag at each release: otherwise the check
   # compares against an ever-older API and stops catching breaks introduced
@@ -204,6 +204,9 @@ jobs:
   semver:
     name: Semver check
     runs-on: ubuntu-latest
+    # 7.0.0 renamed the crates, so v6.2.2 holds no velody-core to compare with. Advisory
+    # until the baseline below moves to v7.0.0 right after that release.
+    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -212,7 +215,7 @@ jobs:
 
       - uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
-          package: velo-core,velo-merge
+          package: velody-core,velody-merge
           baseline-rev: v6.2.2
           feature-group: all-features
 
@@ -281,13 +284,13 @@ jobs:
       - name: Performance guard
         shell: bash
         env:
-          VELO_PERF_AGENT_STEPS: ${{ matrix.os == 'windows-latest' && '100' || '' }}
+          VELODY_PERF_AGENT_STEPS: ${{ matrix.os == 'windows-latest' && '100' || '' }}
           # 100,000 files of setup is too slow on the Windows runner; its baseline
           # must be taken with the same value (bench/perf/README.md).
-          VELO_PERF_SAVE_TREE_FILES: ${{ matrix.os == 'windows-latest' && '10000' || '' }}
+          VELODY_PERF_SAVE_TREE_FILES: ${{ matrix.os == 'windows-latest' && '10000' || '' }}
         run: |
           set -o pipefail
-          cargo test -p velo-core --release --locked perf_guard -- --ignored --nocapture --test-threads=1 2>&1 | tee perf.log
+          cargo test -p velody-core --release --locked perf_guard -- --ignored --nocapture --test-threads=1 2>&1 | tee perf.log
 
       - name: Extract measurements
         if: always()
@@ -303,7 +306,7 @@ jobs:
           if-no-files-found: warn
 
   # Crash injection: kill save, restore, switch, undo and redo at every named
-  # durable step and check what is left (crates/velo-core/tests/crash.rs).
+  # durable step and check what is left (crates/velody-core/tests/crash.rs).
   crash:
     name: Crash · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -332,10 +335,10 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Crash tests
-        run: cargo test -p velo-core --features failpoints --test crash --locked
+        run: cargo test -p velody-core --features failpoints --test crash --locked
 
   # Golden corpus: every repository and bundle written by a released build
-  # opens, migrates or is refused as recorded (crates/velo-core/tests/corpus.rs).
+  # opens, migrates or is refused as recorded (crates/velody-core/tests/corpus.rs).
   corpus:
     name: Corpus · ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -362,12 +365,12 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Corpus tests
-        run: cargo test -p velo-core --test corpus --locked
+        run: cargo test -p velody-core --test corpus --locked
 
       # The real writer replays the spec-written v4 fixture; the keyframe
       # interval setter it needs is behind the failpoints feature.
       - name: Corpus tests (real writer against the spec-written fixture)
-        run: cargo test -p velo-core --features failpoints --test corpus --locked
+        run: cargo test -p velody-core --features failpoints --test corpus --locked
 
   # An old release refuses a v4 repository, and the bundle way back works
   # (tests/corpus/old_release_check.py).
@@ -402,14 +405,14 @@ jobs:
             tag=v5.2.0
           fi
           echo "old release: $tag"
-          git worktree add "$RUNNER_TEMP/old-velo" "$tag"
-          cargo build --release -p velo-cli --manifest-path "$RUNNER_TEMP/old-velo/Cargo.toml" --target-dir "$RUNNER_TEMP/old-target"
+          git worktree add "$RUNNER_TEMP/old-velody" "$tag"
+          cargo build --release -p velo-cli --manifest-path "$RUNNER_TEMP/old-velody/Cargo.toml" --target-dir "$RUNNER_TEMP/old-target"
 
       - name: Build the current release binary
-        run: cargo build --release -p velo-cli --locked
+        run: cargo build --release -p velody-cli --locked
 
       - name: Old release refuses v4, and the bundle way back works
-        run: python3 tests/corpus/old_release_check.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velo
+        run: python3 tests/corpus/old_release_check.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velody
 
       - name: Mixed versions, HTTP and path remotes in both directions
-        run: python3 tests/compat/mixed_versions.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velo
+        run: python3 tests/compat/mixed_versions.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velody

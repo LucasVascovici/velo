@@ -8,10 +8,10 @@ use std::sync::{Mutex, MutexGuard, TryLockError};
 use pyo3::exceptions::{PyRuntimeError, PyTypeError};
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict, PyList, PyString};
-use velo_core::tree::{
+use velody_core::tree::{
     Change as CoreChange, Content, FileKind, SaveChanges, SaveTree, TreeEntry as CoreEntry,
 };
-use velo_core::{Author as CoreAuthor, BranchName, ObjectHash, SnapshotId, SnapshotMeta};
+use velody_core::{Author as CoreAuthor, BranchName, ObjectHash, SnapshotId, SnapshotMeta};
 
 use crate::callbacks::{Hooks, Rule};
 use crate::errors::{to_py, ReentrantCall, REENTRANT};
@@ -31,7 +31,7 @@ fn parse_kind(kind: &str) -> PyResult<FileKind> {
         "regular" => Ok(FileKind::Regular),
         "executable" => Ok(FileKind::Executable),
         "symlink" => Ok(FileKind::Symlink),
-        other => Err(to_py(velo_core::Error::invalid(format!(
+        other => Err(to_py(velody_core::Error::invalid(format!(
             "'{}' is not a file kind; expected regular, executable or symlink.",
             other
         )))),
@@ -47,7 +47,7 @@ pub(crate) fn branch_name(text: &str) -> PyResult<BranchName> {
 }
 
 /// One file of a tree to save.
-#[pyclass(frozen, skip_from_py_object, module = "velo")]
+#[pyclass(frozen, skip_from_py_object, module = "velody")]
 #[derive(Clone)]
 pub struct TreeEntry {
     inner: CoreEntry,
@@ -97,7 +97,7 @@ impl TreeEntry {
 }
 
 /// A file as recorded in a saved tree.
-#[pyclass(frozen, get_all, module = "velo")]
+#[pyclass(frozen, get_all, module = "velody")]
 pub struct TreeFile {
     path: String,
     object: String,
@@ -112,7 +112,7 @@ impl TreeFile {
 }
 
 /// Who made a snapshot.
-#[pyclass(frozen, module = "velo")]
+#[pyclass(frozen, module = "velody")]
 pub struct Author {
     pub(crate) inner: CoreAuthor,
 }
@@ -164,7 +164,7 @@ pub(crate) fn build_meta(
 }
 
 /// A snapshot's header.
-#[pyclass(frozen, get_all, module = "velo")]
+#[pyclass(frozen, get_all, module = "velody")]
 pub struct Entry {
     id: String,
     message: String,
@@ -193,8 +193,8 @@ impl Entry {
     }
 }
 
-impl From<velo_core::commands::history::Entry> for Entry {
-    fn from(e: velo_core::commands::history::Entry) -> Self {
+impl From<velody_core::commands::history::Entry> for Entry {
+    fn from(e: velody_core::commands::history::Entry) -> Self {
         Entry {
             id: e.hash.as_str().to_string(),
             message: e.message,
@@ -248,7 +248,7 @@ fn collect_entries(entries: &Bound<'_, PyAny>) -> PyResult<Vec<CoreEntry>> {
 }
 
 /// One change to apply to a parent's tree with `Repo.save_changes`.
-#[pyclass(frozen, skip_from_py_object, module = "velo")]
+#[pyclass(frozen, skip_from_py_object, module = "velody")]
 #[derive(Clone)]
 pub struct Change {
     inner: CoreChange,
@@ -314,7 +314,7 @@ impl Change {
 
 /// The result of `Repo.save_changes`: the new snapshot and the object of each
 /// file the changes put.
-#[pyclass(frozen, get_all, module = "velo")]
+#[pyclass(frozen, get_all, module = "velody")]
 pub struct Saved {
     snapshot: String,
     written: BTreeMap<String, String>,
@@ -355,7 +355,7 @@ fn collect_changes(changes: &Bound<'_, PyAny>) -> PyResult<Vec<CoreChange>> {
     }
 }
 
-/// An open velo repository, bound to the thread that created it.
+/// An open velody repository, bound to the thread that created it.
 ///
 /// PyO3's own `unsendable` marker enforces this with a Rust panic, which
 /// reaches Python as `PanicException` (a `BaseException`), not a catchable
@@ -363,10 +363,10 @@ fn collect_changes(changes: &Bound<'_, PyAny>) -> PyResult<Vec<CoreChange>> {
 /// recorded and every call checks it first. The `Mutex` is not for contention;
 /// it is what makes the class `Sync` without `unsafe`, since the check above is
 /// what actually keeps other threads out.
-#[pyclass(module = "velo")]
+#[pyclass(module = "velody")]
 pub struct Repo {
     owner: std::thread::ThreadId,
-    inner: Mutex<velo_core::Repo>,
+    inner: Mutex<velody_core::Repo>,
     pub(crate) hooks: Hooks,
     /// Where the repository was opened, to reopen it with other merge drivers.
     pub(crate) root: PathBuf,
@@ -376,19 +376,19 @@ pub struct Repo {
 /// delivers queued change events, so an `on_event` callback never runs inside a
 /// core call.
 pub(crate) struct CoreGuard<'a> {
-    guard: Option<MutexGuard<'a, velo_core::Repo>>,
+    guard: Option<MutexGuard<'a, velody_core::Repo>>,
     hooks: &'a Hooks,
 }
 
 impl Deref for CoreGuard<'_> {
-    type Target = velo_core::Repo;
-    fn deref(&self) -> &velo_core::Repo {
+    type Target = velody_core::Repo;
+    fn deref(&self) -> &velody_core::Repo {
         self.guard.as_deref().expect("guard is held until drop")
     }
 }
 
 impl DerefMut for CoreGuard<'_> {
-    fn deref_mut(&mut self) -> &mut velo_core::Repo {
+    fn deref_mut(&mut self) -> &mut velody_core::Repo {
         self.guard.as_deref_mut().expect("guard is held until drop")
     }
 }
@@ -401,7 +401,7 @@ impl Drop for CoreGuard<'_> {
 }
 
 impl Repo {
-    fn wrap(repo: velo_core::Repo, root: &Path) -> Self {
+    fn wrap(repo: velody_core::Repo, root: &Path) -> Self {
         let hooks = Hooks::new();
         Repo {
             owner: std::thread::current().id(),
@@ -414,7 +414,7 @@ impl Repo {
     pub(crate) fn check_owner(&self) -> PyResult<()> {
         if std::thread::current().id() != self.owner {
             return Err(PyRuntimeError::new_err(
-                "velo.Repo is unsendable: it can only be used on the thread that created it",
+                "velody.Repo is unsendable: it can only be used on the thread that created it",
             ));
         }
         Ok(())
@@ -434,7 +434,7 @@ impl Repo {
             }),
             Err(TryLockError::WouldBlock) => Err(PyErr::new::<ReentrantCall, _>(REENTRANT)),
             Err(TryLockError::Poisoned(_)) => Err(PyRuntimeError::new_err(
-                "velo.Repo is poisoned by an earlier panic",
+                "velody.Repo is poisoned by an earlier panic",
             )),
         }
     }
@@ -444,13 +444,13 @@ impl Repo {
     fn rebuild(&self, py: Python<'_>, add: Option<(String, Rule)>, clear: bool) -> PyResult<()> {
         let mut guard = self.core()?;
         let (drivers, list) = if clear {
-            (velo_core::Drivers::new(), Vec::new())
+            (velody_core::Drivers::new(), Vec::new())
         } else {
             self.hooks.drivers_with(py, add).map_err(to_py)?
         };
         // The builders consume the handle, so the new one is opened from the
         // same root with the same listener and the old one is dropped.
-        let fresh = velo_core::Repo::open_and_migrate(&self.root)
+        let fresh = velody_core::Repo::open_and_migrate(&self.root)
             .map_err(to_py)?
             .listening(self.hooks.listener())
             .merging(drivers);
@@ -465,7 +465,7 @@ impl Repo {
     #[staticmethod]
     fn init(path: PathBuf) -> PyResult<Self> {
         Ok(Repo::wrap(
-            velo_core::Repo::init(&path).map_err(to_py)?,
+            velody_core::Repo::init(&path).map_err(to_py)?,
             &path,
         ))
     }
@@ -473,7 +473,7 @@ impl Repo {
     #[staticmethod]
     fn open(path: PathBuf) -> PyResult<Self> {
         Ok(Repo::wrap(
-            velo_core::Repo::open_and_migrate(Path::new(&path)).map_err(to_py)?,
+            velody_core::Repo::open_and_migrate(Path::new(&path)).map_err(to_py)?,
             &path,
         ))
     }
@@ -631,7 +631,7 @@ impl Repo {
         ignore: Option<Vec<String>>,
     ) -> PyResult<usize> {
         let id = snapshot_id(id)?;
-        let mut scope = velo_core::Scope::new();
+        let mut scope = velody_core::Scope::new();
         for p in only.iter().flatten() {
             scope = scope.only(p).map_err(to_py)?;
         }
@@ -641,11 +641,11 @@ impl Repo {
         self.check_owner()?;
         let done = py.detach(|| -> PyResult<_> {
             let repo = self.core()?;
-            Ok(velo_core::commands::restore::materialize(
+            Ok(velody_core::commands::restore::materialize(
                 &repo,
                 &id,
                 &dest,
-                velo_core::commands::restore::MaterializeOptions::default().scope(&scope),
+                velody_core::commands::restore::MaterializeOptions::default().scope(&scope),
             ))
         })?;
         Ok(done.map_err(to_py)?.files)
@@ -680,14 +680,14 @@ impl Repo {
     }
 
     fn resolve(&self, spec: &str) -> PyResult<String> {
-        let id = velo_core::commands::resolve_snapshot_id(&*self.core()?, spec).map_err(to_py)?;
+        let id = velody_core::commands::resolve_snapshot_id(&*self.core()?, spec).map_err(to_py)?;
         Ok(id.as_str().to_string())
     }
 
     /// Whether `id` is a snapshot this repository once held and moved to the
     /// trash (an undo, a reset).
     fn is_trashed(&self, id: &str) -> PyResult<bool> {
-        velo_core::commands::is_trashed(&*self.core()?, id).map_err(to_py)
+        velody_core::commands::is_trashed(&*self.core()?, id).map_err(to_py)
     }
 
     fn branch_tip(&self, branch: &str) -> PyResult<Option<String>> {
@@ -733,9 +733,9 @@ impl Repo {
         let filters = meta_filters(&meta)?;
         self.check_owner()?;
         let history = py.detach(|| -> PyResult<_> {
-            Ok(velo_core::commands::history::run(
+            Ok(velody_core::commands::history::run(
                 &*self.core()?,
-                velo_core::commands::history::Options {
+                velody_core::commands::history::Options {
                     all,
                     branch: branch.as_ref(),
                     from: from.as_ref(),
@@ -773,7 +773,7 @@ impl Repo {
         let range = match lines {
             Some((first, last)) => {
                 if first == 0 || last < first {
-                    return Err(to_py(velo_core::Error::invalid(
+                    return Err(to_py(velody_core::Error::invalid(
                         "lines must be (first, last), 1-based and inclusive, with first <= last.",
                     )));
                 }
@@ -783,10 +783,10 @@ impl Repo {
         };
         self.check_owner()?;
         let blame = py.detach(|| -> PyResult<_> {
-            Ok(velo_core::commands::blame::run(
+            Ok(velody_core::commands::blame::run(
                 &*self.core()?,
                 Path::new(path),
-                velo_core::commands::blame::Options {
+                velody_core::commands::blame::Options {
                     at: at.as_ref(),
                     lines: range,
                     ..Default::default()
@@ -802,7 +802,7 @@ impl Repo {
         let (a, b) = (snapshot_id(a)?, snapshot_id(b)?);
         self.check_owner()?;
         let base = py.detach(|| -> PyResult<_> {
-            Ok(velo_core::commands::merge::merge_base(
+            Ok(velody_core::commands::merge::merge_base(
                 &*self.core()?,
                 &a,
                 &b,
@@ -823,7 +823,7 @@ impl Repo {
         self.hooks.take_error();
         let plan = py.detach(|| -> PyResult<_> {
             let repo = self.core()?;
-            Ok(velo_core::commands::merge::plan(&repo, &ours, &theirs))
+            Ok(velody_core::commands::merge::plan(&repo, &ours, &theirs))
         })?;
         if let Some(e) = self.hooks.take_error() {
             return Err(e);
@@ -867,7 +867,7 @@ impl Repo {
         if !resolutions.is_empty() && self.hooks.has_custom_driver() {
             py.detach(|| -> PyResult<_> {
                 let repo = self.core()?;
-                let _ = velo_core::commands::merge::plan(&repo, &ours, &theirs);
+                let _ = velody_core::commands::merge::plan(&repo, &ours, &theirs);
                 Ok(())
             })?;
             if let Some(e) = self.hooks.take_error() {
@@ -880,9 +880,9 @@ impl Repo {
                 Ok(g) => g,
                 Err(e) => return Ok(Err(e)),
             };
-            Ok(velo_core::commands::merge::commit(
+            Ok(velody_core::commands::merge::commit(
                 &guard,
-                velo_core::commands::merge::MergeCommit {
+                velody_core::commands::merge::MergeCommit {
                     branch: &branch,
                     ours: &ours,
                     theirs: &theirs,
@@ -939,7 +939,7 @@ impl Repo {
     }
 
     fn branches(&self) -> PyResult<Vec<Branch>> {
-        let list = velo_core::commands::branches::list(&*self.core()?).map_err(to_py)?;
+        let list = velody_core::commands::branches::list(&*self.core()?).map_err(to_py)?;
         Ok(list.into_iter().map(Branch::from).collect())
     }
 
@@ -950,7 +950,7 @@ impl Repo {
         let at = at.map(snapshot_id).transpose()?;
         let repo = self.core()?;
         let guard = repo.write().map_err(to_py)?;
-        velo_core::commands::branches::create(&guard, &name, at.as_ref()).map_err(to_py)
+        velody_core::commands::branches::create(&guard, &name, at.as_ref()).map_err(to_py)
     }
 
     /// Point a branch that has no snapshots of its own at `to`. A branch that has
@@ -961,7 +961,7 @@ impl Repo {
         let to = snapshot_id(to)?;
         let repo = self.core()?;
         let guard = repo.write().map_err(to_py)?;
-        velo_core::commands::branches::set_tip(&guard, &name, &to).map_err(to_py)
+        velody_core::commands::branches::set_tip(&guard, &name, &to).map_err(to_py)
     }
 }
 

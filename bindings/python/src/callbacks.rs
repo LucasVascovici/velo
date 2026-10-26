@@ -22,9 +22,9 @@ use std::sync::{Arc, Mutex};
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
-use velo_core::events::{Event, Listener, Ref};
-use velo_core::merge::{MergeDriver, MergeResult};
-use velo_core::{Drivers, Error, Result};
+use velody_core::events::{Event, Listener, Ref};
+use velody_core::merge::{MergeDriver, MergeResult};
+use velody_core::{Drivers, Error, Result};
 
 use crate::errors::to_py;
 
@@ -205,9 +205,9 @@ impl Hooks {
         let mut drivers = Drivers::new();
         for (pattern, rule) in &list {
             drivers = match rule {
-                Rule::Builtin("json") => drivers.with(pattern, velo_core::merge::JsonDriver)?,
-                Rule::Builtin("yaml") => drivers.with(pattern, velo_core::merge::YamlDriver)?,
-                Rule::Builtin(_) => drivers.with(pattern, velo_core::merge::TomlDriver)?,
+                Rule::Builtin("json") => drivers.with(pattern, velody_core::merge::JsonDriver)?,
+                Rule::Builtin("yaml") => drivers.with(pattern, velody_core::merge::YamlDriver)?,
+                Rule::Builtin(_) => drivers.with(pattern, velody_core::merge::TomlDriver)?,
                 Rule::Custom(f) => drivers.with(
                     pattern,
                     PyDriver {
@@ -260,7 +260,7 @@ impl Hooks {
 
 fn event_dict<'py>(py: Python<'py>, event: &Event) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
-    let id = |s: &velo_core::SnapshotId| s.as_str().to_string();
+    let id = |s: &velody_core::SnapshotId| s.as_str().to_string();
     match event {
         Event::Saved {
             snapshot,

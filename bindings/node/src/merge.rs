@@ -7,8 +7,8 @@ use std::collections::BTreeMap;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use velo_core::commands::branches;
-use velo_core::commands::merge::{self, FileAction, MergeCommit, PlannedChange, Resolution};
+use velody_core::commands::branches;
+use velody_core::commands::merge::{self, FileAction, MergeCommit, PlannedChange, Resolution};
 
 use crate::repo::{
     branch_name, build_author, build_meta, snapshot_id, AuthorInput, Job, Meta, Repo,
@@ -79,7 +79,7 @@ fn action_name(action: FileAction) -> &'static str {
 }
 
 fn plan_info(plan: merge::MergePlan) -> MergePlanInfo {
-    let id = |h: &velo_core::ObjectHash| h.as_str().to_string();
+    let id = |h: &velody_core::ObjectHash| h.as_str().to_string();
     let files = plan
         .files
         .into_iter()

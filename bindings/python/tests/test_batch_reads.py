@@ -1,11 +1,11 @@
 import pytest
-import velo
+import velody
 
 
 def make(tmp_path):
     d = tmp_path / "repo"
     d.mkdir()
-    repo = velo.Repo.init(d)
+    repo = velody.Repo.init(d)
     snap = repo.save_tree(
         branch="main",
         message="base",
@@ -31,7 +31,7 @@ def test_read_files_at_order_and_bytes(tmp_path):
 
 def test_read_files_at_missing_path_errors(tmp_path):
     repo, snap = make(tmp_path)
-    with pytest.raises(velo.VeloError):
+    with pytest.raises(velody.VelodyError):
         repo.read_files_at(snap, ["a.txt", "nope.txt"])
 
 

@@ -1,0 +1,42 @@
+[package]
+name = "velody-cli"
+description = "Command-line interface for Velody — a fast, safe, intuitive version control system."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+rust-version.workspace = true
+readme = "README.md"
+keywords = ["version-control", "vcs", "cli", "snapshot", "history"]
+categories = ["command-line-utilities", "development-tools"]
+
+[[bin]]
+name = "velody"
+path = "src/main.rs"
+
+# The previous name of the command, kept for one release so scripts, ssh servers and
+# habits keep working. Built from the same source.
+[[bin]]
+name = "velo"
+path = "src/main.rs"
+
+[dependencies]
+velody-core = { workspace = true, features = ["bundle", "ssh", "http", "json", "yaml", "toml"] }
+velody-merge.workspace = true
+velody-tui.workspace = true
+
+chrono.workspace = true
+clap.workspace = true
+console.workspace = true
+getrandom.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+tempfile.workspace = true
+# `failpoints` exposes `Repo::set_keyframe_interval`, which the repack test
+# uses to write a repository whose snapshots are all stored whole.
+velody-core = { workspace = true, features = ["failpoints"] }
+velody-testkit.workspace = true

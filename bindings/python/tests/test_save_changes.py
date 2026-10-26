@@ -1,11 +1,11 @@
 import pytest
-import velo
+import velody
 
 
 def make(tmp_path, name):
     d = tmp_path / name
     d.mkdir()
-    return velo.Repo.init(d)
+    return velody.Repo.init(d)
 
 
 def objects(repo, snap):
@@ -21,7 +21,7 @@ def test_dict_form_written_matches_tree(tmp_path):
         branch="main", message="edit", parent=base,
         changes={"a.txt": "ONE", "c.bin": b"\x00\x01", "b.txt": None},
     )
-    assert isinstance(saved, velo.Saved)
+    assert isinstance(saved, velody.Saved)
     assert "Saved" in repr(saved)
     tree = objects(repo, saved.snapshot)
     assert sorted(tree) == ["a.txt", "c.bin"]
@@ -43,10 +43,10 @@ def test_change_list_with_rename_and_delete(tmp_path):
     )
     old_obj = objects(repo, base)["old.txt"]
     changes = [
-        velo.Change.rename("old.txt", "new.txt"),
-        velo.Change.delete("gone.txt"),
-        velo.Change.put("run.sh", "#!/bin/sh\n", kind="executable"),
-        velo.Change.stored("alias.txt", old_obj),
+        velody.Change.rename("old.txt", "new.txt"),
+        velody.Change.delete("gone.txt"),
+        velody.Change.put("run.sh", "#!/bin/sh\n", kind="executable"),
+        velody.Change.stored("alias.txt", old_obj),
     ]
     assert "rename" in repr(changes[0])
     saved = repo.save_changes(
@@ -64,7 +64,7 @@ def test_same_id_as_save_tree(tmp_path):
     one = make(tmp_path, "one")
     two = make(tmp_path, "two")
     kw = dict(branch="main", timestamp_ms=1_700_000_000_000,
-              author=velo.Author("ada"))
+              author=velody.Author("ada"))
     base = one.save_tree(message="base", entries={"a": "1", "b": "2"}, **kw)
     base2 = two.save_tree(message="base", entries={"a": "1", "b": "2"}, **kw)
     assert base == base2
@@ -80,14 +80,14 @@ def test_same_id_as_save_tree(tmp_path):
 def test_delete_absent_is_invalid_input(tmp_path):
     repo = make(tmp_path, "a")
     base = repo.save_tree(branch="main", message="b", entries={"a": "1"})
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.save_changes(
             branch="main", message="m", parent=base, changes={"nope": None}
         )
-    with pytest.raises(velo.InvalidInput):
+    with pytest.raises(velody.InvalidInput):
         repo.save_changes(
             branch="main", message="m", parent=base,
-            changes=[velo.Change.delete("nope")],
+            changes=[velody.Change.delete("nope")],
         )
 
 

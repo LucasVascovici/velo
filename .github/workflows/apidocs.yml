@@ -41,8 +41,8 @@ jobs:
           .venv/bin/python -m pip install maturin pdoc
           .venv/bin/maturin develop --release
           # pdoc reads the docstrings and the signatures in __init__.pyi.
-          .venv/bin/python -m pdoc velo -o ../../site/python
-          grep -q "save_tree" ../../site/python/velo.html
+          .venv/bin/python -m pdoc velody -o ../../site/python
+          grep -q "save_tree" ../../site/python/velody.html
 
       - uses: actions/upload-artifact@v4
         with:

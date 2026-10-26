@@ -1214,8 +1214,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
-name = "velo-core"
-version = "6.2.3"
+name = "velody-core"
+version = "7.0.0"
 dependencies = [
  "blake3",
  "chrono",
@@ -1230,19 +1230,19 @@ dependencies = [
  "regex",
  "rusqlite",
  "similar",
- "velo-merge",
+ "velody-merge",
  "zstd",
 ]
 
 [[package]]
-name = "velo-merge"
-version = "6.2.3"
+name = "velody-merge"
+version = "7.0.0"
 dependencies = [
  "similar",
 ]
 
 [[package]]
-name = "velo-wasm"
+name = "velody-wasm"
 version = "0.1.0"
 dependencies = [
  "js-sys",
@@ -1250,7 +1250,7 @@ dependencies = [
  "serde-wasm-bindgen",
  "sqlite-wasm-rs",
  "sqlite-wasm-vfs",
- "velo-core",
+ "velody-core",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "wasm-bindgen-test",

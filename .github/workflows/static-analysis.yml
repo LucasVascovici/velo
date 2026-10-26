@@ -1,6 +1,6 @@
 name: static-analysis
 
-# Static and dynamic analysis for the unsafe code in velo-ffi and the few other
+# Static and dynamic analysis for the unsafe code in velody-ffi and the few other
 # unsafe sites. Results and dispositions are recorded in docs/REVIEW_KIT.md.
 
 on:
@@ -10,7 +10,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - "crates/velo-ffi/**"
+      - "crates/velody-ffi/**"
       - ".github/workflows/static-analysis.yml"
 
 env:
@@ -18,7 +18,7 @@ env:
 
 jobs:
   # Blocking: every crate root must state its unsafe policy, and only the
-  # documented files outside velo-ffi may contain an unsafe block.
+  # documented files outside velody-ffi may contain an unsafe block.
   unsafe-policy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -28,18 +28,18 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for f in crates/velo-mcp/src/lib.rs crates/velo-mcp/src/main.rs \
-                   crates/velo-merge/src/lib.rs crates/velo-testkit/src/lib.rs \
-                   crates/velo-tui/src/lib.rs; do
+          for f in crates/velody-mcp/src/lib.rs crates/velody-mcp/src/main.rs \
+                   crates/velody-merge/src/lib.rs crates/velody-testkit/src/lib.rs \
+                   crates/velody-tui/src/lib.rs; do
             grep -q 'forbid(unsafe_code)' "$f" || { echo "missing forbid(unsafe_code): $f"; exit 1; }
           done
-          for f in crates/velo-core/src/lib.rs crates/velo-cli/src/main.rs; do
+          for f in crates/velody-core/src/lib.rs crates/velody-cli/src/main.rs; do
             grep -q 'deny(unsafe_code)' "$f" || { echo "missing deny(unsafe_code): $f"; exit 1; }
           done
-          found=$(grep -rlE '^\s*(unsafe\s*\{|unsafe\s+(fn|impl|extern))|=\s*unsafe\s*\{' crates --include='*.rs' | grep -v '^crates/velo-ffi/' | sort)
+          found=$(grep -rlE '^\s*(unsafe\s*\{|unsafe\s+(fn|impl|extern))|=\s*unsafe\s*\{' crates --include='*.rs' | grep -v '^crates/velody-ffi/' | sort)
           echo "$found"
-          expected=$(printf '%s\n' crates/velo-cli/src/lockwait.rs crates/velo-cli/src/main.rs crates/velo-core/src/storage.rs | sort)
-          [ "$found" = "$expected" ] || { echo "unexpected unsafe outside velo-ffi"; exit 1; }
+          expected=$(printf '%s\n' crates/velody-cli/src/lockwait.rs crates/velody-cli/src/main.rs crates/velody-core/src/storage.rs | sort)
+          [ "$found" = "$expected" ] || { echo "unexpected unsafe outside velody-ffi"; exit 1; }
 
   # Blocking: clean at the time it was added.
   clippy-unsafe:
@@ -51,9 +51,9 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - name: Clippy unsafe lints on velo-ffi
+      - name: Clippy unsafe lints on velody-ffi
         run: >
-          cargo clippy -p velo-ffi --locked --
+          cargo clippy -p velody-ffi --locked --
           -D warnings
           -W clippy::undocumented_unsafe_blocks
           -W clippy::multiple_unsafe_ops_per_block
@@ -77,7 +77,7 @@ jobs:
             cargo geiger --forbid-only --manifest-path "$PWD/$m"
           done
 
-  # Miri is not used: velo-ffi's tests call into bundled C SQLite, which Miri
+  # Miri is not used: velody-ffi's tests call into bundled C SQLite, which Miri
   # cannot execute. AddressSanitizer covers the same memory errors natively.
   asan:
     runs-on: ubuntu-latest
@@ -89,10 +89,10 @@ jobs:
         with:
           components: rust-src
       - uses: Swatinem/rust-cache@v2
-      - name: AddressSanitizer on velo-ffi tests
+      - name: AddressSanitizer on velody-ffi tests
         env:
           RUSTFLAGS: -Zsanitizer=address
-        run: cargo +nightly test -p velo-ffi --target x86_64-unknown-linux-gnu
+        run: cargo +nightly test -p velody-ffi --target x86_64-unknown-linux-gnu
 
   careful:
     runs-on: ubuntu-latest
@@ -105,8 +105,8 @@ jobs:
           components: rust-src
       - uses: Swatinem/rust-cache@v2
       - run: cargo install cargo-careful --locked
-      - name: cargo careful on velo-ffi tests
-        run: cargo +nightly careful test -p velo-ffi
+      - name: cargo careful on velody-ffi tests
+        run: cargo +nightly careful test -p velody-ffi
 
   machete:
     runs-on: ubuntu-latest

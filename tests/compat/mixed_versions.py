@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Mixed-version compatibility: a 5.x client with a 6.x peer, and the reverse.
 
-    mixed_versions.py --old <velo 5.x> --new <velo 6.x>
+    mixed_versions.py --old <velody 5.x> --new <velody 6.x>
 
 Four cells, each printed as a PASS or FAIL line:
 
@@ -34,11 +34,11 @@ TOKEN = "mixed-versions-token"
 
 ENV = dict(os.environ)
 ENV.update(
-    VELO_AUTHOR_NAME="Compat",
-    VELO_AUTHOR_EMAIL="compat@example.invalid",
+    VELODY_AUTHOR_NAME="Compat",
+    VELODY_AUTHOR_EMAIL="compat@example.invalid",
     NO_COLOR="1",
 )
-for _k in [k for k in ENV if k.startswith("VELO_TOKEN") or k == "VELO_SERVE_TOKEN"]:
+for _k in [k for k in ENV if k.startswith("VELODY_TOKEN") or k == "VELODY_SERVE_TOKEN"]:
     del ENV[_k]
 
 
@@ -59,7 +59,7 @@ def run(exe, args, cwd, check=True, env=None):
         timeout=120,
     )
     if check and p.returncode != 0:
-        raise Fail(f"`velo {' '.join(args)}` exited {p.returncode} in {cwd}:\n{p.stdout}")
+        raise Fail(f"`velody {' '.join(args)}` exited {p.returncode} in {cwd}:\n{p.stdout}")
     return p
 
 
@@ -117,7 +117,7 @@ def cell_http(client_exe, server_exe, tmp):
     server = tmp / "server"
     make_repo(server_exe, server)
     port = free_port()
-    env = dict(ENV, VELO_SERVE_TOKEN=TOKEN)
+    env = dict(ENV, VELODY_SERVE_TOKEN=TOKEN, VELO_SERVE_TOKEN=TOKEN)
     proc = subprocess.Popen(
         [str(server_exe), "serve-http", str(server), "--listen", f"127.0.0.1:{port}"],
         cwd=str(tmp),
@@ -137,7 +137,7 @@ def cell_http(client_exe, server_exe, tmp):
                 if time.time() > deadline:
                     raise Fail("serve-http did not become ready")
                 time.sleep(0.1)
-        cenv = dict(ENV, VELO_TOKEN=TOKEN)
+        cenv = dict(ENV, VELODY_TOKEN=TOKEN, VELO_TOKEN=TOKEN)
         url = f"http://127.0.0.1:{port}/"
         client = tmp / "client"
         run(client_exe, ["clone", url, str(client)], tmp, env=cenv)
@@ -212,7 +212,7 @@ def main():
     ]
     failed = 0
     for name, fn in cells:
-        with tempfile.TemporaryDirectory(prefix="velo-mixed-") as d:
+        with tempfile.TemporaryDirectory(prefix="velody-mixed-") as d:
             try:
                 fn(Path(d))
                 print(f"PASS {name}")

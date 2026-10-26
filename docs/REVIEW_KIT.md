@@ -1,6 +1,6 @@
 # External review kit
 
-Everything a reviewer needs to audit velo's handling of untrusted input, in one
+Everything a reviewer needs to audit velody's handling of untrusted input, in one
 place. Start with the [threat model](THREAT_MODEL.md); report findings as
 described in [SECURITY.md](../SECURITY.md). Stability promises are in
 [STABILITY.md](STABILITY.md).
@@ -11,19 +11,19 @@ Paths below are relative to the repository root.
 
 | Surface | Where bytes enter | File and function |
 |---|---|---|
-| Bundle decoding (v2, v3, v4) | `velo import` and every pull | `crates/velo-core/src/commands/bundle.rs`: `decode`, then `import` and `import_pack` |
-| Wire strings and ref advertisements | ssh and HTTP transport, both directions | `crates/velo-core/src/transport.rs`: `read_string`, `read_string_opt`, `read_refs` |
-| ssh server side | `velo serve` over stdio | `crates/velo-core/src/serve.rs`: `upload`, `receive` |
-| HTTP server | `velo serve-http` | `crates/velo-core/src/serve.rs`, `mod http`: `Service::handle` (`refs`, `upload`, `receive`; bearer parsing in `parse_bearer`) |
-| Git import | `git fast-export` stream | `crates/velo-core/src/commands/import.rs`: `parse_path`, `parse_ident`, `parse_trailer`, `parse_mark` |
-| Path rule | every ingested or materialised path | `crates/velo-core/src/safe_path.rs`: `check`, `check_for_this_platform`, `check_tree`, `join_checked`, `check_symlink_target` |
-| Stored trees | rows read back from the database, including delta tables | `crates/velo-core/src/tree_store.rs`: `tree_of`, `keyframe_rows`, `check_path_limits` |
-| Signatures | snapshot signatures received with a bundle | `crates/velo-core/src/sign.rs`: `check_row`, `verify` |
-| MCP server | stdio and HTTP | `crates/velo-mcp/src/lib.rs`: `handle_as`; `crates/velo-mcp/src/http.rs`: `serve`, `check_bind`, `origin_is_loopback` |
+| Bundle decoding (v2, v3, v4) | `velody import` and every pull | `crates/velody-core/src/commands/bundle.rs`: `decode`, then `import` and `import_pack` |
+| Wire strings and ref advertisements | ssh and HTTP transport, both directions | `crates/velody-core/src/transport.rs`: `read_string`, `read_string_opt`, `read_refs` |
+| ssh server side | `velody serve` over stdio | `crates/velody-core/src/serve.rs`: `upload`, `receive` |
+| HTTP server | `velody serve-http` | `crates/velody-core/src/serve.rs`, `mod http`: `Service::handle` (`refs`, `upload`, `receive`; bearer parsing in `parse_bearer`) |
+| Git import | `git fast-export` stream | `crates/velody-core/src/commands/import.rs`: `parse_path`, `parse_ident`, `parse_trailer`, `parse_mark` |
+| Path rule | every ingested or materialised path | `crates/velody-core/src/safe_path.rs`: `check`, `check_for_this_platform`, `check_tree`, `join_checked`, `check_symlink_target` |
+| Stored trees | rows read back from the database, including delta tables | `crates/velody-core/src/tree_store.rs`: `tree_of`, `keyframe_rows`, `check_path_limits` |
+| Signatures | snapshot signatures received with a bundle | `crates/velody-core/src/sign.rs`: `check_row`, `verify` |
+| MCP server | stdio and HTTP | `crates/velody-mcp/src/lib.rs`: `handle_as`; `crates/velody-mcp/src/http.rs`: `serve`, `check_bind`, `origin_is_loopback` |
 
 ## Known gaps
 
-Quoted from [THREAT_MODEL.md](THREAT_MODEL.md), "What velo does not defend
+Quoted from [THREAT_MODEL.md](THREAT_MODEL.md), "What velody does not defend
 against":
 
 - **A compromised host.** Anyone who can write the repository directory or run
@@ -70,7 +70,7 @@ Every operation is killed at every failpoint, then four checks run
 ([CRASH_SAFETY.md](CRASH_SAFETY.md)). It takes about a minute:
 
 ```sh
-cargo test -p velo-core --features failpoints --test crash
+cargo test -p velody-core --features failpoints --test crash
 ```
 
 ## Golden corpus
@@ -81,7 +81,7 @@ read from the databases those builds wrote
 `tests/corpus/bundles/` also seed the `bundle_decode` fuzz target.
 
 ```sh
-cargo test -p velo-core --test corpus
+cargo test -p velody-core --test corpus
 ```
 
 ## Reproducible build
@@ -95,8 +95,8 @@ run the same build in two checkouts at different paths and compare:
 export CC=musl-gcc CARGO_INCREMENTAL=0
 export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
 export RUSTFLAGS="--remap-path-prefix=$PWD=/build --remap-path-prefix=$HOME/.cargo=/cargo"
-cargo build -p velo-cli --release --locked --target x86_64-unknown-linux-musl
-sha256sum target/x86_64-unknown-linux-musl/release/velo
+cargo build -p velody-cli --release --locked --target x86_64-unknown-linux-musl
+sha256sum target/x86_64-unknown-linux-musl/release/velody
 ```
 
 `$PWD` must be the checkout root in each run; the two hashes must match.
@@ -104,28 +104,28 @@ sha256sum target/x86_64-unknown-linux-musl/release/velo
 ## Automated passes
 
 The static and dynamic analysis passes below run weekly and on every change to
-`crates/velo-ffi/` in
+`crates/velody-ffi/` in
 [.github/workflows/static-analysis.yml](../.github/workflows/static-analysis.yml),
 one job per pass. Alongside them, the dependency audit and `cargo deny` jobs
 run in CI. Results are as of 2026-10-22 (Rust 1.94.0, cargo 1.94.0).
 
-The claim that `unsafe` is confined to `velo-ffi` is nearly, but not exactly,
-true. Outside `velo-ffi` there are three sites, each under a crate-level
+The claim that `unsafe` is confined to `velody-ffi` is nearly, but not exactly,
+true. Outside `velody-ffi` there are three sites, each under a crate-level
 `deny(unsafe_code)` with a narrow `allow`:
 
 | Site | Why |
 |---|---|
-| `crates/velo-core/src/storage.rs` | read-only `memmap2` map of a pack file, justified in place |
-| `crates/velo-cli/src/lockwait.rs` | `kill(pid, 0)` liveness probe for a lock holder (Unix) and its Windows counterpart |
-| `crates/velo-cli/src/main.rs` | `SetConsoleOutputCP(65001)` on Windows so UTF-8 output renders |
+| `crates/velody-core/src/storage.rs` | read-only `memmap2` map of a pack file, justified in place |
+| `crates/velody-cli/src/lockwait.rs` | `kill(pid, 0)` liveness probe for a lock holder (Unix) and its Windows counterpart |
+| `crates/velody-cli/src/main.rs` | `SetConsoleOutputCP(65001)` on Windows so UTF-8 output renders |
 
-`velo-mcp`, `velo-merge`, `velo-testkit` and `velo-tui` are
+`velody-mcp`, `velody-merge`, `velody-testkit` and `velody-tui` are
 `#![forbid(unsafe_code)]`. The `unsafe-policy` CI job checks the crate-root
-attributes and fails if a new file outside `velo-ffi` gains an unsafe block.
+attributes and fails if a new file outside `velody-ffi` gains an unsafe block.
 
 ### Why Miri is not used
 
-Miri interprets Rust MIR and cannot execute foreign code. `velo-ffi`'s tests
+Miri interprets Rust MIR and cannot execute foreign code. `velody-ffi`'s tests
 open real repositories, which calls into the bundled C SQLite through
 `rusqlite`, so Miri stops at the first foreign call. AddressSanitizer and
 `cargo careful` run the real code natively instead.
@@ -135,10 +135,10 @@ open real repositories, which calls into the bundled C SQLite through
 | Pass | Tool and version | Command | Ran locally | Findings |
 |---|---|---|---|---|
 | Unsafe policy | grep over crate roots | the `unsafe-policy` job | yes (by hand, same patterns) | 0 |
-| Clippy unsafe lints | clippy 1.94.0 | `cargo clippy -p velo-ffi -- -W clippy::undocumented_unsafe_blocks -W clippy::multiple_unsafe_ops_per_block -W clippy::ptr_as_ptr` | yes | 1, fixed |
+| Clippy unsafe lints | clippy 1.94.0 | `cargo clippy -p velody-ffi -- -W clippy::undocumented_unsafe_blocks -W clippy::multiple_unsafe_ops_per_block -W clippy::ptr_as_ptr` | yes | 1, fixed |
 | Unsafe inventory | cargo-geiger (latest at run time) | `cargo geiger --forbid-only` | no | pending first CI run |
-| AddressSanitizer | nightly rustc | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test -p velo-ffi --target x86_64-unknown-linux-gnu` | no | pending first CI run |
-| cargo careful | cargo-careful (latest at run time) | `cargo +nightly careful test -p velo-ffi` | no | pending first CI run |
+| AddressSanitizer | nightly rustc | `RUSTFLAGS=-Zsanitizer=address cargo +nightly test -p velody-ffi --target x86_64-unknown-linux-gnu` | no | pending first CI run |
+| cargo careful | cargo-careful (latest at run time) | `cargo +nightly careful test -p velody-ffi` | no | pending first CI run |
 | Unused dependencies | cargo-machete (latest at run time) | `cargo machete` | no | pending first CI run |
 
 The author's machine could not run the Linux-only and cargo-installed passes
@@ -153,8 +153,8 @@ block.
 
 | Pass | Finding | Disposition |
 |---|---|---|
-| Clippy `ptr_as_ptr` | `crates/velo-ffi/src/tree.rs`: `Box::into_raw(bytes) as *mut u8` | fixed: now `.cast::<u8>()`, same behaviour |
+| Clippy `ptr_as_ptr` | `crates/velody-ffi/src/tree.rs`: `Box::into_raw(bytes) as *mut u8` | fixed: now `.cast::<u8>()`, same behaviour |
 | Clippy `undocumented_unsafe_blocks` | none | clean |
 | Clippy `multiple_unsafe_ops_per_block` | none | clean |
-| Unsafe policy | `velo-core`, `velo-cli` contain three unsafe sites despite the "confined to velo-ffi" description | documented above; not a defect, the sites are minimal and each has an `allow` |
+| Unsafe policy | `velody-core`, `velody-cli` contain three unsafe sites despite the "confined to velody-ffi" description | documented above; not a defect, the sites are minimal and each has an `allow` |
 | geiger, ASan, careful, machete | not yet run | open: record the first CI results here |

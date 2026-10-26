@@ -17,9 +17,9 @@ The heuristics live in the two lists below, in one place:
 
 * INVALID_NAMES: local planning files an agent must never read. Any mention
   of one of these names makes the run invalid.
-* INVALID_PATTERNS: regular expressions for the source tree or tests of a velo
+* INVALID_PATTERNS: regular expressions for the source tree or tests of a velody
   checkout. A match makes the run invalid.
-* Any absolute path under a directory that holds crates/velo-core (a checkout
+* Any absolute path under a directory that holds crates/velody-core (a checkout
   root) is invalid, checked against the filesystem.
 * Any other absolute path (or ~/ path) outside the sandbox is only a warning:
   agents legitimately touch system paths such as /usr/bin or a temp directory.
@@ -32,10 +32,10 @@ import sys
 
 INVALID_NAMES = ["ARCHITECTURE.md", "DEVELOPING.md", "CLAUDE.md"]
 INVALID_PATTERNS = [
-    r"crates[/\\]velo-",
+    r"crates[/\\]velody-",
     r"bindings[/\\][^/\\\s\"']+[/\\]src",
     r"bindings[/\\][^/\\\s\"']+[/\\]tests[/\\]",
-    r"velo[\w.-]*[/\\]tests[/\\]",
+    r"velody[\w.-]*[/\\]tests[/\\]",
 ]
 PATH_RE = re.compile(r"(?:[A-Za-z]:[\\/]|~/|/)[^\s\"'`<>|*?,;()\[\]{}]+")
 
@@ -57,7 +57,7 @@ def _agent_actions(record):
     A Claude Code session transcript is JSONL whose records have a `type`: the
     host writes its own preamble records (skill lists, memory instructions, the
     request body) and the tool results, which echo whatever the agent read, such
-    as a handed-over page that links to `crates/velo-core`. Neither shows what
+    as a handed-over page that links to `crates/velody-core`. Neither shows what
     the agent did. What does is its tool calls (a read, a search, a command), so
     only the `assistant` records' tool-use inputs are returned. The agent's prose
     is not: its final report quotes the pages it was given, and a quoted link is
@@ -99,10 +99,10 @@ def _norm(p):
 
 
 def _in_checkout(path):
-    """True when an ancestor of path holds crates/velo-core."""
+    """True when an ancestor of path holds crates/velody-core."""
     cur = os.path.dirname(os.path.abspath(path))
     while True:
-        if os.path.isdir(os.path.join(cur, "crates", "velo-core")):
+        if os.path.isdir(os.path.join(cur, "crates", "velody-core")):
             return True
         parent = os.path.dirname(cur)
         if parent == cur:
@@ -128,7 +128,7 @@ def audit(text, sandbox):
         if n == sb or n.startswith(sb + "/"):
             continue
         if _in_checkout(p):
-            invalid.append("path under a velo checkout: " + p)
+            invalid.append("path under a velody checkout: " + p)
         else:
             warnings.append("outside sandbox: " + p)
     return invalid, warnings

@@ -12,7 +12,7 @@ const { Repo } = require('../index.js');
 const indexPath = fileURLToPath(new URL('../index.js', import.meta.url));
 
 function tmp() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'velo-node-'));
+  return fs.mkdtempSync(path.join(os.tmpdir(), 'velody-node-'));
 }
 
 // Each worker opens its own handle and saves; a write lock held by the other

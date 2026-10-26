@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """Independent checker for a cold-start run (stdlib only).
 
-Shells out to an installed `velo` and asserts, for a repository directory:
+Shells out to an installed `velody` and asserts, for a repository directory:
 
-  1. `velo fsck` exits zero (the repository is clean),
-  2. `velo history --all --oneline` shows at least one snapshot,
-  3. `velo blame <file>` (at `--at BRANCH` when given) names the expected
+  1. `velody fsck` exits zero (the repository is clean),
+  2. `velody history --all --oneline` shows at least one snapshot,
+  3. `velody blame <file>` (at `--at BRANCH` when given) names the expected
      actor on at least one line,
-  4. with `--run ID`, `velo history --all --where mcp:run=ID` finds at least
+  4. with `--run ID`, `velody history --all --where mcp:run=ID` finds at least
      one snapshot: the MCP server records the run id as metadata, not as the
      author, so blame alone cannot show it.
 
@@ -15,11 +15,11 @@ History is listed across all branches because a repository written through
 the library has no checked-out position, and the task may publish on a branch
 of its own (the config registry does).
 
-The checker never imports velo and never trusts what the agent printed; it
+The checker never imports velody and never trusts what the agent printed; it
 only reads what the repository says about itself.
 
 Usage:
-  python check.py REPO --actor NAME --file PATH [--at BRANCH] [--run ID] [--velo PATH_TO_VELO]
+  python check.py REPO --actor NAME --file PATH [--at BRANCH] [--run ID] [--velody PATH_TO_VELO]
 """
 import argparse
 import os
@@ -32,11 +32,11 @@ import sys
 SNAPSHOT_ROW = re.compile(r"^[*|/\\ ]*[0-9a-f]{8,}\b")
 
 
-def run(velo, repo, *args):
-    """Run `velo <args>` inside `repo`; return (exit code, combined output)."""
+def run(velody, repo, *args):
+    """Run `velody <args>` inside `repo`; return (exit code, combined output)."""
     try:
         p = subprocess.run(
-            [velo, *args],
+            [velody, *args],
             cwd=repo,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -62,12 +62,12 @@ def main(argv=None):
     )
     ap.add_argument("--at", default=None, help="branch or snapshot to blame at (default: the checked-out branch)")
     ap.add_argument("--run", default=None, help="MCP run id that must be recorded on at least one snapshot")
-    ap.add_argument("--velo", default=None, help="path to the velo binary (default: first on PATH)")
+    ap.add_argument("--velody", default=None, help="path to the velody binary (default: first on PATH)")
     args = ap.parse_args(argv)
 
-    velo = args.velo or shutil.which("velo")
-    if not velo:
-        print("FAIL  velo not found on PATH (use --velo)")
+    velody = args.velody or shutil.which("velody")
+    if not velody:
+        print("FAIL  velody not found on PATH (use --velody)")
         return 2
     if not os.path.isdir(os.path.join(args.repo, ".velo")):
         print("FAIL  %s has no .velo directory" % args.repo)
@@ -75,23 +75,23 @@ def main(argv=None):
 
     results = []
 
-    code, _ = run(velo, args.repo, "fsck")
+    code, _ = run(velody, args.repo, "fsck")
     results.append(("fsck clean", code == 0, "exit %d" % code if code else ""))
 
-    code, out = run(velo, args.repo, "history", "--all", "--oneline")
+    code, out = run(velody, args.repo, "history", "--all", "--oneline")
     snaps = [l for l in out.splitlines() if SNAPSHOT_ROW.match(l)]
     results.append(
         ("history non-empty", code == 0 and len(snaps) > 0, "%d snapshot(s)" % len(snaps))
     )
 
     blame_args = ["blame", args.file] + (["--at", args.at] if args.at else [])
-    code, out = run(velo, args.repo, *blame_args)
+    code, out = run(velody, args.repo, *blame_args)
     named = code == 0 and any(args.actor in l for l in out.splitlines())
     detail = "" if named else ("exit %d" % code if code else "actor not in blame output")
     results.append(("blame names %r on %s" % (args.actor, args.file), named, detail))
 
     if args.run:
-        code, out = run(velo, args.repo, "history", "--all", "--oneline", "--where", "mcp:run=" + args.run)
+        code, out = run(velody, args.repo, "history", "--all", "--oneline", "--where", "mcp:run=" + args.run)
         snaps = [l for l in out.splitlines() if SNAPSHOT_ROW.match(l)]
         results.append(
             ("run %r recorded" % args.run, code == 0 and len(snaps) > 0, "%d snapshot(s)" % len(snaps))

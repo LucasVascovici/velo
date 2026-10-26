@@ -88,3 +88,23 @@ the names of the published packages move.
 | npm `@velo/core` (current) | Depends on the owner holding the `@velo` scope, which is not verified. |
 | npm `velo-core` (recommended) | `require("velo-core")` replaces `require("@velo/core")` for the few existing users; no scope is needed. |
 | Rename the project | The largest cost: the binary, every crate name, the import name, the bundle and docs text, the repository and the install channels all change, and every user's scripts break. Nothing in the tables above forces it, because free distribution names exist. |
+
+## Decision: Velody (2026-10-26)
+
+The owner chose the name **Velody** and a full rename (7.0.0). Checked the same day, with the URL or query
+used for each:
+
+| Name | Result |
+| --- | --- |
+| PyPI `velody`, `velody-core` | free (`pypi.org/pypi/<name>/json` is 404) |
+| npm `velody`, `velody-core` | free (`registry.npmjs.org/<name>` is 404) |
+| crates.io `velody`, `velody-core`, `velody-cli` | free (`crates.io/api/v1/crates/<name>` is 404) |
+| Homebrew formula `velody` | free |
+| npm scope `@velody` | **taken** (a published design-system package, `@velody/velys`) |
+| GitHub user `Velody` | **taken** (an empty personal account created 2018); the repository stays under `LucasVascovici` |
+| Docker Hub namespace `velody` | **taken** (no public repositories) |
+| `velody.com`, `velody.io`, `velody.org` | resolve (registered); `velody.dev` and `velody.app` did not resolve |
+
+The names that matter for publishing (the three registries) are free; the rest is worked around: unscoped
+npm names, images published under another namespace, no domain yet. A trademark and prior-use search has not
+been done and is the owner's. The rename itself is described in the 7.0.0 changelog.

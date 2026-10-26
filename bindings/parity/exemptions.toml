@@ -1,4 +1,4 @@
-# Entry points of velo-core that are deliberately not bound.  See README.md.
+# Entry points of velody-core that are deliberately not bound.  See README.md.
 # A stale exemption (entry gone, or now bound) fails the check.
 
 [[exempt]]
@@ -459,4 +459,4 @@ reason = "audit report model for the CLI's HTML and JSON renderers; bindings alr
 [[exempt]]
 entry = "Repo::object_at"
 bindings = ["python", "node"]
-reason = "internal: one indexed existence lookup for velo_save_tree's null-deletes; the bindings answer it with tree_at"
+reason = "internal: one indexed existence lookup for velody_save_tree's null-deletes; the bindings answer it with tree_at"

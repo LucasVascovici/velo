@@ -5,7 +5,7 @@ import threading
 import time
 
 import pytest
-import velo
+import velody
 
 SNAPSHOTS = 3000
 
@@ -14,7 +14,7 @@ SNAPSHOTS = 3000
 def big(tmp_path_factory):
     """A repository of a few thousand snapshots, built with save_tree."""
     path = tmp_path_factory.mktemp("big")
-    repo = velo.Repo.init(path)
+    repo = velody.Repo.init(path)
     parent = None
     for i in range(SNAPSHOTS):
         parent = repo.save_tree(
@@ -73,7 +73,7 @@ def test_fsck_releases_the_gil(big, tmp_path):
     # a pristine copy that nothing has verified yet.
     copy = tmp_path / "copy"
     shutil.copytree(path, copy)
-    repo = velo.Repo.open(copy)
+    repo = velody.Repo.open(copy)
     inside, took = ticks_inside(lambda: repo.fsck())
     assert took >= MIN_CALL, f"fsck took only {took:.3f}s, too short to discriminate"
     # Held for the whole call, ticks could only land at its edges.
@@ -101,7 +101,7 @@ def test_another_thread_gets_a_clear_error(big):
 def test_every_long_method_checks_the_owner(big):
     _, repo = big
     tip = repo.branch_tip("main")
-    key = velo.SigningKey.from_seed(bytes(32))
+    key = velody.SigningKey.from_seed(bytes(32))
     calls = [
         lambda: repo.save_tree(branch="t", message="m", entries={"a": b"a"}),
         lambda: repo.tree_at(tip),
@@ -138,7 +138,7 @@ def test_one_handle_per_thread_runs_in_parallel(big):
     results = []
 
     def work():
-        mine = velo.Repo.open(path)
+        mine = velody.Repo.open(path)
         results.append(len(mine.history(branch="main")))
 
     threads = [threading.Thread(target=work) for _ in range(3)]

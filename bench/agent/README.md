@@ -1,15 +1,15 @@
 # Agent-checkpointing benchmark
 
-`agent_bench.py` compares velo with the things an agent author would actually
+`agent_bench.py` compares velody with the things an agent author would actually
 reach for when they want a trail of what an agent did and a way back. Python 3,
-standard library plus the velo Python binding and the `git` CLI.
+standard library plus the velody Python binding and the `git` CLI.
 
 ## Systems
 
 | system | how a step is stored |
 |---|---|
-| velo | `save_changes` per step with only the changed files (the core carries the rest of the parent's tree forward); author and `agent` metadata on every snapshot |
-| velo (5.2 API) | the baseline: `save_tree` per step; untouched files carried forward with `TreeEntry.stored`, the tree re-read with `tree_at` after every save; restore by `tree_at` plus `read_file_at` per file |
+| velody | `save_changes` per step with only the changed files (the core carries the rest of the parent's tree forward); author and `agent` metadata on every snapshot |
+| velody (5.2 API) | the baseline: `save_tree` per step; untouched files carried forward with `TreeEntry.stored`, the tree re-read with `tree_at` after every save; restore by `tree_at` plus `read_file_at` per file |
 | shadow git | `git --git-dir=shadow.git --work-tree=work add -A && commit` per step, author `agent-run-1` |
 | git worktree | an ordinary repository; each attempt in the branch workload gets its own `git worktree add -b` |
 | dir copy | `shutil.copytree` of the whole project per step |
@@ -25,20 +25,20 @@ All seven sit behind one interface (`setup`, `checkpoint`, `branch`, `merge`,
    file, about 1 KB). Each step rewrites 1 to 20 files, 1 to 3 lines each, then
    checkpoints. Timed: the `checkpoint` calls only. The driver writes the edited
    files to the working directory before each call, untimed, because git and the
-   copy need them there; velo is handed the bytes directly and never reads them.
+   copy need them there; velody is handed the bytes directly and never reads them.
 2. **Branches.** From the final main state, 8 attempts of 10 steps each (same
    edit generator), then the last attempt "wins" and is merged. Timed: branch
    creation, every checkpoint and the merge. Merge means a real three-way merge
-   in velo and git; the copy, log and SQLite stores have no merge, so the winner
+   in velody and git; the copy, log and SQLite stores have no merge, so the winner
    becomes a new step holding the winner's state (copied directory, appended
    changed files, a new manifest). The disk column is measured after this.
 3. **Restore.** Restore step 250 (half way) 100 times into an empty directory;
-   the file count is asserted. velo does this with one `materialize` call (the 5.2 API row
+   the file count is asserted. Velody does this with one `materialize` call (the 5.2 API row
    uses `tree_at` for the file list plus `read_file_at` per file, written to disk); git uses
    `git checkout <commit> -- .` into a separate work tree with its own index;
    the log is replayed from the start; SQLite joins the manifest to the blobs.
 4. **Who wrote this line.** 20 seeded (file, line) pairs at the end of the main
-   line. velo uses `blame`; git uses `git blame -L`; the others scan versions
+   line. Velody uses `blame`; git uses `git blame -L`; the others scan versions
    newest first until the line changes. Edits never add or remove lines, so a
    line number is stable and every answer is checked against the generator's
    own record (the run aborts on a wrong answer).
@@ -49,7 +49,7 @@ project and edits.
 ## Disk
 
 Bytes on disk of each store: the sum of file sizes (apparent size, not blocks;
-Windows reports no block count). Velo is its repository directory; shadow git
+Windows reports no block count). Velody is its repository directory; shadow git
 is `shadow.git`; git worktree is `.git` plus every extra worktree (the attempts'
 checked-out trees are part of the cost); dir copy is every step directory and
 attempt directory; the log is the file; SQLite is the database file. The live
@@ -58,7 +58,7 @@ working directory is not counted for any system.
 ## Provenance
 
 The last column states what each system can verify about a step after the fact,
-without extra discipline. velo hashes author and metadata into the snapshot id;
+without extra discipline. Velody hashes author and metadata into the snapshot id;
 git hashes content and commit fields but an agent identity is whatever the
 committer typed; the rest record nothing that can be verified.
 
@@ -74,10 +74,10 @@ python -m venv .venv
 ```
 
 `--quick` runs 50 steps over 100 files with 10 restores (about a minute on
-Windows) and is for checking the harness. `--only "velo,dir copy"` runs a
+Windows) and is for checking the harness. `--only "velody,dir copy"` runs a
 subset. The JSON holds every number plus the environment (platform, Python,
 git, SQLite, the commit the script was run from, the parameters). A markdown
-table is printed to stdout. A debug build of the binding makes velo several
+table is printed to stdout. A debug build of the binding makes velody several
 times slower; always benchmark `--release`.
 
 The `agent` job in `.github/workflows/bench.yml` does the same on Ubuntu and

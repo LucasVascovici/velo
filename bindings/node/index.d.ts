@@ -9,7 +9,7 @@
  */
 export declare const __napiBindingTarget: 'native' | 'wasm32-wasi' | 'wasm32-wasip1'
 
-/** An open velo repository. */
+/** An open velody repository. */
 export declare class Repo {
   /**
    * Call `callback(event)` for every change committed through this handle.
@@ -264,7 +264,7 @@ export interface FsckReport {
 export interface HistoryOptions {
   /**
    * List the ancestry of this snapshot, following both parents of a merge.
-   * Without `from` or `branch`, velo walks back from the working tree's
+   * Without `from` or `branch`, velody walks back from the working tree's
    * position, so a repository with no working tree must pass one of them.
    */
   from?: string
@@ -481,11 +481,11 @@ export interface SyncInput {
   /** The merge snapshot's message. */
   message?: string
   /**
-   * The `velo` executable for `child:` and `ssh://` remotes, which a binding
-   * does not have of its own. Defaults to `velo` on the path. HTTP and
+   * The `velody` executable for `child:` and `ssh://` remotes, which a binding
+   * does not have of its own. Defaults to `velody` on the path. HTTP and
    * local-path remotes need none.
    */
-  veloBin?: string
+  velodyBin?: string
 }
 
 /** What `sync` did. */

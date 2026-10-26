@@ -1,8 +1,8 @@
-//! A versioned prompt registry, built on `velo-core` with no working tree.
+//! A versioned prompt registry, built on `velody-core` with no working tree.
 //!
-//! This exists to answer a question the test suite cannot: is `velo-core`
+//! This exists to answer a question the test suite cannot: is `velody-core`
 //! actually pleasant to embed? It is written the way a real consumer would write
-//! it — only the public API, no shelling out to the `velo` binary, no scratch
+//! it — only the public API, no shelling out to the `velody` binary, no scratch
 //! directory — and the friction found along the way is recorded in `FINDINGS.md`
 //! next to this file rather than smoothed over silently.
 //!
@@ -31,9 +31,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use velo_core::commands;
-use velo_core::tree::{SaveTree, TreeEntry};
-use velo_core::{BranchName, Repo, SnapshotId, SnapshotMeta, TagName};
+use velody_core::commands;
+use velody_core::tree::{SaveTree, TreeEntry};
+use velody_core::{BranchName, Repo, SnapshotId, SnapshotMeta, TagName};
 
 /// The branch every registry snapshot is recorded on.
 ///
@@ -44,7 +44,7 @@ const BRANCH: &str = "registry";
 /// The metadata namespace this consumer owns.
 const NAMESPACE: &str = "promptreg";
 
-/// What can go wrong. Velo's errors are re-wrapped so callers of *this* crate
+/// What can go wrong. Velody's errors are re-wrapped so callers of *this* crate
 /// never have to know what is underneath.
 #[derive(Debug)]
 pub enum RegistryError {
@@ -55,7 +55,7 @@ pub enum RegistryError {
     /// A prompt name that cannot be a path component.
     BadName(String),
     /// Anything the underlying store reported.
-    Store(velo_core::Error),
+    Store(velody_core::Error),
 }
 
 impl std::fmt::Display for RegistryError {
@@ -71,8 +71,8 @@ impl std::fmt::Display for RegistryError {
 
 impl std::error::Error for RegistryError {}
 
-impl From<velo_core::Error> for RegistryError {
-    fn from(e: velo_core::Error) -> Self {
+impl From<velody_core::Error> for RegistryError {
+    fn from(e: velody_core::Error) -> Self {
         RegistryError::Store(e)
     }
 }
@@ -89,7 +89,7 @@ pub struct Version {
     pub model: Option<String>,
 }
 
-/// A registry backed by one Velo repository.
+/// A registry backed by one Velody repository.
 pub struct Registry {
     repo: Repo,
     branch: BranchName,
@@ -102,7 +102,7 @@ impl Registry {
             Ok(repo) => repo,
             // Being handed an existing directory is normal for a library; the
             // typed error is what makes this recoverable without string-matching.
-            Err(velo_core::Error::AlreadyInitialized { .. }) => Repo::open_and_migrate(root)?,
+            Err(velody_core::Error::AlreadyInitialized { .. }) => Repo::open_and_migrate(root)?,
             Err(e) => return Err(e.into()),
         };
         Ok(Registry {

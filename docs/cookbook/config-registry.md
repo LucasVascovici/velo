@@ -15,7 +15,7 @@ are metadata:
 ```python
 repo.save_tree(branch="registry", message=f"publish {version}",
                entries={PATH: body, "configs/limits.yaml": "cpu: 1\n"},
-               parent=parent, author=velo.Author("release-bot"),
+               parent=parent, author=velody.Author("release-bot"),
                meta={"registry": {"version": version, "approved_by": "alice"}})
 ```
 
@@ -33,7 +33,7 @@ entries carry forward the stored objects of 1.1.0, with
 `TreeEntry.stored(path, object, kind)`:
 
 ```python
-entries = [velo.TreeEntry.stored(f.path, f.object, f.kind)
+entries = [velody.TreeEntry.stored(f.path, f.object, f.kind)
            for f in repo.tree_at(ids["1.1.0"])]
 repo.save_tree(branch="registry", message="rollback to 1.1.0", entries=entries,
                parent=ids["1.2.0"], ...)
@@ -56,7 +56,7 @@ and carries the rest forward from the parent:
 
 ```python
 repo.save_changes(branch="registry", message="publish 1.1.1", parent=parent,
-                  changes=[velo.Change.put(PATH, body)],
+                  changes=[velody.Change.put(PATH, body)],
                   meta={"registry": {"version": "1.1.1", "approved_by": "alice"}})
 ```
 
@@ -65,7 +65,7 @@ repo.save_changes(branch="registry", message="publish 1.1.1", parent=parent,
 `repo.history(branch="registry")` plus `snapshot_meta` gives the full trail:
 1.0.0 and 1.1.0 and 1.2.0 approved by alice, then the rollback approved by bob.
 
-For a reviewer without code, `velo report --branch registry -o registry.html`
+For a reviewer without code, `velody report --branch registry -o registry.html`
 writes the same trail as a self-contained HTML page.
 
 ## Tamper evidence

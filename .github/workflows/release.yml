@@ -68,10 +68,10 @@ jobs:
           # ── Linux x86-64 (static musl binary) ─────────────────────────────
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            artifact: velo
-            package: velo-x86_64-linux.tar.gz
-            mcp_artifact: velo-mcp
-            mcp_package: velo-mcp-x86_64-linux.tar.gz
+            artifact: velody
+            package: velody-x86_64-linux.tar.gz
+            mcp_artifact: velody-mcp
+            mcp_package: velody-mcp-x86_64-linux.tar.gz
             musl_cc: musl-gcc
             apt_packages: musl-tools
 
@@ -80,38 +80,38 @@ jobs:
           # Docker, no separate toolchain.
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-musl
-            artifact: velo
-            package: velo-aarch64-linux.tar.gz
-            mcp_artifact: velo-mcp
-            mcp_package: velo-mcp-aarch64-linux.tar.gz
+            artifact: velody
+            package: velody-aarch64-linux.tar.gz
+            mcp_artifact: velody-mcp
+            mcp_package: velody-mcp-aarch64-linux.tar.gz
             musl_cc: musl-gcc
             apt_packages: musl-tools
 
           # ── macOS Apple Silicon (native runner) ───────────────────────────
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: velo
-            package: velo-aarch64-macos.tar.gz
-            mcp_artifact: velo-mcp
-            mcp_package: velo-mcp-aarch64-macos.tar.gz
+            artifact: velody
+            package: velody-aarch64-macos.tar.gz
+            mcp_artifact: velody-mcp
+            mcp_package: velody-mcp-aarch64-macos.tar.gz
 
           # ── macOS Intel (cross-compiled from the Apple Silicon runner) ────
           # Apple's own Clang ships both targets; no extra toolchain needed.
           # macos-13 was retired in 2026 — cross-compile instead.
           - os: macos-latest
             target: x86_64-apple-darwin
-            artifact: velo
-            package: velo-x86_64-macos.tar.gz
-            mcp_artifact: velo-mcp
-            mcp_package: velo-mcp-x86_64-macos.tar.gz
+            artifact: velody
+            package: velody-x86_64-macos.tar.gz
+            mcp_artifact: velody-mcp
+            mcp_package: velody-mcp-x86_64-macos.tar.gz
 
           # ── Windows x86-64 ────────────────────────────────────────────────
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: velo.exe
-            package: velo-x86_64-windows.zip
-            mcp_artifact: velo-mcp.exe
-            mcp_package: velo-mcp-x86_64-windows.zip
+            artifact: velody.exe
+            package: velody-x86_64-windows.zip
+            mcp_artifact: velody-mcp.exe
+            mcp_package: velody-mcp-x86_64-windows.zip
 
     steps:
       - uses: actions/checkout@v4
@@ -151,7 +151,7 @@ jobs:
       # binary.  --locked ensures exact dep versions from Cargo.lock.
       #
       # `--workspace` is not optional, for the same reason it is not optional in
-      # ci.yml: `default-members` is velo-cli, so a bare `cargo test` runs 19
+      # ci.yml: `default-members` is velody-cli, so a bare `cargo test` runs 19
       # integration tests and silently skips ~390 others. Without it this job
       # reported success on a commit whose suite was failing.
       - name: Run tests
@@ -170,7 +170,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Build release binary
-        run: cargo build --release --locked --target ${{ matrix.target }} -p velo-cli -p velo-mcp
+        run: cargo build --release --locked --target ${{ matrix.target }} -p velody-cli -p velody-mcp
 
       # ── Package ────────────────────────────────────────────────────────────
       - name: Package (Unix)
@@ -178,8 +178,12 @@ jobs:
         run: |
           BINARY="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
           test -f "$BINARY" || (echo "Binary not found at $BINARY" && exit 1)
+          # `velo` is the previous name of the command, shipped as an alias for one
+          # release (the same binary, built from the same source).
+          ALIAS="target/${{ matrix.target }}/release/velo"
+          test -f "$ALIAS" || (echo "Binary not found at $ALIAS" && exit 1)
           tar -czf "${{ matrix.package }}" \
-            -C "target/${{ matrix.target }}/release" "${{ matrix.artifact }}"
+            -C "target/${{ matrix.target }}/release" "${{ matrix.artifact }}" velo
           MCP="target/${{ matrix.target }}/release/${{ matrix.mcp_artifact }}"
           test -f "$MCP" || (echo "Binary not found at $MCP" && exit 1)
           tar -czf "${{ matrix.mcp_package }}"             -C "target/${{ matrix.target }}/release" "${{ matrix.mcp_artifact }}"
@@ -190,7 +194,10 @@ jobs:
         run: |
           $binary = "target/${{ matrix.target }}/release/${{ matrix.artifact }}"
           if (-not (Test-Path $binary)) { throw "Binary not found: $binary" }
-          Compress-Archive -Path $binary -DestinationPath "${{ matrix.package }}"
+          # `velo.exe` is the previous name of the command, shipped as an alias for one release.
+          $alias = "target/${{ matrix.target }}/release/velo.exe"
+          if (-not (Test-Path $alias)) { throw "Binary not found: $alias" }
+          Compress-Archive -Path $binary, $alias -DestinationPath "${{ matrix.package }}"
           $mcp = "target/${{ matrix.target }}/release/${{ matrix.mcp_artifact }}"
           if (-not (Test-Path $mcp)) { throw "Binary not found: $mcp" }
           Compress-Archive -Path $mcp -DestinationPath "${{ matrix.mcp_package }}"
@@ -222,7 +229,7 @@ jobs:
             ${{ matrix.mcp_package }}
           if-no-files-found: error
 
-  # ── Software bill of materials (CycloneDX JSON) for velo-cli ──────────────
+  # ── Software bill of materials (CycloneDX JSON) for velody-cli ──────────────
   sbom:
     name: SBOM
     needs: draft
@@ -244,10 +251,10 @@ jobs:
         shell: bash
         run: |
           VERSION="${GITHUB_REF#refs/tags/v}"
-          cargo cyclonedx --manifest-path crates/velo-cli/Cargo.toml --format json
-          SRC=$(ls crates/velo-cli/*.cdx.json | head -1)
-          mv "$SRC" "velo-${VERSION}.cdx.json"
-          echo "SBOM_FILE=velo-${VERSION}.cdx.json" >> "$GITHUB_ENV"
+          cargo cyclonedx --manifest-path crates/velody-cli/Cargo.toml --format json
+          SRC=$(ls crates/velody-cli/*.cdx.json | head -1)
+          mv "$SRC" "velody-${VERSION}.cdx.json"
+          echo "SBOM_FILE=velody-${VERSION}.cdx.json" >> "$GITHUB_ENV"
 
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
@@ -352,8 +359,8 @@ jobs:
           ls -l
           # 5 CLI archives, 5 MCP archives and the SBOM.
           # The globs match the download patterns, so the Node tarballs
-          # (velo-core-*.tgz) attached in parallel never enter the file.
-          files=$(ls velo-*.tar.gz velo-*.zip velo-*.cdx.json)
+          # (velody-core-*.tgz) attached in parallel never enter the file.
+          files=$(ls velody-*.tar.gz velody-*.zip velody-*.cdx.json)
           test "$(echo "$files" | wc -l)" -eq 11
           sha256sum $files > SHA256SUMS.txt
           cat SHA256SUMS.txt
@@ -371,7 +378,7 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --clobber \
             cli-dist/SHA256SUMS.txt cli-dist/SHA256SUMS.txt.sigstore.json
 
-  # -- Run velo-mcp and the quickstarts from this run's own archives ---------
+  # -- Run velody-mcp and the quickstarts from this run's own archives ---------
   # Before publish, so a broken archive is caught before users see it. The
   # archives come from the `cli-*`, `wheel-*` and `node-*` run artifacts.
   release-smoke:
@@ -410,10 +417,10 @@ jobs:
     permissions:
       contents: read
 
-  setup-velo:
-    name: setup-velo
+  setup-velody:
+    name: setup-velody
     needs: publish
-    uses: ./.github/workflows/setup-velo.yml
+    uses: ./.github/workflows/setup-velody.yml
     permissions:
       contents: read
 

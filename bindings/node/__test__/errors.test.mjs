@@ -1,4 +1,4 @@
-// Every velo_core::Error variant rejects with its own `code` (18.8-f).
+// Every velody_core::Error variant rejects with its own `code` (18.8-f).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';

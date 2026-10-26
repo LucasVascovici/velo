@@ -1,7 +1,7 @@
 # Binding parity check
 
 `python bindings/parity/check.py` (Python 3.11+, stdlib only) fails when a
-public `velo-core` embedder entry point is neither bound in the Python and
+public `velody-core` embedder entry point is neither bound in the Python and
 Node bindings nor listed in `exemptions.toml` with a reason. It turns "the
 binding forgot a method" into a failing CI check (job `parity`).
 
@@ -9,7 +9,7 @@ binding forgot a method" into a failing CI check (job `parity`).
 
 Found by parsing the sources, never listed by hand:
 
-- every module-level `pub fn` in `crates/velo-core/src/commands/*.rs`
+- every module-level `pub fn` in `crates/velody-core/src/commands/*.rs`
   (named `commands::<module>::<fn>`; `mod.rs` functions are
   `commands::<fn>`), except modules declared `pub(crate)`;
 - every `pub fn` in `impl Repo` / `impl WriteGuard` blocks of `repo.rs`

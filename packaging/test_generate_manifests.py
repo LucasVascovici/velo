@@ -27,30 +27,30 @@ class GenerateTest(unittest.TestCase):
         return "%s/releases/download/v1.2.3/%s" % (g.REPO_URL, g.ASSETS[key])
 
     def test_formula(self):
-        text = (self.out / "homebrew/velo.rb").read_text()
+        text = (self.out / "homebrew/velody.rb").read_text()
         for key in g.ASSETS:
             if key.endswith("WINDOWS"):
                 continue
             self.assertIn('url "%s"' % self.url(key), text)
             self.assertIn('sha256 "%s"' % self.sums[key], text)
-        self.assertIn('bin.install "velo"', text)
+        self.assertIn('bin.install "velody"', text)
         self.assertIn('"--version"', text)
 
     def test_scoop(self):
-        m = json.loads((self.out / "scoop/velo.json").read_text())
+        m = json.loads((self.out / "scoop/velody.json").read_text())
         arch = m["architecture"]["64bit"]
         self.assertEqual(m["version"], "1.2.3")
         self.assertEqual(arch["url"], self.url("X86_64_WINDOWS"))
         self.assertEqual(arch["hash"], self.sums["X86_64_WINDOWS"])
-        self.assertEqual(m["bin"], "velo.exe")
+        self.assertEqual(m["bin"], "velody.exe")
 
     def test_winget(self):
-        d = self.out / "winget/manifests/l/LucasVascovici/Velo/1.2.3"
+        d = self.out / "winget/manifests/l/LucasVascovici/Velody/1.2.3"
         self.assertEqual(len(list(d.glob("*.yaml"))), 3)
-        inst = (d / "LucasVascovici.Velo.installer.yaml").read_text()
+        inst = (d / "LucasVascovici.Velody.installer.yaml").read_text()
         self.assertIn(self.url("X86_64_WINDOWS"), inst)
         self.assertIn(self.sums["X86_64_WINDOWS"].upper(), inst)
-        self.assertIn("PortableCommandAlias: velo", inst)
+        self.assertIn("PortableCommandAlias: velody", inst)
         self.assertIn("ManifestVersion: " + g.WINGET_SCHEMA, inst)
 
     def test_no_placeholders_left(self):

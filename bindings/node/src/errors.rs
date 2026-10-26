@@ -1,14 +1,14 @@
-//! One conversion from `velo_core::Error` to a JavaScript `Error`.
+//! One conversion from `velody_core::Error` to a JavaScript `Error`.
 //!
 //! The rejection's `code` is the variant name and the variant's fields are
-//! attached as properties, so the typed errors of velo-core are not flattened
+//! attached as properties, so the typed errors of velody-core are not flattened
 //! into strings at the boundary.
 
 use napi::bindgen_prelude::*;
 use napi::Env;
 use napi_derive::napi;
-use velo_core::error::{InProgress, RefKind};
-use velo_core::Error;
+use velody_core::error::{InProgress, RefKind};
+use velody_core::Error;
 
 fn ref_kind(kind: &RefKind) -> &'static str {
     match kind {
@@ -68,7 +68,7 @@ pub fn error_codes() -> Vec<Vec<String>> {
         .collect()
 }
 
-/// Build the JS `Error` for a velo error and return it as a napi error that
+/// Build the JS `Error` for a velody error and return it as a napi error that
 /// rejects the promise with exactly that object. This is the only conversion
 /// in the crate; it must run on the JS thread.
 pub fn to_js(env: &Env, err: Error) -> napi::Error {

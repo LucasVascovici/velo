@@ -1,6 +1,6 @@
 name: Release smoke
 
-# Does what a user does with a release archive: take velo-mcp and velo for the
+# Does what a user does with a release archive: take velody-mcp and velody for the
 # runner's platform, extract them into an empty directory on a runner with no
 # Rust toolchain, then run the MCP conformance clients, the documented host
 # configs and the quickstart pages against those binaries.
@@ -39,7 +39,7 @@ permissions:
 
 env:
   GH_TOKEN: ${{ github.token }}
-  REPO: LucasVascovici/velo
+  REPO: LucasVascovici/velody
 
 jobs:
   smoke:
@@ -52,17 +52,17 @@ jobs:
           - name: linux
             os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-            cli: velo-x86_64-linux.tar.gz
-            mcp: velo-mcp-x86_64-linux.tar.gz
+            cli: velody-x86_64-linux.tar.gz
+            mcp: velody-mcp-x86_64-linux.tar.gz
             wheel: "*manylinux*x86_64*.whl"
-            tgz: "velo-core-*-linux.tgz"
+            tgz: "velody-core-*-linux.tgz"
           - name: windows
             os: windows-latest
             target: x86_64-pc-windows-msvc
-            cli: velo-x86_64-windows.zip
-            mcp: velo-mcp-x86_64-windows.zip
+            cli: velody-x86_64-windows.zip
+            mcp: velody-mcp-x86_64-windows.zip
             wheel: "*win_amd64*.whl"
-            tgz: "velo-core-*-windows.tgz"
+            tgz: "velody-core-*-windows.tgz"
     steps:
       - uses: actions/checkout@v4
 
@@ -127,9 +127,9 @@ jobs:
           [ "$RUNNER_OS" = Windows ] && ext=".exe"
           # Mixed-style paths (D:/a/...) work for Python, Node and bash alike.
           if [ "$RUNNER_OS" = Windows ]; then bin=$(cygpath -m "$bin"); fi
-          echo "VELO_MCP=$bin/velo-mcp$ext" >> "$GITHUB_ENV"
-          echo "VELO=$bin/velo$ext" >> "$GITHUB_ENV"
-          "$bin/velo$ext" --version
+          echo "VELODY_MCP=$bin/velody-mcp$ext" >> "$GITHUB_ENV"
+          echo "VELO=$bin/velody$ext" >> "$GITHUB_ENV"
+          "$bin/velody$ext" --version
 
       - uses: actions/setup-python@v5
         with:
@@ -139,33 +139,33 @@ jobs:
           node-version: 22
 
       - name: Python SDK client
-        working-directory: crates/velo-mcp/conformance
+        working-directory: crates/velody-mcp/conformance
         shell: bash
         run: |
           pip install mcp jsonschema
-          python python_sdk_client.py --velo-mcp "$VELO_MCP" --velo "$VELO"
+          python python_sdk_client.py --velody-mcp "$VELODY_MCP" --velody "$VELO"
 
       - name: TypeScript SDK client
-        working-directory: crates/velo-mcp/conformance
+        working-directory: crates/velody-mcp/conformance
         shell: bash
         run: |
           npm ci --no-audit --no-fund
-          node ts_sdk_client.mjs "$VELO_MCP"
+          node ts_sdk_client.mjs "$VELODY_MCP"
 
       - name: MCP Inspector CLI
         shell: bash
         run: |
           db="$(mktemp -d)/repo.db"
           if [ "$RUNNER_OS" = Windows ]; then db=$(cygpath -m "$db"); fi
-          npx -y @modelcontextprotocol/inspector --cli "$VELO_MCP" --store "$db" --create --method tools/list
-          npx -y @modelcontextprotocol/inspector --cli "$VELO_MCP" --store "$db" --create \
-            --method tools/call --tool-name velo_save_tree \
+          npx -y @modelcontextprotocol/inspector --cli "$VELODY_MCP" --store "$db" --create --method tools/list
+          npx -y @modelcontextprotocol/inspector --cli "$VELODY_MCP" --store "$db" --create \
+            --method tools/call --tool-name velody_save_tree \
             --tool-arg branch=main --tool-arg message=inspector \
             --tool-arg 'files={"a.txt":"one\n"}'
 
       - name: Documented host configs
         shell: bash
-        run: python crates/velo-mcp/conformance/check_configs.py "$VELO_MCP" "$VELO"
+        run: python crates/velody-mcp/conformance/check_configs.py "$VELODY_MCP" "$VELO"
 
       # The Rust page is left out: this runner has no toolchain.
       - name: Quickstart pages from the release assets
@@ -178,4 +178,4 @@ jobs:
             --page mcp.md \
             --page python-agent-checkpointing.md \
             --page node-config-registry.md \
-            --wheel "$wheel" --tgz "$tgz" --velo-mcp "$VELO_MCP"
+            --wheel "$wheel" --tgz "$tgz" --velody-mcp "$VELODY_MCP"

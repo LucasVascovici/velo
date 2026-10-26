@@ -1,0 +1,97 @@
+name: Setup velody
+description: Install a velody release and put it on PATH, with no package manager.
+branding:
+  icon: download
+  color: blue
+inputs:
+  version:
+    description: "Release to install: latest, 6.1.0 or v6.1.0."
+    default: latest
+  token:
+    description: Token for the GitHub API, to avoid rate limits.
+    default: ${{ github.token }}
+outputs:
+  version:
+    description: The version reported by velody --version.
+    value: ${{ steps.install.outputs.version }}
+runs:
+  using: composite
+  steps:
+    - id: install
+      shell: bash
+      env:
+        VELODY_VERSION: ${{ inputs.version }}
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: LucasVascovici/velody
+      run: |
+        set -euo pipefail
+        case "${RUNNER_OS}-${RUNNER_ARCH}" in
+          Linux-X64) suffix=x86_64-linux.tar.gz ;;
+          Linux-ARM64) suffix=aarch64-linux.tar.gz ;;
+          macOS-ARM64) suffix=aarch64-macos.tar.gz ;;
+          macOS-X64) suffix=x86_64-macos.tar.gz ;;
+          Windows-X64) suffix=x86_64-windows.zip ;;
+          *) echo "::error::setup-velody does not support ${RUNNER_OS} ${RUNNER_ARCH}"; exit 1 ;;
+        esac
+        auth=()
+        if [ -n "${GH_TOKEN:-}" ]; then auth=(-H "Authorization: Bearer ${GH_TOKEN}"); fi
+        if [ "${VELODY_VERSION}" = "latest" ]; then
+          tag=$(curl -fsSL ${auth[@]+"${auth[@]}"} "https://api.github.com/repos/${REPO}/releases/latest" \
+            | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n1)
+          if [ -z "${tag}" ]; then echo "::error::could not resolve the latest velody release"; exit 1; fi
+        else
+          tag="v${VELODY_VERSION#v}"
+        fi
+        base="https://github.com/${REPO}/releases/download/${tag}"
+        dest="${RUNNER_TOOL_CACHE}/velody/${tag#v}/${RUNNER_ARCH}"
+        tmp=$(mktemp -d)
+        mkdir -p "${dest}"
+        # Releases before 7.0.0 were published as velo-<platform>; try the current name first.
+        asset=""
+        for prefix in velody velo; do
+          echo "Downloading ${prefix}-${suffix} from ${tag}"
+          if curl -fsSL --retry 3 -o "${tmp}/${prefix}-${suffix}" "${base}/${prefix}-${suffix}"; then
+            asset="${prefix}-${suffix}"
+            break
+          fi
+        done
+        if [ -z "${asset}" ]; then echo "::error::no velody or velo archive for ${suffix} in ${tag}"; exit 1; fi
+        if curl -fsSL --retry 3 -o "${tmp}/SHA256SUMS.txt" "${base}/SHA256SUMS.txt" 2>/dev/null; then
+          expected=$(grep -F "${asset}" "${tmp}/SHA256SUMS.txt" | awk '{print $1}' | head -n1)
+          if [ -z "${expected}" ]; then
+            echo "::error::SHA256SUMS.txt has no entry for ${asset}"; exit 1
+          fi
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual=$(sha256sum "${tmp}/${asset}" | awk '{print $1}')
+          else
+            actual=$(shasum -a 256 "${tmp}/${asset}" | awk '{print $1}')
+          fi
+          if [ "${expected}" != "${actual}" ]; then
+            echo "::error::checksum mismatch for ${asset}: expected ${expected}, got ${actual}"; exit 1
+          fi
+          echo "Checksum verified"
+        else
+          echo "::notice::${tag} has no SHA256SUMS.txt; skipping checksum verification"
+        fi
+        case "${asset}" in
+          *.zip) unzip -q -o "${tmp}/${asset}" -d "${dest}" ;;
+          *) tar -xzf "${tmp}/${asset}" -C "${dest}" ;;
+        esac
+        # Archives may nest the binary in a directory; put whichever holds it on PATH.
+        exe=velody; if [ "${RUNNER_OS}" = "Windows" ]; then exe=velody.exe; fi
+        found=$(find "${dest}" -name "${exe}" -type f | head -n1)
+        if [ -z "${found}" ]; then
+          # An archive from before 7.0.0 holds only `velo`; install it under the new name too.
+          old=velo; if [ "${RUNNER_OS}" = "Windows" ]; then old=velo.exe; fi
+          oldfound=$(find "${dest}" -name "${old}" -type f | head -n1)
+          if [ -z "${oldfound}" ]; then echo "::error::${exe} not found in ${asset}"; exit 1; fi
+          cp "${oldfound}" "$(dirname "${oldfound}")/${exe}"
+          found="$(dirname "${oldfound}")/${exe}"
+        fi
+        bindir=$(dirname "${found}")
+        chmod +x "${found}"
+        if [ "${RUNNER_OS}" = "Windows" ]; then bindir=$(cygpath -w "${bindir}"); fi
+        echo "${bindir}" >> "${GITHUB_PATH}"
+        reported=$("${found}" --version)
+        echo "version=${reported##* }" >> "${GITHUB_OUTPUT}"
+        echo "Installed ${reported}"

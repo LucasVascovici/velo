@@ -1,9 +1,9 @@
 [package]
-name = "velo-wasm"
+name = "velody-wasm"
 version = "0.1.0"
 edition = "2021"
 publish = false
-description = "WebAssembly binding for velo-core: single-file repositories in the browser or Node"
+description = "WebAssembly binding for velody-core: single-file repositories in the browser or Node"
 
 # An empty table makes this its own workspace root, so wasm-bindgen and the
 # wasm toolchain stay out of the main `cargo test --workspace`.
@@ -13,7 +13,7 @@ description = "WebAssembly binding for velo-core: single-file repositories in th
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-velo-core = { path = "../../crates/velo-core" }
+velody-core = { path = "../../crates/velody-core" }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 js-sys = "0.3"
@@ -30,7 +30,7 @@ wasm-bindgen-test = "0.3"
 
 # Size is the budget here: a local-first app should not pay megabytes for a
 # history engine. These apply to the release build only, so `wasm-pack test`
-# (dev profile, unwinding) is unaffected. Nothing in velo-core or this crate
+# (dev profile, unwinding) is unaffected. Nothing in velody-core or this crate
 # catches a panic, so `panic = "abort"` loses nothing and drops the unwinding
 # tables.
 [profile.release]

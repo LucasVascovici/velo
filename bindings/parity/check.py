@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Binding parity check (ARCHITECTURE 18.8).
 
-Enumerates the public embedder entry points of velo-core by parsing its
+Enumerates the public embedder entry points of velody-core by parsing its
 sources, then asserts every one is either bound in the Python and Node
 bindings or listed in exemptions.toml with a reason.  Exit 0 when clean,
 1 otherwise.  Stdlib only; see README.md.
@@ -14,7 +14,7 @@ import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-CORE_SRC = ROOT / "crates" / "velo-core" / "src"
+CORE_SRC = ROOT / "crates" / "velody-core" / "src"
 BINDINGS = {
     "python": ROOT / "bindings" / "python" / "src",
     "node": ROOT / "bindings" / "node" / "src",
@@ -150,10 +150,10 @@ def main() -> int:
     known = set(entries)
     for entry in sorted(exempt):
         if entry not in known:
-            problems.append(f"stale exemption: {entry} no longer exists in velo-core")
+            problems.append(f"stale exemption: {entry} no longer exists in velody-core")
     for entry in sorted(forced):
         if entry not in known:
-            problems.append(f"stale [[bound]] entry: {entry} no longer exists in velo-core")
+            problems.append(f"stale [[bound]] entry: {entry} no longer exists in velody-core")
 
     print(f"{len(entries)} core entry points")
     print(f"{'binding':<8} {'bound':>6} {'exempt':>7}")
