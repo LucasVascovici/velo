@@ -34,6 +34,7 @@ through `bench/scale/scale.py`.
 | 100,000 x 200 (`envelope-b`) | full | Windows 11 | 6.2.1 | 2026-10-26 | `2026-10-26-windows-envelope-v4-b-full.json` |
 | 100,000 x 500 (ratio shape) | full | Linux, GitHub runner | 6.2.1 | 2026-10-23 | `2026-10-23-linux-runner-ratio-100k-500.json` |
 | 10,000 x 2,000, retention | full | Linux, GitHub runner | 6.2.1 | 2026-10-23 | `2026-10-23-linux-runner-retention-10k-2000.txt` |
+| 10,000 x 2,000, retention | full | Windows 11 | 6.2.2 (branch build) | 2026-10-26 | `2026-10-26-windows-retention-10k-2000.txt` |
 | 10,000 x 2,000 (`envelope-a`) | full | Linux, GitHub runner | 6.2.0 | 2026-10-22 | `2026-10-linux-runner-envelope-v4-a.json` |
 | 100,000 x 200 (`envelope-b`) | full | Linux, GitHub runner | 6.2.0 | 2026-10-22 | `2026-10-linux-runner-envelope-v4-b.json` |
 
@@ -188,6 +189,31 @@ For comparison, the pre-v4 run on Windows (19.4) took 416 s for the apply, 165 s
 for `gc` and 193 s for the vacuum. Different platforms, so read it as the order
 of magnitude, not a ratio.
 
+### Windows 11, velo 6.2.2: retention, 10,000 files x 2,000 snapshots (full)
+
+The same test, run 2026-10-26 on the Windows machine from a build of the 6.2.2
+branch (the retention code is unchanged since 6.2.0), detached
+with no time limit, Defender on with no exclusions.
+
+| Stage | Time |
+| --- | --- |
+| build the history | 4,490 s |
+| `retention::apply` (examined 2,000, removed 1,240) | 1,323 s |
+| of which `compact.delete` / `compact.commit` / `compact.insert` | 940 s / 225 s / 142 s |
+| `gc` | 396 s |
+| `gc::vacuum` (incremental) | 425 s |
+| `velo.db` before / after retention / after vacuum | 5.56 GB / 5.56 GB (3.34 GB on the freelist) / 2.21 GB |
+| snapshots / `file_map` rows after | 760 / 7,600,000 |
+
+The size outcome is the same as on Linux (5.56 GB to 2.21 GB, 760 snapshots), but
+the times are 7.6x the Linux runner for the apply and 3.2x the pre-v4 Windows run
+(1,323 s against 416 s), and 94% of the apply is the delete and its commit. This
+machine was also running other work for most of the two hours (agent sessions and
+their Rust builds), so the run overstates what an idle machine would take, and one
+run cannot say by how much; it is recorded as measured, not as a figure to quote.
+The test builds its history with whole trees, so it is the worst case for the delete
+stage and says nothing about the K = 128 default.
+
 ### Linux (GitHub runner), velo 6.2.0: `envelope-a`, 10,000 files x 2,000 snapshots (full)
 
 | Metric | 10,000 files x 2,000 snapshots |
@@ -227,14 +253,9 @@ velo costs. The saves stay flat over both full envelope shapes on Linux.
 
 ### Not run on 6.x
 
-A shape or platform below has no 6.x number and none is implied.
+A shape or platform below has no 6.x number and none is implied. Every full shape
+now has one on Windows and on the Linux runner.
 
-- **Windows, the full retention run (10,000 x 2,000, 18.10/19.4 shape)**: not
-  run. It was run on the Linux runner (above). The detached
-  `default_policy_at_ten_thousand_files_and_two_thousand_snapshots` test command
-  is under "Detached full runs" in "Commands for the owner". The reduced retention
-  run (`default_policy_at_a_reduced_18_10_shape`) on Windows is the only
-  Windows retention figure on 6.x.
 - **Linux on a local machine or WSL2** (as opposed to a hosted runner): not
   run; the runner tables above are the only Linux data.
 

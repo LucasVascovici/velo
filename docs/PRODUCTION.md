@@ -133,9 +133,14 @@ Each line that was green was re-read against that rule:
   ([result](../bench/results/2026-10-23-linux-runner-ratio-100k-500.json)). The
   full retention run, 10,000 x 2,000, ran on the Linux runner on 6.2.1
   ([log](../bench/results/2026-10-23-linux-runner-retention-10k-2000.txt)).
-- **What the sentence does not claim, and SCALE.md says so:** Windows has no
-  full retention run (only the reduced shape), Linux is a hosted runner and not
-  a local machine, the two Linux envelope runs were on different CPUs, and the
+- **The full retention run also ran on Windows** (2026-10-26, a build of the
+  6.2.2 branch;
+  [log](../bench/results/2026-10-26-windows-retention-10k-2000.txt)): the same
+  size outcome as Linux, and 1,323 s for the apply against 175 s on Linux and
+  416 s before format v4. The machine was busy with other work, so that figure
+  is a measurement and not a number to quote; the delete stage is 94% of it.
+- **What the sentence does not claim, and SCALE.md says so:** Linux is a hosted
+  runner and not a local machine, the two Linux envelope runs were on different CPUs, and the
   Linux envelope runs are on 6.2.0 and the rest on 6.2.1 (no format or save-path
   change between them). Every number is one run.
 
@@ -192,7 +197,7 @@ should demand, which is the owner's:
   the threshold written before the runs**. The log, the audit reading and the
   ranked defects are in
   [`friction-log-v6.2.1.md`](../bench/coldstart/friction-log-v6.2.1.md).
-- **What it found.** No run hit a velo error. The friction is documentation:
+- **What round one found.** No run hit a velo error. The friction is documentation:
   the API reference the pages link to is not reachable (four runs), API shapes
   had to be read from type stubs (four runs), the Rust page shows little beyond
   save, history and blame, and the MCP section does not say how to set the run
@@ -200,9 +205,16 @@ should demand, which is the owner's:
   client's name. The checker also found a velo bug the agents did not run into:
   `velo history` showed nothing in a repository written through the library,
   fixed in 6.2.2.
-- **Not done yet, from the protocol:** fixing the doc defects and running round
-  two at the fixed tag. Until then the friction log is the documentation
-  backlog.
+- **Round two ran on v6.2.2** (2026-10-26), after the documentation fixes: the
+  same eight-run protocol with fresh agents and new sandboxes. All eight runs
+  passed again. Distinct defects fell from 20 to 15 and friction rows from 40 to
+  31; four of round one's top five are gone and the fifth survives only as links
+  to pages the test does not hand over. What remains is Node and Rust call shapes
+  and two `parent` behaviours, all now written into `docs/LIBRARY.md`. See
+  [`friction-log-v6.2.2-round2.md`](../bench/coldstart/friction-log-v6.2.2-round2.md).
+  The audit script was corrected between the rounds (it had flagged every
+  transcript on the host's own records and on quoted links); under it all
+  sixteen runs are valid.
 - **The limit, stated.** Agents are the only evidence this line has. An agent
   that reads the README and succeeds shows that the steps are findable and
   followable by a model; it does not show that a person who has never seen velo

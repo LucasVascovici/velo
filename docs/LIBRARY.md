@@ -15,6 +15,7 @@ npm install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/velo
 
 ```toml
 # Rust: Cargo.toml (the crate is `velo-core`; `cargo install velo-cli` is the command-line tool)
+# Use the newest release tag: the releases page, or `git ls-remote --tags <repo URL>`.
 velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "vX.Y.Z" }
 ```
 
@@ -71,6 +72,17 @@ let next = repo.write()?.save_changes(save)?;
 
 What the calls return and take (all in `velo_core`):
 
+- **Imports.** `Repo`, `Author`, `BranchName`, `SnapshotId` and `TagName` are at the
+  crate root; `SaveTree`, `SaveChanges`, `Change`, `TreeEntry` and `TreeFile` are in
+  `velo_core::tree`; the operations (`history`, `blame`, `branches`, `tag`, `merge`)
+  are in `velo_core::commands`.
+- **`parent` is the snapshot you build on, and `None` starts a new history.** A
+  `save_changes` or `save_tree` with `parent: None` makes a root snapshot holding only
+  what you give it and moves the branch to it, even if the branch had commits. Pass the
+  previous snapshot every time after the first. (The same holds in Python and Node.)
+- `SaveChanges` has public fields `author: Option<&Author>`, `meta`, `merge_parent`,
+  `timestamp_ms` and `changes`; rename edges are `renames: &[(PathBuf, PathBuf)]` on
+  `SaveTree`.
 - `save_tree` returns the new `SnapshotId`; `save_changes` returns `Saved`, so use
   `saved.snapshot` for the id and `saved.written` for the objects it stored.
 - An author is `Author::new("ada")?`, which returns a `Result`; `author` takes
@@ -139,6 +151,10 @@ repo.blame("n.txt", at=c).lines[0].origin.author.name
 
 What the calls return and take:
 
+- **`parent` is required after the first save.** `save_tree` and `save_changes`
+  with no `parent` start a new history holding only what you pass, and move the branch
+  to it, even if the branch already had commits. Pass the previous snapshot id each
+  time. `Repo.init(path)` takes just a path and creates a `.velo` folder in it.
 - `save_tree` returns the snapshot id (`str`); `save_changes` returns `Saved`
   (`.snapshot`, `.written`). `tree_at` returns `TreeFile` objects (`.path`,
   `.object`, `.kind`); `history` returns `Entry` objects (`.id`, `.message`,
@@ -197,6 +213,11 @@ const next = await repo.saveChanges({
 await repo.history({ from: id, limit: 5 })
 await repo.blame('a.txt', { at: id })
 ```
+
+Authors and metadata: `author: { name: 'ada' }` (and optional `email`) and
+`meta: { app: { key: 'value' } }` go on `saveTree`, `saveChanges` and `mergeCommit`. As in
+Python, `parent` is required after the first save: with none, the call starts a new
+history that holds only what you pass and moves the branch to it.
 
 What the calls return and take: `saveTree` resolves to the snapshot id (a
 string); `saveChanges` to `{ snapshot, written }`; `treeAt` to
@@ -280,15 +301,17 @@ against a run id.
 `velo_history`, `velo_metadata`, `velo_blame`, `velo_branch` (`list`, `create`,
 `switch`), `velo_merge_plan` then `velo_merge_apply` (a merge is always a plan
 first, with a resolution for every conflict), `velo_undo`, `velo_redo`,
-`velo_tag`, `velo_conflicts`, `velo_find` and `velo_repack`. Ask the server for
-the exact arguments with `tools/list`. There is no tool that forces anything or
-rewrites pushed history.
+`velo_tag`, `velo_conflicts`, `velo_find` and `velo_repack`; and, for an agent with no
+checkout (`--store`, below), `velo_save_tree`, `velo_tree_at`, `velo_read_file` and
+`velo_read_files`. Ask the server for the exact arguments with `tools/list`. A result
+is in `result.structuredContent` (and as JSON text in `result.content`). There is no tool
+that forces anything or rewrites pushed history.
 
 **Run identity.** Start the server with `--run <id>` (or set `VELO_MCP_RUN`);
 without one it generates `run-<epoch_ms>`. Every write records metadata in the
 `mcp` namespace: `run`, `tool`, `client` and, when the call passes a
 `tool_call_id`, `tool_call_id`. Find a run's snapshots with `velo_find` (or
-`velo history --where mcp:run=<id>`), and `velo_blame` reports the run of each
+`velo history --all --where mcp:run=<id>`), and `velo_blame` reports the run of each
 line. The snapshot **author** is the `clientInfo.name` your client sends at
 `initialize` (or `VELO_AUTHOR_NAME` when set); it is not the run id.
 
@@ -296,6 +319,12 @@ line. The snapshot **author** is the `clientInfo.name` your client sends at
 Send `initialize` (the server accepts protocol versions 2025-11-25, 2025-06-18,
 2025-03-26 and 2024-11-05 and answers with one it supports), then the
 `notifications/initialized` notification, then `tools/list` and `tools/call`.
+
+**Behaviours worth knowing.** `velo_save` snapshots the whole working tree, so a script
+you keep inside the project is saved too (keep it outside, or in `.veloignore`).
+`velo_branch` `create` with no `at` makes an unborn branch; pass `at` to start it from a
+snapshot. `velo_find` searches every branch, while `velo history --where ...` lists
+only the current branch unless you add `--all`.
 
 **Setup.** The server needs an existing repository: run `velo init` in the
 project first (the CLI is in the `velo-<arch>-<os>` release archive), or point it

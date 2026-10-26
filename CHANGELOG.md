@@ -6,6 +6,17 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
+## Unreleased
+
+### Security
+
+- **Lockfile and dependency bump for RUSTSEC-2026-0391, -0398, -0403 and -0410.** Four advisories published on 2026-10-16 against the zstd crates, which velo uses to decompress bundles, packs and wire frames from other machines: data from an abandoned stream leaking into the next on a reused context (`zstd`), uninitialised memory exposed when streaming decompression of a legacy frame fails and a `Vec` length set past its capacity in `Seekable::decompress` (`zstd-safe`), and an allocator shim fault on WebAssembly (`zstd-sys`). `zstd` moves from 0.13 to 0.14 (0.14.3, `zstd-safe` 8.2.0, `zstd-sys` 2.1.2); no velo API changes, and the corpus, fuzz regression and hostile-input tests pass unchanged. The four lockfiles under `bindings/` are updated too.
+
+### Documentation
+
+- **Round two of the cold-start test (v6.2.2): all four wedges pass again, with fewer defects.** `bench/coldstart/friction-log-v6.2.2-round2.md`: 15 distinct defects against 20, and none of round one's top five except the linked pages the test does not hand over. `docs/LIBRARY.md` now says what the second round had to guess: where each Rust type lives and the public fields of `SaveChanges`; the shape of an author and metadata in Node; that `parent` is required after the first save (a save with none starts a new history that holds only what was passed, and moves the branch to it, verified in core by `library_docs`); which release tag to use; the four store-mode MCP tools, the shape of a tool result, that `velo_save` snapshots the whole working tree, that `velo_branch create` with no `at` makes an unborn branch, and that `velo history --where` needs `--all` to see other branches.
+- **The cold-start audit scans only the agent's own tool calls.** It had flagged every transcript because it read the host's preamble records, the tool results (which echo the handed-over pages) and the agent's prose (which quotes their links). Two new tests pin this.
+
 ## 6.2.2
 
 Fixes for what simulation run six found. No repository format change; the

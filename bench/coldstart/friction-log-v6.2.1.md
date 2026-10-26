@@ -94,8 +94,9 @@ handed-over `docs/LIBRARY.md`, which links to `crates/velo-core`. No tool call
 touched a path under a velo checkout or a planning file; the only paths outside
 a sandbox in tool calls were the git dependency URL the Rust docs give, the
 app's own notes folder (written, never read) and string fragments such as
-`"\n"`. The runs are judged valid on that reading; the audit heuristic needs to
-learn the preamble record types (deferred).
+`"\n"`. The runs are judged valid on that reading. The audit was then corrected to
+scan only the agent's own tool calls (the host's records, the tool results and
+the agent's prose are not scanned), and under it every round-one run is valid.
 
 Minutes are from the prompt to the agent's last record; the check is the
 corrected `check.py` above.
