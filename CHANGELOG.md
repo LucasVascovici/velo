@@ -6,7 +6,14 @@ unreadable. The normative format spec is [`docs/FORMAT.md`](docs/FORMAT.md).
 
 This file starts at the format v2 break. Earlier releases are in the git history.
 
-## Unreleased
+## 6.2.3
+
+A security patch for the compression library, and Windows CI that no longer blocks.
+No repository format change; no public API change.
+
+### Changed
+
+- **The Windows legs of the `Test`, `Perf` and `Crash` CI jobs are advisory.** They run and report, and a failure shows as a red leg on the pull request, but it no longer holds a merge: Windows Defender scanning and a busy runner made their timings and the crash harness's process kills random, so a red leg was as likely noise as a regression. The Linux and macOS legs of the same jobs still block, as do the Windows clippy, corpus, Node, Python and packaging legs, which are deterministic. A Windows regression is still visible, and the benchmark numbers in `docs/PERF.md` and `docs/SCALE.md` are measured, not gated.
 
 ### Security
 

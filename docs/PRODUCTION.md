@@ -159,7 +159,7 @@ The verdicts below are as [PERF.md](PERF.md) records them, misses included.
 What changed since the last judgement: the Linux 500-step ratio now exists and
 passes, and the 100,000 x 500 ratio is measured and passes on Windows. The CI
 guard now covers all four workloads on both runners: the `perf` job in
-[`ci.yml`](../.github/workflows/ci.yml) blocks on Linux and Windows, against
+[`ci.yml`](../.github/workflows/ci.yml) blocks on Linux (its Windows leg runs and reports but is advisory since 6.2.3), against
 baselines in [`baseline.json`](../bench/perf/baseline.json) taken as medians of
 three CI runs ([`bench/perf/README.md`](../bench/perf/README.md), "CI
 calibration"). On 2026-10-23 the Linux disk target was met (2.23x with the
@@ -173,8 +173,8 @@ should demand, which is the owner's:
   on Linux; whether the CLI on a scanned Windows disk is part of the line is
   not settled.
 - The benchmark workflow [`bench.yml`](../.github/workflows/bench.yml) is
-  manual. The regression guard is the `perf` job, which blocks on both
-  platforms; the manual workflow is the measurement, not the guard.
+  manual. The regression guard is the `perf` job, which blocks on Linux and reports on Windows; the manual workflow is the
+  measurement, not the guard.
 
 ## 8. API and format promises enforced by CI: green
 
