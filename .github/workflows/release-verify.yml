@@ -21,6 +21,7 @@ on:
         type: string
   # Changing the workflow or the asset list re-checks the latest release.
   push:
+    branches: [main]
     paths:
       - .github/workflows/release-verify.yml
       - packaging/release_assets.py

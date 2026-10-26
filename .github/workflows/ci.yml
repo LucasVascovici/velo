@@ -204,6 +204,9 @@ jobs:
   semver:
     name: Semver check
     runs-on: ubuntu-latest
+    # 7.0.0 renamed the crates, so v6.2.2 holds no velody-core to compare with. Advisory
+    # until the baseline below moves to v7.0.0 right after that release.
+    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
@@ -403,13 +406,13 @@ jobs:
           fi
           echo "old release: $tag"
           git worktree add "$RUNNER_TEMP/old-velody" "$tag"
-          cargo build --release -p velody-cli --manifest-path "$RUNNER_TEMP/old-velody/Cargo.toml" --target-dir "$RUNNER_TEMP/old-target"
+          cargo build --release -p velo-cli --manifest-path "$RUNNER_TEMP/old-velody/Cargo.toml" --target-dir "$RUNNER_TEMP/old-target"
 
       - name: Build the current release binary
         run: cargo build --release -p velody-cli --locked
 
       - name: Old release refuses v4, and the bundle way back works
-        run: python3 tests/corpus/old_release_check.py --old "$RUNNER_TEMP/old-target/release/velody" --new target/release/velody
+        run: python3 tests/corpus/old_release_check.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velody
 
       - name: Mixed versions, HTTP and path remotes in both directions
-        run: python3 tests/compat/mixed_versions.py --old "$RUNNER_TEMP/old-target/release/velody" --new target/release/velody
+        run: python3 tests/compat/mixed_versions.py --old "$RUNNER_TEMP/old-target/release/velo" --new target/release/velody

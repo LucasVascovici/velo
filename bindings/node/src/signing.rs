@@ -332,7 +332,11 @@ impl Repo {
         let hooks = self.hooks.clone();
         self.job(move |repo| {
             let remote = remote.as_deref().unwrap_or("origin");
-            let spawn = Spawn::new(velody_bin.map(PathBuf::from).unwrap_or_else(|| "velody".into()));
+            let spawn = Spawn::new(
+                velody_bin
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| "velody".into()),
+            );
             let author = build_author(author)?;
             let mut opts = SyncOptions::default();
             if let Some(a) = author.as_ref() {
