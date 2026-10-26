@@ -397,6 +397,11 @@ bindings = ["python", "node"]
 reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
 
 [[exempt]]
+entry = "commands::sync::published_except"
+bindings = ["python", "node"]
+reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"
+
+[[exempt]]
 entry = "commands::sync::pull"
 bindings = ["python", "node"]
 reason = "pending: sync, remotes and the HTTP token parameter (18.8-d)"

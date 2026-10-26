@@ -11,7 +11,7 @@ A simulation run has several simulated developers drive the real velo binaries a
 | Three | not recorded | not recorded | not recorded | not recorded | 5 findings fixed in 5.1.2 | not recorded | not recorded |
 | Four (pilot) | 6.0.1 | not recorded | 4 developers, 2 rounds | not recorded | counted with run five below | not recorded | not recorded |
 | Five (full) | 6.0.1 | not recorded | 9 developers, 4 rounds | about 2,700 | 3 wrong-result bugs, 1 `fsck` classification question, message defects | 8 to 27 for eight of nine developers; `velo sync` ran once | "blame attribution mismatch" warnings, unexplained at the time |
-| Six | 6.2.x release | planned | planned | planned | planned | planned | planned |
+| Six | 6.2.1 | 2026-10-23 | 9 developers: 4 rounds, then rounds 1 and 2 again | 2,354 and 933 | 3 (1 medium display, 2 low), fixed in 6.2.2; no data loss | 32.5, then 38.6 with velo's own recipe; `velo sync` used 35 times in the second pass | clones equal the remote and `fsck` clean everywhere; five missing markers traced to deliberate edits |
 
 ## Run one
 
@@ -84,23 +84,47 @@ Not exercised: `restore <path>`, `stash drop`, `stash show`, rename-aware merge,
 
 Open after this run: none of the findings above. The blind spots above remain untested.
 
-## Run six (planned, not yet run)
+## Run six: the 6.2.1 runs
 
-Version: the 6.2.x release.
+Two passes against 6.2.1 (built from `main` at `6114905`), 2026-10-23, both with
+9 developers and an HTTP remote that requires a write token.
 
-Blind spots to exercise, none of which any earlier run covered: `restore <path>`, `stash drop`, `stash show`, rename-aware merge, `mcp`, `push-branch`, `remote add`, `remote remove` and `remote ref`, HTTP remotes, large files and `.veloignore`.
+- **Full run:** 4 rounds, 2,354 commands. All nine clones ended at the remote's
+  tip, and `fsck` was clean on the remote and on every clone.
+- **Second pass:** rounds 1 and 2 again, 933 commands, with the integration
+  routine changed from "pull, then merge" to "do what velo's refusal message
+  says", so that commands per refused push measured velo's own guidance and not
+  the harness's. Converged with no oracle problem.
+- **Blind spots:** the full run's blind-spot missions did not reach the
+  developers; the second pass exercised `stash drop`, `stash show`,
+  `remote add` and `remove`, path restore and `.veloignore`, and a scripted
+  check ran the rest against the same build. Twelve checks, all passing
+  ([results](../bench/results/2026-10-23-run-six-blind-spots.json)).
 
-Fixes under test:
+Commands per refused push: 32.5 in the full run, where the harness still told
+developers to pull and merge, and 38.6 in the second pass, against a target of
+under 4. In the second pass `velo sync` was used 35 times (once in the full run)
+and by seven of the nine developers, and it worked whenever it was used. The
+reviewers' reading: the refusal prints `velo sync` and then "(or by hand:)",
+and developers took the manual recipe as the real instructions.
 
-- commands per refused push below 4
-- tag publishing
-- the HTTP token message
-- the mid-merge refusals
-- the exit-code rule
-- the git-habit spellings
+| Finding | Severity | Disposition |
+| --- | --- | --- |
+| Five merged work markers missing from main at the end of the full run | oracle problem ("data loss?") | not a velo loss. Traced through the remote's history: four were removed when a developer rewrote the `shop/config.py` lines that carried them, on a mission to edit those lines (snapshot `3a97c25`), and every later merge correctly kept the edit; one was dropped by `resolve --mark --force` after velo refused without `--force` and named the line. The oracle counts a marker removed by a deliberate edit of its own line as lost |
+| `velo conflicts` showed lines neither side has when both sides moved the same line | medium, display only | fixed in 6.2.2: hunk context is now text both sides agree on, not the ancestor's lines |
+| A path restore with `--force` reported discarding unsaved changes outside its paths, and without `--force` refused over them | low | fixed in 6.2.2: only changes under the requested paths count |
+| `undo` of a local merge warned that it rewrote history pushed to the merged branch | low | fixed in 6.2.2: undo and amend exclude what every parent reaches |
+| A 5.3.0 client against a 6.2.1 remote, and a 6.2.1 bundle applied by 5.3.0 | mixed versions | both work; 5.3.0 opening a v4 repository directly is refused with a message |
+| The refused-push loop costs far more than the target | usability | open: see above |
+| An unborn branch forgets its start point after switching away and back | usability | open: the start point is not stored; the message should say "from your current position" or the point should be kept |
+| `velo push <branch>` with no remote reads the branch as a remote name | usability | open |
+| Refs are positional in `show` and `diff`, flags in `blame`, `grep` and `history`; `show ref:path` is refused | usability | open |
+| `push` and `sync` publish branches and tags nobody named | usability | open; by design so far (side branches since 5.1.2, tags since 6.1.0), and the reviewers flagged it as a safety surprise |
+| Blame attribution warnings | warning | by design, as in run five (replay authorship and the oracle's parsing) |
 
-Mixed versions: a 5.3 client against a 6.x remote, and the bundle round trip back.
+Not exercised by simulated developers: `mcp`, push of a large file over HTTP
+in the second pass, `tag --force` and `tag --delete` in the second pass. The
+scripted checks cover `velo-mcp` over stdio and a 32 MB file over HTTP; the full
+run covered the tag commands.
 
-A quiet machine: Windows Defender exclusions as in [WINDOWS.md](WINDOWS.md), or Linux, so that timing and lock contention reflect velo and not a scanner.
-
-Convergence rule: the run repeats until nothing above green is open.
+Open after this run: no bug. The usability findings above remain open.

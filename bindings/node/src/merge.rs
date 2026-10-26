@@ -255,7 +255,8 @@ impl Repo {
         })
     }
 
-    /// Point an existing branch at snapshot `to`.
+    /// Point a branch that has no snapshots of its own at snapshot `to`.
+    /// A branch that has snapshots keeps its newest one as its tip: to go back, save a rollback snapshot.
     #[napi(ts_return_type = "Promise<void>")]
     pub fn set_branch_tip(&self, name: String, to: String) -> AsyncTask<Job<()>> {
         self.job(move |repo| {

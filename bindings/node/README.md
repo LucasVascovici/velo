@@ -64,7 +64,7 @@ Notes:
   `mergeCommit` resolutions map a path to `'ours'`, `'theirs'`, `null` (delete)
   or content (`Buffer`, or a string other than those two words). An unresolved
   conflict rejects with `code: 'Conflicts'` and `err.paths`.
-- `branches()`, `createBranch(name, at?)` and `setBranchTip(name, to)` manage
+- `branches()`, `createBranch(name, at?)` and `setBranchTip(name, to)` (only for a branch with no snapshots of its own) manage
   refs. Timestamps come as `createdAtMs` plus a `createdAt` `Date`.
 - Working-tree commands are not yet exposed.
 

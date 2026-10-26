@@ -9,18 +9,18 @@
 
 <p align="center">
   <strong>A timeline engine: verifiable whole-tree snapshots, provenance and
-  explicit divergence, in one SQLite file.</strong><br/>
+  explicit divergence, in one SQLite database.</strong><br/>
   An embeddable Rust library first, with bindings, an MCP server and a CLI on top.
 </p>
 
 <p align="center">
-  <em>v4 — a new snapshot format, an API a program can hold, and merges that
-  remember what you already resolved.</em>
+  <em>v6 — delta snapshots, signed history, an API a program can hold, and merges
+  that remember what you already resolved.</em>
 </p>
 
 > **Note:** Velo was vibe-coded for fun — high-level intent, modern tech stack, tight feedback loop with an AI assistant. It's a real working tool, but built as an experiment in what's possible with that workflow, not as a production-grade Git replacement.
 >
-> The [production checklist](docs/PRODUCTION.md) judges each line against its evidence; 4 of its 11 lines are red.
+> The [production checklist](docs/PRODUCTION.md) judges each line against its evidence; 1 of its 11 lines is red.
 
 ---
 
@@ -30,7 +30,7 @@
 
 Velo is a timeline engine: a program (or a person) records verifiable whole-tree
 snapshots, branches them, merges them and asks questions of the result, all in
-one SQLite file. It is an embeddable Rust library first, with Python, Node, C and
+a SQLite database (a `.velo` folder, or one file in store-only mode). It is an embeddable Rust library first, with Python, Node, C and
 WebAssembly bindings, an MCP server and a Git-shaped CLI on top. To see who wrote
 each line of an agent run, open the [sample `velo report`](docs/report-sample.html).
 

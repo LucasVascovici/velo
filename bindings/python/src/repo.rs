@@ -953,7 +953,9 @@ impl Repo {
         velo_core::commands::branches::create(&guard, &name, at.as_ref()).map_err(to_py)
     }
 
-    /// Point an existing branch at `to`. Nothing is rewritten or deleted.
+    /// Point a branch that has no snapshots of its own at `to`. A branch that has
+    /// snapshots keeps its newest one as its tip, so this does not move it back:
+    /// save a rollback snapshot instead. Nothing is rewritten or deleted.
     fn set_branch_tip(&self, name: &str, to: &str) -> PyResult<()> {
         let name = branch_name(name)?;
         let to = snapshot_id(to)?;

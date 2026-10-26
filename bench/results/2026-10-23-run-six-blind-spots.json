@@ -1,0 +1,62 @@
+[
+ {
+  "check": "stash push -m / list / show / drop",
+  "pass": true,
+  "evidence": "push rc=0: ✔ Shelved 'audit wip' (2 modified, 0 new, 0 deleted)\n  Working tree restored to 227a0b960b2287751d8884524c7ce14d4399358579cf24779fa8ecb3ea997001\n  Bring it back with velo stash pop\nlist: Stash shelves:\n  audit wip (on main) 2026-10-23 15:55 46759cc0eda53656\nshow rc=0: Shelf: audit wip  (from main @ 227a0b96)\n\n~~~ modified: a.txt\n@@ -1,1 +1,1 @@\n    1 -one\n    1 +one edited\n\n~~~ modified: b.txt\n@@ -1,1 +1,1 @@\n    1 -two\n    1 +two edited\ndrop rc=0: ✔ Dropped shelf 'audit wip'.\nlist after: No shelves found.\nstatus: Branch: main  Position: 227a0b960b228775  \"base\"\n  Working directory clean."
+ },
+ {
+  "check": "remote add / list / push / remove",
+  "pass": true,
+  "evidence": "add rc=0: ✔ Added remote 'backup' → <work>/remotes-backup\nlist: Remote           URL\nbackup           <work>/remotes-backup\npush rc=0: ✔ Pushed 'main' to 'backup' — 1 snapshot(s), 3 object(s).\n  note: 'backup' was empty; it now has its first history. Others can now velo clone <url> / velo pull.\n  note: the remote's working tree is unchanged; it updates on its next velo pull.\nbackup history: History for branch 'main'\n  a0594a38d91b3f3d (HEAD → main)  base\nremove rc=0: ✔ Removed remote 'backup'.\nlist after: No remotes configured. Add one with 'velo remote add <name> <path>'."
+ },
+ {
+  "check": ".veloignore excludes files from status, save and clone",
+  "pass": true,
+  "evidence": "status: Branch: main  Position: 0f76747486bee934  \"base\"\n\n  Modified 1 file(s):\n    .veloignore\n\n  1 change(s) total — use velo diff or velo save \"<message>\"\nsave rc=0: ✔ Saved a9128a99f3d36c2a on main  (0 new, 1 modified, 0 deleted)\nclone rc=0: ✔ Cloned 2 snapshot(s), 4 object(s), 1 branch(es) into <work>/ignore-clone\n  Checked out main — from <work>/ignore\nclone has: ['.velo', '.veloignore', 'a.txt', 'b.txt']"
+ },
+ {
+  "check": "exit codes: nothing-to-do 0, error 1, usage 2; HEAD accepted; near-miss refused",
+  "pass": true,
+  "evidence": "undo x3 rc=0,0,0: Nothing to undo on branch 'main'.\nswitch mian rc=1: error: no branch 'mian'; did you mean 'main'? To create it: velo switch --create mian\nsave --no-such-flag rc=2: error: unexpected argument '--no-such-flag' found\n\n  tip: to pass '--no-such-flag' as a value, use '-- --no-such-flag'\n\nUsage: velo.exe save [OPTIONS] [MESSAGE] [-- <PATH>...]\n\nFor more information, t\nshow HEAD rc=0: snapshot 5c399ba5a0a7cd83  main  2026-10-23 15:55:12\n  base\n\n+++ new file: .veloignore\n+# Velo ignore file — patterns here are excluded from tracking.\n+# Syntax follows .gitignore rules.\n+\n+# Build ar\nbranches: Branches:\n  * main  (no commits yet)"
+ },
+ {
+  "check": "switch, whole-tree restore and stash pop refuse mid-merge",
+  "pass": true,
+  "evidence": "merge rc=3\nswitch rc=1: error: a merge is already in progress\n  Finish it or undo it:\n    · velo save \"<message>\"  record the result\n    · velo merge --abort     throw the attempt away\nrestore rc=1: error: a merge is already in progress\n  Finish it or undo it:\n    · velo save \"<message>\"  record the result\n    · velo merge --abort     throw the attempt away\nstash pop rc=1: error: a merge is already in progress\n  Finish it or undo it:\n    · velo save \"<message>\"  record the result\n    · velo merge --abort     throw the attempt away\nstatus unchanged: True"
+ },
+ {
+  "check": "HTTP push without a token names the variable and never prints a token",
+  "pass": true,
+  "evidence": "clone rc=0: ✔ Cloned 1 snapshot(s), 2 object(s), 1 branch(es) into <work>/http-clone\n  Checked out main — from http://127.0.0.1:61191/\npush (no token) rc=1: error: 'http://127.0.0.1:61191/' refused access: a bearer token is required\n  No token was sent. Set VELO_TOKEN_ORIGIN (or VELO_TOKEN) to a bearer token for this remote.\n  The server accepts pushes only with a token: its owner runs `velo serve-http` with VELO_SERVE_TOKEN=<token> or --token-file FILE and gives you one.\n  Never put the token in the URL."
+ },
+ {
+  "check": "32 MB file round-trips over HTTP with a token",
+  "pass": true,
+  "evidence": "push rc=0: ✔ Pushed 'main' to 'origin' — 2 snapshot(s), 2 object(s).\n  note: the remote's working tree is unchanged; it updates on its next velo pull.\nclone rc=0: ✔ Cloned 3 snapshot(s), 4 object(s), 1 branch(es) into <work>/http-clone-2\n  Checked out main — from http://127.0.0.1:61191/\nhash equal: True"
+ },
+ {
+  "check": "a tag on an already-pushed snapshot reaches a fresh clone",
+  "pass": true,
+  "evidence": "push rc=0: ✔ 1 tag(s) published: v-blind\nclone tags: Tag                  | Snapshot         | Message\n-------------------------------------------------\nv-blind              | 69765a2314d46d77 | 32 MB blob"
+ },
+ {
+  "check": "5.3.0 client clones from and pushes to a 6.2.1 HTTP remote",
+  "pass": true,
+  "evidence": "5.3 clone rc=0: ✔ Cloned 3 snapshot(s), 4 object(s), 1 branch(es) into <work>/old-clone\n  Checked out main — from http://127.0.0.1:61191/\n5.3 push: ✔ Pushed 'main' to 'origin' — 1 snapshot(s), 1 object(s).\n  note: the remote's working tree is unchanged; it updates on its next velo pull.\nlanded: True"
+ },
+ {
+  "check": "5.3.0 refuses to open a 6.x (format v4) repository, with a message",
+  "pass": true,
+  "evidence": "5.3 status rc=1: error: repository format v4 is newer than this Velo supports (v3)"
+ },
+ {
+  "check": "bundle written by 6.2.1 applies in 5.3.0 with the same history and a clean fsck",
+  "pass": true,
+  "evidence": "create rc=0\napply rc=0: ✔ Imported 2 snapshot(s) and 3 object(s).\n  Use velo history --all to see them, or velo switch <branch> to check into one.\nfsck rc=0\n6.2.1: ['a7fc3ca6430d6bca', 'd945a88592558f66']\n5.3.0: ['a7fc3ca6430d6bca', 'd945a88592558f66']"
+ },
+ {
+  "check": "velo-mcp over stdio: initialize, tools/list, save with a run id, history",
+  "pass": true,
+  "evidence": "'velo_restore', 'velo_status', 'velo_diff', 'velo_history', 'velo_metadata', 'velo_branch', 'velo_merge_plan', 'velo_merge_apply', 'velo_blame', 'velo_save_tree', 'velo_tree_at', 'velo_read_file', 'velo_read_files', 'velo_repack', 'velo_undo', 'velo_redo', 'velo_tag', 'velo_conflicts', 'velo_find']\nsave: {\"jsonrpc\": \"2.0\", \"id\": 3, \"result\": {\"content\": [{\"type\": \"text\", \"text\": \"{\\n  \\\"snapshot\\\": \\\"8043cba8927e7b46fbac2ad2e583cf70b382f592b0283a4ce0b5ac86e521ec80\\\",\\n  \\\"branch\\\": \\\"main\\\",\\n  \\\"files_changed\\\": 1,\\n  \\\"new\\\": 0,\\n  \\\"modified\\\": 1,\\n  \\\"deleted\\\": 0\\n}\"}], \"structuredContent\": {\"snapshot\": \"8043cba8927e7b46fbac2ad2e583cf70b382f592b0283a4ce0b5ac86e521ec80\", \"branch\": \"main\", \"fil\nblame: 330cce61df56cc30 2026-10-23 15:55 blind          base                             1  start\n8043cba8927e7b46 2026-10-23 15:55 blind          agent edit                       2  agent line"
+ }
+]

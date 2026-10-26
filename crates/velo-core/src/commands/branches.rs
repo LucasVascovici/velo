@@ -151,6 +151,12 @@ pub fn create(guard: &WriteGuard, name: &BranchName, at: Option<&SnapshotId>) ->
 
 /// Point an existing branch at `to`.
 ///
+/// A branch's tip is the newest snapshot recorded *on* that branch, so this moves
+/// only a branch that has no snapshots of its own (for example one created
+/// unborn). On a branch that has snapshots it changes nothing a reader sees: to go
+/// back, save a new snapshot that carries the old objects forward, as the
+/// cookbooks do for a rollback.
+///
 /// Moving a branch does not rewrite or delete anything: snapshots that were only
 /// reachable from the old tip remain in the repository and are still reachable by
 /// id, which is why this is not a destructive operation.

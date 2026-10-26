@@ -1,8 +1,26 @@
 ## Use it from your language
 
 The engine is `velo-core`, a synchronous Rust library with no terminal output.
-Every other surface below is a thin layer over it. **Everything is built from
-source; nothing is published** to crates.io, PyPI or npm yet.
+Every other surface below is a thin layer over it. **Nothing is published** to
+crates.io, PyPI or npm yet: install from the files attached to each GitHub
+release (replace `vX.Y.Z` with a release tag; `docs/INSTALL.md` has the full
+list and how to verify the checksums):
+
+```bash
+# Python: the wheel for your platform; the import name is `velo`
+pip install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/<wheel file>
+# Node: the tarball for your platform; the package name is `velo-core`
+npm install https://github.com/LucasVascovici/velo/releases/download/vX.Y.Z/velo-core-<version>-<platform>.tgz
+```
+
+```toml
+# Rust: Cargo.toml (the crate is `velo-core`; `cargo install velo-cli` is the command-line tool)
+velo-core = { git = "https://github.com/LucasVascovici/velo", tag = "vX.Y.Z" }
+```
+
+The installed Python package ships type stubs (`velo/__init__.pyi`) and the Node
+package ships `index.d.ts`; each lists every method with its types. Below, the
+parts people most often have to look up are written out.
 
 ### Rust
 
@@ -51,6 +69,47 @@ save.changes = vec![
 let next = repo.write()?.save_changes(save)?;
 ```
 
+What the calls return and take (all in `velo_core`):
+
+- `save_tree` returns the new `SnapshotId`; `save_changes` returns `Saved`, so use
+  `saved.snapshot` for the id and `saved.written` for the objects it stored.
+- An author is `Author::new("ada")?`, which returns a `Result`; `author` takes
+  `Option<&Author>`, and the name is read with `author.name()`.
+- `history::run` returns a `History`; the snapshots are in `.entries`.
+  `from: Some(&id)` lists the whole ancestry of `id`; with no scope it lists the
+  checked-out branch, and a repository written only through the library has no
+  checked-out position, so it lists the tip of the branch `HEAD` names.
+- `blame::run` returns lines whose `origin` is an `Option<LineOrigin>`; its
+  `author` is an `Option<Author>`.
+- A new branch: save to a new branch name with a `parent`, or
+  `branches::create(&guard, &name, Some(&id))`. Tags: `tag::create(&guard,
+  &name, Some(&id), false)`.
+- Rollback or undo is a new snapshot that carries the old objects forward:
+  `TreeEntry::stored(file.path, file.object, file.kind)` for each `TreeFile` of
+  `repo.tree_at(&old)?`. History stays append-only.
+- Merge in two steps, with no working tree:
+
+```rust
+use velo_core::commands::merge::{self, MergeCommit, Resolution};
+
+let plan = merge::plan(&repo, &ours, &theirs)?;          // writes nothing
+let conflicts: Vec<_> = plan.conflicts().map(|f| f.path.clone()).collect();
+let merged = merge::commit(&repo.write()?, MergeCommit {
+    branch: &branch,
+    ours: &ours,
+    theirs: &theirs,
+    // One resolution per conflicted path; `Content` writes exactly these bytes.
+    resolutions: &[("notes.md".to_string(), Resolution::Content(b"both\n".to_vec()))],
+    message: "merge",
+    meta: Default::default(),
+    author: None,
+    timestamp_ms: None,
+})?;
+```
+
+  A conflict with no resolution is `Error::Conflicts` listing the paths. The
+  merged snapshot has `ours` as parent and `theirs` as merge parent.
+
 See [`crates/velo-core`](../crates/velo-core) and the runnable
 [`examples/prompt-registry`](../examples/prompt-registry).
 
@@ -78,7 +137,38 @@ d = repo.save_changes(branch="main", message="d", parent=c,
 repo.blame("n.txt", at=c).lines[0].origin.author.name
 ```
 
-It also exposes `merge_plan`, `merge_commit`, `create_branch` and more; see its README.
+What the calls return and take:
+
+- `save_tree` returns the snapshot id (`str`); `save_changes` returns `Saved`
+  (`.snapshot`, `.written`). `tree_at` returns `TreeFile` objects (`.path`,
+  `.object`, `.kind`); `history` returns `Entry` objects (`.id`, `.message`,
+  `.branch`, `.parent`, `.merge_parent`, `.tag`, `.is_merge`); `read_file_at`
+  returns `bytes`.
+- **History scope.** `history(branch="b")` lists the snapshots *recorded on* `b`,
+  which stops where `b` forked; `history(from_=id)` lists everything that led to
+  `id`. Use `from_` for a full trail.
+- **Who.** `Entry` has no author. A line's author is
+  `blame(...).lines[i].origin.author`; a snapshot's is
+  `snapshot_meta(id)["velo"]["author.name"]`. The author is part of the snapshot
+  id, so it cannot be changed afterwards. Keep "which run" or "who approved" in
+  your own metadata namespace (`meta={"app": {...}}`), as the cookbooks do.
+- **Undo and rollback.** Save a new snapshot whose whole tree is the old one, carrying
+  its objects forward: `save_tree(entries=[velo.TreeEntry.stored(f.path, f.object,
+  f.kind) for f in repo.tree_at(old)], parent=current, ...)`. Using `save_tree`
+  rather than `save_changes` drops files the bad snapshot added. History stays
+  complete. A branch's tip is its newest snapshot, so
+  `set_branch_tip(name, to)` moves only a branch that has no snapshots of its own;
+  it does not take an existing branch back. `create_branch(name, at=id)` starts a
+  new branch from an earlier snapshot.
+- **Branches and tags.** `create_branch(name, at=id)`, `branches()`,
+  `create_tag(name, at=id)`, `tags()`, `delete_tag(name)`.
+- **Merging.** `merge_plan(ours, theirs)` writes nothing; `merge_commit(branch=...,
+  ours=..., theirs=..., message=..., resolutions={path: b"text"}, author=...,
+  meta={...})` records a two-parent snapshot. A resolution is `b"bytes"` to write,
+  `"ours"`, `"theirs"`, or `None` to delete the path; a conflicted path with none
+  raises `Conflicts` (its `.paths` lists them).
+
+It also exposes more (events, merge drivers, signing, `repack`, `fsck`); see its README.
 
 ### Node.js
 
@@ -107,6 +197,22 @@ const next = await repo.saveChanges({
 await repo.history({ from: id, limit: 5 })
 await repo.blame('a.txt', { at: id })
 ```
+
+What the calls return and take: `saveTree` resolves to the snapshot id (a
+string); `saveChanges` to `{ snapshot, written }`; `treeAt` to
+`{ path, object, kind }` objects; `history` to `SnapshotInfo` objects (`id`,
+`message`, `branch`, `parent`, `mergeParent`, `tag`, `createdAt`). They carry no
+author: read a line's with `blame(...)` (`lines[i].origin.author`) or a snapshot's
+with `snapshotMeta(id)` (`velo['author.name']`), and keep "who approved" in your
+own metadata namespace. `history({ branch })` lists only what was recorded on
+that branch since it forked; `history({ from })` gives the whole ancestry.
+
+Rollback is a new snapshot that carries the old objects forward, so no content is
+read or copied: pass `{ path, object, kind }` from `treeAt(old)` as the entries of
+`saveTree`. A branch's tip is its newest snapshot, so `setBranchTip` does not take an
+existing branch back; `createBranch(name, at)` starts a new branch from an earlier
+snapshot. Branches and tags are `createBranch`, `branches`, `createTag(name, at)`,
+`tags` and `deleteTag`.
 
 ### C
 
@@ -167,12 +273,39 @@ brotli (measured 2026-10-14; method in the binding README, budget enforced in CI
 ### MCP server
 
 [`crates/velo-mcp`](../crates/velo-mcp) is a stdio Model Context Protocol server
-that makes velo the checkpoint layer for an agent: `velo_save`, `velo_restore`,
-`velo_history`, `velo_branch`, `velo_merge_plan`, `velo_merge_apply`,
-`velo_blame` and more, with every write recorded against a run id.
+that makes velo the checkpoint layer for an agent, with every write recorded
+against a run id.
+
+**Tools.** `velo_save`, `velo_restore`, `velo_status`, `velo_diff`,
+`velo_history`, `velo_metadata`, `velo_blame`, `velo_branch` (`list`, `create`,
+`switch`), `velo_merge_plan` then `velo_merge_apply` (a merge is always a plan
+first, with a resolution for every conflict), `velo_undo`, `velo_redo`,
+`velo_tag`, `velo_conflicts`, `velo_find` and `velo_repack`. Ask the server for
+the exact arguments with `tools/list`. There is no tool that forces anything or
+rewrites pushed history.
+
+**Run identity.** Start the server with `--run <id>` (or set `VELO_MCP_RUN`);
+without one it generates `run-<epoch_ms>`. Every write records metadata in the
+`mcp` namespace: `run`, `tool`, `client` and, when the call passes a
+`tool_call_id`, `tool_call_id`. Find a run's snapshots with `velo_find` (or
+`velo history --where mcp:run=<id>`), and `velo_blame` reports the run of each
+line. The snapshot **author** is the `clientInfo.name` your client sends at
+`initialize` (or `VELO_AUTHOR_NAME` when set); it is not the run id.
+
+**Speaking to it.** Messages are JSON-RPC 2.0, one per line, on stdin and stdout.
+Send `initialize` (the server accepts protocol versions 2025-11-25, 2025-06-18,
+2025-03-26 and 2024-11-05 and answers with one it supports), then the
+`notifications/initialized` notification, then `tools/list` and `tools/call`.
+
+**Setup.** The server needs an existing repository: run `velo init` in the
+project first (the CLI is in the `velo-<arch>-<os>` release archive), or point it
+at a single-file store with `--store FILE --create`. A `velo_branch` `switch` to a
+branch that does not exist yet answers `started_unborn`, with `inherits` naming the
+snapshot the branch will start from at its first save.
 
 Install the `velo-mcp` archive for your platform from the latest release
-(assets `velo-mcp-<arch>-<os>.tar.gz`, and `velo-mcp-x86_64-windows.zip`):
+(assets `velo-mcp-<arch>-<os>.tar.gz` for Linux and macOS, and
+`velo-mcp-x86_64-windows.zip` for Windows; the line below is the Linux one):
 
 ```bash
 curl -L -o velo-mcp.tar.gz https://github.com/LucasVascovici/velo/releases/latest/download/velo-mcp-x86_64-linux.tar.gz && tar -xzf velo-mcp.tar.gz
@@ -184,8 +317,8 @@ Or build it from source:
 cargo build -p velo-mcp --release     # target/release/velo-mcp
 ```
 
-Run `velo init` in the project first. The tools are listed in the
-[velo-mcp README](../crates/velo-mcp/README.md#tools).
+The full tool table, the concurrent-agents rules and the HTTP transport are in the
+[velo-mcp README](../crates/velo-mcp/README.md).
 
 Client configuration (the surrounding file format depends on the client):
 
@@ -215,5 +348,7 @@ Worked walkthroughs live in [`docs/cookbook`](cookbook):
 What is promised to adopters, and which CI job enforces each promise, is in
 [`docs/STABILITY.md`](STABILITY.md).
 
-The Python and Node API reference is `api-python.zip` and `api-node.zip` on each
-release page, and the `api-python`/`api-node` artifacts of the apidocs workflow.
+The generated Python and Node API reference is `api-python.zip` and `api-node.zip`
+on each release page, and the `api-python`/`api-node` artifacts of the apidocs
+workflow. With only the installed package, read `velo/__init__.pyi` (Python) or
+`index.d.ts` (Node).

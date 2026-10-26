@@ -217,15 +217,18 @@ pub fn run(repo: &Repo, options: Options<'_>) -> Result<History> {
 
     let current = repo.position();
     let branch = repo.head_branch();
-    // With no working tree there is no checked-out position, so the default
-    // history walks back from the tip of the default branch instead.
-    let position = match (&current, repo.has_working_tree()) {
-        (Some(p), _) => p.as_str().to_string(),
-        (None, false) => repo
+    // With no checked-out position, the default history walks back from the
+    // tip of the branch HEAD names. That covers a single-file repository, which
+    // has no working tree, and a directory repository written only through the
+    // library, which never sets `.velo/PARENT`: there, reporting the branch as
+    // unborn contradicted `branches`, which shows its tip. The CLI's own paths
+    // always set a position, so they are unaffected.
+    let position = match &current {
+        Some(p) => p.as_str().to_string(),
+        None => repo
             .branch_tip(&branch)?
             .map(|t| t.into_string())
             .unwrap_or_default(),
-        (None, true) => String::new(),
     };
 
     let scope = match (from, all, filter_branch) {

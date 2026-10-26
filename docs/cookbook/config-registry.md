@@ -19,9 +19,12 @@ repo.save_tree(branch="registry", message=f"publish {version}",
                meta={"registry": {"version": version, "approved_by": "alice"}})
 ```
 
-The Python binding exposes branches but not tags, so the release version lives
-in metadata rather than a tag. A release is then found with
-`repo.find_snapshots([("registry", "version", "1.1.0")])`.
+The release version lives in metadata, which is part of the snapshot id, so it
+cannot be edited afterwards. A release is then found with
+`repo.find_snapshots([("registry", "version", "1.1.0")])`. Both bindings also have
+tags (`repo.create_tag("v1.1.0", at=id)` in Python, `createTag` in Node), a movable
+name you can use alongside the metadata; a tag is not hashed, so the metadata is
+the record to trust.
 
 ## Roll back
 
@@ -39,6 +42,14 @@ repo.save_tree(branch="registry", message="rollback to 1.1.0", entries=entries,
 No file content is read or copied; the new snapshot points at the same objects.
 History stays append-only: the bad 1.2.0 is still there, and the script asserts
 both that the rolled-back content equals 1.1.0 and that 1.2.0 is intact.
+
+In Node the same rollback passes `{ path, object, kind }` from `treeAt(id)` as the
+entries of `saveTree`, with no `data`.
+
+Blame credits the restored lines to the rollback snapshot, not to the original
+1.1.0 publish, because a rollback is a new snapshot. To find who approved the
+content, read the rollback's metadata (give it `rollback_of` and the approver, as
+the script does), or follow the object back to the version that first stored it.
 
 To change one file of a large config tree, `save_changes` sends only that file
 and carries the rest forward from the parent:

@@ -973,9 +973,24 @@ pub fn published(
     tip: &SnapshotId,
     base: Option<&SnapshotId>,
 ) -> Result<Option<String>> {
+    published_except(repo, tip, &base.into_iter().cloned().collect::<Vec<_>>())
+}
+
+/// [`published`] with several bases: the snapshots at stake are those below
+/// `tip` that none of `bases` reaches.
+///
+/// Removing one snapshot rewrites only that snapshot, so the caller passes all
+/// of its parents. With the first parent alone, undoing a merge would count the
+/// merged branch's history as rewritten and warn about a remote that holds none
+/// of what was removed.
+pub fn published_except(
+    repo: &Repo,
+    tip: &SnapshotId,
+    bases: &[SnapshotId],
+) -> Result<Option<String>> {
     let conn = repo.conn();
     let mut at_stake = bundle::reachable_ancestry(conn, tip.as_ref());
-    if let Some(base) = base {
+    for base in bases {
         for h in bundle::reachable_ancestry(conn, base.as_ref()) {
             at_stake.remove(&h);
         }

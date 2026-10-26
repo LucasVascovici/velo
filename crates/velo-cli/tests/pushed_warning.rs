@@ -87,3 +87,49 @@ fn squashing_only_local_snapshots_is_silent() {
     assert!(success, "{err}");
     assert!(!err.contains("already pushed"), "{err}");
 }
+
+/// Undoing a local merge removes only the merge snapshot. Its second parent is
+/// a pushed side branch, but nothing on that branch is rewritten, so the
+/// warning must stay quiet (run six, triage: it named origin/release).
+#[test]
+fn undoing_a_local_merge_of_a_pushed_branch_is_silent() {
+    let (_r, local) = setup();
+    let d = local.path();
+    ok(d, &["push"]);
+    ok(d, &["switch", "--create", "release"]);
+    std::fs::write(d.join("g.txt"), "release").unwrap();
+    ok(d, &["save", "release work"]);
+    ok(d, &["push", "origin", "release"]);
+    ok(d, &["switch", "main"]);
+    std::fs::write(d.join("h.txt"), "main only").unwrap();
+    ok(d, &["save", "local main change"]);
+    ok(d, &["fetch"]);
+    let (err, _) = velo(d, &["merge", "origin/release"]);
+    assert!(!err.contains("error"), "{err}");
+    ok(d, &["save", "Merge origin/release"]);
+    let (err, success) = velo(d, &["undo"]);
+    assert!(success, "{err}");
+    assert!(!err.contains("already pushed"), "{err}");
+}
+
+/// The same undo after the merge itself was pushed must still warn.
+#[test]
+fn undoing_a_pushed_merge_warns() {
+    let (_r, local) = setup();
+    let d = local.path();
+    ok(d, &["push"]);
+    ok(d, &["switch", "--create", "release"]);
+    std::fs::write(d.join("g.txt"), "release").unwrap();
+    ok(d, &["save", "release work"]);
+    ok(d, &["push", "origin", "release"]);
+    ok(d, &["switch", "main"]);
+    std::fs::write(d.join("h.txt"), "main only").unwrap();
+    ok(d, &["save", "local main change"]);
+    ok(d, &["fetch"]);
+    velo(d, &["merge", "origin/release"]);
+    ok(d, &["save", "Merge origin/release"]);
+    ok(d, &["push"]);
+    let (err, success) = velo(d, &["undo"]);
+    assert!(success, "{err}");
+    assert!(err.contains(WARNING), "{err}");
+}

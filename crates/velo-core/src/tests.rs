@@ -12112,6 +12112,12 @@ mod change_events;
 mod sync_outcomes;
 
 #[cfg(test)]
+mod library_history_default;
+
+#[cfg(test)]
+mod library_docs;
+
+#[cfg(test)]
 mod chunked_objects;
 
 #[cfg(test)]
