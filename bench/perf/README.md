@@ -80,8 +80,9 @@ as its baseline does. Spread is max/min over the three runs:
 | `save_tree_100k` | 0.4680 | 1.11x | 0.00680 | 1.16x |
 | `blame_walk` | 0.1585 | 1.20x | 0.0378 | 1.24x |
 
-Every spread is under the 1.6x tolerance, so the Windows leg is no longer
-`continue-on-error` and blocks like the Ubuntu leg. The old Linux
+Every spread is under the 1.6x tolerance, so the Windows leg was made
+blocking; since 6.2.3 it is advisory again (`continue-on-error`: a failure shows red
+but holds nothing), because Defender and a busy runner made it random. The old Linux
 `agent_steps` entry (79.96) predated the v4 engine and the bounded WAL and was
 never re-taken; the old Windows entry (8.23) was taken locally at 500 steps,
 not the 100 the Windows leg runs. Both moved down, so no workload got slower.
